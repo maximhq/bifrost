@@ -35,6 +35,81 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
+	return schemas.Key{
+		ID:                 dbKey.KeyID,
+		Name:               dbKey.Name,
+		Value:              dbKey.Value,
+		Models:             dbKey.Models,
+		Weight:             getWeight(dbKey.Weight),
+		Enabled:            dbKey.Enabled,
+		UseForBatchAPI:     dbKey.UseForBatchAPI,
+		AzureKeyConfig:     dbKey.AzureKeyConfig,
+		VertexKeyConfig:    dbKey.VertexKeyConfig,
+		BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+		ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+		VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+		ConfigHash:         dbKey.ConfigHash,
+		Status:             schemas.KeyStatusType(dbKey.Status),
+		Description:        dbKey.Description,
+	}
+}
+
+func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
+	dbKey := tables.TableKey{
+		Provider:           provider.Name,
+		ProviderID:         provider.ID,
+		KeyID:              key.ID,
+		Name:               key.Name,
+		Value:              key.Value,
+		Models:             key.Models,
+		Weight:             &key.Weight,
+		Enabled:            key.Enabled,
+		UseForBatchAPI:     key.UseForBatchAPI,
+		AzureKeyConfig:     key.AzureKeyConfig,
+		VertexKeyConfig:    key.VertexKeyConfig,
+		BedrockKeyConfig:   key.BedrockKeyConfig,
+		ReplicateKeyConfig: key.ReplicateKeyConfig,
+		VLLMKeyConfig:      key.VLLMKeyConfig,
+		ConfigHash:         key.ConfigHash,
+		Status:             string(key.Status),
+		Description:        key.Description,
+	}
+
+	if key.AzureKeyConfig != nil {
+		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+		dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+	}
+
+	if key.VertexKeyConfig != nil {
+		dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
+		dbKey.VertexRegion = &key.VertexKeyConfig.Region
+		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+	}
+
+	if key.BedrockKeyConfig != nil {
+		dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+		dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+		dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+		dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+		dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+		dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
+		dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
+		dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+		if key.BedrockKeyConfig.BatchS3Config != nil {
+			data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
+			if err != nil {
+				return tables.TableKey{}, err
+			}
+			s := string(data)
+			dbKey.BedrockBatchS3ConfigJSON = &s
+		}
+	}
+
+	return dbKey, nil
+}
+
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
@@ -692,23 +767,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		// Convert database keys to schemas.Key
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
-			keys[i] = schemas.Key{
-				ID:                 dbKey.KeyID,
-				Name:               dbKey.Name,
-				Value:              dbKey.Value,
-				Models:             dbKey.Models,
-				Weight:             getWeight(dbKey.Weight),
-				Enabled:            dbKey.Enabled,
-				UseForBatchAPI:     dbKey.UseForBatchAPI,
-				AzureKeyConfig:     dbKey.AzureKeyConfig,
-				VertexKeyConfig:    dbKey.VertexKeyConfig,
-				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-				VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-				ConfigHash:         dbKey.ConfigHash,
-				Status:             schemas.KeyStatusType(dbKey.Status),
-				Description:        dbKey.Description,
-			}
+			keys[i] = schemaKeyFromTableKey(dbKey)
 		}
 		providerConfig := ProviderConfig{
 			Keys:                     keys,
@@ -741,23 +800,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
-		keys[i] = schemas.Key{
-			ID:                 dbKey.KeyID,
-			Name:               dbKey.Name,
-			Value:              dbKey.Value,
-			Models:             dbKey.Models,
-			Weight:             getWeight(dbKey.Weight),
-			Enabled:            dbKey.Enabled,
-			UseForBatchAPI:     dbKey.UseForBatchAPI,
-			AzureKeyConfig:     dbKey.AzureKeyConfig,
-			VertexKeyConfig:    dbKey.VertexKeyConfig,
-			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-			VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-			ConfigHash:         dbKey.ConfigHash,
-			Status:             schemas.KeyStatusType(dbKey.Status),
-			Description:        dbKey.Description,
-		}
+		keys[i] = schemaKeyFromTableKey(dbKey)
 	}
 	return &ProviderConfig{
 		Keys:                     keys,
@@ -773,6 +816,157 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
 	}, nil
+}
+
+// GetProviderKeys retrieves all keys for a provider ordered by creation time.
+func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	var dbKeys []tables.TableKey
+	result := s.db.WithContext(ctx).
+		Table("config_providers").
+		Select("config_keys.*").
+		Joins("LEFT JOIN config_keys ON config_keys.provider_id = config_providers.id").
+		Where("config_providers.name = ?", string(provider)).
+		Order("config_keys.created_at ASC").
+		Scan(&dbKeys)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	if len(dbKeys) == 1 && dbKeys[0].ID == 0 && dbKeys[0].KeyID == "" {
+		return []schemas.Key{}, nil
+	}
+
+	keys := make([]schemas.Key, 0, len(dbKeys))
+	for _, dbKey := range dbKeys {
+		if dbKey.ID == 0 && dbKey.KeyID == "" {
+			continue
+		}
+		if err := dbKey.AfterFind(nil); err != nil {
+			return nil, err
+		}
+		keys = append(keys, schemaKeyFromTableKey(dbKey))
+	}
+
+	return keys, nil
+}
+
+func (s *RDBConfigStore) getProviderKeyByName(ctx context.Context, txDB *gorm.DB, provider schemas.ModelProvider, keyID string) (*tables.TableKey, error) {
+	var dbKey tables.TableKey
+	if err := txDB.WithContext(ctx).
+		Table("config_keys").
+		Select("config_keys.*").
+		Joins("JOIN config_providers ON config_providers.id = config_keys.provider_id").
+		Where("config_providers.name = ? AND config_keys.key_id = ?", string(provider), keyID).
+		First(&dbKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &dbKey, nil
+}
+
+// GetProviderKey retrieves a single key for a provider.
+func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	dbKey, err := s.getProviderKeyByName(ctx, s.db, provider, keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	key := schemaKeyFromTableKey(*dbKey)
+	return &key, nil
+}
+
+// CreateProviderKey creates a new key for an existing provider.
+func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	var dbProvider tables.TableProvider
+	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	dbKey, err := tableKeyFromSchemaKey(dbProvider, key)
+	if err != nil {
+		return err
+	}
+
+	if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	return nil
+}
+
+// UpdateProviderKey updates a single key for an existing provider.
+func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	existingKey, err := s.getProviderKeyByName(ctx, txDB, provider, keyID)
+	if err != nil {
+		return err
+	}
+
+	dbKey, err := tableKeyFromSchemaKey(tables.TableProvider{
+		ID:   existingKey.ProviderID,
+		Name: existingKey.Provider,
+	}, key)
+	if err != nil {
+		return err
+	}
+	dbKey.ID = existingKey.ID
+	dbKey.KeyID = existingKey.KeyID
+	dbKey.ProviderID = existingKey.ProviderID
+	dbKey.Provider = existingKey.Provider
+	dbKey.ConfigHash = existingKey.ConfigHash
+	dbKey.EncryptionStatus = existingKey.EncryptionStatus
+
+	if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	return nil
+}
+
+// DeleteProviderKey deletes a single key for an existing provider.
+func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	providerIDSubquery := txDB.Model(&tables.TableProvider{}).
+		Select("id").
+		Where("name = ?", string(provider))
+
+	result := txDB.WithContext(ctx).
+		Where("provider_id = (?) AND key_id = ?", providerIDSubquery, keyID).
+		Delete(&tables.TableKey{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 // GetProviders retrieves all providers from the database with their governance relationships.

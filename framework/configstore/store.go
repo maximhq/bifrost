@@ -82,6 +82,11 @@ type ConfigStore interface {
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
+	GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error)
+	GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error)
+	CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error
+	UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error
+	DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error
 	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error
