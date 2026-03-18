@@ -326,6 +326,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPromptVariablesColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4804,6 +4807,50 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPromptVariablesColumns adds variables_json column to prompt_sessions and prompt_versions
+func migrationAddPromptVariablesColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_variables_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptSession{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_sessions: %w", err)
+				}
+			}
+
+			if !migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.AddColumn(&tables.TablePromptVersion{}, "VariablesJSON"); err != nil {
+					return fmt.Errorf("failed to add variables_json column to prompt_versions: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TablePromptSession{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptSession{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TablePromptVersion{}, "variables_json") {
+				if err := migrator.DropColumn(&tables.TablePromptVersion{}, "variables_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_variables_columns migration: %s", err.Error())
 	}
 	return nil
 }
