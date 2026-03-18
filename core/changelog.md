@@ -1,0 +1,20 @@
+- fix: Copilot provider - fallback to cached token on malformed JSON in token exchange
+- fix: Copilot provider - set AllowFallbacks=false on ListModels no-keys error
+- test: Copilot provider - fix transport-error test to exercise refresh fallback path
+- feat: add GitHub Copilot provider with two-layer OAuth, device-code flow, and unit tests
+- fix: Copilot provider - also preserve cached token on transport Do() failures
+- fix: preserve JSON Schema description field during Responses-to-Chat mux conversion
+- fix: Copilot provider - use GetPathFromContext in ChatCompletionStream for path consistency
+- fix: Copilot provider - preserve cached token on transient 5xx errors, only clear on 401/403
+- fix: map Responses API text format to ResponseFormat in ToChatRequest for structured outputs
+- fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
+- fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
+- fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout
+- fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — now correctly passes auto, any, and specific tool constraints to the model
+- feat: add BifrostContextKeyAPIKeyID for explicit key selection by ID, with priority over key name selection
+- feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
+- feat: add Filename field to TranscriptionInput schema to carry original filename through the request pipeline
+- fix: add AudioFilenameFromBytes utility to detect audio format from file headers with mp3 fallback
+- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
+- fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
+- fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers

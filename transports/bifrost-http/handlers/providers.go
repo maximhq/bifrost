@@ -135,6 +135,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
+	r.POST("/api/models/refresh", lib.ChainMiddlewares(h.refreshModels, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
@@ -916,6 +917,34 @@ func buildListedModels(
 		listedModels = append(listedModels, entry)
 	}
 	return listedModels
+// refreshModels handles POST /api/models/refresh - Refresh the cached model list for a provider
+// Query parameters:
+//   - provider: The provider name to refresh models for (required)
+func (h *ProviderHandler) refreshModels(ctx *fasthttp.RequestCtx) {
+	providerParam := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider")))
+	if providerParam == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	provider := schemas.ModelProvider(providerParam)
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil {
+		if errors.Is(err, lib.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", providerParam))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load provider config for provider %s: %v", providerParam, err))
+		return
+	}
+
+	err = h.attemptModelDiscovery(ctx, provider, config.CustomProviderConfig)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to refresh models for provider %s: %v", providerParam, err))
+		return
+	}
+
+	SendJSON(ctx, map[string]string{"status": "ok"})
 }
 
 // getModelParameters handles GET /api/models/parameters - Get model parameters for a specific model

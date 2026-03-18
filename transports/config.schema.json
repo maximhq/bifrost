@@ -335,6 +335,9 @@
         },
         "runway": {
           "$ref": "#/$defs/provider"
+        },
+        "copilot": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -3731,12 +3734,6 @@
         "clientSecret": {
           "type": "string",
           "description": "Client secret (optional, required for token revocation)"
-        },
-        "cloud": {
-          "type": "string",
-          "enum": ["commercial", "gcc-high", "dod"],
-          "default": "commercial",
-          "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
         "audience": {
           "type": "string",
