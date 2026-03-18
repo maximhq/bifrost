@@ -284,7 +284,7 @@ export function RoutingRuleSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}
