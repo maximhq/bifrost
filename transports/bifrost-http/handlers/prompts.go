@@ -116,25 +116,28 @@ type CreateVersionRequest struct {
 	ModelParams   tables.ModelParams     `json:"model_params"`
 	Provider      string                 `json:"provider"`
 	Model         string                 `json:"model"`
+	Variables     tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // CreateSessionRequest represents the request body for creating a session
 type CreateSessionRequest struct {
-	Name        string                 `json:"name"`
-	VersionID   *uint                  `json:"version_id,omitempty"`
-	Messages    []tables.PromptMessage `json:"messages,omitempty"`
-	ModelParams tables.ModelParams     `json:"model_params"`
-	Provider    string                 `json:"provider"`
-	Model       string                 `json:"model"`
+	Name        string                  `json:"name"`
+	VersionID   *uint                   `json:"version_id,omitempty"`
+	Messages    []tables.PromptMessage  `json:"messages,omitempty"`
+	ModelParams tables.ModelParams      `json:"model_params"`
+	Provider    string                  `json:"provider"`
+	Model       string                  `json:"model"`
+	Variables   tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // UpdateSessionRequest represents the request body for updating a session
 type UpdateSessionRequest struct {
-	Name        string                 `json:"name"`
-	Messages    []tables.PromptMessage `json:"messages"`
-	ModelParams tables.ModelParams     `json:"model_params"`
-	Provider    string                 `json:"provider"`
-	Model       string                 `json:"model"`
+	Name        string                  `json:"name"`
+	Messages    []tables.PromptMessage  `json:"messages"`
+	ModelParams tables.ModelParams      `json:"model_params"`
+	Provider    string                  `json:"provider"`
+	Model       string                  `json:"model"`
+	Variables   tables.PromptVariables  `json:"variables,omitempty"`
 }
 
 // RenameSessionRequest represents the request body for renaming a session
@@ -612,6 +615,7 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		ModelParams:   req.ModelParams,
 		Provider:      req.Provider,
 		Model:         req.Model,
+		Variables:     req.Variables,
 		Messages:      messages,
 	}
 
@@ -808,6 +812,7 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		ModelParams: req.ModelParams,
 		Provider:    req.Provider,
 		Model:       req.Model,
+		Variables:   req.Variables,
 		Messages:    messages,
 	}
 
@@ -863,6 +868,7 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 	session.ModelParams = req.ModelParams
 	session.Provider = req.Provider
 	session.Model = req.Model
+	session.Variables = req.Variables
 
 	// Update messages
 	var messages []tables.TablePromptSessionMessage
@@ -1029,12 +1035,22 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Copy variable keys from session with empty values for the version
+	var versionVars tables.PromptVariables
+	if len(session.Variables) > 0 {
+		versionVars = make(tables.PromptVariables, len(session.Variables))
+		for key := range session.Variables {
+			versionVars[key] = ""
+		}
+	}
+
 	version := &tables.TablePromptVersion{
 		PromptID:      session.PromptID,
 		CommitMessage: req.CommitMessage,
 		ModelParams:   session.ModelParams,
 		Provider:      session.Provider,
 		Model:         session.Model,
+		Variables:     versionVars,
 		Messages:      messages,
 	}
 
