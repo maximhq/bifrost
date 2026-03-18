@@ -617,26 +617,40 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// No allowed provider configs, continue without modification
 		return body, nil
 	}
-	// Weighted random selection from allowed providers for the main model
-	totalWeight := 0.0
+	// Separate providers with weight set (participate in routing) from those without (nil weight = excluded from routing)
+	weightedConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(allowedProviderConfigs))
 	for _, config := range allowedProviderConfigs {
-		totalWeight += getWeight(config.Weight)
-	}
-	// Generate random number between 0 and totalWeight
-	randomValue := rand.Float64() * totalWeight
-	// Select provider based on weighted random selection
-	var selectedProvider schemas.ModelProvider
-	currentWeight := 0.0
-	for _, config := range allowedProviderConfigs {
-		currentWeight += getWeight(config.Weight)
-		if randomValue <= currentWeight {
-			selectedProvider = schemas.ModelProvider(config.Provider)
-			break
+		if config.Weight != nil {
+			weightedConfigs = append(weightedConfigs, config)
 		}
 	}
-	// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
-	if selectedProvider == "" && len(allowedProviderConfigs) > 0 {
-		selectedProvider = schemas.ModelProvider(allowedProviderConfigs[0].Provider)
+
+	var selectedProvider schemas.ModelProvider
+
+	if len(weightedConfigs) > 0 {
+		// Weighted random selection from providers that have weight set
+		totalWeight := 0.0
+		for _, config := range weightedConfigs {
+			totalWeight += getWeight(config.Weight)
+		}
+		// Generate random number between 0 and totalWeight
+		randomValue := rand.Float64() * totalWeight
+		// Select provider based on weighted random selection
+		currentWeight := 0.0
+		for _, config := range weightedConfigs {
+			currentWeight += getWeight(config.Weight)
+			if randomValue <= currentWeight {
+				selectedProvider = schemas.ModelProvider(config.Provider)
+				break
+			}
+		}
+		// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
+		if selectedProvider == "" {
+			selectedProvider = schemas.ModelProvider(weightedConfigs[0].Provider)
+		}
+	} else {
+		// No providers have weight set
+		return body, nil
 	}
 
 	p.logger.Debug("[Governance] Selected provider: %s", selectedProvider)
@@ -667,15 +681,17 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 
 	// Check if fallbacks field is already present
 	_, hasFallbacks := body["fallbacks"]
-	if !hasFallbacks && len(allowedProviderConfigs) > 1 {
-		// Sort allowed provider configs by weight (descending)
-		sort.Slice(allowedProviderConfigs, func(i, j int) bool {
-			return getWeight(allowedProviderConfigs[i].Weight) > getWeight(allowedProviderConfigs[j].Weight)
+	// Use the same candidate set that was used for primary selection
+	fallbackConfigs := weightedConfigs
+	if !hasFallbacks && len(fallbackConfigs) > 1 {
+		// Sort fallback configs by weight (descending)
+		sort.Slice(fallbackConfigs, func(i, j int) bool {
+			return getWeight(fallbackConfigs[i].Weight) > getWeight(fallbackConfigs[j].Weight)
 		})
 
 		// Filter out the selected provider and create fallbacks array
-		fallbacks := make([]string, 0, len(allowedProviderConfigs)-1)
-		for _, config := range allowedProviderConfigs {
+		fallbacks := make([]string, 0, len(fallbackConfigs)-1)
+		for _, config := range fallbackConfigs {
 			if config.Provider != string(selectedProvider) {
 				var err error
 				refinedModel := modelStr
@@ -847,34 +863,39 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 //   - map[string]string: The updated request headers
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtualKey *configstoreTables.TableVirtualKey) (map[string]string, error) {
-	if len(virtualKey.MCPConfigs) > 0 {
-		if headers == nil {
-			headers = make(map[string]string)
-		}
-		executeOnlyTools := make([]string, 0)
-		for _, vkMcpConfig := range virtualKey.MCPConfigs {
-			if len(vkMcpConfig.ToolsToExecute) == 0 {
-				// No tools specified in virtual key config - skip this client entirely
-				continue
-			}
-			// Handle wildcard in virtual key config - allow all tools from this client
-			if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
-				// Virtual key uses wildcard - use client-specific wildcard
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
-				continue
-			}
-
-			for _, tool := range vkMcpConfig.ToolsToExecute {
-				if tool != "" {
-					// Add the tool - client config filtering will be handled by mcp.go
-					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
-				}
-			}
-		}
-
-		// Set even when empty to exclude tools when no tools are present in the virtual key config
-		headers["x-bf-mcp-include-tools"] = strings.Join(executeOnlyTools, ",")
+	if headers == nil {
+		headers = make(map[string]string)
 	}
+
+	// Empty MCPConfigs means no MCP tools are allowed (deny-by-default)
+	if len(virtualKey.MCPConfigs) == 0 {
+		headers["x-bf-mcp-include-tools"] = ""
+		return headers, nil
+	}
+
+	executeOnlyTools := make([]string, 0)
+	for _, vkMcpConfig := range virtualKey.MCPConfigs {
+		if len(vkMcpConfig.ToolsToExecute) == 0 {
+			// No tools specified in virtual key config - skip this client entirely
+			continue
+		}
+		// Handle wildcard in virtual key config - allow all tools from this client
+		if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
+			// Virtual key uses wildcard - use client-specific wildcard
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
+			continue
+		}
+
+		for _, tool := range vkMcpConfig.ToolsToExecute {
+			if tool != "" {
+				// Add the tool - client config filtering will be handled by mcp.go
+				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
+			}
+		}
+	}
+
+	// Set even when empty to exclude tools when no tools are present in the virtual key config
+	headers["x-bf-mcp-include-tools"] = strings.Join(executeOnlyTools, ",")
 
 	return headers, nil
 }

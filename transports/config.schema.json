@@ -465,14 +465,14 @@
               },
               "provider_configs": {
                 "type": "array",
-                "description": "Provider configurations for this virtual key (empty means all providers allowed)",
+                "description": "Provider configurations for this virtual key (empty means no providers allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_provider_config"
                 }
               },
               "mcp_configs": {
                 "type": "array",
-                "description": "MCP configurations for this virtual key",
+                "description": "MCP configurations for this virtual key (empty array means no MCP tools allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
                 }
@@ -1505,9 +1505,9 @@
           "description": "Provider name"
         },
         "weight": {
-          "type": "number",
-          "description": "Weight for load balancing",
-          "default": 1.0
+          "type": ["number", "null"],
+          "description": "Weight for load balancing (null opts out of weighted routing)",
+          "default": null
         },
         "allowed_models": {
           "type": "array",

@@ -17,6 +17,7 @@ require (
 	github.com/bytedance/sonic v1.15.0
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2

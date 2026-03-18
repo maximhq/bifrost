@@ -12,6 +12,7 @@ const NumberAndSelect = ({
 	onChangeSelect,
 	options,
 	labelClassName,
+	placeholder = "100",
 	dataTestId,
 }: {
 	id: string;
@@ -22,6 +23,7 @@ const NumberAndSelect = ({
 	onChangeSelect: (value: string) => void;
 	options: { label: string; value: string }[];
 	labelClassName?: string;
+	placeholder?: string;
 	dataTestId?: string;
 }) => {
 	return (
@@ -33,7 +35,7 @@ const NumberAndSelect = ({
 				<Input
 					id={id}
 					data-testid={dataTestId}
-					placeholder="100"
+					placeholder={placeholder}
 					value={value}
 					onChange={(e) => {
 						const inputValue = e.target.value;

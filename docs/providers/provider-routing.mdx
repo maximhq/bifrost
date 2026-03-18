@@ -911,6 +911,8 @@ When a Virtual Key has `provider_configs` defined:
 
 <Note>
 **Empty `allowed_models`**: When left empty, Bifrost uses the Model Catalog (populated from pricing data and the provider's list models API) to determine which models are supported. See the [Model Catalog section](#the-model-catalog) above for how syncing works. For configuration instructions, see [Governance Routing](/features/governance/routing).
+
+**Empty `provider_configs`**: When `provider_configs` is empty (no providers configured), **all providers are blocked** (deny-by-default). You must explicitly add provider configurations to allow traffic through a Virtual Key.
 </Note>
 
 ---
@@ -1158,7 +1160,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Load Balancing Only">
 
 **Setup:**
-- No Virtual Key or Virtual Key without `provider_configs`
+- **No Virtual Key** (do not send `x-bf-vk`) → this is the **Load Balancing–only** setup
+- **Virtual Key with empty / missing `provider_configs`** → **blocks all providers** (deny-by-default) and therefore is **NOT** an LB-only setup
 - Adaptive load balancing enabled
 
 **Request:**
@@ -1232,7 +1235,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 | Scenario | Provider Selection | Key Selection |
 |----------|-------------------|---------------|
 | VK with provider_configs | **Governance** (weighted random) | **Standard** or **Adaptive** (if enabled) |
-| VK without provider_configs + LB | **Load Balancing Level 1** (performance) | **Load Balancing Level 2** (performance) |
+| VK without provider_configs + LB | **Blocked** (empty = no providers allowed) | N/A |
 | No VK + LB | **Load Balancing Level 1** (performance) | **Load Balancing Level 2** (performance) |
 | Model with provider prefix + LB | **Skip** (already specified) | **Load Balancing Level 2** (performance) ✅ |
 | No Load Balancing enabled | **Governance** or **User** or **Model Catalog** | **Standard** (static weights) |

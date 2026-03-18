@@ -65,7 +65,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	var includeClients []string
 
 	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
+	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
 		includeClients = existingIncludeClients
 	}
 
@@ -439,7 +439,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 // Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
 // This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -752,6 +752,7 @@ func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
 		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
 			return true
 		}
+
 		// Check if message has tool calls regardless of finish_reason.
 		// Some providers (e.g. Gemini) return finish_reason "stop" even when tool calls are present,
 		// so we cannot rely solely on finish_reason to detect tool calls.

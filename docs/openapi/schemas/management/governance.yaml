@@ -130,6 +130,8 @@ VirtualKeyProviderConfig:
       type: string
     weight:
       type: number
+      nullable: true
+      description: Weight for provider load balancing. Null means excluded from weighted routing.
     allowed_models:
       type: array
       items:
@@ -195,6 +197,7 @@ CreateVirtualKeyRequest:
       type: string
     provider_configs:
       type: array
+      description: Provider configurations (empty means no providers allowed, deny-by-default)
       items:
         type: object
         properties:
@@ -202,6 +205,8 @@ CreateVirtualKeyRequest:
             type: string
           weight:
             type: number
+            nullable: true
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
@@ -216,6 +221,7 @@ CreateVirtualKeyRequest:
               type: string
     mcp_configs:
       type: array
+      description: MCP configurations (empty means no MCP tools allowed, deny-by-default)
       items:
         type: object
         properties:
@@ -255,6 +261,8 @@ UpdateVirtualKeyRequest:
             type: string
           weight:
             type: number
+            nullable: true
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
