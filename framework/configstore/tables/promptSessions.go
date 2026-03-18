@@ -22,6 +22,8 @@ type TablePromptSession struct {
 	ModelParams     ModelParams         `gorm:"-" json:"model_params"`
 	Provider        string              `gorm:"type:varchar(100)" json:"provider"`
 	Model           string              `gorm:"type:varchar(100)" json:"model"`
+	VariablesJSON   *string             `gorm:"type:text;column:variables_json" json:"-"`
+	Variables       PromptVariables     `gorm:"-" json:"variables,omitempty"` // {key: value} map for Jinja2 variables
 	CreatedAt       time.Time           `gorm:"not null" json:"created_at"`
 	UpdatedAt       time.Time           `gorm:"not null" json:"updated_at"`
 
@@ -40,6 +42,15 @@ func (s *TablePromptSession) BeforeSave(tx *gorm.DB) error {
 	}
 	paramsStr := string(data)
 	s.ModelParamsJSON = &paramsStr
+
+	if s.Variables != nil {
+		varsData, err := json.Marshal(s.Variables)
+		if err != nil {
+			return err
+		}
+		varsStr := string(varsData)
+		s.VariablesJSON = &varsStr
+	}
 	return nil
 }
 
@@ -49,6 +60,11 @@ func (s *TablePromptSession) AfterFind(tx *gorm.DB) error {
 		dec := json.NewDecoder(strings.NewReader(*s.ModelParamsJSON))
 		dec.UseNumber()
 		if err := dec.Decode(&s.ModelParams); err != nil {
+			return err
+		}
+	}
+	if s.VariablesJSON != nil && *s.VariablesJSON != "" {
+		if err := json.Unmarshal([]byte(*s.VariablesJSON), &s.Variables); err != nil {
 			return err
 		}
 	}
