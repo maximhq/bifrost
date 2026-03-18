@@ -1,0 +1,10 @@
+- fix: deterministic JSON serialization across all providers — replaced map[string]interface{} round-trips with json.RawMessage and sjson/gjson to preserve original key ordering for prompt caching
+- fix: ResponsesTool MarshalJSON rewritten to use sjson for incremental byte-level JSON construction, ensuring stable key order critical for OpenAI prompt caching
+- fix: Anthropic tool call arguments preserved as json.RawMessage instead of parsing into map, preventing key reordering on re-serialization
+- fix: Bedrock tool use input and extra params preserved as json.RawMessage for consistent prompt caching behavior
+- fix: Gemini FunctionCall.Args changed from map[string]interface{} to json.RawMessage, eliminating key order randomization
+- fix: Cohere response format serialization switched to sjson for deterministic output
+- fix: HuggingFace model field update uses sjson SetJSONField instead of unmarshal/marshal round-trip
+- fix: Replicate prediction request input merges extra params using sjson to preserve key ordering
+- feat: added comprehensive prompt caching tests for Anthropic, Azure, Bedrock, Gemini, and Vertex providers
+- feat: added serialization tests for ResponsesTool to verify deterministic JSON output
