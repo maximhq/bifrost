@@ -29,13 +29,14 @@ type TableVirtualKeyProviderConfig struct {
 	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
 	Weight        *float64 `json:"weight"`
 	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
+	AllowAllKeys  bool     `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
 	BudgetID      *string  `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID   *string  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
-	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means all keys allowed for this provider
+	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Used when AllowAllKeys is false; empty means no keys allowed
 }
 
 // TableName sets the table name for each model
@@ -60,12 +61,17 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	// Copy all standard fields
 	*pc = TableVirtualKeyProviderConfig(temp.Alias)
 
-	// If allowed_keys is provided (config file format), convert to Keys
+	// If allowed_keys is provided (config file format), convert to Keys or set AllowAllKeys
 	// This takes precedence if Keys is empty but allowed_keys has values
 	if len(temp.AllowedKeys) > 0 && len(pc.Keys) == 0 {
-		pc.Keys = make([]TableKey, len(temp.AllowedKeys))
-		for i, keyName := range temp.AllowedKeys {
-			pc.Keys[i] = TableKey{Name: keyName}
+		// Check for wildcard — ["*"] means allow all keys
+		if len(temp.AllowedKeys) == 1 && temp.AllowedKeys[0] == "*" {
+			pc.AllowAllKeys = true
+		} else {
+			pc.Keys = make([]TableKey, len(temp.AllowedKeys))
+			for i, keyName := range temp.AllowedKeys {
+				pc.Keys[i] = TableKey{Name: keyName}
+			}
 		}
 	}
 
