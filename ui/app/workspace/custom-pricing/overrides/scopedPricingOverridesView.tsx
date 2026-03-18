@@ -20,6 +20,7 @@ import {
 	useGetProvidersQuery,
 	useGetVirtualKeysQuery,
 } from "@/lib/store";
+import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
@@ -150,6 +151,7 @@ export default function ScopedPricingOverridesView() {
 	}, [totalCount, offset]);
 	const { data: providersData } = useGetProvidersQuery();
 	const { data: virtualKeysData } = useGetVirtualKeysQuery();
+	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [deleteOverride, { isLoading: isDeleting }] = useDeletePricingOverrideMutation();
 
 	useEffect(() => {
@@ -169,14 +171,12 @@ export default function ScopedPricingOverridesView() {
 	const providerMap = useMemo(() => new Map<string, string>(providers.map((provider) => [provider.name, provider.name])), [providers]);
 	const providerKeyOptions = useMemo(
 		() =>
-			providers.flatMap((provider) =>
-				(provider.keys || []).map((key) => ({
-					id: key.id,
-					label: key.name || key.id,
-					providerName: provider.name,
-				})),
-			),
-		[providers],
+			allKeysData.map((key) => ({
+				id: key.key_id,
+				label: key.name || key.key_id,
+				providerName: key.provider,
+			})),
+		[allKeysData],
 	);
 	const providerKeyProviderMap = useMemo(
 		() => new Map<string, string>(providerKeyOptions.map((key) => [key.id, key.providerName])),

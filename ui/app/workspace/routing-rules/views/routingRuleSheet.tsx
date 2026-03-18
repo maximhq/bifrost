@@ -41,7 +41,7 @@ import {
 	useGetTeamsQuery,
 	useGetCustomersQuery,
 } from "@/lib/store/apis/governanceApi";
-import { useGetProvidersQuery } from "@/lib/store/apis/providersApi";
+import { useGetProvidersQuery, useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
@@ -85,6 +85,7 @@ export function RoutingRuleSheet({
 	const { data: rulesData } = useGetRoutingRulesQuery();
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
+	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
 	const { data: teamsData = { teams: [], count: 0, total_count: 0, limit: 0, offset: 0 } } = useGetTeamsQuery();
 	const { data: customersData = { customers: [] } } = useGetCustomersQuery();
@@ -487,7 +488,7 @@ export function RoutingRuleSheet({
 									target={target}
 									index={index}
 									availableProviders={availableProviders}
-									providersData={providersData}
+									allKeys={allKeysData}
 									showRemove={targets.length > 1}
 									onUpdate={updateTarget}
 									onRemove={removeTarget}
@@ -623,15 +624,15 @@ interface TargetRowProps {
 	target: RoutingTargetFormData;
 	index: number;
 	availableProviders: string[];
-	providersData: Array<{ name: string; keys: Array<{ id: string; name: string }> }>;
+	allKeys: Array<{ key_id: string; name: string; provider: string }>;
 	showRemove: boolean;
 	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
 	onRemove: (index: number) => void;
 }
 
-function TargetRow({ target, index, availableProviders, providersData, showRemove, onUpdate, onRemove }: TargetRowProps) {
+function TargetRow({ target, index, availableProviders, allKeys, showRemove, onUpdate, onRemove }: TargetRowProps) {
 	const availableKeys = target.provider
-		? (providersData.find((p) => p.name === target.provider)?.keys ?? [])
+		? allKeys.filter((k) => k.provider === target.provider).map((k) => ({ id: k.key_id, name: k.name }))
 		: [];
 
 	return (
