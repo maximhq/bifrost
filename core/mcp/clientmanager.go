@@ -243,13 +243,14 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
 		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
 		// Updatable fields - copy from updated config with proper cloning
-		Name:               updatedConfig.Name,
-		IsCodeModeClient:   updatedConfig.IsCodeModeClient,
-		Headers:            maps.Clone(updatedConfig.Headers),
-		ToolsToExecute:     slices.Clone(updatedConfig.ToolsToExecute),
-		ToolsToAutoExecute: slices.Clone(updatedConfig.ToolsToAutoExecute),
-		IsPingAvailable:    updatedConfig.IsPingAvailable,
-		ToolSyncInterval:   updatedConfig.ToolSyncInterval,
+		Name:                updatedConfig.Name,
+		IsCodeModeClient:    updatedConfig.IsCodeModeClient,
+		Headers:             maps.Clone(updatedConfig.Headers),
+		ToolsToExecute:      slices.Clone(updatedConfig.ToolsToExecute),
+		ToolsToAutoExecute:  slices.Clone(updatedConfig.ToolsToAutoExecute),
+		AllowedExtraHeaders: slices.Clone(updatedConfig.AllowedExtraHeaders),
+		IsPingAvailable:     updatedConfig.IsPingAvailable,
+		ToolSyncInterval:    updatedConfig.ToolSyncInterval,
 	}
 
 	// Atomically replace the config pointer
@@ -663,7 +664,11 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	}
 
 	// Start health monitoring for the client
-	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, config.IsPingAvailable, m.logger)
+	isPingAvailable := true
+	if config.IsPingAvailable != nil {
+		isPingAvailable = *config.IsPingAvailable
+	}
+	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, isPingAvailable, m.logger)
 	m.healthMonitorManager.StartMonitoring(monitor)
 
 	// Start tool syncing for the client (skip for internal bifrost client)

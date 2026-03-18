@@ -74,6 +74,8 @@ type HandlerStore interface {
 	// GetKVStore returns the shared in-memory kvstore instance.
 	// Returns nil if not initialized.
 	GetKVStore() *kvstore.Store
+	// GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers
+	GetMCPHeaderCombinedAllowlist() schemas.WhiteList
 }
 
 // Retry backoff constants for validation
@@ -1726,17 +1728,18 @@ func mergePluginsFromFile(ctx context.Context, config *Config, configData *Confi
 // convertSchemasMCPClientConfigToTable converts schemas.MCPClientConfig to tables.TableMCPClient
 func convertSchemasMCPClientConfigToTable(clientConfig *schemas.MCPClientConfig) *configstoreTables.TableMCPClient {
 	return &configstoreTables.TableMCPClient{
-		ClientID:           clientConfig.ID,
-		Name:               clientConfig.Name,
-		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     string(clientConfig.ConnectionType),
-		ConnectionString:   clientConfig.ConnectionString,
-		StdioConfig:        clientConfig.StdioConfig,
-		ToolsToExecute:     clientConfig.ToolsToExecute,
-		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
-		Headers:            clientConfig.Headers,
-		AuthType:           string(clientConfig.AuthType),
-		OauthConfigID:      clientConfig.OauthConfigID,
+		ClientID:            clientConfig.ID,
+		Name:                clientConfig.Name,
+		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ConnectionType:      string(clientConfig.ConnectionType),
+		ConnectionString:    clientConfig.ConnectionString,
+		StdioConfig:         clientConfig.StdioConfig,
+		ToolsToExecute:      clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+		Headers:             clientConfig.Headers,
+		AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
+		AuthType:            string(clientConfig.AuthType),
+		OauthConfigID:       clientConfig.OauthConfigID,
 	}
 }
 
@@ -2524,6 +2527,29 @@ func (c *Config) GetHeaderMatcher() *HeaderMatcher {
 // Called when header filter config changes.
 func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
 	c.headerMatcher.Store(m)
+}
+
+// GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers across all MCP clients.
+// This method acquires a muMCP read lock and is safe for concurrent access from hot paths.
+func (c *Config) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil || len(c.MCPConfig.ClientConfigs) == 0 {
+		return schemas.WhiteList{}
+	}
+
+	allowlist := schemas.WhiteList{}
+	for _, mcpClient := range c.MCPConfig.ClientConfigs {
+		if mcpClient == nil {
+			continue
+		}
+		if mcpClient.AllowedExtraHeaders.IsUnrestricted() {
+			return schemas.WhiteList{"*"}
+		}
+		allowlist = append(allowlist, mcpClient.AllowedExtraHeaders...)
+	}
+	return allowlist
 }
 
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
@@ -3398,6 +3424,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = updatedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
+	c.MCPConfig.ClientConfigs[configIndex].AllowedExtraHeaders = updatedConfig.AllowedExtraHeaders
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval

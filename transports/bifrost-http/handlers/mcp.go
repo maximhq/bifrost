@@ -209,7 +209,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ToolsToExecute:     dbClient.ToolsToExecute,
 			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
 			Headers:            dbClient.Headers,
-			IsPingAvailable:    isPingAvailable,
+			IsPingAvailable:    &isPingAvailable,
 			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
 			ToolPricing:        dbClient.ToolPricing,
 		}
@@ -314,6 +314,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
+	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
+		return
+	}
 
 	// Check if OAuth flow is needed
 	if req.AuthType == "oauth" {
@@ -375,27 +379,23 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		isPingAvailable := true
-		if req.IsPingAvailable != nil {
-			isPingAvailable = *req.IsPingAvailable
-		}
-
 		// Store MCP client config in OAuth provider memory (not in database)
 		// It will be stored in database only after OAuth completion
 		pendingConfig := schemas.MCPClientConfig{
-			ID:                 req.ClientID,
-			Name:               req.Name,
-			IsCodeModeClient:   req.IsCodeModeClient,
-			IsPingAvailable:    isPingAvailable,
-			ToolSyncInterval:   toolSyncInterval,
-			ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
-			ConnectionString:   req.ConnectionString,
-			StdioConfig:        req.StdioConfig,
-			AuthType:           schemas.MCPAuthType(req.AuthType),
-			OauthConfigID:      &flowInitiation.OauthConfigID,
-			ToolsToExecute:     req.ToolsToExecute,
-			ToolsToAutoExecute: req.ToolsToAutoExecute,
-			Headers:            req.Headers,
+			ID:                  req.ClientID,
+			Name:                req.Name,
+			IsCodeModeClient:    req.IsCodeModeClient,
+			IsPingAvailable:     req.IsPingAvailable,
+			ToolSyncInterval:    toolSyncInterval,
+			ConnectionType:      schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:    req.ConnectionString,
+			StdioConfig:         req.StdioConfig,
+			AuthType:            schemas.MCPAuthType(req.AuthType),
+			OauthConfigID:       &flowInitiation.OauthConfigID,
+			ToolsToExecute:      req.ToolsToExecute,
+			ToolsToAutoExecute:  req.ToolsToAutoExecute,
+			Headers:             req.Headers,
+			AllowedExtraHeaders: req.AllowedExtraHeaders,
 		}
 
 		// Store pending config in database (associated with oauth_config_id for multi-instance support)
@@ -432,26 +432,22 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
-	// Dereference IsPingAvailable pointer, defaulting to true if nil (new clients default to ping available)
-	isPingAvailable := true
-	if req.IsPingAvailable != nil {
-		isPingAvailable = *req.IsPingAvailable
-	}
 	schemasConfig := &schemas.MCPClientConfig{
-		ID:                 req.ClientID,
-		Name:               req.Name,
-		IsCodeModeClient:   req.IsCodeModeClient,
-		ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
-		ConnectionString:   req.ConnectionString,
-		StdioConfig:        req.StdioConfig,
-		ToolsToExecute:     req.ToolsToExecute,
-		ToolsToAutoExecute: req.ToolsToAutoExecute,
-		Headers:            req.Headers,
-		AuthType:           schemas.MCPAuthType(req.AuthType),
-		OauthConfigID:      req.OauthConfigID,
-		IsPingAvailable:    isPingAvailable,
-		ToolSyncInterval:   toolSyncInterval,
-		ToolPricing:        req.ToolPricing,
+		ID:                  req.ClientID,
+		Name:                req.Name,
+		IsCodeModeClient:    req.IsCodeModeClient,
+		ConnectionType:      schemas.MCPConnectionType(req.ConnectionType),
+		ConnectionString:    req.ConnectionString,
+		StdioConfig:         req.StdioConfig,
+		ToolsToExecute:      req.ToolsToExecute,
+		ToolsToAutoExecute:  req.ToolsToAutoExecute,
+		Headers:             req.Headers,
+		AllowedExtraHeaders: req.AllowedExtraHeaders,
+		AuthType:            schemas.MCPAuthType(req.AuthType),
+		OauthConfigID:       req.OauthConfigID,
+		IsPingAvailable:     req.IsPingAvailable,
+		ToolSyncInterval:    toolSyncInterval,
+		ToolPricing:         req.ToolPricing,
 	}
 
 	// Creating MCP client config in config store
@@ -518,6 +514,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
+	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
+		return
+	}
 	// Get existing config to handle redacted values
 	var existingConfig *schemas.MCPClientConfig
 	if h.store.MCPConfig != nil {
@@ -566,25 +566,22 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
-	isPingAvailable := true
-	if req.IsPingAvailable != nil {
-		isPingAvailable = *req.IsPingAvailable
-	}
 	schemasConfig := &schemas.MCPClientConfig{
-		ID:                 req.ClientID,
-		Name:               req.Name,
-		IsCodeModeClient:   req.IsCodeModeClient,
-		ConnectionType:     existingConfig.ConnectionType,
-		ConnectionString:   existingConfig.ConnectionString,
-		StdioConfig:        existingConfig.StdioConfig,
-		ToolsToExecute:     req.ToolsToExecute,
-		ToolsToAutoExecute: req.ToolsToAutoExecute,
-		Headers:            req.Headers,
-		AuthType:           existingConfig.AuthType,
-		OauthConfigID:      existingConfig.OauthConfigID,
-		IsPingAvailable:    isPingAvailable,
-		ToolSyncInterval:   toolSyncInterval,
-		ToolPricing:        req.ToolPricing,
+		ID:                  req.ClientID,
+		Name:                req.Name,
+		IsCodeModeClient:    req.IsCodeModeClient,
+		ConnectionType:      existingConfig.ConnectionType,
+		ConnectionString:    existingConfig.ConnectionString,
+		StdioConfig:         existingConfig.StdioConfig,
+		ToolsToExecute:      req.ToolsToExecute,
+		ToolsToAutoExecute:  req.ToolsToAutoExecute,
+		Headers:             req.Headers,
+		AllowedExtraHeaders: req.AllowedExtraHeaders,
+		AuthType:            existingConfig.AuthType,
+		OauthConfigID:       existingConfig.OauthConfigID,
+		IsPingAvailable:     req.IsPingAvailable,
+		ToolSyncInterval:    toolSyncInterval,
+		ToolPricing:         req.ToolPricing,
 	}
 	// Update MCP client in memory
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
@@ -650,6 +647,13 @@ func getIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 func validateToolsToExecute(toolsToExecute schemas.WhiteList) error {
 	if err := toolsToExecute.Validate(); err != nil {
 		return fmt.Errorf("invalid tools_to_execute: %w", err)
+	}
+	return nil
+}
+
+func validateAllowedExtraHeaders(allowedExtraHeaders schemas.WhiteList) error {
+	if err := allowedExtraHeaders.Validate(); err != nil {
+		return fmt.Errorf("invalid allowed_extra_headers: %w", err)
 	}
 	return nil
 }
@@ -738,7 +742,11 @@ func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, 
 	// Preserve IsPingAvailable if not explicitly set in incoming request
 	// This prevents the zero-value (false) from overwriting the existing DB value
 	if incoming.IsPingAvailable == nil {
-		merged.IsPingAvailable = bifrost.Ptr(oldRaw.IsPingAvailable)
+		merged.IsPingAvailable = oldRaw.IsPingAvailable
+	}
+	// Preserve AllowedExtraHeaders if not explicitly set in incoming request
+	if incoming.AllowedExtraHeaders == nil {
+		merged.AllowedExtraHeaders = oldRaw.AllowedExtraHeaders
 	}
 
 	return merged

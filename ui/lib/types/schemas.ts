@@ -935,6 +935,17 @@ export const mcpClientUpdateSchema = z.object({
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+	allowed_extra_headers: z
+		.array(z.string())
+		.optional()
+		.refine(
+			(headers) => {
+				if (!headers || headers.length === 0) return true;
+				const hasWildcard = headers.includes("*");
+				return !hasWildcard || headers.length === 1;
+			},
+			{ message: "Wildcard '*' cannot be combined with specific header names" },
+		),
 });
 
 // Global proxy type schema

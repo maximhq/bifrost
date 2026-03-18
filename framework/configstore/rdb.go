@@ -870,26 +870,22 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			// This will never happen, but just in case.
 			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 			for i, dbClient := range dbMCPClients {
-				// Dereference IsPingAvailable pointer, defaulting to true if nil
-				isPingAvailable := true
-				if dbClient.IsPingAvailable != nil {
-					isPingAvailable = *dbClient.IsPingAvailable
-				}
 				clientConfigs[i] = &schemas.MCPClientConfig{
-					ID:                 dbClient.ClientID,
-					Name:               dbClient.Name,
-					IsCodeModeClient:   dbClient.IsCodeModeClient,
-					ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
-					ConnectionString:   dbClient.ConnectionString,
-					StdioConfig:        dbClient.StdioConfig,
-					AuthType:           schemas.MCPAuthType(dbClient.AuthType),
-					OauthConfigID:      dbClient.OauthConfigID,
-					ToolsToExecute:     dbClient.ToolsToExecute,
-					ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
-					Headers:            dbClient.Headers,
-					IsPingAvailable:    isPingAvailable,
-					ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
-					ToolPricing:        dbClient.ToolPricing,
+					ID:                  dbClient.ClientID,
+					Name:                dbClient.Name,
+					IsCodeModeClient:    dbClient.IsCodeModeClient,
+					ConnectionType:      schemas.MCPConnectionType(dbClient.ConnectionType),
+					ConnectionString:    dbClient.ConnectionString,
+					StdioConfig:         dbClient.StdioConfig,
+					AuthType:            schemas.MCPAuthType(dbClient.AuthType),
+					OauthConfigID:       dbClient.OauthConfigID,
+					ToolsToExecute:      dbClient.ToolsToExecute,
+					ToolsToAutoExecute:  dbClient.ToolsToAutoExecute,
+					Headers:             dbClient.Headers,
+					AllowedExtraHeaders: dbClient.AllowedExtraHeaders,
+					IsPingAvailable:     dbClient.IsPingAvailable,
+					ToolSyncInterval:    time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolPricing:         dbClient.ToolPricing,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -910,26 +906,22 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {
-		// Dereference IsPingAvailable pointer, defaulting to true if nil
-		isPingAvailable := true
-		if dbClient.IsPingAvailable != nil {
-			isPingAvailable = *dbClient.IsPingAvailable
-		}
 		clientConfigs[i] = &schemas.MCPClientConfig{
-			ID:                 dbClient.ClientID,
-			Name:               dbClient.Name,
-			IsCodeModeClient:   dbClient.IsCodeModeClient,
-			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:   dbClient.ConnectionString,
-			StdioConfig:        dbClient.StdioConfig,
-			AuthType:           schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:      dbClient.OauthConfigID,
-			ToolsToExecute:     dbClient.ToolsToExecute,
-			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
-			Headers:            dbClient.Headers,
-			IsPingAvailable:    isPingAvailable,
-			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
-			ToolPricing:        dbClient.ToolPricing,
+			ID:                  dbClient.ClientID,
+			Name:                dbClient.Name,
+			IsCodeModeClient:    dbClient.IsCodeModeClient,
+			ConnectionType:      schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:    dbClient.ConnectionString,
+			StdioConfig:         dbClient.StdioConfig,
+			AuthType:            schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:       dbClient.OauthConfigID,
+			ToolsToExecute:      dbClient.ToolsToExecute,
+			ToolsToAutoExecute:  dbClient.ToolsToAutoExecute,
+			Headers:             dbClient.Headers,
+			AllowedExtraHeaders: dbClient.AllowedExtraHeaders,
+			IsPingAvailable:     dbClient.IsPingAvailable,
+			ToolSyncInterval:    time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolPricing:         dbClient.ToolPricing,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -1014,19 +1006,20 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 		// Create new client
 		dbClient := tables.TableMCPClient{
-			ClientID:           clientConfigCopy.ID,
-			Name:               clientConfigCopy.Name,
-			IsCodeModeClient:   clientConfigCopy.IsCodeModeClient,
-			ConnectionType:     string(clientConfigCopy.ConnectionType),
-			ConnectionString:   clientConfigCopy.ConnectionString,
-			StdioConfig:        clientConfigCopy.StdioConfig,
-			AuthType:           string(clientConfigCopy.AuthType),
-			OauthConfigID:      clientConfigCopy.OauthConfigID,
-			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
-			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
-			Headers:            clientConfigCopy.Headers,
-			IsPingAvailable:    &clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:   int(clientConfigCopy.ToolSyncInterval.Minutes()),
+			ClientID:            clientConfigCopy.ID,
+			Name:                clientConfigCopy.Name,
+			IsCodeModeClient:    clientConfigCopy.IsCodeModeClient,
+			ConnectionType:      string(clientConfigCopy.ConnectionType),
+			ConnectionString:    clientConfigCopy.ConnectionString,
+			StdioConfig:         clientConfigCopy.StdioConfig,
+			AuthType:            string(clientConfigCopy.AuthType),
+			OauthConfigID:       clientConfigCopy.OauthConfigID,
+			ToolsToExecute:      clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute:  clientConfigCopy.ToolsToAutoExecute,
+			Headers:             clientConfigCopy.Headers,
+			AllowedExtraHeaders: clientConfigCopy.AllowedExtraHeaders,
+			IsPingAvailable:     clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:    int(clientConfigCopy.ToolSyncInterval.Minutes()),
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1085,6 +1078,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal headers: %w", err)
 		}
+		if clientConfigCopy.AllowedExtraHeaders == nil {
+			clientConfigCopy.AllowedExtraHeaders = []string{}
+		}
+		allowedExtraHeadersJSON, err := json.Marshal(clientConfigCopy.AllowedExtraHeaders)
+		if err != nil {
+			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1111,6 +1111,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
 			"headers_json":               headersJSONStr,
+			"allowed_extra_headers_json": string(allowedExtraHeadersJSON),
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"updated_at":                 time.Now(),
