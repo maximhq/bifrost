@@ -49,6 +49,32 @@ Access Guardrails from the Bifrost dashboard:
 | **Configuration** | Guardrails > Configuration | Manage guardrail rules and their settings |
 | **Providers** | Guardrails > Providers | Configure and manage guardrail profiles |
 
+### Managing Large Rule Sets
+
+Guardrail rule management is enterprise-only and now supports search and pagination in both the UI and the management API. Use the `search`, `limit`, and `offset` query parameters on `GET /api/guardrails/rules` to browse large rule catalogs without fetching every rule at once.
+
+```bash
+curl "http://localhost:8080/api/guardrails/rules?search=pii&limit=25&offset=0"
+```
+
+```json
+{
+  "rules": [
+    {
+      "id": 12,
+      "name": "Block PII on output",
+      "enabled": true
+    }
+  ],
+  "count": 1,
+  "total_count": 1,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+The wrapped response shape is returned consistently, including when you omit pagination parameters, so enterprise UI clients and automation can rely on `count`, `total_count`, `limit`, and `offset`.
+
 ### Architecture
 
 The following diagram illustrates how Rules and Profiles work together to validate LLM requests:

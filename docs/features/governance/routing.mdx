@@ -313,6 +313,16 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 
 <Note>The models restrictions applied on the keys of individual providers will always be applied and will work together with the provider/model or api key restrictions set on the virtual key.</Note>
 
+## Enterprise layering with user governance
+
+In Bifrost Enterprise, routing restrictions can be combined with [user-level governance](/enterprise/advanced-governance). When an authenticated enterprise user sends a request with a virtual key, Bifrost evaluates both layers:
+
+- The user policy enforces per-user budgets and rate limits.
+- The virtual key still decides which providers, models, API keys, and MCP tools are eligible for routing.
+- Team and customer policies continue to provide shared rollups and higher-level ceilings above the user.
+
+This makes it possible to give each user their own spend envelope while still pinning entire workloads to approved providers or API keys.
+
 ## Troubleshooting
 
 ### Model Catalog Sync Failures

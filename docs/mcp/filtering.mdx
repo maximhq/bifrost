@@ -230,6 +230,34 @@ Virtual Keys can have their own MCP tool access configuration, which **takes pre
 When a Virtual Key has MCP configurations, it generates the `x-bf-mcp-include-tools` header automatically, overriding any manually sent header.
 </Note>
 
+### Enterprise MCP Tool Groups
+
+Bifrost Enterprise adds **MCP Tool Groups** on top of the per-virtual-key controls described above. Tool groups let you build reusable sets of MCP tools and attach them to multiple governance resources, including virtual keys, teams, customers, users, providers, API keys, and MCP clients.
+
+The enterprise list endpoint supports search and pagination so large catalogs stay manageable:
+
+```bash
+curl "http://localhost:8080/api/mcp/tool-groups?search=support&limit=25&offset=0"
+```
+
+```json
+{
+  "mcp_tool_groups": [
+    {
+      "id": 4,
+      "name": "support-tools",
+      "enabled": true
+    }
+  ],
+  "count": 1,
+  "total_count": 1,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+Use tool groups when you want a centrally managed allow-list that can be reused across many enterprise identities or workloads instead of hand-configuring MCP tool access on each virtual key individually.
+
 ### Configuration
 
 <Tabs>

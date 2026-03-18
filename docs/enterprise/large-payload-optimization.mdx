@@ -1,0 +1,140 @@
+---
+title: "Large Payload Optimization"
+description: "Enterprise-only streaming controls for oversized request and response bodies, with configurable thresholds, payload caps, and truncated logging."
+icon: "box"
+---
+
+## Overview
+
+Large Payload Optimization is an **enterprise-only** feature that lets Bifrost stream eligible large request and response bodies without fully buffering them in memory first.
+
+This is useful for workloads such as:
+
+- Large image batches and multimodal inputs
+- Video uploads and long-form media workflows
+- Speech and audio generation with large responses
+- High-volume passthrough workloads where buffering creates memory pressure
+
+<Note>
+This feature is not available in the OSS build. The enterprise server exposes the configuration through the enterprise config schema and the `/api/large-payload-config` management API.
+</Note>
+
+## How it works
+
+Large payload optimization is intentionally conservative:
+
+1. Bifrost checks request size against enterprise-configured thresholds and rejects anything above the hard maximum payload cap.
+2. It reads only a bounded initial window of the body so it can discover routing metadata such as model and stream flags.
+3. If that first window is not enough, Bifrost can keep scanning the JSON stream while the body is already flowing upstream.
+4. Only requests that can remain passthrough-safe are upgraded into large payload mode. If the route would require body transformation, Bifrost restores the normal buffered path instead.
+5. Response streaming follows the same principle: large responses continue streaming to the client while Bifrost scans for important metadata such as usage without re-materializing the full body.
+6. Logs keep only a truncated preview instead of storing the full payload body.
+
+If a request or response requires shape transformation, Bifrost falls back to the normal buffered path instead of forcing the optimization.
+
+## Two-stage request detection
+
+The request path uses a deliberate two-stage approach:
+
+### Phase A: bounded prefetch
+
+Bifrost first inspects a small, configurable slice of the request body. In many cases that is enough to identify the model, stream flag, or other routing signals needed to decide whether passthrough is safe.
+
+This keeps the common path cheap and avoids extra work when the important metadata is already near the top of the payload.
+
+### Phase B: streaming scan
+
+Some large JSON payloads place those routing fields later in the body, after big arrays or large content blocks. When that happens, Bifrost does **not** fall back to fully buffering the request. Instead, it can continue scanning the full JSON stream in parallel while the payload is already being forwarded upstream.
+
+That is the key point: the optimization is not limited to the prefetch buffer. Bifrost can still recover the routing metadata it needs while preserving the streaming path.
+
+## What Bifrost still verifies before enabling passthrough
+
+Large payload mode is only activated when Bifrost is confident that streaming the body through is safe and correct:
+
+- The request must stay within the configured maximum payload size.
+- The request must be compatible with direct streaming through the gateway.
+- If the request needs deeper gateway-side processing, Bifrost does **not** force large payload mode.
+- Multipart and chunked uploads are handled carefully so Bifrost can still extract the small set of fields it needs without turning the whole request into an in-memory blob.
+
+It is not a blanket “stream everything” switch.
+
+## Response-side behavior
+
+The response path follows the same philosophy. When a response is large, Bifrost can stream it to the client immediately while continuing to inspect the outbound stream for usage metadata and similar accounting fields that may appear later in the JSON.
+
+That matters because usage information often comes after the heaviest parts of the response. Instead of buffering the whole response just to collect accounting data, Bifrost keeps the response moving and extracts that metadata concurrently.
+
+## Operational safeguards
+
+Large payload optimization is designed to reduce memory pressure without weakening the rest of the gateway:
+
+- Oversized request and response bodies are not unnecessarily copied through the normal inspection path.
+- Gateway control planes continue to behave safely when large-payload mode is active.
+- Bifrost still preserves a truncated preview for observability, so operators keep useful debugging context without paying the full storage and memory cost of the original payload.
+- If a request does not meet the passthrough conditions, Bifrost returns to the standard buffered flow instead of risking a partially compatible stream.
+
+## Configuration fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Master toggle for enterprise large payload handling |
+| `request_threshold_bytes` | `10485760` (10 MB) | Request size above which Bifrost switches to streaming mode |
+| `response_threshold_bytes` | `10485760` (10 MB) | Response size above which Bifrost streams the response instead of buffering |
+| `prefetch_size_bytes` | `65536` (64 KB) | Bytes read up front so routing metadata can be extracted before the rest is streamed |
+| `max_payload_bytes` | `524288000` (500 MB) | Hard cap for request and response payload size |
+| `truncated_log_bytes` | `1048576` (1 MB) | Maximum preview stored in logs for large payload traffic |
+
+All byte-based fields must be at least `1024`, and `max_payload_bytes` must be greater than or equal to both threshold values.
+
+## Management API
+
+Use the enterprise management API to inspect or update the active configuration.
+
+### Read current settings
+
+```bash
+curl http://localhost:8080/api/large-payload-config
+```
+
+### Update settings
+
+```bash
+curl -X PUT http://localhost:8080/api/large-payload-config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true,
+    "request_threshold_bytes": 10485760,
+    "response_threshold_bytes": 10485760,
+    "prefetch_size_bytes": 65536,
+    "max_payload_bytes": 524288000,
+    "truncated_log_bytes": 1048576
+  }'
+```
+
+Updating the config marks the deployment as **restart required** so the running large-payload hooks are reinitialized with the new settings.
+
+## config.json
+
+Enterprise deployments can also persist the same settings in the enterprise config payload:
+
+```json
+{
+  "large_payload_optimization": {
+    "enabled": true,
+    "request_threshold_bytes": 10485760,
+    "response_threshold_bytes": 10485760,
+    "prefetch_size_bytes": 65536,
+    "max_payload_bytes": 524288000,
+    "truncated_log_bytes": 1048576
+  }
+}
+```
+
+## Operational notes
+
+- Large payload mode is best for traffic that can remain on the direct streaming path through the gateway.
+- The feature is designed to keep large uploads and downloads moving without turning them into full in-memory buffers first.
+- Request metadata detection is not limited to the first prefetch window: Bifrost can continue scanning the JSON stream while forwarding the body upstream.
+- Large response handling can continue scanning the outbound stream for usage metadata while the client is already receiving the response.
+- Truncated logging helps preserve debuggability without writing entire oversized payloads to storage.
