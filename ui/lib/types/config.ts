@@ -302,7 +302,6 @@ export interface ProviderPricingOverride {
 
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -331,7 +330,6 @@ export interface ListProvidersResponse {
 // AddProviderRequest matching Go's AddProviderRequest
 export interface AddProviderRequest {
 	provider: ModelProviderName;
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -344,7 +342,6 @@ export interface AddProviderRequest {
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
 export interface UpdateProviderRequest {
-	keys: ModelProviderKey[];
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config: ProxyConfig;
@@ -353,6 +350,15 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	pricing_overrides?: ProviderPricingOverride[];
+}
+
+export interface CreateProviderKeyRequest extends ModelProviderKey {}
+
+export interface UpdateProviderKeyRequest extends ModelProviderKey {}
+
+export interface ListProviderKeysResponse {
+	keys: ModelProviderKey[];
+	total: number;
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError

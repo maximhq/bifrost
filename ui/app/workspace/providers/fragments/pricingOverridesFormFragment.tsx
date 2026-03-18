@@ -10,6 +10,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface PricingOverridesFormFragmentProps {
 	provider: ModelProvider;
@@ -65,9 +66,11 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 		setValidationError("");
 
 		try {
-			await updateProvider({
-				...provider,
-			}).unwrap();
+			await updateProvider(
+				buildProviderUpdatePayload(provider, {
+					pricing_overrides: validated.data,
+				}),
+			).unwrap();
 			toast.success("Pricing overrides updated successfully");
 			setOverridesJSON(toPrettyJSON(validated.data));
 			setHasUserEdits(false);

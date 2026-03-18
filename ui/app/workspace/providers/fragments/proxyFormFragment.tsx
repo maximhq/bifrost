@@ -15,6 +15,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface ProxyFormFragmentProps {
 	provider: ModelProvider;
@@ -58,8 +59,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 	const watchedProxyType = form.watch("proxy_config.type");
 
 	const onSubmit = (data: ProxyOnlyFormSchema) => {
-		updateProvider({
-			...provider,
+		updateProvider(buildProviderUpdatePayload(provider, {
 			proxy_config: {
 				type: data.proxy_config?.type ?? "none",
 				url: data.proxy_config?.url || undefined,
@@ -67,7 +67,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 				password: data.proxy_config?.password || undefined,
 				ca_cert_pem: data.proxy_config?.ca_cert_pem || undefined,
 			},
-		})
+		}))
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
