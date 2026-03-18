@@ -449,6 +449,68 @@ func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
+func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	return append([]schemas.Key(nil), config.Keys...), nil
+}
+
+func (m *MockConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	for _, key := range config.Keys {
+		if key.ID == keyID {
+			keyCopy := key
+			return &keyCopy, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	config.Keys = append(config.Keys, key)
+	m.providers[provider] = config
+	return nil
+}
+
+func (m *MockConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys[i] = key
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys = append(config.Keys[:i], config.Keys[i+1:]...)
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
 // MCP config
 func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	return m.mcpConfig, nil
