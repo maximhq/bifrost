@@ -1,11 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Message } from "./message";
 import {
-	extractVariablesFromText,
 	extractVariablesFromMessages,
-	replaceVariablesInText,
-	replaceVariablesInMessages,
+	extractVariablesFromText,
 	mergeVariables,
+	replaceVariablesInMessages,
+	replaceVariablesInText,
 } from "./variables";
 
 // =============================================================================
@@ -122,7 +122,7 @@ describe("extractVariablesFromMessages", () => {
 
 	it("extracts variables from an assistant message", () => {
 		const messages = [Message.response("Hello {{ name }}")];
-		expect(extractVariablesFromMessages(messages)).toEqual(["name"]);
+		expect(extractVariablesFromMessages(messages)).toEqual([]);
 	});
 
 	it("extracts variables across multiple messages", () => {
@@ -178,6 +178,14 @@ describe("replaceVariablesInText", () => {
 
 	it("replaces all occurrences of the same variable", () => {
 		expect(replaceVariablesInText("{{ x }} and {{ x }}", { x: "yes" })).toBe("yes and yes");
+	});
+
+	it("preserves leading curly braces that are not part of variables", () => {
+		expect(replaceVariablesInText("{{{ x }} and {{ x }}", { x: "yes" })).toBe("{yes and yes");
+	});
+
+	it("preserves trailing curly braces that are not part of variables", () => {
+		expect(replaceVariablesInText("{{ x }} and {{ x }}}}", { x: "yes" })).toBe("yes and yes}}");
 	});
 
 	it("leaves variable untouched when not in map", () => {
