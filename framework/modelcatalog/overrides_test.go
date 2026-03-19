@@ -1,13 +1,10 @@
 package modelcatalog
 
 import (
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,40 +22,6 @@ func (noOpLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 	return schemas.NoopLogEvent
 }
 
-type providerOverrideCompat struct {
-	ModelPattern      string
-	MatchType         pricingoverrides.MatchType
-	RequestTypes      []schemas.RequestType
-	InputCostPerToken *float64
-	ID                string
-	UpdatedAt         time.Time
-}
-
-func setProviderScopedOverrides(t *testing.T, mc *ModelCatalog, provider schemas.ModelProvider, overrides []providerOverrideCompat) error {
-	t.Helper()
-	scopeID := string(provider)
-	compiled := make([]pricingoverrides.Override, 0, len(overrides))
-	for i, override := range overrides {
-		id := override.ID
-		if id == "" {
-			id = fmt.Sprintf("%s-override-%d", scopeID, i)
-		}
-		compiled = append(compiled, pricingoverrides.Override{
-			ID:           id,
-			ScopeKind:    pricingoverrides.ScopeKindProvider,
-			ProviderID:   &scopeID,
-			MatchType:    override.MatchType,
-			Pattern:      override.ModelPattern,
-			RequestTypes: override.RequestTypes,
-			UpdatedAt:    override.UpdatedAt,
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: override.InputCostPerToken,
-			},
-		})
-	}
-	return mc.SetPricingOverrides(compiled)
-}
-
 func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
@@ -70,26 +33,29 @@ func TestGetPricing_OverridePrecedenceExactWildcard(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	exact := 20.0
-	wildcard := 10.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &wildcard,
+			ID:               "openai-override-0",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-*",
+			PricingPatchJSON: `{"input_cost_per_token":10}`,
 		},
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			InputCostPerToken: &exact,
+			ID:               "openai-override-1",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":20}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 20.0, pricing.InputCostPerToken)
-	assert.Equal(t, 2.0, pricing.OutputCostPerToken)
 }
 
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
@@ -104,24 +70,28 @@ func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	specific := 15.0
-	generic := 9.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			InputCostPerToken: &generic,
+			ID:               "openai-generic",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
 		},
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			RequestTypes:      []schemas.RequestType{schemas.ResponsesRequest},
-			InputCostPerToken: &specific,
+			ID:               "openai-specific",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ResponsesRequest},
+			PricingPatchJSON: `{"input_cost_per_token":15}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "openai", schemas.ResponsesRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 15.0, pricing.InputCostPerToken)
 }
@@ -138,17 +108,19 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	override := 7.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.Gemini, []providerOverrideCompat{
+	geminiProviderID := "gemini"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			InputCostPerToken: &override,
+			ID:               "gemini-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &geminiProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":7}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "gemini", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("gemini", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 7.0, pricing.InputCostPerToken)
 }
@@ -164,29 +136,19 @@ func TestGetPricing_DeploymentLookupUsesRequestedModelForOverrideMatching(t *tes
 		OutputCostPerToken: 2,
 	}
 
-	override := 7.0
-	providerID := string(schemas.OpenAI)
-	require.NoError(t, mc.SetPricingOverrides([]pricingoverrides.Override{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ID:         "requested-model-override",
-			ScopeKind:  pricingoverrides.ScopeKindProvider,
-			ProviderID: &providerID,
-			MatchType:  pricingoverrides.MatchTypeExact,
-			Pattern:    "gpt-4o",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &override,
-			},
+			ID:               "requested-model-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":7}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricingLocked(
-		"dep-gpt4o",
-		"gpt-4o",
-		"openai",
-		schemas.ChatCompletionRequest,
-		PricingLookupScopes{Provider: "openai"},
-	)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o", "dep-gpt4o", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 7.0, pricing.InputCostPerToken)
 }
@@ -202,35 +164,28 @@ func TestGetPricing_FallbackUsesRequestedProviderForScopeMatching(t *testing.T) 
 		OutputCostPerToken: 2,
 	}
 
-	geminiProviderID := string(schemas.Gemini)
-	vertexProviderID := string(schemas.Vertex)
-	geminiOverrideCost := 5.0
-	vertexOverrideCost := 9.0
-	require.NoError(t, mc.SetPricingOverrides([]pricingoverrides.Override{
+	geminiProviderID := "gemini"
+	vertexProviderID := "vertex"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ID:         "gemini-provider-override",
-			ScopeKind:  pricingoverrides.ScopeKindProvider,
-			ProviderID: &geminiProviderID,
-			MatchType:  pricingoverrides.MatchTypeExact,
-			Pattern:    "gpt-4o",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &geminiOverrideCost,
-			},
+			ID:               "gemini-provider-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &geminiProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":5}`,
 		},
 		{
-			ID:         "vertex-provider-override",
-			ScopeKind:  pricingoverrides.ScopeKindProvider,
-			ProviderID: &vertexProviderID,
-			MatchType:  pricingoverrides.MatchTypeExact,
-			Pattern:    "gpt-4o",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &vertexOverrideCost,
-			},
+			ID:               "vertex-provider-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &vertexProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "gemini", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("gemini", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 5.0, pricing.InputCostPerToken)
 }
@@ -247,17 +202,19 @@ func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T)
 		OutputCostPerToken: 2,
 	}
 
-	override := 19.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			InputCostPerToken: &override,
+			ID:               "openai-override-0",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":19}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("openai/gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "openai/gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 }
@@ -276,17 +233,19 @@ func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 		CacheReadInputTokenCost: &baseCacheRead,
 	}
 
-	override := 9.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "claude-*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &override,
+			ID:               "openai-override-0",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "claude-*",
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 	assert.Equal(t, 2.0, pricing.OutputCostPerToken)
@@ -306,24 +265,25 @@ func TestDeleteProviderPricingOverrides_StopsApplying(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	override := 11.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-4o",
-			MatchType:         pricingoverrides.MatchTypeExact,
-			InputCostPerToken: &override,
+			ID:               "openai-override-0",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			PricingPatchJSON: `{"input_cost_per_token":11}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 11.0, pricing.InputCostPerToken)
 
 	require.NoError(t, mc.SetPricingOverrides(nil))
 
-	pricing, ok = mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing = mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 1.0, pricing.InputCostPerToken)
 }
@@ -340,28 +300,34 @@ func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	generic := 5.0
-	specific := 6.0
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &generic,
+			ID:               "openai-override-0",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-*",
+			PricingPatchJSON: `{"input_cost_per_token":5}`,
 		},
 		{
-			ModelPattern:      "gpt-4o*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &specific,
+			ID:               "openai-override-1",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4o*",
+			PricingPatchJSON: `{"input_cost_per_token":6}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o-mini", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o-mini", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 6.0, pricing.InputCostPerToken)
 }
 
-func TestGetPricing_TieBreakLatestUpdatedAtWins(t *testing.T) {
+// TestGetPricing_FirstInsertionWinsOnTie verifies that when multiple wildcard overrides
+// match the same model and scope, the first one inserted takes precedence.
+func TestGetPricing_FirstInsertionWinsOnTie(t *testing.T) {
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -372,65 +338,27 @@ func TestGetPricing_TieBreakLatestUpdatedAtWins(t *testing.T) {
 		OutputCostPerToken: 2,
 	}
 
-	first := 8.0
-	second := 9.0
-	now := time.Now().UTC()
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
+	providerID := "openai"
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ModelPattern:      "gpt-4o*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &first,
-			ID:                "older",
-			UpdatedAt:         now.Add(-1 * time.Minute),
+			ID:               "a-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4o*",
+			PricingPatchJSON: `{"input_cost_per_token":8}`,
 		},
 		{
-			ModelPattern:      "gpt-4o*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &second,
-			ID:                "newer",
-			UpdatedAt:         now,
-		},
-	}))
-
-	pricing, ok := mc.getPricing("gpt-4o-mini", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
-	require.NotNil(t, pricing)
-	assert.Equal(t, 9.0, pricing.InputCostPerToken)
-}
-
-func TestGetPricing_TieBreakIDWinsWhenUpdatedAtEqual(t *testing.T) {
-	mc := newTestCatalog(nil, nil)
-	mc.logger = noOpLogger{}
-	mc.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
-		Model:              "gpt-4o-mini",
-		Provider:           "openai",
-		Mode:               "chat",
-		InputCostPerToken:  1,
-		OutputCostPerToken: 2,
-	}
-
-	first := 8.0
-	second := 9.0
-	now := time.Now().UTC()
-	require.NoError(t, setProviderScopedOverrides(t, mc, schemas.OpenAI, []providerOverrideCompat{
-		{
-			ModelPattern:      "gpt-4o*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &first,
-			ID:                "a-override",
-			UpdatedAt:         now,
-		},
-		{
-			ModelPattern:      "gpt-4o*",
-			MatchType:         pricingoverrides.MatchTypeWildcard,
-			InputCostPerToken: &second,
-			ID:                "b-override",
-			UpdatedAt:         now,
+			ID:               "b-override",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4o*",
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
 		},
 	}))
 
-	pricing, ok := mc.getPricing("gpt-4o-mini", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	pricing := mc.resolvePricing("openai", "gpt-4o-mini", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	assert.Equal(t, 8.0, pricing.InputCostPerToken)
 }
@@ -449,17 +377,16 @@ func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
 		InputCostPerImage:       &baseInputImage,
 	}
 
-	patched := patchPricing(base, pricingoverrides.Patch{
-		InputCostPerToken:       schemas.Ptr(3.0),
-		CacheReadInputTokenCost: schemas.Ptr(0.9),
+	cacheRead := 0.9
+	patched := patchPricing(base, PricingOptions{
+		InputCostPerToken:       3.0,
+		CacheReadInputTokenCost: &cacheRead,
 	})
 
-	// Changed fields
 	assert.Equal(t, 3.0, patched.InputCostPerToken)
 	require.NotNil(t, patched.CacheReadInputTokenCost)
 	assert.Equal(t, 0.9, *patched.CacheReadInputTokenCost)
 
-	// Unchanged fields
 	assert.Equal(t, 2.0, patched.OutputCostPerToken)
 	require.NotNil(t, patched.InputCostPerImage)
 	assert.Equal(t, 0.7, *patched.InputCostPerImage)
@@ -473,50 +400,37 @@ func TestApplyScopedPricingOverrides_ScopePrecedence(t *testing.T) {
 	providerKeyScopeID := "provider-key-1"
 	virtualKeyScopeID := "virtual-key-1"
 
-	globalCost := 2.0
-	providerCost := 3.0
-	providerKeyCost := 4.0
-	virtualKeyCost := 5.0
-
-	require.NoError(t, mc.SetPricingOverrides([]pricingoverrides.Override{
+	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ID:        "global",
-			ScopeKind: pricingoverrides.ScopeKindGlobal,
-			MatchType: pricingoverrides.MatchTypeExact,
-			Pattern:   "gpt-5-nano",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &globalCost,
-			},
+			ID:               "global",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			PricingPatchJSON: `{"input_cost_per_token":2}`,
 		},
 		{
-			ID:         "provider",
-			ScopeKind:  pricingoverrides.ScopeKindProvider,
-			ProviderID: &providerScopeID,
-			MatchType:  pricingoverrides.MatchTypeExact,
-			Pattern:    "gpt-5-nano",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &providerCost,
-			},
+			ID:               "provider",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
 		},
 		{
-			ID:            "provider-key",
-			ScopeKind:     pricingoverrides.ScopeKindProviderKey,
-			ProviderKeyID: &providerKeyScopeID,
-			MatchType:     pricingoverrides.MatchTypeExact,
-			Pattern:       "gpt-5-nano",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &providerKeyCost,
-			},
+			ID:               "provider-key",
+			ScopeKind:        string(ScopeKindProviderKey),
+			ProviderKeyID:    &providerKeyScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			PricingPatchJSON: `{"input_cost_per_token":4}`,
 		},
 		{
-			ID:           "virtual-key",
-			ScopeKind:    pricingoverrides.ScopeKindVirtualKey,
-			VirtualKeyID: &virtualKeyScopeID,
-			MatchType:    pricingoverrides.MatchTypeExact,
-			Pattern:      "gpt-5-nano",
-			Patch: pricingoverrides.Patch{
-				InputCostPerToken: &virtualKeyCost,
-			},
+			ID:               "virtual-key",
+			ScopeKind:        string(ScopeKindVirtualKey),
+			VirtualKeyID:     &virtualKeyScopeID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-5-nano",
+			PricingPatchJSON: `{"input_cost_per_token":5}`,
 		},
 	}))
 
@@ -540,7 +454,7 @@ func TestApplyScopedPricingOverrides_ScopePrecedence(t *testing.T) {
 				SelectedKeyID: providerKeyScopeID,
 				Provider:      providerScopeID,
 			},
-			expected: virtualKeyCost,
+			expected: 5.0,
 		},
 		{
 			name: "provider key wins over provider and global",
@@ -548,25 +462,25 @@ func TestApplyScopedPricingOverrides_ScopePrecedence(t *testing.T) {
 				SelectedKeyID: providerKeyScopeID,
 				Provider:      providerScopeID,
 			},
-			expected: providerKeyCost,
+			expected: 4.0,
 		},
 		{
 			name: "provider wins over global",
 			scopes: PricingLookupScopes{
 				Provider: providerScopeID,
 			},
-			expected: providerCost,
+			expected: 3.0,
 		},
 		{
 			name:     "global applies when no narrower scope is provided",
 			scopes:   PricingLookupScopes{},
-			expected: globalCost,
+			expected: 2.0,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			patched := mc.applyScopedPricingOverrides("gpt-5-nano", schemas.ChatCompletionRequest, base, tc.scopes)
+			patched := mc.applyPricingOverrides("gpt-5-nano", schemas.ChatCompletionRequest, base, tc.scopes)
 			assert.Equal(t, tc.expected, patched.InputCostPerToken)
 		})
 	}

@@ -5,7 +5,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,7 +20,6 @@ func newTestCatalog(modelPool map[schemas.ModelProvider][]string, baseModelIndex
 		modelPool:       modelPool,
 		baseModelIndex:  baseModelIndex,
 		pricingData:     make(map[string]configstoreTables.TableModelPricing),
-		scopedOverrides: &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]pricingoverrides.Override)},
 	}
 }
 

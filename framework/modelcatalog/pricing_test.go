@@ -1140,8 +1140,7 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
 
@@ -1152,8 +1151,7 @@ func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 			InputCostPerToken: 0.0000001, OutputCostPerToken: 0.0000004,
 		},
 	})
-	p, ok := mc.getPricing("gemini-2.0-flash", "gemini", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, p.InputCostPerToken)
 }
 
@@ -1161,8 +1159,7 @@ func TestGetPricing_VertexStripsProviderPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
-	p, ok := mc.getPricing("google/gemini-2.0-flash", "vertex", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("vertex", "google/gemini-2.0-flash", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "vertex"})
 	assert.Equal(t, 0.0000001, p.InputCostPerToken)
 }
 
@@ -1170,8 +1167,7 @@ func TestGetPricing_BedrockAddsAnthropicPrefix(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock", "chat"): chatPricing(0.000003, 0.000015),
 	})
-	p, ok := mc.getPricing("claude-3-5-sonnet-20241022-v2:0", "bedrock", schemas.ChatCompletionRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("bedrock", "claude-3-5-sonnet-20241022-v2:0", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "bedrock"})
 	assert.Equal(t, 0.000003, p.InputCostPerToken)
 }
 
@@ -1179,8 +1175,7 @@ func TestGetPricing_ResponsesFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ResponsesRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
 
@@ -1188,8 +1183,7 @@ func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
-	p, ok := mc.getPricing("gpt-4o", "openai", schemas.ResponsesStreamRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.ResponsesStreamRequest, PricingLookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
 
@@ -1198,15 +1192,14 @@ func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
 	})
 	// gemini provider + responses request → try vertex + responses → try vertex + chat
-	p, ok := mc.getPricing("gemini-2.0-flash", "gemini", schemas.ResponsesRequest)
-	require.True(t, ok)
+	p := mc.resolvePricing("gemini", "gemini-2.0-flash", "", schemas.ResponsesRequest, PricingLookupScopes{Provider: "gemini"})
 	assert.Equal(t, 0.0000001, p.InputCostPerToken)
 }
 
 func TestGetPricing_NotFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	_, ok := mc.getPricing("nonexistent", "openai", schemas.ChatCompletionRequest)
-	assert.False(t, ok)
+	p := mc.resolvePricing("openai", "nonexistent", "", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Nil(t, p)
 }
 
 // =========================================================================

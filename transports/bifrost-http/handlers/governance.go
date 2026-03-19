@@ -20,7 +20,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -304,7 +303,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Pricing override operations
 	r.GET("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.getPricingOverrides, middlewares...))
 	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
-	r.PATCH("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.patchPricingOverride, middlewares...))
+	r.PUT("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.updatePricingOverride, middlewares...))
 	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 }
 
@@ -3261,29 +3260,15 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 // CreatePricingOverrideRequest is the request payload for creating a governance
 // pricing override.
 type CreatePricingOverrideRequest struct {
-	Name          string                     `json:"name"`
-	ScopeKind     pricingoverrides.ScopeKind `json:"scope_kind"`
-	VirtualKeyID  *string                    `json:"virtual_key_id,omitempty"`
-	ProviderID    *string                    `json:"provider_id,omitempty"`
-	ProviderKeyID *string                    `json:"provider_key_id,omitempty"`
-	MatchType     pricingoverrides.MatchType `json:"match_type"`
-	Pattern       string                     `json:"pattern"`
-	RequestTypes  []schemas.RequestType      `json:"request_types,omitempty"`
-	Patch         pricingoverrides.Patch     `json:"patch,omitempty"`
-}
-
-// PatchPricingOverrideRequest is the sparse request payload for updating a
-// governance pricing override.
-type PatchPricingOverrideRequest struct {
-	Name          *string                     `json:"name,omitempty"`
-	ScopeKind     *pricingoverrides.ScopeKind `json:"scope_kind,omitempty"`
+	Name          string                      `json:"name"`
+	ScopeKind     modelcatalog.ScopeKind      `json:"scope_kind"`
 	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
 	ProviderID    *string                     `json:"provider_id,omitempty"`
 	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
-	MatchType     *pricingoverrides.MatchType `json:"match_type,omitempty"`
-	Pattern       *string                     `json:"pattern,omitempty"`
-	RequestTypes  *[]schemas.RequestType      `json:"request_types,omitempty"`
-	Patch         *pricingoverrides.Patch     `json:"patch,omitempty"`
+	MatchType     modelcatalog.MatchType      `json:"match_type"`
+	Pattern       string                      `json:"pattern"`
+	RequestTypes  []schemas.RequestType       `json:"request_types,omitempty"`
+	Patch         modelcatalog.PricingOptions `json:"patch,omitempty"`
 }
 
 func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
@@ -3312,26 +3297,41 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := validatePricingOverrideRequest(req.ScopeKind, req.VirtualKeyID, req.ProviderID, req.ProviderKeyID, req.MatchType, req.Pattern, req.RequestTypes, req.Patch); err != nil {
+	shape := modelcatalog.PricingOverride{
+		ScopeKind:     req.ScopeKind,
+		VirtualKeyID:  req.VirtualKeyID,
+		ProviderID:    req.ProviderID,
+		ProviderKeyID: req.ProviderKeyID,
+		MatchType:     req.MatchType,
+		Pattern:       req.Pattern,
+		RequestTypes:  req.RequestTypes,
+	}
+	if err := shape.IsValid(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	patchJSON, err := sonic.Marshal(req.Patch)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid patch")
 		return
 	}
 
 	now := time.Now()
 	override := configstoreTables.TablePricingOverride{
-		ID:            uuid.NewString(),
-		Name:          name,
-		ScopeKind:     req.ScopeKind,
-		VirtualKeyID:  normalizeOptionalString(req.VirtualKeyID),
-		ProviderID:    normalizeOptionalString(req.ProviderID),
-		ProviderKeyID: normalizeOptionalString(req.ProviderKeyID),
-		MatchType:     req.MatchType,
-		Pattern:       strings.TrimSpace(req.Pattern),
-		RequestTypes:  req.RequestTypes,
-		Patch:         req.Patch,
-		ConfigHash:    "",
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:               uuid.NewString(),
+		Name:             name,
+		ScopeKind:        string(req.ScopeKind),
+		VirtualKeyID:     normalizeOptionalString(req.VirtualKeyID),
+		ProviderID:       normalizeOptionalString(req.ProviderID),
+		ProviderKeyID:    normalizeOptionalString(req.ProviderKeyID),
+		MatchType:        string(req.MatchType),
+		Pattern:          strings.TrimSpace(req.Pattern),
+		RequestTypes:     req.RequestTypes,
+		PricingPatchJSON: string(patchJSON),
+		ConfigHash:       "",
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	if err := h.configStore.CreatePricingOverride(ctx, &override); err != nil {
@@ -3340,73 +3340,86 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.refreshPricingOverrides(ctx)
+	if h.modelCatalog != nil {
+		if err := h.modelCatalog.UpsertPricingOverrides(&override); err != nil {
+			logger.Error("failed to upsert pricing override: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
+		}
+	}
 	SendJSONWithStatus(ctx, map[string]interface{}{
 		"message":          "Pricing override created successfully",
 		"pricing_override": override,
 	}, fasthttp.StatusCreated)
 }
 
-func (h *GovernanceHandler) patchPricingOverride(ctx *fasthttp.RequestCtx) {
+func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 	id := ctx.UserValue("id").(string)
 
-	var req PatchPricingOverrideRequest
+	var req CreatePricingOverrideRequest
 	if !decodePricingOverrideJSON(ctx, &req) {
 		return
 	}
 
-	override, ok := h.getPricingOverrideOrSendError(ctx, id)
+	existing, ok := h.getPricingOverrideOrSendError(ctx, id)
 	if !ok {
 		return
 	}
 
-	if req.ScopeKind != nil {
-		override.ScopeKind = *req.ScopeKind
-	}
-	if req.Name != nil {
-		name, err := normalizeAndValidatePricingOverrideName(*req.Name)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
-		}
-		override.Name = name
-	}
-	if req.VirtualKeyID != nil {
-		override.VirtualKeyID = normalizeOptionalString(req.VirtualKeyID)
-	}
-	if req.ProviderID != nil {
-		override.ProviderID = normalizeOptionalString(req.ProviderID)
-	}
-	if req.ProviderKeyID != nil {
-		override.ProviderKeyID = normalizeOptionalString(req.ProviderKeyID)
-	}
-	if req.MatchType != nil {
-		override.MatchType = *req.MatchType
-	}
-	if req.Pattern != nil {
-		override.Pattern = strings.TrimSpace(*req.Pattern)
-	}
-	if req.RequestTypes != nil {
-		override.RequestTypes = *req.RequestTypes
-	}
-	if req.Patch != nil {
-		override.Patch = pricingoverrides.MergePatch(override.Patch, *req.Patch)
-	}
-	override.ConfigHash = ""
-	override.UpdatedAt = time.Now()
-
-	if err := validatePricingOverrideRequest(override.ScopeKind, override.VirtualKeyID, override.ProviderID, override.ProviderKeyID, override.MatchType, override.Pattern, override.RequestTypes, override.Patch); err != nil {
+	name, err := normalizeAndValidatePricingOverrideName(req.Name)
+	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
-	if err := h.configStore.UpdatePricingOverride(ctx, override); err != nil {
+	shape := modelcatalog.PricingOverride{
+		ScopeKind:     req.ScopeKind,
+		VirtualKeyID:  req.VirtualKeyID,
+		ProviderID:    req.ProviderID,
+		ProviderKeyID: req.ProviderKeyID,
+		MatchType:     req.MatchType,
+		Pattern:       req.Pattern,
+		RequestTypes:  req.RequestTypes,
+	}
+	if err := shape.IsValid(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	patchJSON, err := sonic.Marshal(req.Patch)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid patch")
+		return
+	}
+
+	override := configstoreTables.TablePricingOverride{
+		ID:               id,
+		Name:             name,
+		ScopeKind:        string(req.ScopeKind),
+		VirtualKeyID:     normalizeOptionalString(req.VirtualKeyID),
+		ProviderID:       normalizeOptionalString(req.ProviderID),
+		ProviderKeyID:    normalizeOptionalString(req.ProviderKeyID),
+		MatchType:        string(req.MatchType),
+		Pattern:          strings.TrimSpace(req.Pattern),
+		RequestTypes:     req.RequestTypes,
+		PricingPatchJSON: string(patchJSON),
+		ConfigHash:       "",
+		CreatedAt:        existing.CreatedAt,
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := h.configStore.UpdatePricingOverride(ctx, &override); err != nil {
 		logger.Error("failed to update pricing override: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update pricing override")
 		return
 	}
 
-	h.refreshPricingOverrides(ctx)
+	if h.modelCatalog != nil {
+		if err := h.modelCatalog.UpsertPricingOverrides(&override); err != nil {
+			logger.Error("failed to upsert pricing override: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
+			return
+		}
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message":          "Pricing override updated successfully",
 		"pricing_override": override,
@@ -3425,17 +3438,18 @@ func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.refreshPricingOverrides(ctx)
+	if h.modelCatalog != nil {
+		h.modelCatalog.DeletePricingOverride(id)
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Pricing override deleted successfully",
 	})
 }
 
-func pricingOverrideFilterFromQuery(ctx *fasthttp.RequestCtx) configstore.PricingOverrideFilter {
-	var filter configstore.PricingOverrideFilter
+func pricingOverrideFilterFromQuery(ctx *fasthttp.RequestCtx) configstore.PricingOverrideFilters {
+	var filter configstore.PricingOverrideFilters
 	if scopeKindRaw := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_kind"))); scopeKindRaw != "" {
-		scopeKind := pricingoverrides.ScopeKind(scopeKindRaw)
-		filter.ScopeKind = &scopeKind
+		filter.ScopeKind = &scopeKindRaw
 	}
 	if virtualKeyID := strings.TrimSpace(string(ctx.QueryArgs().Peek("virtual_key_id"))); virtualKeyID != "" {
 		filter.VirtualKeyID = &virtualKeyID
@@ -3469,48 +3483,6 @@ func (h *GovernanceHandler) getPricingOverrideOrSendError(ctx *fasthttp.RequestC
 	logger.Error("failed to retrieve pricing override by id %s: %v", id, err)
 	SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve pricing override")
 	return nil, false
-}
-
-func (h *GovernanceHandler) refreshPricingOverrides(ctx context.Context) {
-	if h.modelCatalog == nil {
-		return
-	}
-	rows, err := h.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilter{})
-	if err != nil {
-		logger.Warn("failed to load pricing overrides for model catalog refresh: %v", err)
-		return
-	}
-	if err := h.modelCatalog.SetPricingOverrides(toPricingOverrides(rows)); err != nil {
-		logger.Warn("failed to apply pricing override refresh: %v", err)
-	}
-}
-
-func toPricingOverrides(rows []configstoreTables.TablePricingOverride) []pricingoverrides.Override {
-	overrides := make([]pricingoverrides.Override, 0, len(rows))
-	for i := range rows {
-		overrides = append(overrides, rows[i].ToPricingOverride())
-	}
-	return overrides
-}
-
-func validatePricingOverrideRequest(
-	scopeKind pricingoverrides.ScopeKind,
-	virtualKeyID, providerID, providerKeyID *string,
-	matchType pricingoverrides.MatchType,
-	pattern string,
-	requestTypes []schemas.RequestType,
-	patch pricingoverrides.Patch,
-) error {
-	if err := pricingoverrides.ValidateScopeKind(scopeKind, virtualKeyID, providerID, providerKeyID); err != nil {
-		return err
-	}
-	if _, err := pricingoverrides.ValidatePattern(matchType, pattern); err != nil {
-		return err
-	}
-	if err := pricingoverrides.ValidateRequestTypes(requestTypes); err != nil {
-		return err
-	}
-	return pricingoverrides.ValidatePatchNonNegative(patch)
 }
 
 func normalizeAndValidatePricingOverrideName(name string) (string, error) {

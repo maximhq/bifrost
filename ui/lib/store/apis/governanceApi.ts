@@ -23,7 +23,6 @@ import {
 	HealthCheckResponse,
 	ModelConfig,
 	ProviderGovernance,
-	PatchPricingOverrideRequest,
 	PricingOverride,
 	RateLimit,
 	ResetUsageRequest,
@@ -590,13 +589,13 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["PricingOverrides"],
 		}),
 
-		patchPricingOverride: builder.mutation<
+		updatePricingOverride: builder.mutation<
 			{ message: string; pricing_override: PricingOverride },
-			{ id: string; data: PatchPricingOverrideRequest }
+			{ id: string; data: CreatePricingOverrideRequest }
 		>({
 			query: ({ id, data }) => ({
 				url: `/governance/pricing-overrides/${id}`,
-				method: "PATCH",
+				method: "PUT",
 				body: data,
 			}),
 			invalidatesTags: ["PricingOverrides"],
@@ -729,7 +728,7 @@ export const {
 	useDeleteModelConfigMutation,
 	useGetPricingOverridesQuery,
 	useCreatePricingOverrideMutation,
-	usePatchPricingOverrideMutation,
+	useUpdatePricingOverrideMutation,
 	useDeletePricingOverrideMutation,
 
 	// Provider Governance

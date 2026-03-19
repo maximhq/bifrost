@@ -71,8 +71,8 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	if scopes.Provider == "" {
 		scopes.Provider = *cacheDebug.ProviderUsed
 	}
-	pricing, exists := mc.getPricingLocked(*cacheDebug.ModelUsed, *cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest, scopes)
-	if !exists {
+	pricing := mc.resolvePricing(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", schemas.EmbeddingRequest, scopes)
+	if pricing == nil {
 		return 0
 	}
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens)
@@ -759,16 +759,19 @@ func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, reque
 		scopes.Provider = provider
 	}
 
-	pricing, exists := mc.getPricingLocked(model, model, provider, requestType, scopes)
+	base, exists := mc.getBasePricing(model, provider, requestType)
 	if exists {
-		return pricing
+		result := mc.applyPricingOverrides(model, requestType, base, scopes)
+		return &result
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricingLocked(deployment, model, provider, requestType, scopes)
+		base, exists = mc.getBasePricing(deployment, provider, requestType)
 		if exists {
-			return pricing
+			// Apply overrides using the requested model name, not the deployment name
+			result := mc.applyPricingOverrides(model, requestType, base, scopes)
+			return &result
 		}
 	}
 
@@ -776,35 +779,29 @@ func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, reque
 	return nil
 }
 
-// getPricing returns pricing information for a model (thread-safe)
-func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
-	return mc.getPricingLocked(model, model, provider, requestType, PricingLookupScopes{Provider: provider})
-}
-
-// getPricingLocked acquires a read lock and resolves pricing for a model with scoped overrides.
-func (mc *ModelCatalog) getPricingLocked(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (*configstoreTables.TableModelPricing, bool) {
+// getBasePricing looks up catalog pricing for the given model, provider, and request type.
+// It applies a provider-specific fallback chain when an exact match is not found:
+//
+//   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
+//   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
+//   - Bedrock: prepends the "anthropic." namespace for Claude models, then falls back to chat mode for Responses requests.
+//   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
+//   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//
+// The method acquires a read lock for the duration of the lookup.
+//
+// Input:  model       — exact model name to look up.
+//
+//	provider    — provider identifier (e.g. "openai", "anthropic").
+//	requestType — the request type used to derive the pricing mode.
+//
+// Output: TableModelPricing — the matched pricing row (zero value when not found).
+//
+//	bool              — true when a pricing entry was found, false otherwise.
+func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schemas.RequestType) (configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
-	pricing, ok := mc.resolvePricingEntryLocked(lookupModel, matchModel, provider, requestType, scopes)
-	mc.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	return &pricing, true
-}
+	defer mc.mu.RUnlock()
 
-// resolvePricingEntryLocked resolves pricing data including scoped overrides.
-// Caller must hold mc.mu read lock.
-func (mc *ModelCatalog) resolvePricingEntryLocked(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (configstoreTables.TableModelPricing, bool) {
-	pricing, ok := mc.resolveBasePricingEntryLocked(lookupModel, provider, requestType)
-	if !ok {
-		return configstoreTables.TableModelPricing{}, false
-	}
-	return mc.applyScopedPricingOverrides(matchModel, requestType, pricing, scopes), true
-}
-
-// resolveBasePricingEntryLocked resolves pricing data from the base catalog including all fallback logic.
-// Caller must hold mc.mu read lock.
-func (mc *ModelCatalog) resolveBasePricingEntryLocked(model, provider string, requestType schemas.RequestType) (configstoreTables.TableModelPricing, bool) {
 	mode := normalizeRequestType(requestType)
 
 	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]

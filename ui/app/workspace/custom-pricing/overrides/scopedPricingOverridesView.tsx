@@ -25,6 +25,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideDrawer from "./pricingOverrideDrawer";
+import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
 
 type ScopeFilter = "all" | PricingOverrideScopeKind;
 
@@ -190,6 +191,20 @@ export default function ScopedPricingOverridesView() {
 		}
 	};
 
+	if (!isLoading && !error && rows.length === 0) {
+		return (
+			<>
+				<PricingOverridesEmptyState onCreateClick={openCreateDrawer} />
+				<PricingOverrideDrawer
+					open={isDrawerOpen}
+					onOpenChange={setIsDrawerOpen}
+					editingOverride={editingOverride}
+					scopeLock={createScopeLock}
+				/>
+			</>
+		);
+	}
+
 	return (
 		<div className="mt-6 space-y-4">
 			<div className="flex items-start justify-between gap-4">
@@ -204,8 +219,6 @@ export default function ScopedPricingOverridesView() {
 					<div className="p-4 text-sm">Loading overrides...</div>
 				) : error ? (
 					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
-				) : rows.length === 0 ? (
-					<div className="text-muted-foreground p-4 text-sm">No pricing overrides configured.</div>
 				) : (
 					<Table>
 						<TableHeader>

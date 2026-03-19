@@ -355,7 +355,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					"concurrency_buffer_json",
 					"proxy_config_json",
 					"custom_provider_config_json",
-					"pricing_overrides_json",
 					"send_back_raw_request",
 					"send_back_raw_response",
 					"store_raw_request_response",

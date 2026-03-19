@@ -1302,20 +1302,20 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
-func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filter PricingOverrideFilter) ([]tables.TablePricingOverride, error) {
+func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	var overrides []tables.TablePricingOverride
 	q := s.db.WithContext(ctx).Model(&tables.TablePricingOverride{})
-	if filter.ScopeKind != nil {
-		q = q.Where("scope_kind = ?", *filter.ScopeKind)
+	if filters.ScopeKind != nil {
+		q = q.Where("scope_kind = ?", *filters.ScopeKind)
 	}
-	if filter.VirtualKeyID != nil {
-		q = q.Where("virtual_key_id = ?", *filter.VirtualKeyID)
+	if filters.VirtualKeyID != nil {
+		q = q.Where("virtual_key_id = ?", *filters.VirtualKeyID)
 	}
-	if filter.ProviderID != nil {
-		q = q.Where("provider_id = ?", *filter.ProviderID)
+	if filters.ProviderID != nil {
+		q = q.Where("provider_id = ?", *filters.ProviderID)
 	}
-	if filter.ProviderKeyID != nil {
-		q = q.Where("provider_key_id = ?", *filter.ProviderKeyID)
+	if filters.ProviderKeyID != nil {
+		q = q.Where("provider_key_id = ?", *filters.ProviderKeyID)
 	}
 	if err := q.Order("created_at ASC").Find(&overrides).Error; err != nil {
 		return nil, s.parseGormError(err)

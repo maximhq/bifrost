@@ -937,6 +937,12 @@ func loadGovernanceConfigFromFile(ctx context.Context, config *Config, configDat
 		logger.Debug("no governance config found in store, processing from config file")
 		config.GovernanceConfig = configData.Governance
 		createGovernanceConfigInStore(ctx, config)
+		// No config store: load pricing overrides directly into the model catalog
+		if config.ConfigStore == nil && config.ModelCatalog != nil && len(configData.Governance.PricingOverrides) > 0 {
+			if err := config.ModelCatalog.SetPricingOverrides(configData.Governance.PricingOverrides); err != nil {
+				logger.Warn("failed to set pricing overrides from config file: %v", err)
+			}
+		}
 	} else {
 		logger.Debug("no governance config in store or config file")
 	}
@@ -1175,6 +1181,35 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			routingRulesToAdd = append(routingRulesToAdd, configData.Governance.RoutingRules[i])
 		}
 	}
+	// Merge PricingOverrides by ID with hash comparison
+	pricingOverridesToAdd := make([]configstoreTables.TablePricingOverride, 0)
+	pricingOverridesToUpdate := make([]configstoreTables.TablePricingOverride, 0)
+	for i, newOverride := range configData.Governance.PricingOverrides {
+		fileHash, err := configstore.GeneratePricingOverrideHash(newOverride)
+		if err != nil {
+			logger.Warn("failed to generate pricing override hash for %s: %v", newOverride.ID, err)
+			continue
+		}
+		configData.Governance.PricingOverrides[i].ConfigHash = fileHash
+
+		found := false
+		for j, existing := range governanceConfig.PricingOverrides {
+			if existing.ID == newOverride.ID {
+				found = true
+				if existing.ConfigHash != fileHash {
+					logger.Debug("config hash mismatch for pricing override %s, syncing from config file", newOverride.ID)
+					pricingOverridesToUpdate = append(pricingOverridesToUpdate, configData.Governance.PricingOverrides[i])
+					governanceConfig.PricingOverrides[j] = configData.Governance.PricingOverrides[i]
+				} else {
+					logger.Debug("config hash matches for pricing override %s, keeping DB config", newOverride.ID)
+				}
+				break
+			}
+		}
+		if !found {
+			pricingOverridesToAdd = append(pricingOverridesToAdd, configData.Governance.PricingOverrides[i])
+		}
+	}
 	// Add merged items to config
 	config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 	config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
@@ -1182,13 +1217,15 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
 	config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
 	config.GovernanceConfig.RoutingRules = append(governanceConfig.RoutingRules, routingRulesToAdd...)
+	config.GovernanceConfig.PricingOverrides = append(governanceConfig.PricingOverrides, pricingOverridesToAdd...)
 	// Update store with merged config items
 	hasChanges := len(budgetsToAdd) > 0 || len(budgetsToUpdate) > 0 ||
 		len(rateLimitsToAdd) > 0 || len(rateLimitsToUpdate) > 0 ||
 		len(customersToAdd) > 0 || len(customersToUpdate) > 0 ||
 		len(teamsToAdd) > 0 || len(teamsToUpdate) > 0 ||
 		len(virtualKeysToAdd) > 0 || len(virtualKeysToUpdate) > 0 ||
-		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0
+		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
+		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0
 	if config.ConfigStore != nil && hasChanges {
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
@@ -1196,9 +1233,26 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			customersToAdd, customersToUpdate,
 			teamsToAdd, teamsToUpdate,
 			virtualKeysToAdd, virtualKeysToUpdate,
-			routingRulesToAdd, routingRulesToUpdate)
+			routingRulesToAdd, routingRulesToUpdate,
+			pricingOverridesToAdd, pricingOverridesToUpdate)
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
+		}
+	}
+	// Sync pricing overrides into the model catalog in one batch to avoid
+	// rebuilding the lookup map on every iteration.
+	if config.ModelCatalog != nil {
+		rows := make([]*configstoreTables.TablePricingOverride, 0, len(pricingOverridesToAdd)+len(pricingOverridesToUpdate))
+		for i := range pricingOverridesToAdd {
+			rows = append(rows, &pricingOverridesToAdd[i])
+		}
+		for i := range pricingOverridesToUpdate {
+			rows = append(rows, &pricingOverridesToUpdate[i])
+		}
+		if len(rows) > 0 {
+			if err := config.ModelCatalog.UpsertPricingOverrides(rows...); err != nil {
+				logger.Error("failed to upsert pricing overrides into model catalog: %v", err)
+			}
 		}
 	}
 }
@@ -1219,6 +1273,8 @@ func updateGovernanceConfigInStore(
 	virtualKeysToUpdate []configstoreTables.TableVirtualKey,
 	routingRulesToAdd []configstoreTables.TableRoutingRule,
 	routingRulesToUpdate []configstoreTables.TableRoutingRule,
+	pricingOverridesToAdd []configstoreTables.TablePricingOverride,
+	pricingOverridesToUpdate []configstoreTables.TablePricingOverride,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -1330,6 +1386,20 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Create pricing overrides (new from config.json)
+		for _, override := range pricingOverridesToAdd {
+			if err := config.ConfigStore.CreatePricingOverride(ctx, &override, tx); err != nil {
+				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
+			}
+		}
+
+		// Update pricing overrides (config.json changed)
+		for _, override := range pricingOverridesToUpdate {
+			if err := config.ConfigStore.UpdatePricingOverride(ctx, &override, tx); err != nil {
+				return fmt.Errorf("failed to update pricing override %s: %w", override.ID, err)
+			}
+		}
+
 		return nil
 	})
 }
@@ -1408,6 +1478,19 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateRoutingRule(ctx, rule, tx); err != nil {
 				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
+			}
+		}
+
+		for i := range config.GovernanceConfig.PricingOverrides {
+			override := &config.GovernanceConfig.PricingOverrides[i]
+			overrideHash, err := configstore.GeneratePricingOverrideHash(*override)
+			if err != nil {
+				logger.Warn("failed to generate pricing override hash for %s: %v", override.ID, err)
+			} else {
+				override.ConfigHash = overrideHash
+			}
+			if err := config.ConfigStore.CreatePricingOverride(ctx, override, tx); err != nil {
+				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
 			}
 		}
 

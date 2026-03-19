@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,7 +89,7 @@ func newTestRequestCtx(body string) *fasthttp.RequestCtx {
 	return ctx
 }
 
-func TestPatchPricingOverride_MergesPatch(t *testing.T) {
+func TestUpdatePricingOverride_ReplacesFullBody(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
 	handler := &GovernanceHandler{
@@ -98,39 +98,44 @@ func TestPatchPricingOverride_MergesPatch(t *testing.T) {
 		modelCatalog:      &modelcatalog.ModelCatalog{},
 	}
 
-	inputCost := 1.0
-	outputCost := 2.0
+	now := time.Now().UTC()
 	override := configstoreTables.TablePricingOverride{
-		ID:        "override-1",
-		Name:      "Config Managed",
-		ScopeKind: pricingoverrides.ScopeKindGlobal,
-		MatchType: pricingoverrides.MatchTypeExact,
-		Pattern:   "gpt-4.1",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-		RequestTypes: []schemas.RequestType{
-			schemas.ChatCompletionRequest,
-		},
-		Patch: pricingoverrides.Patch{
-			InputCostPerToken:  &inputCost,
-			OutputCostPerToken: &outputCost,
-		},
+		ID:               "override-1",
+		Name:             "Original",
+		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
+		MatchType:        string(modelcatalog.MatchTypeExact),
+		Pattern:          "gpt-4.1",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		PricingPatchJSON: `{"input_cost_per_token":1,"output_cost_per_token":2}`,
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
 	}
 	require.NoError(t, store.CreatePricingOverride(context.Background(), &override))
 
-	ctx := newTestRequestCtx(`{"patch":{"output_cost_per_token":3.5}}`)
+	// Send complete replacement body — output cost changed, input cost kept
+	body := `{
+		"name":"Updated",
+		"scope_kind":"global",
+		"match_type":"exact",
+		"pattern":"gpt-4.1",
+		"request_types":["chat_completion"],
+		"patch":{"input_cost_per_token":1,"output_cost_per_token":3.5}
+	}`
+	ctx := newTestRequestCtx(body)
 	ctx.SetUserValue("id", override.ID)
 
-	handler.patchPricingOverride(ctx)
+	handler.updatePricingOverride(ctx)
 
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 
 	stored, err := store.GetPricingOverrideByID(context.Background(), override.ID)
 	require.NoError(t, err)
-	require.NotNil(t, stored.Patch.InputCostPerToken)
-	assert.Equal(t, inputCost, *stored.Patch.InputCostPerToken)
-	require.NotNil(t, stored.Patch.OutputCostPerToken)
-	assert.Equal(t, 3.5, *stored.Patch.OutputCostPerToken)
+	assert.Equal(t, "Updated", stored.Name)
+
+	var patch modelcatalog.PricingOptions
+	require.NoError(t, json.Unmarshal([]byte(stored.PricingPatchJSON), &patch))
+	assert.Equal(t, 1.0, patch.InputCostPerToken)
+	assert.Equal(t, 3.5, patch.OutputCostPerToken)
 	assert.Empty(t, stored.ConfigHash)
 }
 
