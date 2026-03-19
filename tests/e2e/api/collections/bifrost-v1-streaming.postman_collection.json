@@ -1,0 +1,90 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Streaming",
+    "description": "Streaming SSE tests for inference endpoints. Validates Content-Type, data: lines, and [DONE] marker.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "base_url", "value": "http://localhost:8080", "type": "string"},
+    {"key": "provider", "value": "openai", "type": "string"},
+    {"key": "chat_model", "value": "gpt-4o", "type": "string"},
+    {"key": "responses_model", "value": "gpt-4o", "type": "string"},
+    {"key": "embedding_model", "value": "text-embedding-3-small", "type": "string"}
+  ],
+  "item": [
+    {
+      "name": "Chat Completion (stream)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  pm.test('Content-Type is SSE', function() {",
+              "    var ct = pm.response.headers.get('Content-Type') || '';",
+              "    pm.expect(ct).to.include('text/event-stream');",
+              "  });",
+              "  var body = pm.response.text();",
+              "  pm.test('Body contains data lines', function() { pm.expect(body).to.include('data:'); });",
+              "  pm.test('Stream ends with DONE', function() { pm.expect(body).to.include('[DONE]'); });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "chat", "completions"]
+        }
+      }
+    },
+    {
+      "name": "Responses (stream)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  pm.test('Content-Type is SSE', function() {",
+              "    var ct = pm.response.headers.get('Content-Type') || '';",
+              "    pm.expect(ct).to.include('text/event-stream');",
+              "  });",
+              "  var body = pm.response.text();",
+              "  pm.test('Body contains data lines', function() { pm.expect(body).to.include('data:'); });",
+              "  pm.test('Body contains event lines', function() { pm.expect(body).to.include('event:'); });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": \"Say hello\",\n  \"max_output_tokens\": 50,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/responses",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "responses"]
+        }
+      }
+    }
+  ]
+}
