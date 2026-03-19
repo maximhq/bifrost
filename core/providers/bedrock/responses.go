@@ -1,13 +1,14 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -2451,10 +2452,13 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 							Name:      toolCall.ToolName,
 						},
 					}
-					// Parse arguments
+					// Preserve original key ordering of tool arguments for prompt caching.
 					var input interface{}
-					if err := sonic.Unmarshal([]byte(toolCall.Arguments), &input); err != nil {
-						input = map[string]interface{}{}
+					var buf bytes.Buffer
+					if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
+						input = json.RawMessage(buf.Bytes())
+					} else {
+						input = json.RawMessage("{}")
 					}
 					toolUseBlock.ToolUse.Input = input
 					contentBlocks = append(contentBlocks, *toolUseBlock)
@@ -2578,9 +2582,13 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 									Name:      toolCall.ToolName,
 								},
 							}
+							// Preserve original key ordering of tool arguments for prompt caching.
 							var input interface{}
-							if err := sonic.Unmarshal([]byte(toolCall.Arguments), &input); err != nil {
-								input = map[string]interface{}{}
+							var buf bytes.Buffer
+							if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
+								input = json.RawMessage(buf.Bytes())
+							} else {
+								input = json.RawMessage("{}")
 							}
 							toolUseBlock.ToolUse.Input = input
 							contentBlocks = append(contentBlocks, *toolUseBlock)
@@ -2655,10 +2663,13 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 								Name:      toolCall.ToolName,
 							},
 						}
-						// Parse arguments
+						// Preserve original key ordering of tool arguments for prompt caching.
 						var input interface{}
-						if err := sonic.Unmarshal([]byte(toolCall.Arguments), &input); err != nil {
-							input = map[string]interface{}{}
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
+							input = json.RawMessage(buf.Bytes())
+						} else {
+							input = json.RawMessage("{}")
 						}
 						toolUseBlock.ToolUse.Input = input
 						toolUseBlocks = append(toolUseBlocks, *toolUseBlock)

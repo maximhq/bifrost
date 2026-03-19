@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -221,5 +223,116 @@ func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 	nestedKeys := nestedPropsOM.Keys()
 	if len(nestedKeys) != 3 || nestedKeys[0] != "verdict" || nestedKeys[1] != "score" || nestedKeys[2] != "explanation" {
 		t.Errorf("expected nested property order [verdict, score, explanation], got %v", nestedKeys)
+	}
+}
+
+// TestToAnthropicChatRequest_ToolInputKeyOrderPreservation verifies that tool_use input
+// arguments preserve the client's original key ordering after conversion to Anthropic format.
+// This is critical for prompt caching, which relies on exact byte-for-byte prefix matching.
+// The test uses multiple parallel tool calls in a single assistant message — each with
+// a different key ordering — matching real-world Claude Code usage patterns.
+func TestToAnthropicChatRequest_ToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				// Multiple parallel tool calls with different key orderings per block
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_013t7gabfKz98BKpdwrnS6LP"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references to auth_injector quickly","timeout":30000,"command":"grep -r \"auth_injector\" . --include=\"Makefile\" -l 2>/dev/null"}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_01K2kr3wi7M4RriLgE7Kq3vJ"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff of commits in branch"}`,
+							},
+						},
+						{
+							Index: 2,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_01D1mMkcvpfqGrEhkcxUQpGc"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git log main..HEAD --format=\"%H %s\" | head -20","description":"Show detailed commits in branch"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Collect all tool_use content blocks
+	var toolUseBlocks []AnthropicContentBlock
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolUse {
+				toolUseBlocks = append(toolUseBlocks, block)
+			}
+		}
+	}
+
+	if len(toolUseBlocks) != 3 {
+		t.Fatalf("expected 3 tool_use blocks, got %d", len(toolUseBlocks))
+	}
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	json0, _ := json.Marshal(toolUseBlocks[0].Input)
+	s0 := string(json0)
+	descIdx0 := strings.Index(s0, `"description"`)
+	timeIdx0 := strings.Index(s0, `"timeout"`)
+	cmdIdx0 := strings.Index(s0, `"command"`)
+	if descIdx0 < 0 || timeIdx0 < 0 || cmdIdx0 < 0 {
+		t.Fatalf("block 0: missing expected key(s) in: %s", s0)
+	}
+	if !(descIdx0 < timeIdx0 && timeIdx0 < cmdIdx0) {
+		t.Errorf("block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+	}
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	json1, _ := json.Marshal(toolUseBlocks[1].Input)
+	s1 := string(json1)
+	cmdIdx1 := strings.Index(s1, `"command"`)
+	descIdx1 := strings.Index(s1, `"description"`)
+	if cmdIdx1 < 0 || descIdx1 < 0 {
+		t.Fatalf("block 1: missing expected key(s) in: %s", s1)
+	}
+	if !(cmdIdx1 < descIdx1) {
+		t.Errorf("block 1: key order not preserved, expected command < description in: %s", s1)
+	}
+
+	// Block 2: keys should be command, description (same as block 1)
+	json2, _ := json.Marshal(toolUseBlocks[2].Input)
+	s2 := string(json2)
+	cmdIdx2 := strings.Index(s2, `"command"`)
+	descIdx2 := strings.Index(s2, `"description"`)
+	if cmdIdx2 < 0 || descIdx2 < 0 {
+		t.Fatalf("block 2: missing expected key(s) in: %s", s2)
+	}
+	if !(cmdIdx2 < descIdx2) {
+		t.Errorf("block 2: key order not preserved, expected command < description in: %s", s2)
 	}
 }

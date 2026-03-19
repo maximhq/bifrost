@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -870,19 +871,32 @@ func getImageURLFromBlock(block AnthropicContentBlock) string {
 	return ""
 }
 
-// Helper function to parse JSON input arguments back to interface{}
+// parseJSONInput returns a json.RawMessage that preserves the original key ordering
+// of the JSON input. This is critical for prompt caching, which relies on exact
+// byte-for-byte matching of the request prefix sent to providers.
 func parseJSONInput(jsonStr string) interface{} {
 	if jsonStr == "" || jsonStr == "{}" {
-		return map[string]interface{}{}
+		return json.RawMessage("{}")
 	}
 
-	var result interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// If parsing fails, return as string
-		return jsonStr
+	// Compact removes insignificant whitespace while preserving key order.
+	compacted := compactJSONBytes([]byte(jsonStr))
+	if compacted != nil {
+		return json.RawMessage(compacted)
 	}
 
-	return result
+	// If compaction fails (invalid JSON), return as string
+	return jsonStr
+}
+
+// compactJSONBytes compacts JSON bytes, removing insignificant whitespace while
+// preserving key ordering. Returns nil if the input is not valid JSON.
+func compactJSONBytes(data []byte) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, data); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // extractTypesFromValue extracts type strings from various formats (string, []string, []interface{})

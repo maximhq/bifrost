@@ -548,6 +548,297 @@ func TestNormalized_CachingRegression_FullToolMarshal(t *testing.T) {
 		"property order must be preserved through full marshal round-trip")
 }
 
+// --- ResponsesTool deterministic serialization tests ---
+
+// TestResponsesTool_MarshalJSON_Deterministic verifies that marshaling the same
+// ResponsesTool struct produces byte-identical JSON every time. This is critical for
+// OpenAI's prefix-based prompt caching — non-deterministic tool serialization
+// would invalidate the cache on every other call.
+func TestResponsesTool_MarshalJSON_Deterministic(t *testing.T) {
+	tools := []ResponsesTool{
+		{
+			Type:        ResponsesToolTypeFunction,
+			Name:        Ptr("weather"),
+			Description: Ptr("Get current weather"),
+			CacheControl: &CacheControl{
+				Type: CacheControlTypeEphemeral,
+			},
+			ResponsesToolFunction: &ResponsesToolFunction{
+				Parameters: &ToolFunctionParameters{
+					Type: "object",
+					Properties: NewOrderedMapFromPairs(
+						KV("location", NewOrderedMapFromPairs(
+							KV("type", "string"),
+							KV("description", "City name"),
+						)),
+						KV("unit", NewOrderedMapFromPairs(
+							KV("type", "string"),
+							KV("enum", []string{"celsius", "fahrenheit"}),
+						)),
+					),
+					Required: []string{"location"},
+				},
+				Strict: Ptr(true),
+			},
+		},
+		{
+			Type:                    ResponsesToolTypeFileSearch,
+			ResponsesToolFileSearch: &ResponsesToolFileSearch{VectorStoreIDs: []string{"vs_1", "vs_2"}},
+		},
+		{
+			Type:        ResponsesToolTypeWebSearch,
+			Description: Ptr("Search the web"),
+			ResponsesToolWebSearch: &ResponsesToolWebSearch{
+				SearchContextSize: Ptr("medium"),
+			},
+		},
+		{
+			Type: ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &ResponsesToolComputerUsePreview{
+				DisplayWidth:  1024,
+				DisplayHeight: 768,
+				Environment:   "browser",
+			},
+		},
+	}
+
+	for _, tool := range tools {
+		t.Run(string(tool.Type), func(t *testing.T) {
+			first, err := Marshal(tool)
+			require.NoError(t, err, "first marshal should succeed")
+
+			for i := 0; i < 100; i++ {
+				got, err := Marshal(tool)
+				require.NoError(t, err)
+				require.Equal(t, string(first), string(got),
+					"iteration %d: marshal produced different bytes.\nfirst: %s\ngot:   %s", i, string(first), string(got))
+			}
+		})
+	}
+}
+
+// TestResponsesTool_MarshalJSON_ContentPreservation verifies that the sjson-based
+// MarshalJSON produces JSON with all expected fields and values.
+func TestResponsesTool_MarshalJSON_ContentPreservation(t *testing.T) {
+	tests := []struct {
+		name         string
+		tool         ResponsesTool
+		wantContains []string // substrings that must appear in JSON
+	}{
+		{
+			name: "function_with_all_common_fields",
+			tool: ResponsesTool{
+				Type:        ResponsesToolTypeFunction,
+				Name:        Ptr("search_db"),
+				Description: Ptr("Search database"),
+				CacheControl: &CacheControl{
+					Type: CacheControlTypeEphemeral,
+				},
+				ResponsesToolFunction: &ResponsesToolFunction{
+					Strict: Ptr(false),
+				},
+			},
+			wantContains: []string{
+				`"type":"function"`,
+				`"name":"search_db"`,
+				`"description":"Search database"`,
+				`"cache_control":{"type":"ephemeral"}`,
+				`"strict":false`,
+			},
+		},
+		{
+			name: "function_with_parameters",
+			tool: ResponsesTool{
+				Type: ResponsesToolTypeFunction,
+				Name: Ptr("get_weather"),
+				ResponsesToolFunction: &ResponsesToolFunction{
+					Parameters: &ToolFunctionParameters{
+						Type: "object",
+						Properties: NewOrderedMapFromPairs(
+							KV("location", NewOrderedMapFromPairs(
+								KV("type", "string"),
+							)),
+						),
+					},
+					Strict: Ptr(true),
+				},
+			},
+			wantContains: []string{
+				`"type":"function"`,
+				`"name":"get_weather"`,
+				`"parameters":{`,
+				`"location":{`,
+				`"strict":true`,
+			},
+		},
+		{
+			name: "file_search_tool",
+			tool: ResponsesTool{
+				Type: ResponsesToolTypeFileSearch,
+				ResponsesToolFileSearch: &ResponsesToolFileSearch{
+					VectorStoreIDs: []string{"vs_123"},
+					MaxNumResults:  Ptr(10),
+				},
+			},
+			wantContains: []string{
+				`"type":"file_search"`,
+				`"vector_store_ids":["vs_123"]`,
+				`"max_num_results":10`,
+			},
+		},
+		{
+			name: "web_search_tool",
+			tool: ResponsesTool{
+				Type:        ResponsesToolTypeWebSearch,
+				Description: Ptr("Web search tool"),
+				ResponsesToolWebSearch: &ResponsesToolWebSearch{
+					SearchContextSize: Ptr("high"),
+				},
+			},
+			wantContains: []string{
+				`"type":"web_search"`,
+				`"description":"Web search tool"`,
+				`"search_context_size":"high"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := Marshal(tt.tool)
+			require.NoError(t, err)
+			jsonStr := string(data)
+			for _, want := range tt.wantContains {
+				assert.Contains(t, jsonStr, want, "JSON should contain %q, got: %s", want, jsonStr)
+			}
+		})
+	}
+}
+
+// TestResponsesTool_MarshalJSON_RoundTrip verifies that unmarshal→marshal→unmarshal
+// produces structurally identical results.
+func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
+	inputs := []string{
+		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
+		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
+		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+	}
+
+	for _, input := range inputs {
+		name := input
+		if len(name) > 50 {
+			name = name[:50]
+		}
+		t.Run(name, func(t *testing.T) {
+			// Round 1: unmarshal → marshal
+			var tool1 ResponsesTool
+			require.NoError(t, Unmarshal([]byte(input), &tool1))
+			data1, err := Marshal(tool1)
+			require.NoError(t, err)
+
+			// Round 2: unmarshal → marshal
+			var tool2 ResponsesTool
+			require.NoError(t, Unmarshal(data1, &tool2))
+			data2, err := Marshal(tool2)
+			require.NoError(t, err)
+
+			// Round-trip stability: second marshal must match first
+			require.Equal(t, string(data1), string(data2),
+				"round-trip produced different bytes.\nround1: %s\nround2: %s", string(data1), string(data2))
+
+			// Content equivalence with original input
+			var original, roundTripped map[string]interface{}
+			require.NoError(t, Unmarshal([]byte(input), &original))
+			require.NoError(t, Unmarshal(data1, &roundTripped))
+			assert.Equal(t, original, roundTripped, "content should match original input")
+		})
+	}
+}
+
+// TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
+// serialization for file search filters.
+func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {
+	filters := []*ResponsesToolFileSearchFilter{
+		{
+			Type: "eq",
+			ResponsesToolFileSearchComparisonFilter: &ResponsesToolFileSearchComparisonFilter{
+				Key:   "status",
+				Value: "active",
+			},
+		},
+		{
+			Type: "and",
+			ResponsesToolFileSearchCompoundFilter: &ResponsesToolFileSearchCompoundFilter{
+				Filters: []ResponsesToolFileSearchFilter{
+					{
+						Type: "eq",
+						ResponsesToolFileSearchComparisonFilter: &ResponsesToolFileSearchComparisonFilter{
+							Key:   "type",
+							Value: "document",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, filter := range filters {
+		t.Run(filter.Type, func(t *testing.T) {
+			first, err := Marshal(filter)
+			require.NoError(t, err)
+
+			for i := 0; i < 100; i++ {
+				got, err := Marshal(filter)
+				require.NoError(t, err)
+				require.Equal(t, string(first), string(got),
+					"iteration %d: marshal produced different bytes", i)
+			}
+		})
+	}
+}
+
+// TestResponsesToolMCPApprovalSetting_MarshalJSON_Deterministic verifies deterministic
+// serialization for MCP approval settings.
+func TestResponsesToolMCPApprovalSetting_MarshalJSON_Deterministic(t *testing.T) {
+	settings := []ResponsesToolMCPAllowedToolsApprovalSetting{
+		{
+			Setting: Ptr("always"),
+		},
+		{
+			Always: &ResponsesToolMCPAllowedToolsApprovalFilter{
+				ToolNames: []string{"tool1", "tool2"},
+			},
+		},
+		{
+			Never: &ResponsesToolMCPAllowedToolsApprovalFilter{
+				ToolNames: []string{"dangerous_tool"},
+			},
+		},
+		{
+			Always: &ResponsesToolMCPAllowedToolsApprovalFilter{
+				ToolNames: []string{"safe_tool"},
+			},
+			Never: &ResponsesToolMCPAllowedToolsApprovalFilter{
+				ToolNames: []string{"risky_tool"},
+			},
+		},
+	}
+
+	for i, setting := range settings {
+		t.Run(strings.Repeat("_", i), func(t *testing.T) {
+			first, err := Marshal(setting)
+			require.NoError(t, err)
+
+			for j := 0; j < 100; j++ {
+				got, err := Marshal(setting)
+				require.NoError(t, err)
+				require.Equal(t, string(first), string(got),
+					"iteration %d: marshal produced different bytes", j)
+			}
+		})
+	}
+}
+
 // TestNetworkConfig_TLSFieldsRoundTrip verifies that insecure_skip_verify and ca_cert_pem
 // round-trip correctly through JSON marshaling (used by config.json).
 func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {

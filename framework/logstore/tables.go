@@ -128,7 +128,7 @@ type Log struct {
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
 	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
 	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
-	Metadata               string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
+	Metadata               *string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
 	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
 
@@ -420,10 +420,13 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.MetadataParsed != nil {
-		if data, err := sonic.Marshal(l.MetadataParsed); err != nil {
-			return err
+		data, err := sonic.Marshal(l.MetadataParsed)
+		if err != nil {
+			// Metadata is supplementary — null it out rather than aborting the log write.
+			l.Metadata = nil
+			l.MetadataParsed = nil
 		} else {
-			l.Metadata = string(data)
+			l.Metadata = new(string(data))
 		}
 	}
 
@@ -611,8 +614,8 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
-	if l.Metadata != "" {
-		if err := sonic.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+	if l.Metadata != nil && *l.Metadata != "" {
+		if err := sonic.Unmarshal([]byte(*l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
 		}
 	}
@@ -702,8 +705,11 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.MetadataParsed != nil {
-		if data, err := sonic.Marshal(l.MetadataParsed); err != nil {
-			return err
+		data, err := sonic.Marshal(l.MetadataParsed)
+		if err != nil {
+			// Metadata is supplementary — null it out rather than aborting the log write.
+			l.Metadata = ""
+			l.MetadataParsed = nil
 		} else {
 			l.Metadata = string(data)
 		}

@@ -12,15 +12,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.4.10
-	github.com/maximhq/bifrost/framework v1.2.29
-	github.com/maximhq/bifrost/plugins/governance v1.4.29
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.18
-	github.com/maximhq/bifrost/plugins/logging v1.4.29
-	github.com/maximhq/bifrost/plugins/maxim v1.5.27
-	github.com/maximhq/bifrost/plugins/otel v1.1.28
-	github.com/maximhq/bifrost/plugins/semanticcache v1.4.27
-	github.com/maximhq/bifrost/plugins/telemetry v1.4.29
+	github.com/maximhq/bifrost/core v1.4.11
+	github.com/maximhq/bifrost/framework v1.2.30
+	github.com/maximhq/bifrost/plugins/governance v1.4.30
+	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.19
+	github.com/maximhq/bifrost/plugins/logging v1.4.30
+	github.com/maximhq/bifrost/plugins/maxim v1.5.28
+	github.com/maximhq/bifrost/plugins/otel v1.1.29
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.28
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.30
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -111,7 +111,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.4.28 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.4.29 // indirect
 	github.com/maximhq/maxim-go v0.1.16 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
@@ -135,8 +135,8 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/weaviate/weaviate v1.34.5 // indirect
-	github.com/weaviate/weaviate-go-client/v5 v5.6.0 // indirect
+	github.com/weaviate/weaviate v1.36.5 // indirect
+	github.com/weaviate/weaviate-go-client/v5 v5.7.1 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.mongodb.org/mongo-driver v1.17.6 // indirect
@@ -154,13 +154,13 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
+	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260203192932-546029d2fa20 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260203192932-546029d2fa20 // indirect
 	google.golang.org/grpc v1.78.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
