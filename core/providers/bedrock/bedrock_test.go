@@ -2,6 +2,7 @@ package bedrock_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -97,6 +98,7 @@ func TestBedrock(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	// Get Bedrock-specific configuration from environment
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
@@ -178,7 +180,6 @@ func TestBedrock(t *testing.T) {
 	t.Run("BedrockTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request
@@ -596,14 +597,14 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Name:      "hello",
-									Input:     map[string]interface{}{},
+									Input:     json.RawMessage("{}"),
 								},
 							},
 							{
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_eARDw2iqRXak8uyRC2KxXw",
 									Name:      "world",
-									Input:     map[string]interface{}{},
+									Input:     json.RawMessage("{}"),
 								},
 							},
 						},
@@ -765,9 +766,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Name:      "get_weather",
-									Input: map[string]any{
-										"location": "New York",
-									},
+									Input:     json.RawMessage(`{"location":"New York"}`),
 								},
 							},
 						},
@@ -1201,9 +1200,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-123",
 									Name:      "get_weather",
-									Input: map[string]interface{}{
-										"location": "NYC",
-									},
+									Input: json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1278,9 +1275,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-456",
 									Name:      "calculate",
-									Input: map[string]interface{}{
-										"expression": "2+2",
-									},
+									Input: json.RawMessage(`{"expression":"2+2"}`),
 								},
 							},
 						},
@@ -1482,7 +1477,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{"location": "NYC"},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1554,7 +1549,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{}, // Should default to empty map
+									Input:     json.RawMessage("{}"), // Should default to empty map
 								},
 							},
 						},
@@ -1809,9 +1804,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "call-111",
 									Name:      "get_weather",
-									Input: map[string]interface{}{
-										"location": "NYC",
-									},
+									Input: json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 							{
@@ -1863,7 +1856,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     map[string]interface{}{"location": "NYC"},
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -3462,4 +3455,103 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 				"Bedrock format %q should map to MIME type %q", tt.bedrockFormat, tt.expectedMimeType)
 		})
 	}
+}
+
+// TestBedrockToolInputKeyOrderPreservation verifies that multiple parallel tool calls
+// preserve the client's original key ordering after conversion to Bedrock format.
+func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-sonnet",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff of commits"}`,
+							},
+						},
+						{
+							Index: 2,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_003"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git log main..HEAD","description":"Show commits in branch"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+
+	// Collect all tool use content blocks from assistant messages
+	var toolUseInputs []interface{}
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil {
+				toolUseInputs = append(toolUseInputs, block.ToolUse.Input)
+			}
+		}
+	}
+
+	require.Len(t, toolUseInputs, 3, "expected 3 tool use blocks")
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	json0, _ := json.Marshal(toolUseInputs[0])
+	s0 := string(json0)
+	descIdx0 := strings.Index(s0, `"description"`)
+	timeIdx0 := strings.Index(s0, `"timeout"`)
+	cmdIdx0 := strings.Index(s0, `"command"`)
+	if descIdx0 < 0 || timeIdx0 < 0 || cmdIdx0 < 0 {
+		t.Fatalf("block 0: missing expected key(s) in: %s", s0)
+	}
+	assert.True(t, descIdx0 < timeIdx0 && timeIdx0 < cmdIdx0,
+		"block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	json1, _ := json.Marshal(toolUseInputs[1])
+	s1 := string(json1)
+	cmdIdx1 := strings.Index(s1, `"command"`)
+	descIdx1 := strings.Index(s1, `"description"`)
+	if cmdIdx1 < 0 || descIdx1 < 0 {
+		t.Fatalf("block 1: missing expected key(s) in: %s", s1)
+	}
+	assert.True(t, cmdIdx1 < descIdx1,
+		"block 1: key order not preserved, expected command < description in: %s", s1)
+
+	// Block 2: keys should be command, description
+	json2, _ := json.Marshal(toolUseInputs[2])
+	s2 := string(json2)
+	cmdIdx2 := strings.Index(s2, `"command"`)
+	descIdx2 := strings.Index(s2, `"description"`)
+	if cmdIdx2 < 0 || descIdx2 < 0 {
+		t.Fatalf("block 2: missing expected key(s) in: %s", s2)
+	}
+	assert.True(t, cmdIdx2 < descIdx2,
+		"block 2: key order not preserved, expected command < description in: %s", s2)
 }

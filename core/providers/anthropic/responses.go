@@ -27,6 +27,10 @@ type AnthropicResponsesStreamState struct {
 	WebSearchOutputIndex *int                   // Output index for this search
 	WebSearchResult      *AnthropicContentBlock // Result block when it arrives
 
+	// Web fetch tool accumulation
+	WebFetchToolID      *string // Tool ID of active web fetch
+	WebFetchOutputIndex *int    // Output index for this fetch
+
 	// OpenAI Responses API mapping state
 	ContentIndexToOutputIndex map[int]int                       // Maps Anthropic content_index to OpenAI output_index
 	ContentIndexToBlockType   map[int]AnthropicContentBlockType // Tracks content block types
@@ -73,6 +77,9 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 // webSearchItemIDs tracks item IDs for WebSearch tools to skip their argument deltas
 // Maps item_id (string) -> true for WebSearch tools that need delta skipping
 var webSearchItemIDs sync.Map
+
+// webFetchItemIDs tracks item IDs for WebFetch tools to skip their argument deltas
+var webFetchItemIDs sync.Map
 
 // acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
 func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
@@ -136,6 +143,8 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchResult = nil
+	state.WebFetchToolID = nil
+	state.WebFetchOutputIndex = nil
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
@@ -164,6 +173,8 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchResult = nil
+	state.WebFetchToolID = nil
+	state.WebFetchOutputIndex = nil
 	state.ContentIndexToOutputIndex = nil
 	state.ContentIndexToBlockType = nil
 	state.ToolArgumentBuffers = nil
@@ -381,6 +392,79 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 
 				// If no matching tool ID, skip (shouldn't happen in normal flow)
+				return nil, nil, false
+			}
+
+			// Handle web_fetch server_tool_use (fetch block)
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+				chunk.ContentBlock.Name != nil &&
+				*chunk.ContentBlock.Name == string(AnthropicToolNameWebFetch) &&
+				chunk.ContentBlock.ID != nil {
+
+				state.ChunkIndex = chunk.Index
+				state.AccumulatedJSON = ""
+				state.WebFetchToolID = chunk.ContentBlock.ID
+				state.WebFetchOutputIndex = schemas.Ptr(outputIndex)
+
+				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+				item := &schemas.ResponsesMessage{
+					ID:     chunk.ContentBlock.ID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status: schemas.Ptr("in_progress"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: chunk.ContentBlock.ID,
+					},
+				}
+
+				var responses []*schemas.BifrostResponsesStreamResponse
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					Item:           item,
+				})
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeWebFetchCallInProgress,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ItemID:         chunk.ContentBlock.ID,
+				})
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeWebFetchCallFetching,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ItemID:         chunk.ContentBlock.ID,
+				})
+
+				return responses, nil, false
+			}
+
+			// Handle web_fetch_tool_result block
+			if chunk.ContentBlock.Type == AnthropicContentBlockTypeWebFetchToolResult &&
+				chunk.ContentBlock.ToolUseID != nil {
+
+				if chunk.Index != nil {
+					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebFetchToolResult
+				}
+
+				if state.WebFetchToolID != nil && *state.WebFetchToolID == *chunk.ContentBlock.ToolUseID {
+					if chunk.Index != nil {
+						delete(state.ContentIndexToBlockType, *chunk.Index)
+					}
+
+					return []*schemas.BifrostResponsesStreamResponse{{
+						Type:           schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    state.WebFetchOutputIndex,
+						ItemID:         chunk.ContentBlock.ToolUseID,
+					}}, nil, false
+				}
+
 				return nil, nil, false
 			}
 
@@ -961,8 +1045,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			// (their handlers already emitted the proper done event)
 			if chunk.Index != nil {
 				if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists {
-					if blockType == AnthropicContentBlockTypeWebSearchToolResult {
-						// Clean up the tracking
+					if blockType == AnthropicContentBlockTypeWebSearchToolResult ||
+						blockType == AnthropicContentBlockTypeWebFetchToolResult {
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
 					}
@@ -1538,10 +1622,12 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
-		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
-		// after sanitization to remove conflicting allowed_domains and blocked_domains
+		// Skip WebSearch/WebFetch tool argument deltas - they will be sent synthetically in output_item.done
 		if bifrostResp.ItemID != nil {
 			if _, isWebSearch := webSearchItemIDs.Load(*bifrostResp.ItemID); isWebSearch {
+				return nil
+			}
+			if _, isWebFetch := webFetchItemIDs.Load(*bifrostResp.ItemID); isWebFetch {
 				return nil
 			}
 		}
@@ -2025,12 +2111,16 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		params.Include = include
 	}
 
-	// Add trucation parameter if computer tool is being used
+	// Add truncation parameter if computer tool is being used
 	if provider == schemas.OpenAI && req.Tools != nil {
 		for _, tool := range req.Tools {
-			if tool.Type != nil && (*tool.Type == AnthropicToolTypeComputer20250124 || *tool.Type == AnthropicToolTypeComputer20251124) {
+			if tool.Type == nil {
+				continue
+			}
+			switch *tool.Type {
+			case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
 				params.Truncation = schemas.Ptr("auto")
-			} else if tool.Type != nil && (*tool.Type == AnthropicToolTypeWebSearch20250305) {
+			case AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209:
 				params.Include = []string{"web_search_call.action.sources"}
 			}
 		}
@@ -2962,6 +3052,44 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 			}
 
+		case schemas.ResponsesMessageTypeWebFetchCall:
+			flushPendingToolResults()
+
+			if currentAssistantMessage == nil {
+				currentAssistantMessage = &AnthropicMessage{
+					Role: AnthropicMessageRoleAssistant,
+				}
+			}
+
+			if len(pendingReasoningContentBlocks) > 0 {
+				copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+				copy(copied, pendingReasoningContentBlocks)
+				pendingToolCalls = append(copied, pendingToolCalls...)
+				pendingReasoningContentBlocks = nil
+			}
+
+			serverToolUseBlock := AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeServerToolUse,
+				Name: schemas.Ptr(string(AnthropicToolNameWebFetch)),
+			}
+			if msg.ID != nil {
+				serverToolUseBlock.ID = msg.ID
+			}
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Action != nil &&
+				msg.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction != nil {
+				serverToolUseBlock.Input = map[string]interface{}{
+					"url": msg.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction.URL,
+				}
+			}
+			pendingToolCalls = append(pendingToolCalls, serverToolUseBlock)
+
+			if serverToolUseBlock.ID != nil {
+				if currentToolCallIDs == nil {
+					currentToolCallIDs = make(map[string]bool)
+				}
+				currentToolCallIDs[*serverToolUseBlock.ID] = true
+			}
+
 		// Handle other tool call types that are not natively supported by Anthropic
 		case schemas.ResponsesMessageTypeFileSearchCall,
 			schemas.ResponsesMessageTypeCodeInterpreterCall,
@@ -3340,7 +3468,6 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					}
 				}
 			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
-				// Handle web_search tool
 				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 				bifrostMsg.ResponsesToolMessage.Name = nil
 				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
@@ -3349,7 +3476,19 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
 								Type:    "search",
 								Query:   schemas.Ptr(query),
-								Queries: []string{query}, // Anthropic uses single query
+								Queries: []string{query},
+							},
+						}
+					}
+				}
+			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
+				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
+				bifrostMsg.ResponsesToolMessage.Name = nil
+				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
+					if url, ok := inputMap["url"].(string); ok {
+						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+								URL: url,
 							},
 						}
 					}
@@ -3650,6 +3789,29 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					bifrostMsg.ID = block.ID
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
 				}
+			} else if block.Name != nil && *block.Name == string(AnthropicToolNameWebFetch) {
+				bifrostMsg := schemas.ResponsesMessage{
+					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+					Status:               schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+				}
+
+				if block.Input != nil {
+					if inputMap, ok := block.Input.(map[string]interface{}); ok {
+						if url, ok := inputMap["url"].(string); ok {
+							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+								ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+									URL: url,
+								},
+							}
+						}
+					}
+				}
+
+				if isOutputMessage {
+					bifrostMsg.ID = block.ID
+					bifrostMessages = append(bifrostMessages, bifrostMsg)
+				}
 			}
 
 		case AnthropicContentBlockTypeWebSearchToolResult:
@@ -3657,6 +3819,23 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			if block.ToolUseID != nil {
 				attachWebSearchSourcesToCall(bifrostMessages, *block.ToolUseID, block, true)
 			}
+
+		case AnthropicContentBlockTypeWebFetchToolResult:
+			// Web fetch results are handled server-side by Anthropic, skip
+
+		case AnthropicContentBlockTypeWebSearchToolResultError:
+			// Handle web search errors — find matching web_search_call and mark as failed
+			if block.ToolUseID != nil {
+				for i := len(bifrostMessages) - 1; i >= 0; i-- {
+					msg := &bifrostMessages[i]
+					if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+						msg.ID != nil && *msg.ID == *block.ToolUseID {
+						msg.Status = schemas.Ptr("failed")
+						break
+					}
+				}
+			}
+
 		case AnthropicContentBlockTypeMCPToolUse:
 			// Convert MCP tool use to MCP call (assistant's tool call)
 			if block.ID != nil && block.Name != nil {
@@ -4142,37 +4321,40 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 
 	blocks = append(blocks, serverToolUseBlock)
 
-	// 2. Create web_search_tool_result block if sources are present
-	if len(action.Sources) > 0 {
-		var resultBlocks []AnthropicContentBlock
-		for _, source := range action.Sources {
-			if source.URL != "" {
-				resultBlock := AnthropicContentBlock{
-					Type:             AnthropicContentBlockTypeWebSearchResult,
-					URL:              schemas.Ptr(source.URL),
-					EncryptedContent: source.EncryptedContent,
-					PageAge:          source.PageAge,
-				}
-				if source.Title != nil {
-					resultBlock.Title = source.Title
-				} else if source.URL != "" {
-					resultBlock.Title = schemas.Ptr(source.URL)
-				}
-				resultBlocks = append(resultBlocks, resultBlock)
+	// 2. Always create web_search_tool_result block — Anthropic requires it alongside every server_tool_use.
+	// Without this block, the API returns: "web_search tool use was found without a corresponding web_search_tool_result block"
+	var resultBlocks []AnthropicContentBlock
+	for _, source := range action.Sources {
+		if source.URL != "" {
+			resultBlock := AnthropicContentBlock{
+				Type:             AnthropicContentBlockTypeWebSearchResult,
+				URL:              schemas.Ptr(source.URL),
+				EncryptedContent: source.EncryptedContent,
+				PageAge:          source.PageAge,
 			}
-		}
-
-		if len(resultBlocks) > 0 {
-			webSearchResultBlock := AnthropicContentBlock{
-				Type:      AnthropicContentBlockTypeWebSearchToolResult,
-				ToolUseID: msg.ID,
-				Content: &AnthropicContent{
-					ContentBlocks: resultBlocks,
-				},
+			if source.Title != nil {
+				resultBlock.Title = source.Title
+			} else if source.URL != "" {
+				resultBlock.Title = schemas.Ptr(source.URL)
 			}
-			blocks = append(blocks, webSearchResultBlock)
+			resultBlocks = append(resultBlocks, resultBlock)
 		}
 	}
+	// Determine the tool use ID - prefer CallID (authoritative), fall back to msg.ID
+	var toolUseID *string
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+		toolUseID = msg.ResponsesToolMessage.CallID
+	} else {
+		toolUseID = msg.ID
+	}
+	webSearchResultBlock := AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeWebSearchToolResult,
+		ToolUseID: toolUseID,
+		Content: &AnthropicContent{
+			ContentBlocks: resultBlocks,
+		},
+	}
+	blocks = append(blocks, webSearchResultBlock)
 
 	return blocks
 }
@@ -4278,7 +4460,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 			}
 			return bifrostTool
 
-		case AnthropicToolTypeWebSearch20250305:
+		case AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209:
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
 			}
@@ -4303,6 +4485,42 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 			}
 
 			return bifrostTool
+
+		case AnthropicToolTypeWebFetch20250910, AnthropicToolTypeWebFetch20260209, AnthropicToolTypeWebFetch20260309:
+			bifrostTool := &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeWebFetch,
+			}
+			if tool.AnthropicToolWebFetch != nil {
+				bifrostTool.ResponsesToolWebFetch = &schemas.ResponsesToolWebFetch{
+					MaxUses:          tool.AnthropicToolWebFetch.MaxUses,
+					MaxContentTokens: tool.AnthropicToolWebFetch.MaxContentTokens,
+				}
+				if len(tool.AnthropicToolWebFetch.AllowedDomains) > 0 || len(tool.AnthropicToolWebFetch.BlockedDomains) > 0 {
+					bifrostTool.ResponsesToolWebFetch.Filters = &schemas.ResponsesToolWebSearchFilters{
+						AllowedDomains: tool.AnthropicToolWebFetch.AllowedDomains,
+						BlockedDomains: tool.AnthropicToolWebFetch.BlockedDomains,
+					}
+				}
+			}
+			return bifrostTool
+
+		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution20260120:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeCodeInterpreter,
+			}
+
+		case AnthropicToolTypeMemory20250818:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeMemory,
+				Name: &tool.Name,
+			}
+
+		case AnthropicToolTypeToolSearchBM25, AnthropicToolTypeToolSearchBM2520251119,
+			AnthropicToolTypeToolSearchRegex, AnthropicToolTypeToolSearchRegex20251119:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeToolSearch,
+				Name: &tool.Name,
+			}
 
 		case AnthropicToolTypeBash20250124:
 			return &schemas.ResponsesTool{
@@ -4452,7 +4670,8 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
-			if strings.Contains(model, "claude") && strings.Contains(model, "opus") && (strings.Contains(model, "4.5") || strings.Contains(model, "4-5")) {
+			if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") ||
+				(strings.Contains(model, "opus") && (strings.Contains(model, "4.5") || strings.Contains(model, "4-5"))) {
 				computerToolType = AnthropicToolTypeComputer20251124
 			}
 			return &AnthropicTool{
@@ -4467,8 +4686,12 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 			}
 		}
 	case schemas.ResponsesToolTypeWebSearch:
+		webSearchType := AnthropicToolTypeWebSearch20250305
+		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+			webSearchType = AnthropicToolTypeWebSearch20260209
+		}
 		anthropicTool := &AnthropicTool{
-			Type:                   schemas.Ptr(AnthropicToolTypeWebSearch20250305),
+			Type:                   schemas.Ptr(webSearchType),
 			Name:                   string(AnthropicToolNameWebSearch),
 			AnthropicToolWebSearch: &AnthropicToolWebSearch{},
 		}
@@ -4491,6 +4714,42 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 
 		return anthropicTool
+	case schemas.ResponsesToolTypeWebFetch:
+		webFetchType := AnthropicToolTypeWebFetch20250910
+		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+			webFetchType = AnthropicToolTypeWebFetch20260309
+		}
+		anthropicTool := &AnthropicTool{
+			Type:                  schemas.Ptr(webFetchType),
+			Name:                  string(AnthropicToolNameWebFetch),
+			AnthropicToolWebFetch: &AnthropicToolWebFetch{},
+		}
+		if tool.ResponsesToolWebFetch != nil {
+			anthropicTool.AnthropicToolWebFetch.MaxUses = tool.ResponsesToolWebFetch.MaxUses
+			anthropicTool.AnthropicToolWebFetch.MaxContentTokens = tool.ResponsesToolWebFetch.MaxContentTokens
+			if tool.ResponsesToolWebFetch.Filters != nil {
+				anthropicTool.AnthropicToolWebFetch.AllowedDomains = tool.ResponsesToolWebFetch.Filters.AllowedDomains
+				anthropicTool.AnthropicToolWebFetch.BlockedDomains = tool.ResponsesToolWebFetch.Filters.BlockedDomains
+			}
+		}
+		return anthropicTool
+	case schemas.ResponsesToolTypeMemory:
+		anthropicTool := &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeMemory20250818),
+			Name: string(AnthropicToolNameMemory),
+		}
+		return anthropicTool
+	case schemas.ResponsesToolTypeToolSearch:
+		toolSearchType := AnthropicToolTypeToolSearchBM2520251119
+		toolSearchName := AnthropicToolNameToolSearchBM25
+		if tool.Name != nil && strings.Contains(*tool.Name, "regex") {
+			toolSearchType = AnthropicToolTypeToolSearchRegex20251119
+			toolSearchName = AnthropicToolNameToolSearchRegex
+		}
+		return &AnthropicTool{
+			Type: schemas.Ptr(toolSearchType),
+			Name: string(toolSearchName),
+		}
 	case schemas.ResponsesToolTypeLocalShell:
 		return &AnthropicTool{
 			Type: schemas.Ptr(AnthropicToolTypeBash20250124),

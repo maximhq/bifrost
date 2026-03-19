@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -23,41 +22,62 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 	// Check if raw request body should be used
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
-		// Unmarshal and check if model and region are present
-		var requestBody map[string]interface{}
-		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
-		}
+
 		if isCountTokens {
-			delete(requestBody, "max_tokens")
-			delete(requestBody, "temperature")
-			requestBody["model"] = deployment
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", deployment)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		} else {
 			// Add max_tokens if not present
-			if _, exists := requestBody["max_tokens"]; !exists {
-				requestBody["max_tokens"] = anthropic.AnthropicDefaultMaxTokens
+			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", anthropic.AnthropicDefaultMaxTokens)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
 			}
-			delete(requestBody, "model")
-			// Add stream if not present
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+			// Add stream if streaming
 			if isStreaming {
-				requestBody["stream"] = true
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
 			}
 		}
-		delete(requestBody, "region")
-		delete(requestBody, "fallbacks")
-		// Add anthropic_version if not present
-		if _, exists := requestBody["anthropic_version"]; !exists {
-			requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
-		}
-		jsonBody, err = sonic.Marshal(requestBody)
+
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+
+		// Add anthropic_version if not present
+		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+		}
 	} else {
 		// Convert request to Anthropic format
-		reqBody, err := anthropic.ToAnthropicResponsesRequest(ctx, request)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
+		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
+		if convErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
 		}
 		if reqBody == nil {
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
@@ -70,32 +90,38 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 
 		reqBody.SetStripCacheControlScope(true)
 
-		// Convert struct to map for Vertex API
-		reqBytes, err := sonic.Marshal(reqBody)
+		// Marshal struct to JSON bytes
+		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
 
-		var requestBody map[string]interface{}
-		if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
-		}
-
-		// Add anthropic_version if not present
-		if _, exists := requestBody["anthropic_version"]; !exists {
-			requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
+		// Add anthropic_version if not present (using sjson to preserve order)
+		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		}
 
 		if isCountTokens {
-			delete(requestBody, "max_tokens")
-			delete(requestBody, "temperature")
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		} else {
-			// Remove fields not needed by Vertex API
-			delete(requestBody, "model")
+			// Remove model field for Vertex API (it's in URL)
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		}
-		delete(requestBody, "region")
 
-		jsonBody, err = sonic.Marshal(requestBody)
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}

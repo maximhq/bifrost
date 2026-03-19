@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -1111,6 +1113,7 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 
 	if params.Properties != nil && params.Properties.Len() > 0 {
 		schema.Properties = make(map[string]*Schema)
+		schema.PropertyOrdering = params.Properties.Keys()
 		params.Properties.Range(func(k string, v interface{}) bool {
 			schema.Properties[k] = convertPropertyToSchema(v)
 			return true
@@ -1234,12 +1237,14 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				}
 			case *schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
 				})
 			case schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
@@ -1720,10 +1725,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
-					// Create function call part - simplified implementation
-					argsMap := make(map[string]any)
+					// Preserve original key ordering of tool arguments for prompt caching.
+					var argsRaw json.RawMessage
 					if toolCall.Function.Arguments != "" {
-						sonic.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+							argsRaw = buf.Bytes()
+						} else {
+							argsRaw = json.RawMessage("{}")
+						}
+					} else {
+						argsRaw = json.RawMessage("{}")
 					}
 					// Handle ID: use it if available, otherwise fallback to function name
 					callID := *toolCall.Function.Name
@@ -1744,7 +1756,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						FunctionCall: &FunctionCall{
 							ID:   callID,
 							Name: *toolCall.Function.Name,
-							Args: argsMap,
+							Args: argsRaw,
 						},
 					}
 					// Store the mapping for later use in FunctionResponse
@@ -2383,7 +2395,8 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	req.SetRequestURI(imageURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return "", fmt.Errorf("failed to download image: %v", bifrostErr)
 	}

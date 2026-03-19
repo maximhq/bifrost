@@ -212,10 +212,12 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			if err := mc.syncPricing(ctx); err != nil {
 				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 			}
-			// Sync model parameters into memory
-			if err := mc.syncModelParameters(ctx); err != nil {
-				mc.logger.Warn("failed to sync model parameters data: %v", err)
-			}
+			// Sync model parameters asynchronously - not needed for startup
+			go func() {
+				if err := mc.syncModelParameters(ctx); err != nil {
+					mc.logger.Warn("failed to sync model parameters data: %v", err)
+				}
+			}()
 		} else {
 			lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
 			if err != nil {
@@ -232,10 +234,12 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			if err := mc.syncPricing(ctx); err != nil {
 				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 			}
-			// Sync model parameters into memory
-			if err := mc.syncModelParameters(ctx); err != nil {
-				mc.logger.Warn("failed to sync model parameters data: %v", err)
-			}
+			// Sync model parameters asynchronously - not needed for startup
+			go func() {
+				if err := mc.syncModelParameters(ctx); err != nil {
+					mc.logger.Warn("failed to sync model parameters data: %v", err)
+				}
+			}()
 		}
 	} else {
 		// Load pricing data from config memory
@@ -250,9 +254,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
-	mc.configStore = configStore
-	mc.logger = logger
-
 	return mc, nil
 }
 

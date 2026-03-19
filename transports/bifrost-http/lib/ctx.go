@@ -8,14 +8,12 @@ package lib
 
 import (
 	"context"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -94,7 +92,7 @@ const (
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher) (*schemas.BifrostContext, context.CancelFunc) {
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
 	var cancel context.CancelFunc
@@ -161,45 +159,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		"x-bf-vk":         true,
 	}
 
-	// shouldAllowHeader determines if a header should be forwarded based on
-	// the configurable header filter config (separate from security denylist)
-	// Filter logic:
-	// 1. If allowlist is non-empty, header must be in allowlist
-	// 2. If denylist is non-empty, header must not be in denylist
-	// 3. If both are non-empty, allowlist takes precedence first, then denylist filters
-	// 4. If both are empty, header is allowed
-	shouldAllowHeader := func(headerName string) bool {
-		if headerFilterConfig == nil {
-			return true
-		}
-		hasAllowlist := len(headerFilterConfig.Allowlist) > 0
-		hasDenylist := len(headerFilterConfig.Denylist) > 0
-		// If allowlist is non-empty, header must be in allowlist
-		if hasAllowlist {
-			if !slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
-				return strings.EqualFold(s, headerName)
-			}) {
-				return false
-			}
-		}
-		// If denylist is non-empty, header must not be in denylist
-		if hasDenylist {
-			if slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
-				return strings.EqualFold(s, headerName)
-			}) {
-				return false
-
-			}
-		}
-		return true
-	}
-
-	// Debug: Log header filter config
+	// Debug: Log header matcher state
 	if logger != nil {
-		if headerFilterConfig != nil {
-			logger.Debug("headerFilterConfig allowlist: %v, denylist: %v", headerFilterConfig.Allowlist, headerFilterConfig.Denylist)
+		if matcher != nil {
+			logger.Debug("headerMatcher hasAllowlist=%v, hasDenylist=%v", matcher.HasAllowlist(), matcher.hasDenylist)
 		} else {
-			logger.Debug("headerFilterConfig is nil")
+			logger.Debug("headerMatcher is nil (allow all)")
 		}
 	}
 
@@ -379,7 +344,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				return true
 			}
 			// Apply configurable header filter
-			if !shouldAllowHeader(labelName) {
+			if !matcher.ShouldAllow(labelName) {
 				return true
 			}
 			// Append header value (allow multiple values for the same header)
@@ -390,11 +355,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
 		// Only applies when allowlist is non-empty (backward compatible).
-		if headerFilterConfig != nil && len(headerFilterConfig.Allowlist) > 0 {
-			// Check if this header is explicitly in the allowlist (case-insensitive)
-			if slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
-				return strings.EqualFold(s, keyStr)
-			}) {
+		if matcher.HasAllowlist() {
+			if matcher.MatchesAllow(keyStr) {
 				// Skip reserved x-bf-* headers (handled separately)
 				if strings.HasPrefix(keyStr, "x-bf-") {
 					return true
@@ -403,10 +365,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				if securityDenylist[keyStr] {
 					return true
 				}
-				// Check denylist (allowlist check already passed by being in allowlist, case-insensitive)
-				if len(headerFilterConfig.Denylist) > 0 && slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
-					return strings.EqualFold(s, keyStr)
-				}) {
+				// Check denylist
+				if matcher.MatchesDeny(keyStr) {
 					return true
 				}
 				// Forward the header directly with its original name

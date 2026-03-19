@@ -181,6 +181,20 @@ func ParseModel(model string) (string, string, error) {
 	return provider, name, nil
 }
 
+// ClampPaginationParams applies default/max bounds to limit and offset so that
+// the handler response matches the values the store actually uses.
+func ClampPaginationParams(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
 // fuzzyMatch checks if all characters in query appear in text in order (case-insensitive)
 // Example: "gpt4" matches "gpt-4", "gpt-4-turbo", etc.
 func fuzzyMatch(text, query string) bool {

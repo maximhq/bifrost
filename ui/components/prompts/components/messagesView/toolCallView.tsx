@@ -83,7 +83,7 @@ export default function ToolCallMessageView({
 				<div className="ml-auto h-5">
 					{!disabled && onRemove && (
 							<button type="button" aria-label="Delete message" data-testid="tool-call-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
@@ -102,7 +102,7 @@ export default function ToolCallMessageView({
 					return (
 						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2 mt-2">
 							<div className="flex items-center gap-2">
-								<Wrench className="text-muted-foreground h-3 w-3 shrink-0" />
+								<Wrench className="text-muted-foreground size-3 shrink-0" />
 								<span className="font-mono text-xs font-medium shrink-0 mr-4">{tc.function.name}</span>
 								<span className="text-muted-foreground ml-auto font-mono text-[10px] truncate">{tc.id}</span>
 							</div>

@@ -1,7 +1,9 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -270,60 +272,66 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 
 			// Handle tool calls (function calls)
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall && msg.ResponsesToolMessage != nil {
-				argsMap := make(map[string]any)
+				argsRaw := json.RawMessage("{}")
 				if msg.ResponsesToolMessage.Arguments != nil {
-					if err := sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &argsMap); err == nil {
-						functionCall := &FunctionCall{
-							Args: argsMap,
-						}
-						if msg.ResponsesToolMessage.Name != nil {
-							functionCall.Name = *msg.ResponsesToolMessage.Name
-						}
-
-						// Extract thought signature from CallID if present
-						var thoughtSignature []byte
-						if msg.ResponsesToolMessage.CallID != nil {
-							callID := *msg.ResponsesToolMessage.CallID
-							// Check if the ID contains a thought signature (format: "ToolName_ts_base64signature")
-							if strings.Contains(callID, thoughtSignatureSeparator) {
-								parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
-								if len(parts) == 2 {
-									// Try to decode the signature part
-									if decodedSig, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
-										thoughtSignature = decodedSig
-									}
-								}
-							}
-							functionCall.ID = callID
-						}
-
-						part := &Part{
-							FunctionCall: functionCall,
-						}
-
-						// Use thought signature from CallID if we extracted one
-						if len(thoughtSignature) > 0 {
-							part.ThoughtSignature = thoughtSignature
-						} else {
-							// Otherwise, look ahead to see if the next message is a reasoning message with encrypted content
-							// (thought signature for this function call)
-							if i+1 < len(bifrostResp.Output) {
-								nextMsg := bifrostResp.Output[i+1]
-								if nextMsg.Type != nil && *nextMsg.Type == schemas.ResponsesMessageTypeReasoning &&
-									nextMsg.ResponsesReasoning != nil && nextMsg.ResponsesReasoning.EncryptedContent != nil {
-									decodedSig, err := base64.StdEncoding.DecodeString(*nextMsg.ResponsesReasoning.EncryptedContent)
-									if err == nil {
-										part.ThoughtSignature = decodedSig
-										// Mark this reasoning message as consumed
-										consumedIndices[i+1] = true
-									}
-								}
-							}
-						}
-
-						currentParts = append(currentParts, part)
+					rawArgs := strings.TrimSpace(*msg.ResponsesToolMessage.Arguments)
+					if rawArgs == "" {
+						rawArgs = "{}"
+					}
+					var buf bytes.Buffer
+					if err := json.Compact(&buf, []byte(rawArgs)); err == nil {
+						argsRaw = buf.Bytes()
 					}
 				}
+				functionCall := &FunctionCall{
+					Args: argsRaw,
+				}
+				if msg.ResponsesToolMessage.Name != nil {
+					functionCall.Name = *msg.ResponsesToolMessage.Name
+				}
+
+				// Extract thought signature from CallID if present
+				var thoughtSignature []byte
+				if msg.ResponsesToolMessage.CallID != nil {
+					callID := *msg.ResponsesToolMessage.CallID
+					// Check if the ID contains a thought signature (format: "ToolName_ts_base64signature")
+					if strings.Contains(callID, thoughtSignatureSeparator) {
+						parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+						if len(parts) == 2 {
+							// Try to decode the signature part
+							if decodedSig, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+								thoughtSignature = decodedSig
+							}
+						}
+					}
+					functionCall.ID = callID
+				}
+
+				part := &Part{
+					FunctionCall: functionCall,
+				}
+
+				// Use thought signature from CallID if we extracted one
+				if len(thoughtSignature) > 0 {
+					part.ThoughtSignature = thoughtSignature
+				} else {
+					// Otherwise, look ahead to see if the next message is a reasoning message with encrypted content
+					// (thought signature for this function call)
+					if i+1 < len(bifrostResp.Output) {
+						nextMsg := bifrostResp.Output[i+1]
+						if nextMsg.Type != nil && *nextMsg.Type == schemas.ResponsesMessageTypeReasoning &&
+							nextMsg.ResponsesReasoning != nil && nextMsg.ResponsesReasoning.EncryptedContent != nil {
+							decodedSig, err := base64.StdEncoding.DecodeString(*nextMsg.ResponsesReasoning.EncryptedContent)
+							if err == nil {
+								part.ThoughtSignature = decodedSig
+								// Mark this reasoning message as consumed
+								consumedIndices[i+1] = true
+							}
+						}
+					}
+				}
+
+				currentParts = append(currentParts, part)
 			}
 
 			// Handle function responses (function call outputs)
@@ -579,37 +587,41 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			if rawArgs == "" {
 				rawArgs = "{}"
 			}
-			argsMap := make(map[string]any)
-			if err := sonic.Unmarshal([]byte(rawArgs), &argsMap); err == nil {
-				functionCall := &FunctionCall{
-					Name: "",
-					Args: argsMap,
-				}
-				if name != nil {
-					functionCall.Name = *name
-				}
-
-				var thoughtSig string
-				if callID != nil {
-					// Extract thought signature from CallID if present
-					if strings.Contains(*callID, thoughtSignatureSeparator) {
-						parts := strings.SplitN(*callID, thoughtSignatureSeparator, 2)
-						if len(parts) == 2 {
-							thoughtSig = parts[1]
-						}
-					}
-					functionCall.ID = *callID
-				}
-				functionCallPart := &Part{
-					FunctionCall: functionCall,
-				}
-				if thoughtSig != "" {
-					if decodedSig, err := base64.RawURLEncoding.DecodeString(thoughtSig); err == nil {
-						functionCallPart.ThoughtSignature = decodedSig
-					}
-				}
-				candidate.Content.Parts = append(candidate.Content.Parts, functionCallPart)
+			var argsRaw json.RawMessage
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, []byte(rawArgs)); err == nil {
+				argsRaw = buf.Bytes()
+			} else {
+				argsRaw = json.RawMessage("{}")
 			}
+			functionCall := &FunctionCall{
+				Name: "",
+				Args: argsRaw,
+			}
+			if name != nil {
+				functionCall.Name = *name
+			}
+
+			var thoughtSig string
+			if callID != nil {
+				// Extract thought signature from CallID if present
+				if strings.Contains(*callID, thoughtSignatureSeparator) {
+					parts := strings.SplitN(*callID, thoughtSignatureSeparator, 2)
+					if len(parts) == 2 {
+						thoughtSig = parts[1]
+					}
+				}
+				functionCall.ID = *callID
+			}
+			functionCallPart := &Part{
+				FunctionCall: functionCall,
+			}
+			if thoughtSig != "" {
+				if decodedSig, err := base64.RawURLEncoding.DecodeString(thoughtSig); err == nil {
+					functionCallPart.ThoughtSignature = decodedSig
+				}
+			}
+			candidate.Content.Parts = append(candidate.Content.Parts, functionCallPart)
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputTextDone:
@@ -1217,10 +1229,8 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 
 	// Convert args to JSON string
 	argsJSON := ""
-	if part.FunctionCall.Args != nil {
-		if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
-			argsJSON = string(argsBytes)
-		}
+	if len(part.FunctionCall.Args) > 0 {
+		argsJSON = string(part.FunctionCall.Args)
 	}
 	state.ToolArgumentBuffers[outputIndex] = argsJSON
 
@@ -1858,10 +1868,8 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 			case part.FunctionCall != nil:
 				// Function call message
 				argsJSON := "{}"
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
-						argsJSON = string(argsBytes)
-					}
+				if len(part.FunctionCall.Args) > 0 {
+					argsJSON = string(part.FunctionCall.Args)
 				}
 
 				callID := part.FunctionCall.ID
@@ -2248,10 +2256,8 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				// Function call message
 				// Convert Args to JSON string if it's not already a string
 				argumentsStr := ""
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
-						argumentsStr = string(argsBytes)
-					}
+				if len(part.FunctionCall.Args) > 0 {
+					argumentsStr = string(part.FunctionCall.Args)
 				}
 
 				callID := part.FunctionCall.ID
@@ -2930,18 +2936,27 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			case schemas.ResponsesMessageTypeFunctionCall:
 				// Convert function call to Gemini FunctionCall
 				if msg.ResponsesToolMessage.Name != nil {
-					argsMap := map[string]any{}
+					var argsRaw json.RawMessage
 					if msg.ResponsesToolMessage.Arguments != nil {
-						if err := sonic.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &argsMap); err != nil {
+						rawArgs := strings.TrimSpace(*msg.ResponsesToolMessage.Arguments)
+						if rawArgs == "" {
+							rawArgs = "{}"
+						}
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(rawArgs)); err != nil {
 							return nil, nil, fmt.Errorf("failed to decode function call arguments: %w", err)
 						}
+						argsRaw = buf.Bytes()
+					}
+					if argsRaw == nil {
+						argsRaw = json.RawMessage("{}")
 					}
 
 					var thoughtSig string
 					part := &Part{
 						FunctionCall: &FunctionCall{
 							Name: *msg.ResponsesToolMessage.Name,
-							Args: argsMap,
+							Args: argsRaw,
 						},
 					}
 					if msg.ResponsesToolMessage.CallID != nil {

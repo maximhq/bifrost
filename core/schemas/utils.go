@@ -1032,6 +1032,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copy.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction = &copyAction
 			}
 
+			if original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction
+				copy.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction = &copyAction
+			}
+
 			if original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction

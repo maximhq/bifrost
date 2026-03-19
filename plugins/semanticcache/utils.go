@@ -355,7 +355,9 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 }
 
 func getMetadataHash(metadata map[string]interface{}) (string, error) {
-	metadataJSON, err := json.Marshal(metadata)
+	// Use MarshalDeeplySorted for deterministic hashing - plain json.Marshal
+	// doesn't guarantee key ordering since Go maps have random iteration order
+	metadataJSON, err := schemas.MarshalDeeplySorted(metadata)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
 	}

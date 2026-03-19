@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1199,10 +1200,16 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 		toolName = *toolCall.Function.Name
 	}
 
-	// Parse JSON arguments to object
+	// Preserve original key ordering of tool arguments for prompt caching.
+	// Using json.RawMessage avoids the map[string]interface{} round-trip
+	// that would destroy key order.
 	var input interface{}
-	if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-		input = map[string]interface{}{} // Fallback to empty object
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+		input = json.RawMessage(buf.Bytes())
+	} else {
+		// Preserve original payload instead of silently dropping args.
+		input = json.RawMessage([]byte(toolCall.Function.Arguments))
 	}
 
 	return BedrockContentBlock{

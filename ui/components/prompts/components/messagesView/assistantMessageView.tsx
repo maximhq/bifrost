@@ -70,7 +70,7 @@ export function AssistantMessageView({
 					{usage && (
 						<Tooltip>
 							<TooltipTrigger className="p-1 hover:bg-muted focus:bg-muted focus:opacity-100 rounded-sm">
-								<InfoIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 " />
+								<InfoIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 " />
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
 								<div className="flex flex-col gap-0.5 text-xs tabular-nums">
@@ -83,12 +83,12 @@ export function AssistantMessageView({
 					)}
 					{!disabled && !isStreaming && (
 						<button type="button" aria-label="Edit message" data-testid="assistant-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="assistant-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>

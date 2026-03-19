@@ -1,11 +1,11 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -90,41 +90,43 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 	// Check if raw request body should be used
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
-		// Unmarshal and check if model and region are present
-		var requestBody map[string]interface{}
-		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
-		}
-		// update model with provider model
-		if modelVal, exists := requestBody["model"]; exists {
-			if modelStr, ok := modelVal.(string); ok {
+
+		// Update model with provider model (using gjson/sjson to preserve key order for prompt caching)
+		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+			if modelStr := modelResult.String(); modelStr != "" {
 				_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
-				requestBody["model"] = model
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
 			}
 		}
 		// Add max_tokens if not present
-		if _, exists := requestBody["max_tokens"]; !exists {
-			requestBody["max_tokens"] = AnthropicDefaultMaxTokens
-		}
-		// Add stream if not present
-		if isStreaming {
-			requestBody["stream"] = true
-		}
-		// Remove excluded fields
-		if len(excludeFields) > 0 {
-			for _, field := range excludeFields {
-				delete(requestBody, field)
+		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", AnthropicDefaultMaxTokens)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}
 		}
-		jsonBody, err = providerUtils.MarshalSorted(requestBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		// Add stream if streaming
+		if isStreaming {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+		}
+		// Remove excluded fields
+		for _, field := range excludeFields {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		}
 	} else {
 		// Convert request to Anthropic format
-		reqBody, err := ToAnthropicResponsesRequest(ctx, request)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
+		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
+		if convErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
 		}
 		if reqBody == nil {
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
@@ -133,8 +135,8 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if isStreaming {
 			reqBody.Stream = schemas.Ptr(true)
 		}
-		// Convert struct to map
-		jsonBody, err = sonic.Marshal(reqBody)
+		// Marshal struct to JSON bytes
+		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
 		}
@@ -142,31 +144,26 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 			extraParams := reqBody.GetExtraParams()
 			if len(extraParams) > 0 {
-				var jsonMap map[string]interface{}
-				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+				// Use MergeExtraParamsIntoJSON which preserves key order
+				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
-				// Remove excluded fields
-				if len(excludeFields) > 0 {
-					for _, field := range excludeFields {
-						delete(jsonMap, field)
-					}
-				}
-				// Merge ExtraParams recursively (handles nested maps)
-				providerUtils.MergeExtraParams(jsonMap, extraParams)
-				// Re-marshal the merged map
-				jsonBody, err = providerUtils.MarshalSorted(jsonMap)
+			}
+			// Remove excluded fields after merging (using sjson to preserve order)
+			for _, field := range excludeFields {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
 			}
 		} else if len(excludeFields) > 0 {
-			// Remove top-level keys while preserving nested JSON byte ordering
-			// (avoids roundtrip through map[string]interface{} which loses key order
-			// in nested objects like tool input_schema).
-			jsonBody, err = excludeTopLevelJSONKeys(jsonBody, excludeFields)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			// Remove excluded fields using sjson to preserve key order
+			for _, field := range excludeFields {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
 			}
 		}
 	}
@@ -874,19 +871,32 @@ func getImageURLFromBlock(block AnthropicContentBlock) string {
 	return ""
 }
 
-// Helper function to parse JSON input arguments back to interface{}
+// parseJSONInput returns a json.RawMessage that preserves the original key ordering
+// of the JSON input. This is critical for prompt caching, which relies on exact
+// byte-for-byte matching of the request prefix sent to providers.
 func parseJSONInput(jsonStr string) interface{} {
 	if jsonStr == "" || jsonStr == "{}" {
-		return map[string]interface{}{}
+		return json.RawMessage("{}")
 	}
 
-	var result interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// If parsing fails, return as string
-		return jsonStr
+	// Compact removes insignificant whitespace while preserving key order.
+	compacted := compactJSONBytes([]byte(jsonStr))
+	if compacted != nil {
+		return json.RawMessage(compacted)
 	}
 
-	return result
+	// If compaction fails (invalid JSON), return as string
+	return jsonStr
+}
+
+// compactJSONBytes compacts JSON bytes, removing insignificant whitespace while
+// preserving key ordering. Returns nil if the input is not valid JSON.
+func compactJSONBytes(data []byte) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, data); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // extractTypesFromValue extracts type strings from various formats (string, []string, []interface{})
@@ -1639,17 +1649,3 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
-// excludeTopLevelJSONKeys removes the specified top-level keys from a JSON
-// object without parsing nested values. Nested bytes are preserved as-is,
-// which keeps the original key ordering within tool schemas and other
-// deeply nested structures.
-func excludeTopLevelJSONKeys(data []byte, keys []string) ([]byte, error) {
-	var raw map[string]json.RawMessage
-	if err := sonic.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("anthropic: unmarshalling for field exclusion: %w", err)
-	}
-	for _, k := range keys {
-		delete(raw, k)
-	}
-	return sonic.Marshal(raw)
-}

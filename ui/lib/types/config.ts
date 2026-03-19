@@ -156,6 +156,7 @@ export interface NetworkConfig {
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: string;
+	stream_idle_timeout_in_seconds?: number;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize

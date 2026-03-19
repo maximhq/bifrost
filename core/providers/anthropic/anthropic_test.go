@@ -21,6 +21,7 @@ func TestAnthropic(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Anthropic,
@@ -74,5 +75,4 @@ func TestAnthropic(t *testing.T) {
 	t.Run("AnthropicTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

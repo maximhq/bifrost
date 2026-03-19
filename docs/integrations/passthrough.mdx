@@ -14,16 +14,18 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 
 ## Endpoints
 
-- `/openai_passthrough`  
+- `/openai_passthrough`
   Default provider: `openai`
-- `/genai_passthrough`  
+- `/anthropic_passthrough`
+  Default provider: `anthropic`
+- `/genai_passthrough`
   Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
 
 ---
 
 ## How It Works
 
-1. Send your request to a passthrough endpoint (OpenAI or GenAI passthrough).
+1. Send your request to a passthrough endpoint (OpenAI, Anthropic, or GenAI passthrough).
 2. The integration strips the passthrough prefix and forwards the remaining provider-native path/body.
 3. Bifrost handles provider execution through core inference and plugin pipelines.
 4. Response status, headers, and body are returned as passthrough output (for both stream and non-stream requests).
@@ -35,6 +37,10 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 ### OpenAI Passthrough
 
 - Uses `openai` as the default provider.
+
+### Anthropic Passthrough
+
+- Uses `anthropic` as the default provider.
 
 ### GenAI Passthrough
 
@@ -78,6 +84,46 @@ curl -X POST "http://localhost:8080/openai_passthrough/v1/chat/completions" \
   -H "authorization: Bearer sk-your-openai-key" \
   -d '{
     "model": "gpt-4o-mini",
+    "messages": [{"role":"user","content":"hello from passthrough"}]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+### Anthropic Passthrough
+
+<Tabs group="anthropic-passthrough">
+<Tab title="Python SDK">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic_passthrough",
+    api_key="dummy-key"
+)
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "hello from passthrough"}]
+)
+
+print(response.content[0].text)
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "http://localhost:8080/anthropic_passthrough/v1/messages" \
+  -H "content-type: application/json" \
+  -H "x-api-key: your-anthropic-key" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 1024,
     "messages": [{"role":"user","content":"hello from passthrough"}]
   }'
 ```

@@ -74,7 +74,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8 sm:max-w-[50%]">
+			<SheetContent className="custom-scrollbar p-8 sm:max-w-[50%]">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

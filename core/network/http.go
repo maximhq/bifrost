@@ -35,11 +35,13 @@ var DefaultClientConfig = struct {
 	ReadTimeout         time.Duration
 	WriteTimeout        time.Duration
 	MaxIdleConnDuration time.Duration
+	MaxConnDuration     time.Duration
 	MaxConnsPerHost     int
 }{
 	ReadTimeout:         60 * time.Second,
 	WriteTimeout:        60 * time.Second,
 	MaxIdleConnDuration: 30 * time.Second,
+	MaxConnDuration:     300 * time.Second,
 	MaxConnsPerHost:     200,
 }
 
@@ -214,7 +216,10 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 		ReadTimeout:         DefaultClientConfig.ReadTimeout,
 		WriteTimeout:        DefaultClientConfig.WriteTimeout,
 		MaxIdleConnDuration: DefaultClientConfig.MaxIdleConnDuration,
+		MaxConnDuration:     DefaultClientConfig.MaxConnDuration,
 		MaxConnsPerHost:     DefaultClientConfig.MaxConnsPerHost,
+		MaxConnWaitTimeout:  DefaultClientConfig.ReadTimeout,
+		ConnPoolStrategy:    fasthttp.FIFO,
 		RetryIfErr:          StaleConnectionRetryIfErr,
 	}
 

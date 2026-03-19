@@ -2,7 +2,6 @@ package gemini
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -134,12 +133,8 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Name: &part.FunctionCall.Name,
 				}
 
-				if part.FunctionCall.Args != nil {
-					jsonArgs, err := json.Marshal(part.FunctionCall.Args)
-					if err != nil {
-						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
-					}
-					function.Arguments = string(jsonArgs)
+				if len(part.FunctionCall.Args) > 0 {
+					function.Arguments = string(part.FunctionCall.Args)
 				}
 
 				callID := part.FunctionCall.Name
@@ -362,10 +357,8 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 			case part.FunctionCall != nil:
 				// Function call
 				jsonArgs := ""
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := json.Marshal(part.FunctionCall.Args); err == nil {
-						jsonArgs = string(argsBytes)
-					}
+				if len(part.FunctionCall.Args) > 0 {
+					jsonArgs = string(part.FunctionCall.Args)
 				}
 
 				// Use ID if available, otherwise use function name

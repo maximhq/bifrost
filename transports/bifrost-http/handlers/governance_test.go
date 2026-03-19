@@ -32,6 +32,10 @@ func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ conf
 	return nil, 0, nil
 }
 
+func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreTables.TableVirtualKey, error) {
+	return nil, nil
+}
+
 // TestGetVirtualKeys_PaginatedEndpoint_ResponseShape verifies the JSON response
 // from the paginated virtual keys endpoint contains all expected fields.
 func TestGetVirtualKeys_PaginatedEndpoint_ResponseShape(t *testing.T) {
