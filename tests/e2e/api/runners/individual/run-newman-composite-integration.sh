@@ -1,14 +1,19 @@
 #!/bin/bash
 
-# Bifrost Bedrock Integration API Newman Test Runner
-# This script runs the Bedrock integration API test suite using Newman
+# Bifrost Composite Integrations API Newman Test Runner
+# This script runs the Composite Integrations API test suite using Newman
 
 set -e
 
+# Run from script directory so paths to collection and provider-config work
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+API_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$API_DIR"
+
 # Configuration
-COLLECTION="bifrost-bedrock-integration.postman_collection.json"
+COLLECTION="collections/bifrost-composite-integrations.postman_collection.json"
 ENVIRONMENT="bifrost-v1.postman_environment.json"
-REPORT_DIR="newman-reports/bedrock-integration"
+REPORT_DIR="newman-reports/composite-integration"
 PROVIDER_CONFIG_DIR="provider_config"
 
 # Colors for output
@@ -41,9 +46,9 @@ ci_normalized="$(printf '%s' "${CI:-}" | tr '[:upper:]' '[:lower:]')"
 # Print banner
 echo -e "${GREEN}========================================${NC}"
 if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
-    echo -e "${GREEN}Bifrost Bedrock Integration API Test Runner with retries: 10${NC}"
+    echo -e "${GREEN}Bifrost Composite Integrations API Test Runner with retries: 10${NC}"
 else
-    echo -e "${GREEN}Bifrost Bedrock Integration API Test Runner${NC}"
+    echo -e "${GREEN}Bifrost Composite Integrations API Test Runner${NC}"
 fi
 echo -e "${GREEN}========================================${NC}"
 echo ""
@@ -62,12 +67,12 @@ if [ ! -f "$COLLECTION" ]; then
 fi
 
 # Check if environment exists
-USE_DEFAULT_ENV=0
 if [ ! -f "$ENVIRONMENT" ]; then
     echo -e "${YELLOW}Warning: Environment file not found: $ENVIRONMENT${NC}"
     echo "Using collection variables only"
+    ENV_FLAG=""
 else
-    USE_DEFAULT_ENV=1
+    ENV_FLAG="-e $ENVIRONMENT"
 fi
 
 # Create report directory
@@ -103,7 +108,7 @@ while [[ $# -gt 0 ]]; do
                 echo -e "${RED}Error: --folder requires a value${NC}"
                 exit 1
             fi
-            FOLDER="$2"
+            FOLDER="--folder \"$2\""
             shift 2
             ;;
         --verbose)
@@ -143,15 +148,10 @@ while [[ $# -gt 0 ]]; do
             echo "  BIFROST_BASE_URL    Override base URL (default: http://localhost:8080)"
             echo "  BIFROST_PROVIDER    Override provider (default: openai)"
             echo "  BIFROST_MODEL       Override model name (default: gpt-4o)"
-            echo "  BIFROST_MODEL_INVOKE Override model for Bedrock invoke/invoke-stream (default: amazon.titan-text-express-v1)"
             echo "  BIFROST_EMBEDDING_MODEL    Override embedding model (default: text-embedding-3-small)"
             echo "  BIFROST_SPEECH_MODEL       Override speech model (default: tts-1)"
             echo "  BIFROST_TRANSCRIPTION_MODEL  Override transcription model (default: whisper-1)"
             echo "  BIFROST_IMAGE_MODEL        Override image model (default: dall-e-3)"
-            echo "  BIFROST_BEDROCK_API_KEY    Bedrock API key (when --env bedrock)"
-            echo "  BIFROST_BEDROCK_ACCESS_KEY Bedrock AWS access key (when --env bedrock)"
-            echo "  BIFROST_BEDROCK_SECRET_KEY Bedrock AWS secret key (when --env bedrock)"
-            echo "  BIFROST_BEDROCK_REGION     Bedrock region (default: us-east-1)"
             echo ""
             echo "Examples:"
             echo "  $0                                    # Run collection for all providers (each provider_config/bifrost-v1-*.postman_environment.json)"
@@ -173,47 +173,37 @@ done
 # Optional second arg: path to Postman env .json file (e.g. provider_config/bifrost-v1-openai.postman_environment.json).
 # When given, uses only that env file; otherwise uses default env and BIFROST_* overrides.
 run_newman() {
-    local -a cmd=(newman run "$COLLECTION")
+    local cmd="newman run $COLLECTION"
     if [ -n "${2:-}" ] && [ -f "${2}" ]; then
-        cmd+=(-e "${2}")
-        # Pass Bedrock credentials from env when using bedrock provider
-        if [[ "${1:-}" == "bedrock" ]]; then
-            [ -n "${BIFROST_BEDROCK_API_KEY:-}" ] && cmd+=(--env-var "bedrock_api_key=$BIFROST_BEDROCK_API_KEY")
-            [ -n "${BIFROST_BEDROCK_ACCESS_KEY:-}" ] && cmd+=(--env-var "bedrock_access_key=$BIFROST_BEDROCK_ACCESS_KEY")
-            [ -n "${BIFROST_BEDROCK_SECRET_KEY:-}" ] && cmd+=(--env-var "bedrock_secret_key=$BIFROST_BEDROCK_SECRET_KEY")
-            [ -n "${BIFROST_BEDROCK_REGION:-}" ] && cmd+=(--env-var "bedrock_region=$BIFROST_BEDROCK_REGION")
-            [ -n "${BIFROST_BEDROCK_SESSION_TOKEN:-}" ] && cmd+=(--env-var "bedrock_session_token=$BIFROST_BEDROCK_SESSION_TOKEN")
-        fi
+        cmd="$cmd -e ${2}"
     else
         local base_url="${BIFROST_BASE_URL:-http://localhost:8080}"
         local provider="${BIFROST_PROVIDER:-openai}"
         local model="${BIFROST_MODEL:-gpt-4o}"
-        local model_invoke="${BIFROST_MODEL_INVOKE:-amazon.titan-text-express-v1}"
         local embedding_model="${BIFROST_EMBEDDING_MODEL:-text-embedding-3-small}"
         local speech_model="${BIFROST_SPEECH_MODEL:-tts-1}"
         local transcription_model="${BIFROST_TRANSCRIPTION_MODEL:-whisper-1}"
         local image_model="${BIFROST_IMAGE_MODEL:-dall-e-3}"
-        if [ "${USE_DEFAULT_ENV:-0}" -eq 1 ]; then
-            cmd+=(-e "$ENVIRONMENT")
+        if [ -n "$ENV_FLAG" ]; then
+            cmd="$cmd $ENV_FLAG"
         fi
-        cmd+=(--env-var "base_url=$base_url" --env-var "provider=$provider" --env-var "model=$model" --env-var "model_invoke=$model_invoke" --env-var "embedding_model=$embedding_model" --env-var "speech_model=$speech_model" --env-var "transcription_model=$transcription_model" --env-var "image_model=$image_model")
+        cmd="$cmd --env-var \"base_url=$base_url\" --env-var \"provider=$provider\" --env-var \"model=$model\" --env-var \"embedding_model=$embedding_model\" --env-var \"speech_model=$speech_model\" --env-var \"transcription_model=$transcription_model\" --env-var \"image_model=$image_model\""
     fi
-    [ -n "$FOLDER" ] && cmd+=(--folder "$FOLDER")
-    cmd+=(--timeout-script 120000 --timeout 900000)
-    cmd+=(-r "$REPORTERS")
+    [ -n "$FOLDER" ] && cmd="$cmd $FOLDER"
+    cmd="$cmd --timeout-script 120000 --timeout 900000 -r $REPORTERS"
     if [[ "$REPORTERS" == *"html"* ]]; then
-        cmd+=(--reporter-html-export "$REPORT_DIR/report_${1:-run}.html")
+        cmd="$cmd --reporter-html-export $REPORT_DIR/report_${1:-run}.html"
     fi
     if [[ "$REPORTERS" == *"json"* ]]; then
-        cmd+=(--reporter-json-export "$REPORT_DIR/report_${1:-run}.json")
+        cmd="$cmd --reporter-json-export $REPORT_DIR/report_${1:-run}.json"
     fi
-    [ -n "$VERBOSE" ] && cmd+=("$VERBOSE")
-    [ -n "$BAIL" ] && cmd+=("$BAIL")
+    [ -n "$VERBOSE" ] && cmd="$cmd $VERBOSE"
+    [ -n "$BAIL" ] && cmd="$cmd $BAIL"
     if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
-        cmd+=(--env-var "CI=1")
+        cmd="$cmd --env-var \"CI=1\""
     fi
 
-    "${cmd[@]}"
+    eval $cmd
 }
 
 # Post-process log file to pretty-print JSON blocks using jq
@@ -348,7 +338,7 @@ if [ -n "$PROVIDER_ENV_FILE" ]; then
     EXIT_CODE=$?
     set -e
     LOG_FILE="$REPORT_DIR/${SINGLE_PROVIDER_NAME}.log"
-    post_process_log "$TEMP_LOG" "$LOG_FILE"
+    post_process_log "$TEMP_LOG" "$LOG_FILE" || cp "$TEMP_LOG" "$LOG_FILE"
     rm -f "$TEMP_LOG"
     echo ""
     if [ $EXIT_CODE -eq 0 ]; then
@@ -380,7 +370,7 @@ if [ -z "${PROVIDER_JSON_FILES+x}" ] || [ ${#PROVIDER_JSON_FILES[@]} -eq 0 ]; th
     EXIT_CODE=$?
     set -e
     LOG_FILE="$REPORT_DIR/default.log"
-    post_process_log "$TEMP_LOG" "$LOG_FILE"
+    post_process_log "$TEMP_LOG" "$LOG_FILE" || cp "$TEMP_LOG" "$LOG_FILE"
     rm -f "$TEMP_LOG"
     echo ""
     if [ $EXIT_CODE -eq 0 ]; then
@@ -448,7 +438,7 @@ for jsonfile in "${PROVIDER_JSON_FILES[@]}"; do
     temp_logfile="${logfile}.tmp"
     LOG_FILES+=("$logfile")
     NAMES+=("$name")
-    ( set +e; run_newman "$name" "$jsonfile" > "$temp_logfile" 2>&1; rc=$?; set -e; post_process_log "$temp_logfile" "$logfile" || cp "$temp_logfile" "$logfile"; rm -f "$temp_logfile"; exit $rc ) &
+    ( set +e; run_newman "$name" "$jsonfile" > "$temp_logfile" 2>&1; ec=$?; set -e; post_process_log "$temp_logfile" "$logfile" || cp "$temp_logfile" "$logfile"; rm -f "$temp_logfile"; exit $ec ) &
     PIDS+=($!)
 done
 

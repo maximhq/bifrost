@@ -1,0 +1,244 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Async Inference",
+    "description": "Async inference submit/poll tests. Requires LogsStore and governance plugin.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "base_url", "value": "http://localhost:8080", "type": "string"},
+    {"key": "provider", "value": "openai", "type": "string"},
+    {"key": "chat_model", "value": "gpt-4o", "type": "string"},
+    {"key": "embedding_model", "value": "text-embedding-3-small", "type": "string"},
+    {"key": "job_id", "value": "", "type": "string"},
+    {"key": "embed_job_id", "value": "", "type": "string"},
+    {"key": "poll_retries", "value": "0", "type": "string"},
+    {"key": "embed_poll_retries", "value": "0", "type": "string"}
+  ],
+  "item": [
+    {
+      "name": "Submit Chat Completion",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('poll_retries', '0');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code === 404) {",
+              "  pm.test('Async not configured (404)', function() { pm.expect(true).to.be.true; });",
+              "  if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+              "    postman.setNextRequest('Submit with stream (expect 400)');",
+              "  }",
+              "  return;",
+              "}",
+              "pm.test('Status 202', function() { pm.expect(code).to.equal(202); });",
+              "if (code === 202) {",
+              "  var json = pm.response.json();",
+              "  pm.test('Has job_id', function() { pm.expect(json.id).to.be.a('string'); });",
+              "  pm.test('Status is pending', function() { pm.expect(json.status).to.equal('pending'); });",
+              "  pm.collectionVariables.set('job_id', json.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/async/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "async", "chat", "completions"]
+        }
+      }
+    },
+    {
+      "name": "Poll Chat Completion",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+              "var json = pm.response.json();",
+              "var status = json.status;",
+              "if (status === 'pending' || status === 'processing') {",
+              "  pm.test('HTTP 202 while pending/processing', function() { pm.expect(code).to.equal(202); });",
+              "  var retries = parseInt(pm.collectionVariables.get('poll_retries') || '0', 10);",
+              "  if (retries < 10) {",
+              "    pm.collectionVariables.set('poll_retries', String(retries + 1));",
+              "    var end = Date.now() + 3000;",
+              "    while (Date.now() < end) {}",
+              "    if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+              "      postman.setNextRequest('Poll Chat Completion');",
+              "    }",
+              "  } else {",
+              "    pm.test('Job completed or max retries', function() { pm.expect(status).to.be.oneOf(['completed', 'failed']); });",
+              "  }",
+              "} else if (status === 'completed') {",
+              "  pm.test('HTTP 200 when completed', function() { pm.expect(code).to.equal(200); });",
+              "  pm.test('Job completed', function() { pm.expect(status).to.equal('completed'); });",
+              "  pm.test('Has result', function() { pm.expect(json.result).to.not.be.undefined; });",
+              "  pm.test('Result has choices with content', function() {",
+              "    pm.expect(json.result).to.have.property('choices').that.is.an('array').and.has.length.above(0);",
+              "    pm.expect(json.result.choices[0]).to.have.property('message');",
+              "    pm.expect(json.result.choices[0].message).to.have.property('content').that.is.a('string');",
+              "  });",
+              "} else if (status === 'failed') {",
+              "  pm.test('HTTP 200 when failed', function() { pm.expect(code).to.equal(200); });",
+              "  pm.test('Job failed (acceptable)', function() { pm.expect(status).to.equal('failed'); });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/v1/async/chat/completions/{{job_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "async", "chat", "completions", "{{job_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Submit Embedding with TTL",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('embed_poll_retries', '0');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+              "pm.test('Status 202', function() { pm.expect(code).to.equal(202); });",
+              "if (code === 202) {",
+              "  var json = pm.response.json();",
+              "  pm.collectionVariables.set('embed_job_id', json.id);",
+              "  pm.test('expires_at is set when TTL provided', function() { pm.expect(json.expires_at).to.not.be.undefined; });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {"key": "Content-Type", "value": "application/json"},
+          {"key": "x-bf-async-job-result-ttl", "value": "60"}
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/async/embeddings",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "async", "embeddings"]
+        }
+      }
+    },
+    {
+      "name": "Poll Embedding",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+              "var json = pm.response.json();",
+              "var status = json.status;",
+              "if (status === 'pending' || status === 'processing') {",
+              "  pm.test('HTTP 202 while pending/processing', function() { pm.expect(code).to.equal(202); });",
+              "  var retries = parseInt(pm.collectionVariables.get('embed_poll_retries') || '0', 10);",
+              "  if (retries < 10) {",
+              "    pm.collectionVariables.set('embed_poll_retries', String(retries + 1));",
+              "    var end = Date.now() + 3000;",
+              "    while (Date.now() < end) {}",
+              "    if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+              "      postman.setNextRequest('Poll Embedding');",
+              "    }",
+              "  }",
+              "} else if (status === 'completed') {",
+              "  pm.test('HTTP 200 when completed', function() { pm.expect(code).to.equal(200); });",
+              "  pm.test('Embedding job completed', function() { pm.expect(status).to.equal('completed'); });",
+              "  pm.test('Result has embedding data', function() {",
+              "    pm.expect(json.result).to.not.be.undefined;",
+              "    pm.expect(json.result).to.have.property('data').that.is.an('array').and.has.length.above(0);",
+              "    pm.expect(json.result.data[0]).to.have.property('embedding').that.is.an('array');",
+              "  });",
+              "} else if (status === 'failed') {",
+              "  pm.test('HTTP 200 when failed', function() { pm.expect(code).to.equal(200); });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/v1/async/embeddings/{{embed_job_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "async", "embeddings", "{{embed_job_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Submit with stream (expect 400)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+              "pm.test('Streaming not supported on async - expect 400', function() { pm.expect(code).to.equal(400); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/async/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "async", "chat", "completions"]
+        }
+      }
+    }
+  ]
+}

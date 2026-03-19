@@ -1,0 +1,126 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Fallbacks",
+    "description": "Fallback failover tests. Validates fallbacks array and extra_fields.provider.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "base_url", "value": "http://localhost:8080", "type": "string"},
+    {"key": "provider", "value": "openai", "type": "string"},
+    {"key": "chat_model", "value": "gpt-4o", "type": "string"},
+    {"key": "fallback_provider", "value": "anthropic", "type": "string"},
+    {"key": "fallback_model", "value": "claude-3-5-sonnet-20241022", "type": "string"}
+  ],
+  "item": [
+    {
+      "name": "Chat Completion with fallbacks",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var extra = json.extra_fields || {};",
+              "  var providerUsed = extra.provider || json.provider;",
+              "  var allowed = ['openai', 'anthropic'];",
+              "  pm.test('Provider is openai or anthropic', function() {",
+              "    pm.expect(providerUsed).to.be.oneOf(allowed);",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-4o\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"anthropic/claude-3-5-sonnet-20241022\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "chat", "completions"]
+        }
+      }
+    },
+    {
+      "name": "Forced fallback (invalid primary)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var extra = json.extra_fields || {};",
+              "  var providerUsed = extra.provider || json.provider;",
+              "  pm.test('Provider is openai (fallback)', function() {",
+              "    pm.expect(String(providerUsed).toLowerCase()).to.equal('openai');",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/nonexistent-model-xyz\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"openai/gpt-4o\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "chat", "completions"]
+        }
+      }
+    },
+    {
+      "name": "All fallbacks fail",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Status is non-2xx', function() { pm.expect(code).to.not.be.within(200, 299); });",
+              "if (code >= 400) {",
+              "  try {",
+              "    var json = pm.response.json();",
+              "    var msg = (json.error && json.error.message) ? json.error.message : (json.message || '');",
+              "    pm.test('Error response has message', function() {",
+              "      pm.expect(msg).to.be.a('string').and.not.be.empty;",
+              "    });",
+              "  } catch (e) {}",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/nonexistent-1\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"openai/nonexistent-2\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": ["{{base_url}}"],
+          "path": ["v1", "chat", "completions"]
+        }
+      }
+    }
+  ]
+}

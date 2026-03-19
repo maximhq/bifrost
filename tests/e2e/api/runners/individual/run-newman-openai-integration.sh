@@ -1,19 +1,21 @@
 #!/bin/bash
 
-# Bifrost Composite Integrations API Newman Test Runner
-# This script runs the Composite Integrations API test suite using Newman
+# Bifrost OpenAI Integration API Newman Test Runner
+# This script runs the OpenAI integration API test suite using Newman
 
 set -e
 
-# Run from script directory so paths to collection and provider-config work
+# Run from script directory so paths to collection and provider-capabilities.json work
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+API_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$API_DIR"
 
 # Configuration
-COLLECTION="bifrost-composite-integrations.postman_collection.json"
+COLLECTION="collections/bifrost-openai-integration.postman_collection.json"
 ENVIRONMENT="bifrost-v1.postman_environment.json"
-REPORT_DIR="newman-reports/composite-integration"
+REPORT_DIR="newman-reports/openai-integration"
 PROVIDER_CONFIG_DIR="provider_config"
+PROVIDER_CAPABILITIES_JSON="provider-capabilities.json"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -45,9 +47,9 @@ ci_normalized="$(printf '%s' "${CI:-}" | tr '[:upper:]' '[:lower:]')"
 # Print banner
 echo -e "${GREEN}========================================${NC}"
 if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
-    echo -e "${GREEN}Bifrost Composite Integrations API Test Runner with retries: 10${NC}"
+    echo -e "${GREEN}Bifrost OpenAI Integration API Test Runner with retries: 10${NC}"
 else
-    echo -e "${GREEN}Bifrost Composite Integrations API Test Runner${NC}"
+    echo -e "${GREEN}Bifrost OpenAI Integration API Test Runner${NC}"
 fi
 echo -e "${GREEN}========================================${NC}"
 echo ""
@@ -76,6 +78,19 @@ fi
 
 # Create report directory
 mkdir -p "$REPORT_DIR"
+
+# Load provider capabilities from provider-capabilities.json (single source of truth) into a Newman globals file
+if [ ! -f "$PROVIDER_CAPABILITIES_JSON" ]; then
+    echo -e "${RED}Error: $PROVIDER_CAPABILITIES_JSON not found${NC}"
+    exit 1
+fi
+if ! command -v jq &>/dev/null; then
+    echo -e "${RED}Error: jq is required to load $PROVIDER_CAPABILITIES_JSON${NC}"
+    exit 1
+fi
+GLOBALS_TMP=$(mktemp)
+trap 'rm -f "$GLOBALS_TMP"' EXIT
+jq -n --rawfile cap "$PROVIDER_CAPABILITIES_JSON" '{id: "bifrost-provider-capabilities", name: "Provider capabilities", values: [{key: "provider_capabilities", value: $cap, type: "default", enabled: true}]}' > "$GLOBALS_TMP"
 
 # When no --env: resolve list of provider Postman env .json files (sorted), excluding sgl and ollama
 EXCLUDED_PROVIDERS="sgl ollama"
@@ -107,7 +122,7 @@ while [[ $# -gt 0 ]]; do
                 echo -e "${RED}Error: --folder requires a value${NC}"
                 exit 1
             fi
-            FOLDER="--folder \"$2\""
+            FOLDER="$2"
             shift 2
             ;;
         --verbose)
@@ -147,6 +162,7 @@ while [[ $# -gt 0 ]]; do
             echo "  BIFROST_BASE_URL    Override base URL (default: http://localhost:8080)"
             echo "  BIFROST_PROVIDER    Override provider (default: openai)"
             echo "  BIFROST_MODEL       Override model name (default: gpt-4o)"
+            echo "  BIFROST_RESPONSES_MODEL  Override Responses API model (default: BIFROST_MODEL)"
             echo "  BIFROST_EMBEDDING_MODEL    Override embedding model (default: text-embedding-3-small)"
             echo "  BIFROST_SPEECH_MODEL       Override speech model (default: tts-1)"
             echo "  BIFROST_TRANSCRIPTION_MODEL  Override transcription model (default: whisper-1)"
@@ -172,37 +188,39 @@ done
 # Optional second arg: path to Postman env .json file (e.g. provider_config/bifrost-v1-openai.postman_environment.json).
 # When given, uses only that env file; otherwise uses default env and BIFROST_* overrides.
 run_newman() {
-    local cmd="newman run $COLLECTION"
+    local -a cmd=(newman run "$COLLECTION" -g "$GLOBALS_TMP")
     if [ -n "${2:-}" ] && [ -f "${2}" ]; then
-        cmd="$cmd -e ${2}"
+        cmd+=(-e "${2}")
     else
         local base_url="${BIFROST_BASE_URL:-http://localhost:8080}"
         local provider="${BIFROST_PROVIDER:-openai}"
         local model="${BIFROST_MODEL:-gpt-4o}"
+        local responses_model="${BIFROST_RESPONSES_MODEL:-$model}"
         local embedding_model="${BIFROST_EMBEDDING_MODEL:-text-embedding-3-small}"
         local speech_model="${BIFROST_SPEECH_MODEL:-tts-1}"
         local transcription_model="${BIFROST_TRANSCRIPTION_MODEL:-whisper-1}"
         local image_model="${BIFROST_IMAGE_MODEL:-dall-e-3}"
         if [ -n "$ENV_FLAG" ]; then
-            cmd="$cmd $ENV_FLAG"
+            cmd+=(-e "$ENVIRONMENT")
         fi
-        cmd="$cmd --env-var \"base_url=$base_url\" --env-var \"provider=$provider\" --env-var \"model=$model\" --env-var \"embedding_model=$embedding_model\" --env-var \"speech_model=$speech_model\" --env-var \"transcription_model=$transcription_model\" --env-var \"image_model=$image_model\""
+        cmd+=(--env-var "base_url=$base_url" --env-var "provider=$provider" --env-var "model=$model" --env-var "responses_model=$responses_model" --env-var "embedding_model=$embedding_model" --env-var "speech_model=$speech_model" --env-var "transcription_model=$transcription_model" --env-var "image_model=$image_model")
     fi
-    [ -n "$FOLDER" ] && cmd="$cmd $FOLDER"
-    cmd="$cmd --timeout-script 120000 --timeout 900000 -r $REPORTERS"
+    [ -n "$FOLDER" ] && cmd+=(--folder "$FOLDER")
+    cmd+=(--timeout-script 120000 --timeout 900000)
+    cmd+=(-r "$REPORTERS")
     if [[ "$REPORTERS" == *"html"* ]]; then
-        cmd="$cmd --reporter-html-export $REPORT_DIR/report_${1:-run}.html"
+        cmd+=(--reporter-html-export "$REPORT_DIR/report_${1:-run}.html")
     fi
     if [[ "$REPORTERS" == *"json"* ]]; then
-        cmd="$cmd --reporter-json-export $REPORT_DIR/report_${1:-run}.json"
+        cmd+=(--reporter-json-export "$REPORT_DIR/report_${1:-run}.json")
     fi
-    [ -n "$VERBOSE" ] && cmd="$cmd $VERBOSE"
-    [ -n "$BAIL" ] && cmd="$cmd $BAIL"
+    [ -n "$VERBOSE" ] && cmd+=("$VERBOSE")
+    [ -n "$BAIL" ] && cmd+=("$BAIL")
     if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
-        cmd="$cmd --env-var \"CI=1\""
+        cmd+=(--env-var "CI=1")
     fi
 
-    eval $cmd
+    "${cmd[@]}"
 }
 
 # Post-process log file to pretty-print JSON blocks using jq

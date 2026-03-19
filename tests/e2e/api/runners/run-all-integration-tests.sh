@@ -88,9 +88,9 @@ for i in "${!TEST_SCRIPTS[@]}"; do
     echo -e "${BLUE}========================================${NC}"
     echo ""
 
-    script_path="$SCRIPT_DIR/$script"
+    script_path="$SCRIPT_DIR/individual/$script"
     if [ -f "$script_path" ]; then
-        if (cd "$SCRIPT_DIR" && "./$script" "${ARGS[@]}"); then
+        if (cd "$SCRIPT_DIR/individual" && "./$script" "${ARGS[@]}"); then
             echo ""
             echo -e "${GREEN}✓ ${name} PASSED${NC}"
             PASSED_COUNT=$((PASSED_COUNT + 1))
