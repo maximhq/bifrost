@@ -2117,30 +2117,133 @@ class TestOpenAIIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking")
     )
-    def test_37a_chat_reasoning_content_is_string(self, test_config, provider, model, vk_enabled):
-        """Test Case 37a: Chat completion with reasoning returns content as string, not array"""
+    def test_37a_chat_reasoning_multi_turn_with_continuity(self, test_config, provider, model, vk_enabled):
+        """Test Case 37a: Multi-turn chat with reasoning continuity via Responses API.
+        
+        This test verifies:
+        1. First turn: Model reasons about a math problem
+        2. Second turn: Follow-up question that requires the model to recall its previous reasoning
+        3. Thinking continuity is maintained via encrypted_content passed between turns
+        """
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
         model_to_use = format_provider_model(provider, model)
 
         try:
-            response = client.chat.completions.create(
+            # Turn 1: Initial reasoning problem
+            first_turn_input = [
+                {
+                    "role": "user",
+                    "content": (
+                        "A train leaves Station A at 2:00 PM traveling at 60 mph toward Station B. "
+                        "Another train leaves Station B at 3:00 PM traveling at 80 mph toward Station A. "
+                        "The stations are 420 miles apart. At what time will the trains meet? "
+                        "Show your step-by-step reasoning."
+                    ),
+                }
+            ]
+
+            response1 = client.responses.create(
                 model=model_to_use,
-                messages=RESPONSES_REASONING_INPUT,
-                max_tokens=1200,
-                extra_body={
-                    "reasoning": {
-                        "effort": "high",
-                    },
+                input=first_turn_input,
+                max_output_tokens=1500,
+                reasoning={
+                    "effort": "high",
                 },
+                include=["reasoning.encrypted_content"],
             )
 
-            # Core assertion: content must be a string, not a list/array
-            content = response.choices[0].message.content
-            assert content is not None, "Response content should not be None"
-            assert isinstance(content, str), (
-                f"Expected message.content to be a string, got {type(content).__name__}: {content!r}"
+            # Validate first turn response
+            assert response1.output is not None, "First turn should have output"
+            assert len(response1.output) > 0, "First turn output should not be empty"
+
+            # Extract content and check for reasoning items
+            first_turn_content = ""
+            has_reasoning_item = False
+            reasoning_items = []
+
+            for item in response1.output:
+                if hasattr(item, "type"):
+                    if item.type == "reasoning":
+                        has_reasoning_item = True
+                        reasoning_items.append(item)
+                    elif item.type == "message":
+                        if hasattr(item, "content") and item.content:
+                            for block in item.content:
+                                if hasattr(block, "text") and block.text:
+                                    first_turn_content += block.text
+
+            assert has_reasoning_item, (
+                f"First turn should contain reasoning items. "
+                f"Got output types: {[getattr(item, 'type', 'unknown') for item in response1.output]}"
             )
-            assert len(content) > 0, "Response content should not be empty"
+            assert len(first_turn_content) > 0, "First turn should have text content"
+
+            # Verify reasoning item has encrypted_content for continuity
+            encrypted_reasoning_found = False
+            for item in reasoning_items:
+                if hasattr(item, "encrypted_content") and item.encrypted_content:
+                    encrypted_reasoning_found = True
+                    break
+
+            assert encrypted_reasoning_found, (
+                "Reasoning item should have encrypted_content for thinking continuity"
+            )
+
+            print(f"Turn 1 response ({len(first_turn_content)} chars): {first_turn_content[:200]}...")
+
+            # Turn 2: Follow-up that requires recalling previous reasoning
+            # Build context with previous response output (includes reasoning items)
+            second_turn_input = list(response1.output) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "Now, what if the first train had left 30 minutes earlier (at 1:30 PM) instead? "
+                        "How would that change when they meet? Use your previous reasoning as a foundation."
+                    ),
+                }
+            ]
+
+            response2 = client.responses.create(
+                model=model_to_use,
+                input=second_turn_input,
+                max_output_tokens=1500,
+                reasoning={
+                    "effort": "high",
+                },
+                include=["reasoning.encrypted_content"],
+            )
+
+            # Validate second turn response
+            assert response2.output is not None, "Second turn should have output"
+            assert len(response2.output) > 0, "Second turn output should not be empty"
+
+            second_turn_content = ""
+            second_turn_has_reasoning = False
+
+            for item in response2.output:
+                if hasattr(item, "type"):
+                    if item.type == "reasoning":
+                        second_turn_has_reasoning = True
+                    elif item.type == "message":
+                        if hasattr(item, "content") and item.content:
+                            for block in item.content:
+                                if hasattr(block, "text") and block.text:
+                                    second_turn_content += block.text
+
+            assert second_turn_has_reasoning, "Second turn should also have reasoning"
+            assert len(second_turn_content) > 0, "Second turn should have text content"
+
+            # The response should reference or build upon the previous calculation
+            # (checking for time-related keywords that would indicate understanding of the problem)
+            time_keywords = ["pm", "time", "meet", "hour", "minute", "earlier", "1:30", "2:00", "3:00"]
+            keyword_matches = sum(1 for kw in time_keywords if kw.lower() in second_turn_content.lower())
+            assert keyword_matches >= 2, (
+                f"Second turn should reference time/meeting concepts from the problem. "
+                f"Found {keyword_matches} keywords. Content: {second_turn_content[:300]}..."
+            )
+
+            print(f"Turn 2 response ({len(second_turn_content)} chars): {second_turn_content[:200]}...")
+            print("✓ Multi-turn reasoning with continuity verified")
 
         except Exception as e:
             error_str = str(e)

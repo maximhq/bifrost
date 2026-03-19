@@ -244,7 +244,7 @@
         "enabled": true,
         "type": "sqlite",
         "config": {
-            "path": "../../tests/integrations/config.db"
+            "path": "./config.db"
         }
     },
     "logs_store": {

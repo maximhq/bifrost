@@ -136,6 +136,7 @@ type Log struct {
 	PromptTokens     int `gorm:"default:0" json:"-"`
 	CompletionTokens int `gorm:"default:0" json:"-"`
 	TotalTokens      int `gorm:"index:idx_logs_total_tokens;default:0" json:"-"`
+	CachedReadTokens int `gorm:"default:0" json:"-"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
@@ -401,6 +402,9 @@ func (l *Log) SerializeFields() error {
 		l.PromptTokens = l.TokenUsageParsed.PromptTokens
 		l.CompletionTokens = l.TokenUsageParsed.CompletionTokens
 		l.TotalTokens = l.TokenUsageParsed.TotalTokens
+		if l.TokenUsageParsed.PromptTokensDetails != nil {
+			l.CachedReadTokens = l.TokenUsageParsed.PromptTokensDetails.CachedReadTokens
+		}
 	}
 
 	if l.ErrorDetailsParsed != nil {
@@ -1037,6 +1041,7 @@ type TokenHistogramBucket struct {
 	PromptTokens     int64     `json:"prompt_tokens"`
 	CompletionTokens int64     `json:"completion_tokens"`
 	TotalTokens      int64     `json:"total_tokens"`
+	CachedReadTokens int64     `json:"cached_read_tokens"`
 }
 
 // TokenHistogramResult represents the token histogram query result
@@ -1151,4 +1156,74 @@ type ProviderLatencyHistogramResult struct {
 	Buckets           []ProviderLatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                            `json:"bucket_size_seconds"`
 	Providers         []string                         `json:"providers"`
+}
+
+// MCPHistogramBucket represents a single time bucket for MCP tool call volume
+type MCPHistogramBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Count     int64     `json:"count"`
+	Success   int64     `json:"success"`
+	Error     int64     `json:"error"`
+}
+
+// MCPHistogramResult represents the MCP tool call volume histogram query result
+type MCPHistogramResult struct {
+	Buckets           []MCPHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64               `json:"bucket_size_seconds"`
+}
+
+// MCPCostHistogramBucket represents a single time bucket for MCP cost data
+type MCPCostHistogramBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	TotalCost float64   `json:"total_cost"`
+}
+
+// MCPCostHistogramResult represents the MCP cost histogram query result
+type MCPCostHistogramResult struct {
+	Buckets           []MCPCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
+}
+
+// MCPTopToolResult represents a single tool's aggregated stats
+type MCPTopToolResult struct {
+	ToolName string  `json:"tool_name"`
+	Count    int64   `json:"count"`
+	Cost     float64 `json:"cost"`
+}
+
+// MCPTopToolsResult represents the top N MCP tools by call count
+type MCPTopToolsResult struct {
+	Tools []MCPTopToolResult `json:"tools"`
+}
+
+// ModelRankingEntry represents aggregated stats for a single model over a time period.
+type ModelRankingEntry struct {
+	Model         string  `json:"model"`
+	Provider      string  `json:"provider"`
+	TotalRequests int64   `json:"total_requests"`
+	SuccessCount  int64   `json:"success_count"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+	AvgLatency    float64 `json:"avg_latency"`
+}
+
+// ModelRankingTrend represents the percentage change compared to the previous period.
+type ModelRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+	LatencyTrend      float64 `json:"latency_trend"`
+}
+
+// ModelRankingWithTrend combines ranking entry with trend data.
+type ModelRankingWithTrend struct {
+	ModelRankingEntry
+	Trend ModelRankingTrend `json:"trend"`
+}
+
+// ModelRankingResult is the response for the model rankings endpoint.
+type ModelRankingResult struct {
+	Rankings []ModelRankingWithTrend `json:"rankings"`
 }

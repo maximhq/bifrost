@@ -19,6 +19,7 @@ export function ChartTypeToggle({ chartType, onToggle, "data-testid": testId }: 
 				size="sm"
 				className="h-7 w-7 p-0"
 				onClick={() => onToggle("bar")}
+				data-testid={testId ? `${testId}-bar-btn` : undefined}
 			>
 				<BarChart3 className="h-3.5 w-3.5" />
 			</Button>
@@ -27,6 +28,7 @@ export function ChartTypeToggle({ chartType, onToggle, "data-testid": testId }: 
 				size="sm"
 				className="h-7 w-7 p-0"
 				onClick={() => onToggle("line")}
+				data-testid={testId ? `${testId}-line-btn` : undefined}
 			>
 				<LineChart className="h-3.5 w-3.5" />
 			</Button>

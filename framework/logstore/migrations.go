@@ -192,6 +192,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMetadataGINIndex(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddDashboardEnhancements(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1871,6 +1874,155 @@ func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	// always include an IS NOT NULL guard (rdb.go) so the planner will use this index.
 	if err := db.WithContext(ctx).Exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL").Error; err != nil {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
+	}
+	return nil
+}
+
+// migrationAddDashboardEnhancements adds cached_read_tokens column to logs table,
+// updates the histogram covering index to include it, and adds MCP histogram covering index.
+// All in a single migration to keep schema changes atomic.
+func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_dashboard_enhancements",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			dialect := tx.Dialector.Name()
+
+			// Step 1: Add cached_read_tokens column to logs
+			if !dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
+				if err := dbMigrator.AddColumn(&Log{}, "CachedReadTokens"); err != nil {
+					return fmt.Errorf("failed to add cached_read_tokens column: %w", err)
+				}
+			}
+
+			// Step 2: Backfill cached_read_tokens from token_usage JSON
+			var backfillSQL string
+			switch dialect {
+			case "sqlite":
+				backfillSQL = `UPDATE logs SET
+					cached_read_tokens = COALESCE(json_extract(token_usage, '$.prompt_tokens_details.cached_read_tokens'), 0)
+					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null' AND json_valid(token_usage)`
+			case "mysql":
+				backfillSQL = `UPDATE logs SET
+					cached_read_tokens = COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(token_usage, '$.prompt_tokens_details.cached_read_tokens')) AS SIGNED), 0)
+					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null' AND JSON_VALID(token_usage)`
+			default: // postgres
+				backfillSQL = `UPDATE logs SET
+					cached_read_tokens = COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0)
+					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
+					AND token_usage ~ '^\s*\{.*\}\s*$'`
+			}
+			if err := tx.Exec(backfillSQL).Error; err != nil {
+				return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
+			}
+
+			// Step 3: Drop and recreate covering index with cached_read_tokens
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				switch dialect {
+				case "mysql":
+					if err := tx.Exec("DROP INDEX idx_logs_histogram_cover ON logs").Error; err != nil {
+						return fmt.Errorf("failed to drop old covering index: %w", err)
+					}
+				default:
+					if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+						return fmt.Errorf("failed to drop old covering index: %w", err)
+					}
+				}
+			}
+
+			var createLogsIndexSQL string
+			switch dialect {
+			case "mysql":
+				createLogsIndexSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
+					status(50), timestamp,
+					selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
+					model(50), cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
+				)`
+			default:
+				createLogsIndexSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
+					status, timestamp,
+					selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+					model, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
+				)`
+			}
+			if err := tx.Exec(createLogsIndexSQL).Error; err != nil {
+				return fmt.Errorf("failed to create updated covering index: %w", err)
+			}
+
+			// Step 4: Add MCP histogram covering index
+			if !dbMigrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_histogram_cover") {
+				var createMCPIndexSQL string
+				switch dialect {
+				case "mysql":
+					createMCPIndexSQL = `CREATE INDEX idx_mcp_logs_histogram_cover ON mcp_tool_logs(
+						status(50), timestamp, tool_name(50), server_label(50), virtual_key_id(50), cost
+					)`
+				default:
+					createMCPIndexSQL = `CREATE INDEX IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
+						status, timestamp, tool_name, server_label, virtual_key_id, cost
+					)`
+				}
+				if err := tx.Exec(createMCPIndexSQL).Error; err != nil {
+					return fmt.Errorf("failed to create MCP histogram covering index: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			dialect := tx.Dialector.Name()
+
+			// Drop MCP covering index
+			if dbMigrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_histogram_cover") {
+				switch dialect {
+				case "mysql":
+					_ = tx.Exec("DROP INDEX idx_mcp_logs_histogram_cover ON mcp_tool_logs")
+				default:
+					_ = tx.Exec("DROP INDEX IF EXISTS idx_mcp_logs_histogram_cover")
+				}
+			}
+
+			// Revert covering index to original (without cached_read_tokens)
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				switch dialect {
+				case "mysql":
+					_ = tx.Exec("DROP INDEX idx_logs_histogram_cover ON logs")
+				default:
+					_ = tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover")
+				}
+			}
+			var revertSQL string
+			switch dialect {
+			case "mysql":
+				revertSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
+					status(50), timestamp,
+					selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
+					model(50), cost, prompt_tokens, completion_tokens, total_tokens
+				)`
+			default:
+				revertSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
+					status, timestamp,
+					selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+					model, cost, prompt_tokens, completion_tokens, total_tokens
+				)`
+			}
+			_ = tx.Exec(revertSQL)
+
+			// Drop cached_read_tokens column
+			if dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
+				_ = dbMigrator.DropColumn(&Log{}, "cached_read_tokens")
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running dashboard enhancements migration: %s", err.Error())
 	}
 	return nil
 }

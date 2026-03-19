@@ -1,14 +1,14 @@
 "use client";
 
-import type { LatencyHistogramResponse } from "@/lib/types/logs";
+import type { MCPHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatLatency, formatTimestamp, LATENCY_COLORS } from "../utils/chartUtils";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
-interface LatencyChartProps {
-	data: LatencyHistogramResponse | null;
+interface MCPVolumeChartProps {
+	data: MCPHistogramResponse | null;
 	chartType: ChartType;
 	startTime: number;
 	endTime: number;
@@ -26,42 +26,28 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Avg</span>
+						<span className="h-2 w-2 rounded-full bg-emerald-500" />
+						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
 					</span>
-					<span className="font-medium">{formatLatency(data.avg_latency)}</span>
+					<span className="font-medium text-emerald-600 dark:text-emerald-400">{data.success.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
-						<span className="text-zinc-600 dark:text-zinc-400">P90</span>
+						<span className="h-2 w-2 rounded-full bg-red-500" />
+						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
 					</span>
-					<span className="font-medium">{formatLatency(data.p90_latency)}</span>
-				</div>
-				<div className="flex items-center justify-between gap-4">
-					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
-						<span className="text-zinc-600 dark:text-zinc-400">P95</span>
-					</span>
-					<span className="font-medium">{formatLatency(data.p95_latency)}</span>
-				</div>
-				<div className="flex items-center justify-between gap-4">
-					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
-						<span className="text-zinc-600 dark:text-zinc-400">P99</span>
-					</span>
-					<span className="font-medium">{formatLatency(data.p99_latency)}</span>
+					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Requests</span>
-					<span className="font-medium">{data.total_requests.toLocaleString()}</span>
+					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+					<span className="font-medium">{data.count.toLocaleString()}</span>
 				</div>
 			</div>
 		</div>
 	);
 }
 
-export function LatencyChart({ data, chartType, startTime, endTime }: LatencyChartProps) {
+export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -80,11 +66,11 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
-		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
+		<ChartErrorBoundary resetKey={`${chartType}-${startTime}-${endTime}-${chartData.length}`}>
 			<ResponsiveContainer width="100%" height="100%">
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
@@ -103,16 +89,14 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={55}
-							tickFormatter={formatLatency}
+							width={40}
+							tickFormatter={(v) => v.toLocaleString()}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
+						<Bar isAnimationActive={false} dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
+						<Bar isAnimationActive={false} dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -131,17 +115,22 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={55}
-							tickFormatter={formatLatency}
+							width={40}
+							tickFormatter={(v) => v.toLocaleString()}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} />
-						{/* Render P99 first (behind), then overlay in descending order so Avg is in front */}
-						<Area type="monotone" dataKey="p99_latency" stroke={LATENCY_COLORS.p99} fill={LATENCY_COLORS.p99} fillOpacity={0.15} />
-						<Area type="monotone" dataKey="p95_latency" stroke={LATENCY_COLORS.p95} fill={LATENCY_COLORS.p95} fillOpacity={0.2} />
-						<Area type="monotone" dataKey="p90_latency" stroke={LATENCY_COLORS.p90} fill={LATENCY_COLORS.p90} fillOpacity={0.25} />
-						<Area type="monotone" dataKey="avg_latency" stroke={LATENCY_COLORS.avg} fill={LATENCY_COLORS.avg} fillOpacity={0.4} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="success"
+							stackId="1"
+							stroke={CHART_COLORS.success}
+							fill={CHART_COLORS.success}
+							fillOpacity={0.7}
+						/>
+						<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
