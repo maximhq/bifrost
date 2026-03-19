@@ -68,7 +68,7 @@ type Tracer interface {
 
 	// PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
 	// This includes output messages, tokens, usage stats, and error information if present.
-	PopulateLLMResponseAttributes(handle SpanHandle, resp *BifrostResponse, err *BifrostError)
+	PopulateLLMResponseAttributes(ctx *BifrostContext, handle SpanHandle, resp *BifrostResponse, err *BifrostError)
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -144,7 +144,7 @@ func (n *NoOpTracer) AddEvent(_ SpanHandle, _ string, _ map[string]any) {}
 func (n *NoOpTracer) PopulateLLMRequestAttributes(_ SpanHandle, _ *BifrostRequest) {}
 
 // PopulateLLMResponseAttributes does nothing.
-func (n *NoOpTracer) PopulateLLMResponseAttributes(_ SpanHandle, _ *BifrostResponse, _ *BifrostError) {
+func (n *NoOpTracer) PopulateLLMResponseAttributes(_ *BifrostContext, _ SpanHandle, _ *BifrostResponse, _ *BifrostError) {
 }
 
 // StoreDeferredSpan does nothing.

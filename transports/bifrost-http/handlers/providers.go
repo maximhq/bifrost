@@ -184,10 +184,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	}{}
-	if hasUnsupportedProviderPricingOverridesField(ctx.PostBody()) {
-		SendError(ctx, fasthttp.StatusBadRequest, "pricing_overrides is not a supported provider field; use /api/governance/pricing-overrides")
-		return
-	}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
 		return
@@ -325,10 +321,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	}{}
-	if hasUnsupportedProviderPricingOverridesField(ctx.PostBody()) {
-		SendError(ctx, fasthttp.StatusBadRequest, "pricing_overrides is not a supported provider field; use /api/governance/pricing-overrides")
-		return
-	}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
@@ -454,7 +446,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
-	// Provider-level pricing overrides are deprecated and ignored.
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -1069,15 +1060,6 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		Description:              config.Description,
 		ConfigHash:               config.ConfigHash,
 	}
-}
-
-func hasUnsupportedProviderPricingOverridesField(body []byte) bool {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return false
-	}
-	_, exists := payload["pricing_overrides"]
-	return exists
 }
 
 func getProviderFromCtx(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, error) {

@@ -855,8 +855,12 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
-func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilter) ([]tables.TablePricingOverride, error) {
+func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverridesPaginated(ctx context.Context, params configstore.PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
+	return []tables.TablePricingOverride{}, 0, nil
 }
 
 func (m *MockConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {

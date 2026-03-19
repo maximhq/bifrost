@@ -967,6 +967,23 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GeneratePricingOverrideHash generates a SHA256 hash for a pricing override.
+// Skips: CreatedAt, UpdatedAt, ConfigHash (dynamic/meta fields).
+func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(p.ID))
+	hash.Write([]byte(p.Name))
+	hash.Write([]byte(p.ScopeKind))
+	hash.Write([]byte(derefStr(p.VirtualKeyID)))
+	hash.Write([]byte(derefStr(p.ProviderID)))
+	hash.Write([]byte(derefStr(p.ProviderKeyID)))
+	hash.Write([]byte(p.MatchType))
+	hash.Write([]byte(p.Pattern))
+	hash.Write([]byte(p.RequestTypesJSON))
+	hash.Write([]byte(p.PricingPatchJSON))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -1093,13 +1110,14 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        []tables.TableTeam        `json:"teams"`
-	Customers    []tables.TableCustomer    `json:"customers"`
-	Budgets      []tables.TableBudget      `json:"budgets"`
-	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
-	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
-	Providers    []tables.TableProvider    `json:"providers"`
-	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
-	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
+	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams            []tables.TableTeam            `json:"teams"`
+	Customers        []tables.TableCustomer        `json:"customers"`
+	Budgets          []tables.TableBudget          `json:"budgets"`
+	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
+	Providers        []tables.TableProvider        `json:"providers"`
+	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
 }

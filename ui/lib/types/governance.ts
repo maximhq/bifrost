@@ -1,6 +1,6 @@
 // Governance types that match the Go backend structures
 
-import { ModelProviderName } from "./config";
+import { ModelProviderName, RequestType } from "./config";
 
 export interface Budget {
 	id: string;
@@ -372,38 +372,34 @@ export type PricingOverrideScopeKind =
 export type PricingOverrideMatchType = "exact" | "wildcard";
 
 export interface PricingOverridePatch {
+	// Token
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
 	input_cost_per_character?: number;
-	output_cost_per_character?: number;
-	input_cost_per_audio_token?: number;
-	input_cost_per_video_per_second?: number;
-	input_cost_per_second?: number;
-	output_cost_per_audio_token?: number;
-	output_cost_per_video_per_second?: number;
-	output_cost_per_second?: number;
-	input_cost_per_audio_per_second?: number;
+	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
-	input_cost_per_character_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
 	input_cost_per_image_above_128k_tokens?: number;
 	input_cost_per_video_per_second_above_128k_tokens?: number;
 	input_cost_per_audio_per_second_above_128k_tokens?: number;
-	output_cost_per_token_above_128k_tokens?: number;
-	output_cost_per_character_above_128k_tokens?: number;
+	// 200k tier
 	input_cost_per_token_above_200k_tokens?: number;
 	output_cost_per_token_above_200k_tokens?: number;
+	// Cache
+	cache_creation_input_token_cost?: number;
+	cache_read_input_token_cost?: number;
 	cache_creation_input_token_cost_above_200k_tokens?: number;
 	cache_read_input_token_cost_above_200k_tokens?: number;
 	cache_creation_input_token_cost_above_1hr?: number;
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
-	cache_read_input_token_cost?: number;
-	cache_creation_input_token_cost?: number;
-	input_cost_per_token_batches?: number;
-	output_cost_per_token_batches?: number;
+	cache_read_input_image_token_cost?: number;
+	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
 	input_cost_per_image?: number;
@@ -415,7 +411,19 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
 	output_cost_per_image_above_1024_and_1024_pixels?: number;
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
-	cache_read_input_image_token_cost?: number;
+	output_cost_per_image_low_quality?: number;
+	output_cost_per_image_medium_quality?: number;
+	output_cost_per_image_high_quality?: number;
+	output_cost_per_image_auto_quality?: number;
+	// Audio/Video
+	input_cost_per_audio_token?: number;
+	input_cost_per_audio_per_second?: number;
+	input_cost_per_second?: number;
+	input_cost_per_video_per_second?: number;
+	output_cost_per_audio_token?: number;
+	output_cost_per_video_per_second?: number;
+	output_cost_per_second?: number;
+	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 }
@@ -430,7 +438,7 @@ export interface PricingOverride {
 	match_type: PricingOverrideMatchType;
 	pattern: string;
 	request_types?: string[];
-	patch: PricingOverridePatch;
+	pricing_patch: string;
 	config_hash?: string;
 	created_at: string;
 	updated_at: string;
@@ -444,11 +452,11 @@ export interface CreatePricingOverrideRequest {
 	provider_key_id?: string;
 	match_type: PricingOverrideMatchType;
 	pattern: string;
-	request_types?: string[];
+	request_types: RequestType[];
 	patch?: PricingOverridePatch;
 }
 
-export interface PatchPricingOverrideRequest {
+export interface UpdatePricingOverrideRequest {
 	name?: string;
 	scope_kind?: PricingOverrideScopeKind;
 	virtual_key_id?: string;
@@ -463,6 +471,9 @@ export interface PatchPricingOverrideRequest {
 export interface GetPricingOverridesResponse {
 	pricing_overrides: PricingOverride[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Provider governance - for extending provider with budget/rate limit

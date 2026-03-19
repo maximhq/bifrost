@@ -11,9 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -245,47 +243,6 @@ func TestFindUniqueName_NormalizationAndCollision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my_tool2", uniqueName, "Should handle normalization and collision")
 	assert.Contains(t, logOutput, "MCP Client Name Normalized: 'my-tool' -> 'my_tool2'", "Should log the full transformation")
-}
-
-func TestMigrationReconcilePricingOverridesTable_PreservesExistingRows(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-
-	err = db.AutoMigrate(&tables.TablePricingOverride{})
-	require.NoError(t, err)
-
-	inputCost := 1.25
-	override := tables.TablePricingOverride{
-		ID:           "override-1",
-		Name:         "Config Override",
-		ScopeKind:    pricingoverrides.ScopeKindGlobal,
-		MatchType:    pricingoverrides.MatchTypeExact,
-		Pattern:      "gpt-4.1",
-		RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
-		Patch: pricingoverrides.Patch{
-			InputCostPerToken: &inputCost,
-		},
-		ConfigHash: "config-hash-1",
-		CreatedAt:  time.Now().UTC().Round(time.Second),
-		UpdatedAt:  time.Now().UTC().Round(time.Second),
-	}
-	require.NoError(t, db.Create(&override).Error)
-
-	require.NoError(t, db.Migrator().DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_match"))
-	require.False(t, db.Migrator().HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_match"))
-
-	require.NoError(t, migrationReconcilePricingOverridesTable(context.Background(), db))
-
-	var stored []tables.TablePricingOverride
-	require.NoError(t, db.Order("id").Find(&stored).Error)
-	require.Len(t, stored, 1)
-	assert.Equal(t, override.ID, stored[0].ID)
-	assert.Equal(t, override.Name, stored[0].Name)
-	require.NotNil(t, stored[0].Patch.InputCostPerToken)
-	assert.Equal(t, inputCost, *stored[0].Patch.InputCostPerToken)
-	assert.Equal(t, override.ConfigHash, stored[0].ConfigHash)
-	assert.True(t, db.Migrator().HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"))
-	assert.True(t, db.Migrator().HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_match"))
 }
 
 func TestFindUniqueName_MultipleNormalizationsToSameBase(t *testing.T) {

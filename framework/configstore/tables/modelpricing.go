@@ -9,8 +9,8 @@ type TableModelPricing struct {
 	Mode      string `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"mode"`
 
 	// Costs - Text
-	InputCostPerToken          float64  `gorm:"not null" json:"input_cost_per_token"`
-	OutputCostPerToken         float64  `gorm:"not null" json:"output_cost_per_token"`
+	InputCostPerToken          *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
 	InputCostPerTokenBatches   *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
 	OutputCostPerTokenBatches  *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
 	InputCostPerTokenPriority  *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`

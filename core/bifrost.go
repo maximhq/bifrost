@@ -4815,7 +4815,7 @@ func executeRequestWithRetries[T any](
 		} else {
 			// Populate LLM response attributes for non-streaming responses
 			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
-				tracer.PopulateLLMResponseAttributes(handle, resp, bifrostError)
+				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
 			}
 
 			// End span with appropriate status

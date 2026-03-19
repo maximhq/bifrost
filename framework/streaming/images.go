@@ -8,6 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // buildCompleteImageFromImageStreamChunks builds a complete image generation response from accumulated chunks
@@ -273,7 +274,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result, nil)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
