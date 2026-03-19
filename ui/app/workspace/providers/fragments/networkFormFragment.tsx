@@ -17,6 +17,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
@@ -95,8 +96,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			return;
 		}
 		// Create updated provider configuration
-		const updatedProvider: ModelProvider = {
-			...provider,
+		const updatedProvider = buildProviderUpdatePayload(provider, {
 			network_config: {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
@@ -110,7 +110,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				stream_idle_timeout_in_seconds:
 					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 			},
-		};
+		});
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {

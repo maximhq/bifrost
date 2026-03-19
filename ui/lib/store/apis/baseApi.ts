@@ -134,6 +134,7 @@ export const baseApi = createApi({
 		"DebugStats",
 		"HealthCheck",
 		"DBKeys",
+		"ProviderKeys",
 		"Models",
 		"BaseModels",
 		"ModelConfigs",
