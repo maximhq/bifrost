@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -874,7 +875,7 @@ func getImageURLFromBlock(block AnthropicContentBlock) string {
 // parseJSONInput returns a json.RawMessage that preserves the original key ordering
 // of the JSON input. This is critical for prompt caching, which relies on exact
 // byte-for-byte matching of the request prefix sent to providers.
-func parseJSONInput(jsonStr string) interface{} {
+func parseJSONInput(jsonStr string) json.RawMessage {
 	if jsonStr == "" || jsonStr == "{}" {
 		return json.RawMessage("{}")
 	}
@@ -885,8 +886,8 @@ func parseJSONInput(jsonStr string) interface{} {
 		return json.RawMessage(compacted)
 	}
 
-	// If compaction fails (invalid JSON), return as string
-	return jsonStr
+	// If compaction fails (invalid JSON), return json.RawMessage of the raw string
+	return json.RawMessage(jsonStr)
 }
 
 // compactJSONBytes compacts JSON bytes, removing insignificant whitespace while
@@ -1155,7 +1156,7 @@ func normalizeSchemaForAnthropic(schema map[string]interface{}) map[string]inter
 //	  "schema": {...},
 //	  "strict": true
 //	}
-func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{}) interface{} {
+func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{}) json.RawMessage {
 	if responseFormat == nil {
 		return nil
 	}
@@ -1189,7 +1190,11 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 		outputFormat["schema"] = normalizedSchema
 	}
 
-	return outputFormat
+	result, err := providerUtils.MarshalSorted(outputFormat)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(result)
 }
 
 // convertResponsesTextConfigToAnthropicOutputFormat converts OpenAI Responses API text config
@@ -1212,7 +1217,7 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 //	  "type": "json_schema",
 //	  "schema": {...}
 //	}
-func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.ResponsesTextConfig) interface{} {
+func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.ResponsesTextConfig) json.RawMessage {
 	if textConfig == nil || textConfig.Format == nil {
 		return nil
 	}
@@ -1255,7 +1260,11 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 		outputFormat["schema"] = normalizedSchema
 	}
 
-	return outputFormat
+	result, err := providerUtils.MarshalSorted(outputFormat)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(result)
 }
 
 // convertAnthropicOutputFormatToResponsesTextConfig converts Anthropic's output_format structure
@@ -1280,14 +1289,14 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 //	    }
 //	  }
 //	}
-func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{}) *schemas.ResponsesTextConfig {
+func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat json.RawMessage) *schemas.ResponsesTextConfig {
 	if outputFormat == nil {
 		return nil
 	}
 
-	// Try to convert to map
-	formatMap, ok := outputFormat.(map[string]interface{})
-	if !ok {
+	// Unmarshal to map
+	var formatMap map[string]interface{}
+	if err := sonic.Unmarshal(outputFormat, &formatMap); err != nil {
 		return nil
 	}
 
@@ -1494,7 +1503,7 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{})
 // - If both arrays are empty, delete blocked_domains
 func sanitizeWebSearchArguments(argumentsJSON string) string {
 	var toolArgs map[string]interface{}
-	if err := json.Unmarshal([]byte(argumentsJSON), &toolArgs); err != nil {
+	if err := sonic.Unmarshal([]byte(argumentsJSON), &toolArgs); err != nil {
 		return argumentsJSON // Return original if parse fails
 	}
 
@@ -1529,7 +1538,7 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 		delete(toolArgs, shouldDelete)
 
 		// Re-marshal the sanitized arguments
-		if sanitizedBytes, err := json.Marshal(toolArgs); err == nil {
+		if sanitizedBytes, err := providerUtils.MarshalSorted(toolArgs); err == nil {
 			return string(sanitizedBytes)
 		}
 	}

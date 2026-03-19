@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -1419,12 +1420,18 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				}
 
 				// Handle different types for InputSchema.JSON
-				if params, ok := tool.ToolSpec.InputSchema.JSON.(*schemas.ToolFunctionParameters); ok {
-					bifrostTool.ResponsesToolFunction.Parameters = params
-				} else if paramsMap, ok := tool.ToolSpec.InputSchema.JSON.(map[string]interface{}); ok {
-					// Convert map to ToolFunctionParameters
-					params := convertMapToToolFunctionParameters(paramsMap)
-					bifrostTool.ResponsesToolFunction.Parameters = params
+				if len(tool.ToolSpec.InputSchema.JSON) > 0 {
+					var params schemas.ToolFunctionParameters
+					if err := sonic.Unmarshal(tool.ToolSpec.InputSchema.JSON, &params); err == nil {
+						bifrostTool.ResponsesToolFunction.Parameters = &params
+					} else {
+						// Fallback: unmarshal as map and convert
+						var paramsMap map[string]interface{}
+						if err := sonic.Unmarshal(tool.ToolSpec.InputSchema.JSON, &paramsMap); err == nil {
+							params := convertMapToToolFunctionParameters(paramsMap)
+							bifrostTool.ResponsesToolFunction.Parameters = params
+						}
+					}
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
@@ -1899,12 +1906,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					description = *tool.Description
 				}
 
+				schemaObjectBytes, err := providerUtils.MarshalSorted(schemaObject)
+				if err != nil {
+					return nil, fmt.Errorf("failed to serialize tool schema %q: %w", name, err)
+				}
 				bedrockTool := BedrockTool{
 					ToolSpec: &BedrockToolSpec{
 						Name:        name,
 						Description: &description,
 						InputSchema: BedrockToolInputSchema{
-							JSON: schemaObject,
+							JSON: json.RawMessage(schemaObjectBytes),
 						},
 					},
 				}
@@ -2132,12 +2143,13 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 				description = *tool.Description
 			}
 
+			schemaObjectBytes2, _ := providerUtils.MarshalSorted(schemaObject)
 			bedrockTool := BedrockTool{
 				ToolSpec: &BedrockToolSpec{
 					Name:        *tool.Name,
 					Description: &description,
 					InputSchema: BedrockToolInputSchema{
-						JSON: schemaObject,
+						JSON: json.RawMessage(schemaObjectBytes2),
 					},
 				},
 			}
@@ -2453,10 +2465,10 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 						},
 					}
 					// Preserve original key ordering of tool arguments for prompt caching.
-					var input interface{}
+					var input json.RawMessage
 					var buf bytes.Buffer
 					if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
-						input = json.RawMessage(buf.Bytes())
+						input = buf.Bytes()
 					} else {
 						input = json.RawMessage("{}")
 					}
@@ -2583,10 +2595,10 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 								},
 							}
 							// Preserve original key ordering of tool arguments for prompt caching.
-							var input interface{}
+							var input json.RawMessage
 							var buf bytes.Buffer
 							if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
-								input = json.RawMessage(buf.Bytes())
+								input = buf.Bytes()
 							} else {
 								input = json.RawMessage("{}")
 							}
@@ -2664,10 +2676,10 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 							},
 						}
 						// Preserve original key ordering of tool arguments for prompt caching.
-						var input interface{}
+						var input json.RawMessage
 						var buf bytes.Buffer
 						if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
-							input = json.RawMessage(buf.Bytes())
+							input = buf.Bytes()
 						} else {
 							input = json.RawMessage("{}")
 						}
@@ -2980,7 +2992,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				// Marshal the tool input to JSON string
 				var contentStr string
 				if block.ToolUse.Input != nil {
-					contentStr = schemas.JsonifyInput(block.ToolUse.Input)
+					contentStr = string(block.ToolUse.Input)
 				} else {
 					contentStr = "{}"
 				}
@@ -2992,13 +3004,17 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				outputMessages = append(outputMessages, bifrostMsg)
 			} else {
 				// Normal tool call message
+				arguments := "{}"
+				if block.ToolUse.Input != nil {
+					arguments = string(block.ToolUse.Input)
+				}
 				toolMsg := schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status: schemas.Ptr("completed"),
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
 						CallID:    &toolUseID,
 						Name:      &toolUseName,
-						Arguments: schemas.Ptr(schemas.JsonifyInput(block.ToolUse.Input)),
+						Arguments: schemas.Ptr(arguments),
 					},
 				}
 				if isOutputMessage {
@@ -3073,7 +3089,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				// JSON first (no unmarshal; just one marshal to string when present)
 				for _, c := range block.ToolResult.Content {
 					if c.JSON != nil {
-						resultContent = schemas.JsonifyInput(c.JSON)
+						resultContent = string(c.JSON)
 						break
 					}
 				}

@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -180,7 +181,7 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			if referenceImages, ok := bifrostReq.Params.ExtraParams["referenceImages"]; ok {
 				if referenceImages, ok := referenceImages.([]VideoReferenceImage); ok && referenceImages != nil {
 					params.ReferenceImages = referenceImages
-				} else if data, err := sonic.Marshal(referenceImages); err == nil {
+				} else if data, err := providerUtils.MarshalSorted(referenceImages); err == nil {
 					var referenceImages []VideoReferenceImage
 					if sonic.Unmarshal(data, &referenceImages) == nil {
 						params.ReferenceImages = referenceImages
@@ -190,7 +191,7 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			if lastFrame, ok := bifrostReq.Params.ExtraParams["lastFrame"]; ok {
 				if lastFrame, ok := lastFrame.(*VideoImageData); ok {
 					params.LastFrame = lastFrame
-				} else if data, err := sonic.Marshal(lastFrame); err == nil {
+				} else if data, err := providerUtils.MarshalSorted(lastFrame); err == nil {
 					var lastFrame VideoImageData
 					if sonic.Unmarshal(data, &lastFrame) == nil {
 						params.LastFrame = &lastFrame
@@ -232,15 +233,24 @@ func ToBifrostVideoGenerationResponse(operation *GenerateVideosOperation, model 
 	if !operation.Done {
 		response.Status = schemas.VideoStatusInProgress
 		if operation.Metadata != nil {
-			if progress, ok := operation.Metadata["progress"].(float64); ok {
+			if p := providerUtils.GetJSONField([]byte(operation.Metadata), "progress"); p.Exists() {
+				progress := p.Float()
 				response.Progress = &progress
 			}
 		}
 	} else if operation.Error != nil {
 		response.Status = schemas.VideoStatusFailed
+		code := providerUtils.GetJSONField(operation.Error, "code").String()
+		message := providerUtils.GetJSONField(operation.Error, "message").String()
+		if code == "" {
+			code = "video_generation_failed"
+		}
+		if message == "" {
+			message = string(operation.Error)
+		}
 		response.Error = &schemas.VideoCreateError{
-			Code:    "video_generation_failed",
-			Message: fmt.Sprintf("%v", operation.Error),
+			Code:    code,
+			Message: message,
 		}
 	} else if operation.Response != nil {
 		// Check new response format with content filtering support
@@ -358,13 +368,13 @@ func ToBifrostVideoGenerationResponse(operation *GenerateVideosOperation, model 
 
 	// Try to extract timestamps from metadata
 	if operation.Metadata != nil {
-		if createTime, ok := operation.Metadata["createTime"].(string); ok {
-			if t, err := time.Parse(time.RFC3339, createTime); err == nil {
+		if ct := providerUtils.GetJSONField([]byte(operation.Metadata), "createTime"); ct.Exists() {
+			if t, err := time.Parse(time.RFC3339, ct.String()); err == nil {
 				response.CreatedAt = t.Unix()
 			}
 		}
-		if updateTime, ok := operation.Metadata["updateTime"].(string); ok {
-			if t, err := time.Parse(time.RFC3339, updateTime); err == nil && operation.Done {
+		if ut := providerUtils.GetJSONField([]byte(operation.Metadata), "updateTime"); ut.Exists() {
+			if t, err := time.Parse(time.RFC3339, ut.String()); err == nil && operation.Done {
 				response.CompletedAt = schemas.Ptr(t.Unix())
 			}
 		}
@@ -571,10 +581,11 @@ func ToGeminiVideoGenerationResponse(response *schemas.BifrostVideoGenerationRes
 				},
 			}
 		} else if response.Error != nil {
-			operation.Error = map[string]any{
+			errBytes, _ := providerUtils.MarshalSorted(map[string]any{
 				"message": response.Error.Message,
 				"code":    response.Error.Code,
-			}
+			})
+			operation.Error = json.RawMessage(errBytes)
 		}
 	default:
 		operation.Done = false

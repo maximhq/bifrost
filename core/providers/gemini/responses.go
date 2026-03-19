@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -339,7 +338,12 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				responseMap := make(map[string]any)
 
 				if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-					responseMap["output"] = *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+					output := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+					if json.Valid([]byte(output)) {
+						responseMap["output"] = json.RawMessage(output)
+					} else {
+						responseMap["output"] = output
+					}
 				}
 				funcName := ""
 				if msg.ResponsesToolMessage.Name != nil && strings.TrimSpace(*msg.ResponsesToolMessage.Name) != "" {
@@ -348,9 +352,10 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					funcName = *msg.ResponsesToolMessage.CallID
 				}
 
+				responseBytes, _ := providerUtils.MarshalSorted(responseMap)
 				functionResponse := &FunctionResponse{
 					Name:     funcName,
-					Response: responseMap,
+					Response: json.RawMessage(responseBytes),
 				}
 				if msg.ResponsesToolMessage.CallID != nil {
 					functionResponse.ID = *msg.ResponsesToolMessage.CallID
@@ -1917,13 +1922,13 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					}
 				}
 
-				// Convert response map to string
+				// Convert response to string — extract output field if present
 				responseStr := ""
 				if part.FunctionResponse.Response != nil {
-					if output, ok := part.FunctionResponse.Response["output"].(string); ok {
-						responseStr = output
-					} else if responseBytes, err := sonic.Marshal(part.FunctionResponse.Response); err == nil {
-						responseStr = string(responseBytes)
+					if r := providerUtils.GetJSONField(part.FunctionResponse.Response, "output"); r.Exists() {
+						responseStr = r.String()
+					} else {
+						responseStr = string(part.FunctionResponse.Response)
 					}
 				}
 
@@ -3003,10 +3008,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						responseMap["output"] = *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+						output := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+						if json.Valid([]byte(output)) {
+							responseMap["output"] = json.RawMessage(output)
+						} else {
+							responseMap["output"] = output
+						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
-						responseMap["output"] = *msg.Content.ContentStr
+						output := *msg.Content.ContentStr
+						if json.Valid([]byte(output)) {
+							responseMap["output"] = json.RawMessage(output)
+						} else {
+							responseMap["output"] = output
+						}
 					}
 
 					// Prefer the declared tool name; fallback to callIDToName lookup, then raw CallID
@@ -3019,10 +3034,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						funcName = *msg.ResponsesToolMessage.CallID
 					}
 
+					responseBytes, _ := providerUtils.MarshalSorted(responseMap)
 					part := &Part{
 						FunctionResponse: &FunctionResponse{
 							Name:     funcName,
-							Response: responseMap,
+							Response: json.RawMessage(responseBytes),
 							ID:       *msg.ResponsesToolMessage.CallID,
 						},
 					}
