@@ -1270,6 +1270,29 @@ func HandleAnthropicResponsesStream(
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				break
 			}
+			// Passthrough: when conversion returns no responses but we need to forward raw events,
+			// create a minimal pass-through response to carry the raw event data.
+			// This ensures events like compaction content_block_start/stop are not silently dropped.
+			if len(responses) == 0 && sendBackRawResponse {
+				passthroughResp := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseType(eventType),
+					SequenceNumber: chunkIndex,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ResponsesStreamRequest,
+						Provider:       providerName,
+						ModelRequested: modelName,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+						RawResponse:    eventData,
+					},
+				}
+				lastChunkTime = time.Now()
+				chunkIndex++
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, passthroughResp, nil, nil, nil),
+					responseChan)
+				continue
+			}
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {

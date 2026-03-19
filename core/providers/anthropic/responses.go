@@ -196,6 +196,15 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.StructuredOutputIndex = nil
 }
 
+// isCompactionItem checks if a ResponsesMessage represents a compaction item
+// (a message with a compaction content block as its first content block)
+func isCompactionItem(item *schemas.ResponsesMessage) bool {
+	return item != nil && item.Type != nil &&
+		*item.Type == schemas.ResponsesMessageTypeMessage &&
+		item.Content != nil && len(item.Content.ContentBlocks) > 0 &&
+		item.Content.ContentBlocks[0].Type == schemas.ResponsesOutputMessageContentTypeCompaction
+}
+
 // getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
 func (state *AnthropicResponsesStreamState) getOrCreateOutputIndex(contentIndex *int) int {
 	if contentIndex == nil {
@@ -1468,7 +1477,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// Build content_block based on item type
 			if bifrostResp.Item != nil {
 				contentBlock := &AnthropicContentBlock{}
-				if bifrostResp.Item.Type != nil {
+
+				// Check if this is a compaction item (message with compaction content block)
+				if isCompactionItem(bifrostResp.Item) {
+					contentBlock.Type = AnthropicContentBlockTypeCompaction
+					contentBlock.Content = &AnthropicContent{ContentStr: schemas.Ptr("")}
+					if bifrostResp.Item.Content.ContentBlocks[0].CacheControl != nil {
+						contentBlock.CacheControl = bifrostResp.Item.Content.ContentBlocks[0].CacheControl
+					}
+				} else if bifrostResp.Item.Type != nil {
 					switch *bifrostResp.Item.Type {
 					case schemas.ResponsesMessageTypeMessage:
 						contentBlock.Type = AnthropicContentBlockTypeText
@@ -1562,6 +1579,27 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Generate synthetic input_json_delta events for tool calls with arguments
 		var events []*AnthropicStreamEvent
 		events = append(events, streamResp)
+
+		// Generate compaction_delta event for compaction items
+		if isCompactionItem(bifrostResp.Item) {
+			block := bifrostResp.Item.Content.ContentBlocks[0]
+			if block.ResponsesOutputMessageContentCompaction != nil {
+				var indexToUse *int
+				if bifrostResp.OutputIndex != nil {
+					indexToUse = bifrostResp.OutputIndex
+				} else if bifrostResp.ContentIndex != nil {
+					indexToUse = bifrostResp.ContentIndex
+				}
+				events = append(events, &AnthropicStreamEvent{
+					Type:  AnthropicStreamEventTypeContentBlockDelta,
+					Index: indexToUse,
+					Delta: &AnthropicStreamDelta{
+						Type:    AnthropicStreamDeltaTypeCompaction,
+						Content: &block.ResponsesOutputMessageContentCompaction.Summary,
+					},
+				})
+			}
+		}
 
 		// Check if this is a tool call with arguments that need to be streamed
 		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil {
@@ -2566,6 +2604,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	bifrostResp.Model = response.Model
 
+	// Preserve stop reason from Anthropic response
+	if response.StopReason != "" {
+		bifrostResp.StopReason = schemas.Ptr(string(response.StopReason))
+	}
+
 	return bifrostResp
 }
 
@@ -2605,14 +2648,16 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		anthropicResp.Content = []AnthropicContentBlock{}
 	}
 
-	// Set default stop reason - could be enhanced based on additional context
-	anthropicResp.StopReason = AnthropicStopReasonEndTurn
-
-	// Check if there are tool calls to set appropriate stop reason
-	for _, block := range contentBlocks {
-		if block.Type == AnthropicContentBlockTypeToolUse {
-			anthropicResp.StopReason = AnthropicStopReasonToolUse
-			break
+	// Map stop reason from Bifrost response if available, otherwise infer from content
+	if bifrostResp.StopReason != nil {
+		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+	} else {
+		anthropicResp.StopReason = AnthropicStopReasonEndTurn
+		for _, block := range contentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolUse {
+				anthropicResp.StopReason = AnthropicStopReasonToolUse
+				break
+			}
 		}
 	}
 

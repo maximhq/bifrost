@@ -117,6 +117,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunPassthroughAPITest,
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
+		RunCompactionTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -233,6 +234,7 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
 		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
 		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
+		{"Compaction", testConfig.Scenarios.Compaction},
 	}
 
 	supported := 0
