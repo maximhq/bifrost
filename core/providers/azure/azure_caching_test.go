@@ -1,6 +1,7 @@
 package azure_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -115,5 +116,83 @@ func TestAzure_OpenAIModel_PreservesPropertyOrder(t *testing.T) {
 	keys := result.ChatParameters.Tools[0].Function.Parameters.Properties.Keys()
 	if len(keys) != 3 || keys[0] != "chain_of_thought" || keys[1] != "answer" || keys[2] != "citations" {
 		t.Errorf("expected property order [chain_of_thought, answer, citations], got %v", keys)
+	}
+}
+
+// TestAzure_ToolInputKeyOrderPreservation verifies that tool call arguments
+// preserve their original key ordering through the Azure→OpenAI delegation path.
+// TestAzure_ToolInputKeyOrderPreservation verifies that Azure→OpenAI delegation
+// preserves the original key ordering of tool call arguments for prompt caching.
+// Tests multiple parallel tool calls with different key orderings per block.
+func TestAzure_ToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := openai.ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Collect tool call arguments from assistant message
+	var argsList []string
+	for _, msg := range result.Messages {
+		if msg.OpenAIChatAssistantMessage != nil {
+			for _, tc := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				argsList = append(argsList, tc.Function.Arguments)
+			}
+		}
+	}
+
+	if len(argsList) != 2 {
+		t.Fatalf("expected 2 tool call arguments, got %d", len(argsList))
+	}
+
+	// OpenAI path passes Arguments through as strings — verify key order is preserved
+	// Block 0: keys should be description, timeout, command
+	s0 := argsList[0]
+	if !(strings.Index(s0, "description") < strings.Index(s0, "timeout") &&
+		strings.Index(s0, "timeout") < strings.Index(s0, "command")) {
+		t.Errorf("block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+	}
+
+	// Block 1: keys should be command, description
+	s1 := argsList[1]
+	if !(strings.Index(s1, "command") < strings.Index(s1, "description")) {
+		t.Errorf("block 1: key order not preserved, expected command < description in: %s", s1)
 	}
 }

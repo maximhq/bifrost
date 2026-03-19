@@ -1345,8 +1345,8 @@ type FunctionCall struct {
 	// `function_call` and return the response with the matching `id`.
 	ID string `json:"id,omitempty"`
 	// Optional. The function parameters and values in JSON object format. See [FunctionDeclaration.parameters]
-	// for parameter details.
-	Args map[string]any `json:"args,omitempty"`
+	// for parameter details. Uses json.RawMessage to preserve key ordering for prompt caching.
+	Args json.RawMessage `json:"args,omitempty"`
 	// Required. The name of the function to call. Matches [FunctionDeclaration.Name].
 	Name string `json:"name,omitempty"`
 }

@@ -157,16 +157,11 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	// Skip body modification for fal-ai, nebius, and together image generation - they have special requirements
 	skipBodyModification := (inferenceProvider == falAI || inferenceProvider == nebius || inferenceProvider == together) && requestType == schemas.ImageGenerationRequest
 	if !isHFInferenceAudioRequest && !skipBodyModification && (requestType == schemas.EmbeddingRequest || requestType == schemas.ImageGenerationRequest) {
-		// Parse, update model field, and re-encode for embedding and image generation requests
+		// Use sjson to update model field in-place, preserving key ordering for prompt caching.
 		// NOTE: For fal-ai image generation, model is in URL path, not in body
 		// For nebius and together image generation, use original model name (already set in ToHuggingFaceImageGenerationRequest)
-		var reqBody map[string]interface{}
-		if err := sonic.Unmarshal(jsonData, &reqBody); err == nil {
-			// For other providers (embeddings, hf-inference images), use validated model ID
-			reqBody["model"] = modelName
-			if newJSON, err := sonic.Marshal(reqBody); err == nil {
-				updatedJSONData = newJSON
-			}
+		if newJSON, err := providerUtils.SetJSONField(jsonData, "model", modelName); err == nil {
+			updatedJSONData = newJSON
 		}
 	}
 
@@ -192,13 +187,9 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 			// Update the model field in the JSON body for retry
 			// Skip body modification for fal-ai, nebius, and together image generation - they have special requirements
 			if !isHFInferenceAudioRequest && !skipBodyModification && (requestType == schemas.EmbeddingRequest || requestType == schemas.ImageGenerationRequest) {
-				var reqBody map[string]interface{}
-				if err := sonic.Unmarshal(jsonData, &reqBody); err == nil {
-					// For other providers (embeddings, hf-inference images), use validated model ID
-					reqBody["model"] = modelName
-					if newJSON, err := sonic.Marshal(reqBody); err == nil {
-						updatedJSONData = newJSON
-					}
+				// Use sjson to update model field in-place, preserving key ordering.
+				if newJSON, err := providerUtils.SetJSONField(jsonData, "model", modelName); err == nil {
+					updatedJSONData = newJSON
 				}
 			}
 

@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
@@ -136,14 +137,15 @@ func (r *BedrockConverseRequest) UnmarshalJSON(data []byte) error {
 		r.ExtraParams = make(map[string]interface{})
 	}
 
-	// Extract unknown fields
+	// Extract unknown fields, preserving nested key ordering for prompt caching.
 	for key, value := range rawData {
 		if !bedrockConverseRequestKnownFields[key] {
-			var v interface{}
-			if err := sonic.Unmarshal(value, &v); err != nil {
-				continue // Skip fields that can't be unmarshaled
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, value); err == nil {
+				r.ExtraParams[key] = json.RawMessage(buf.Bytes())
+			} else {
+				r.ExtraParams[key] = json.RawMessage(value)
 			}
-			r.ExtraParams[key] = v
 		}
 	}
 

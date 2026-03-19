@@ -44,9 +44,11 @@ export default function MCPServersPage() {
 
 	useEffect(() => {
 		if (error) {
+			const message = getErrorMessage(error);
+			if (message.toLowerCase().includes("mcp is not configured in this bifrost instance")) return;
 			toast({
 				title: "Error",
-				description: getErrorMessage(error),
+				description: message,
 				variant: "destructive",
 			});
 		}
