@@ -1198,7 +1198,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
@@ -1224,6 +1223,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
+	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
+
 	// Always process usage tracking (with or without virtual key)
 	// When user auth is present, skip VK usage tracking to avoid double-counting
 	effectiveVK := virtualKey
@@ -1236,7 +1238,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.postHookWorker(result, provider, model, requestType, effectiveVK, selectedKeyID, requestID, userID, isCacheRead, isBatch, isFinalChunk)
+			p.postHookWorker(result, provider, model, requestType, effectiveVK, requestID, userID, isCacheRead, isBatch, isFinalChunk, pricingScopes)
 		}()
 	}
 
@@ -1420,14 +1422,15 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - provider: The provider of the request
 //   - model: The model of the request
 //   - requestType: The type of the request
-//   - virtualKey: The virtual key of the request (empty string if not present)
+//   - virtualKey: The raw virtual key token of the request (empty string if not present)
 //   - selectedKeyID: The selected provider key ID used for scoped pricing overrides
 //   - requestID: The request ID
 //   - userID: The user ID for enterprise user-level governance (empty string if not present)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, selectedKeyID, requestID, userID string, _, _, isFinalChunk bool) {
+//   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, _, _, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
 	// Determine if request was successful
 	success := (result != nil)
 
@@ -1437,11 +1440,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCost(result, &modelcatalog.PricingLookupScopes{
-				VirtualKeyID:  virtualKey,
-				SelectedKeyID: selectedKeyID,
-				Provider:      string(provider),
-			})
+			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0
 		if result != nil {

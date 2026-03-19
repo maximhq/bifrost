@@ -497,6 +497,13 @@
             "$ref": "#/$defs/routing_rule"
           }
         },
+        "pricing_overrides": {
+          "type": "array",
+          "description": "Scoped pricing overrides applied at runtime by the model catalog",
+          "items": {
+            "$ref": "#/$defs/pricing_override"
+          }
+        },
         "auth_config": {
           "$ref": "#/$defs/auth_config"
         },
@@ -1921,13 +1928,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -1969,13 +1969,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2017,13 +2010,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2065,13 +2051,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2113,13 +2092,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -3055,6 +3027,155 @@
           "additionalProperties": false
         }
       },
+      "additionalProperties": false
+    },
+    "pricing_override": {
+      "type": "object",
+      "description": "Scoped pricing override applied at runtime by the model catalog",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique pricing override ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for this override"
+        },
+        "scope_kind": {
+          "type": "string",
+          "description": "Scope level for this override",
+          "enum": ["global", "provider", "provider_key", "virtual_key", "virtual_key_provider", "virtual_key_provider_key"]
+        },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "Provider ID (required for provider* scopes)"
+        },
+        "provider_key_id": {
+          "type": "string",
+          "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)"
+        },
+        "match_type": {
+          "type": "string",
+          "description": "How the pattern is matched against model names",
+          "enum": ["exact", "wildcard"]
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Model name pattern to match (exact name or wildcard prefix ending with *)"
+        },
+        "request_types": {
+          "type": "array",
+          "description": "Request types this override applies to. At least one value is required.",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "pricing_patch": {
+          "type": "string",
+          "description": "JSON-encoded pricing fields to override (e.g. '{\"input_cost_per_token\":0.000001}')"
+        },
+        "config_hash": {
+          "type": "string",
+          "description": "Internal hash for change detection (auto-managed)"
+        }
+      },
+      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
+      "additionalProperties": false
+    },
+    "pricing_override_match_type": {
+      "type": "string",
+      "enum": ["exact", "wildcard"]
+    },
+    "pricing_override_request_type": {
+      "type": "string",
+      "enum": [
+        "chat_completion", "text_completion", "responses",
+        "embedding", "rerank",
+        "speech", "transcription",
+        "image_generation", "image_variation", "image_edit",
+        "video_generation", "video_remix"
+      ]
+    },
+    "custom_provider_config": {
+      "type": "object",
+      "description": "Custom provider configuration for extending or customizing provider behavior",
+      "properties": {
+        "is_key_less": {
+          "type": "boolean",
+          "description": "Whether the custom provider requires a key"
+        },
+        "base_provider_type": {
+          "type": "string",
+          "description": "Base provider type to extend"
+        },
+        "allowed_requests": {
+          "type": "object",
+          "description": "Allowed request types for the custom provider",
+          "properties": {
+            "list_models": { "type": "boolean" },
+            "text_completion": { "type": "boolean" },
+            "text_completion_stream": { "type": "boolean" },
+            "chat_completion": { "type": "boolean" },
+            "chat_completion_stream": { "type": "boolean" },
+            "responses": { "type": "boolean" },
+            "responses_stream": { "type": "boolean" },
+            "count_tokens": { "type": "boolean" },
+            "embedding": { "type": "boolean" },
+            "rerank": { "type": "boolean" },
+            "speech": { "type": "boolean" },
+            "speech_stream": { "type": "boolean" },
+            "transcription": { "type": "boolean" },
+            "transcription_stream": { "type": "boolean" },
+            "image_generation": { "type": "boolean" },
+            "image_generation_stream": { "type": "boolean" },
+            "image_edit": { "type": "boolean" },
+            "image_edit_stream": { "type": "boolean" },
+            "image_variation": { "type": "boolean" },
+            "video_generation": { "type": "boolean" },
+            "video_retrieve": { "type": "boolean" },
+            "video_download": { "type": "boolean" },
+            "video_delete": { "type": "boolean" },
+            "video_list": { "type": "boolean" },
+            "video_remix": { "type": "boolean" },
+            "batch_create": { "type": "boolean" },
+            "batch_list": { "type": "boolean" },
+            "batch_retrieve": { "type": "boolean" },
+            "batch_cancel": { "type": "boolean" },
+            "batch_delete": { "type": "boolean" },
+            "batch_results": { "type": "boolean" },
+            "file_upload": { "type": "boolean" },
+            "file_list": { "type": "boolean" },
+            "file_retrieve": { "type": "boolean" },
+            "file_delete": { "type": "boolean" },
+            "file_content": { "type": "boolean" },
+            "container_create": { "type": "boolean" },
+            "container_list": { "type": "boolean" },
+            "container_retrieve": { "type": "boolean" },
+            "container_delete": { "type": "boolean" },
+            "container_file_create": { "type": "boolean" },
+            "container_file_list": { "type": "boolean" },
+            "container_file_retrieve": { "type": "boolean" },
+            "container_file_content": { "type": "boolean" },
+            "container_file_delete": { "type": "boolean" },
+            "passthrough": { "type": "boolean" },
+            "passthrough_stream": { "type": "boolean" },
+            "websocket_responses": { "type": "boolean" },
+            "realtime": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "request_path_overrides": {
+          "type": "object",
+          "description": "Mapping of request type to custom path overriding the default provider path",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "required": ["base_provider_type"],
       "additionalProperties": false
     }
   }

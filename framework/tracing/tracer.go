@@ -164,7 +164,7 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 }
 
 // PopulateLLMResponseAttributes populates all LLM-specific response attributes on the span.
-func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
 	h, ok := handle.(*spanHandle)
 	if !ok || h == nil {
 		return
@@ -185,7 +185,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	}
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCost(resp, nil)
+		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}
 }

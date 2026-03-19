@@ -250,12 +250,12 @@ const SidebarItemView = ({
 				data-testid={`nav-button-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
 				data-nav-url={!hasSubItems ? item.url : undefined}
 				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-						? "bg-sidebar-accent text-accent-foreground border-primary/20"
-						: isActive || isAnySubItemActive
-							? "bg-sidebar-accent text-primary border-primary/20"
-							: item.hasAccess
-								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					? "bg-sidebar-accent text-accent-foreground border-primary/20"
+					: isActive || isAnySubItemActive
+						? "bg-sidebar-accent text-primary border-primary/20"
+						: item.hasAccess
+							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 					} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
 			>
@@ -297,12 +297,12 @@ const SidebarItemView = ({
 									data-testid={`nav-submenu-toggle-${subItem.title.toLowerCase().replace(/\s+/g, "-")}`}
 									data-nav-url={subItem.url}
 									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-											? "bg-sidebar-accent text-accent-foreground"
-											: isSubItemActive
-												? "bg-sidebar-accent text-primary font-medium"
-												: subItem.hasAccess === false
-													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										? "bg-sidebar-accent text-accent-foreground"
+										: isSubItemActive
+											? "bg-sidebar-accent text-primary font-medium"
+											: subItem.hasAccess === false
+												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 										}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 								>
@@ -486,7 +486,7 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Pricing overrides",
+						title: "Pricing Overrides",
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
 						description: "Scoped pricing overrides",

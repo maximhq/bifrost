@@ -13,7 +13,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 )
 
 // Default sync interval and config key
@@ -39,10 +38,13 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	// Scoped pricing overrides are maintained separately to avoid contention
-	// with pricing cache rebuilds.
-	scopedOverrides *compiledScopedOverrides
-	overridesMu     sync.RWMutex
+	// rawOverrides is the canonical list of all active overrides. It exists solely
+	// to support incremental mutations: UpsertPricingOverrides and DeletePricingOverride
+	// iterate over it to rebuild the list, then derive customPricing from it.
+	// customPricing is the actual lookup structure used at query time.
+	rawOverrides  []PricingOverride
+	customPricing *customPricingData
+	overridesMu   sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -62,10 +64,13 @@ type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
 	Mode      string `json:"mode"`
+	PricingOptions
+}
 
+type PricingOptions struct {
 	// Costs - Text
-	InputCostPerToken          float64  `json:"input_cost_per_token"`
-	OutputCostPerToken         float64  `json:"output_cost_per_token"`
+	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
 	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
 	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
 	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
@@ -195,7 +200,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		scopedOverrides:        &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]pricingoverrides.Override)},
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -251,8 +255,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	// Populate model pool with normalized providers from pricing data
 	mc.populateModelPoolFromPricingData()
+
 	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
-		logger.Warn("failed to load pricing overrides: %v", err)
+		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
 
 	// Start background sync worker
@@ -324,6 +329,7 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
+
 	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
 		return fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
@@ -791,6 +797,79 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	return model, nil
 }
 
+// SetPricingOverrides replaces the full in-memory pricing override set.
+func (mc *ModelCatalog) SetPricingOverrides(rows []configstoreTables.TablePricingOverride) error {
+	seen := make(map[string]int, len(rows))
+	overrides := make([]PricingOverride, 0, len(rows))
+	for i := range rows {
+		o, err := convertTablePricingOverrideToPricingOverride(&rows[i])
+		if err != nil {
+			return err
+		}
+		if idx, exists := seen[o.ID]; exists {
+			overrides[idx] = o // last entry wins for duplicate IDs
+		} else {
+			seen[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+	mc.overridesMu.Lock()
+	mc.rawOverrides = overrides
+	mc.customPricing = buildCustomPricingData(overrides)
+	mc.overridesMu.Unlock()
+	return nil
+}
+
+// UpsertPricingOverrides inserts or replaces one or more pricing overrides in a single
+// operation, rebuilding the lookup map only once at the end.
+func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TablePricingOverride) error {
+	// Deduplicate the input batch by ID (last entry wins) and build the
+	// incoming set for O(1) lookup when filtering existing rawOverrides.
+	seenIncoming := make(map[string]int, len(rows))
+	overrides := make([]PricingOverride, 0, len(rows))
+	for _, row := range rows {
+		o, err := convertTablePricingOverrideToPricingOverride(row)
+		if err != nil {
+			return err
+		}
+		if idx, exists := seenIncoming[o.ID]; exists {
+			overrides[idx] = o // last entry wins for duplicate IDs
+		} else {
+			seenIncoming[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+
+	mc.overridesMu.Lock()
+	defer mc.overridesMu.Unlock()
+
+	updated := make([]PricingOverride, 0, len(mc.rawOverrides)+len(overrides))
+	for _, o := range mc.rawOverrides {
+		if _, replacing := seenIncoming[o.ID]; !replacing {
+			updated = append(updated, o)
+		}
+	}
+	updated = append(updated, overrides...)
+	mc.rawOverrides = updated
+	mc.customPricing = buildCustomPricingData(updated)
+	return nil
+}
+
+// DeletePricingOverride removes a pricing override by ID.
+func (mc *ModelCatalog) DeletePricingOverride(id string) {
+	mc.overridesMu.Lock()
+	defer mc.overridesMu.Unlock()
+
+	updated := make([]PricingOverride, 0, len(mc.rawOverrides))
+	for _, o := range mc.rawOverrides {
+		if o.ID != id {
+			updated = append(updated, o)
+		}
+	}
+	mc.rawOverrides = updated
+	mc.customPricing = buildCustomPricingData(updated)
+}
+
 // IsTextCompletionSupported checks if a model supports text completion for the given provider.
 // Returns true if the model has pricing data for text completion ("text_completion"),
 // false otherwise. This is used by the litellmcompat plugin to determine whether to
@@ -885,7 +964,6 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		scopedOverrides:     &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]pricingoverrides.Override)},
 		done:                make(chan struct{}),
 	}
 }

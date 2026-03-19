@@ -62,6 +62,8 @@ type ServerCallbacks interface {
 	// Pricing related callbacks
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
+	UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error
+	DeletePricingOverride(ctx context.Context, id string) error
 	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	// Client config related callbacks
@@ -806,6 +808,23 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 	return nil
 }
 
+// UpsertPricingOverride inserts or updates a pricing override in the in-memory model catalog.
+func (s *BifrostHTTPServer) UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	return s.Config.ModelCatalog.UpsertPricingOverrides(override)
+}
+
+// DeletePricingOverride removes a pricing override from the in-memory model catalog.
+func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	s.Config.ModelCatalog.DeletePricingOverride(id)
+	return nil
+}
+
 // ReloadProxyConfig reloads the proxy configuration
 func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
 	if s.Config == nil {
@@ -987,7 +1006,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, s.Config.ModelCatalog)
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}

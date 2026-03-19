@@ -778,14 +778,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		pricingScopes := modelcatalog.PricingLookupScopes{
-			SelectedKeyID: entry.SelectedKeyID,
-			Provider:      string(entry.Provider),
-		}
-		if entry.VirtualKeyID != nil {
-			pricingScopes.VirtualKeyID = *entry.VirtualKeyID
-		}
-		if cost := p.pricingManager.CalculateCost(result, &pricingScopes); cost > 0 {
+		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
 			entry.Cost = &cost
 		}
 	}

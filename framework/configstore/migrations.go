@@ -329,6 +329,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationMakeBasePricingColumnsNullable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -355,7 +358,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					"concurrency_buffer_json",
 					"proxy_config_json",
 					"custom_provider_config_json",
-					"pricing_overrides_json",
 					"send_back_raw_request",
 					"send_back_raw_response",
 					"store_raw_request_response",
@@ -5124,6 +5126,34 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_plugin_order_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMakeBasePricingColumnsNullable drops the NOT NULL constraint on
+// input_cost_per_token and output_cost_per_token in governance_model_pricing,
+// allowing models that only have non-token pricing (image, audio, video) to be
+// stored without a placeholder zero value.
+func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "make_base_pricing_columns_nullable",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "InputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter input_cost_per_token: %w", err)
+			}
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "OutputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter output_cost_per_token: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running make_base_pricing_columns_nullable migration: %s", err.Error())
 	}
 	return nil
 }

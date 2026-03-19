@@ -8,6 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
@@ -497,7 +498,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result, nil)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -523,7 +524,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result, nil)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug

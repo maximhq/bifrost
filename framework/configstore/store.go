@@ -10,7 +10,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
-	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -58,6 +57,25 @@ type CustomersQueryParams struct {
 	Limit  int
 	Offset int
 	Search string
+}
+
+// PricingOverrideFilters holds the filters for pricing overrides.
+type PricingOverrideFilters struct {
+	ScopeKind     *string
+	VirtualKeyID  *string
+	ProviderID    *string
+	ProviderKeyID *string
+}
+
+// PricingOverridesQueryParams holds pagination, filtering, and search parameters for pricing override queries.
+type PricingOverridesQueryParams struct {
+	Limit         int
+	Offset        int
+	Search        string
+	ScopeKind     *string
+	VirtualKeyID  *string
+	ProviderID    *string
+	ProviderKeyID *string
 }
 
 // ConfigStore is the interface for the config store.
@@ -220,7 +238,8 @@ type ConfigStore interface {
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
 	// Governance pricing overrides CRUD
-	GetPricingOverrides(ctx context.Context, filter PricingOverrideFilter) ([]tables.TablePricingOverride, error)
+	GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error)
+	GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error)
 	GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error)
 	CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
 	UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
@@ -315,13 +334,6 @@ type ConfigStore interface {
 
 	// Cleanup
 	Close(ctx context.Context) error
-}
-
-type PricingOverrideFilter struct {
-	ScopeKind     *pricingoverrides.ScopeKind
-	VirtualKeyID  *string
-	ProviderID    *string
-	ProviderKeyID *string
 }
 
 // NewConfigStore creates a new config store based on the configuration

@@ -425,6 +425,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
+
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
 		// For streaming requests, handle per-token metrics for intermediate chunks
@@ -447,11 +449,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCost(result, &modelcatalog.PricingLookupScopes{
-				VirtualKeyID:  virtualKeyID,
-				SelectedKeyID: selectedKeyID,
-				Provider:      string(provider),
-			})
+			cost = p.pricingManager.CalculateCost(result, pricingScopes)
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()

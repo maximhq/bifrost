@@ -745,15 +745,21 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Deployment, provider)
 			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{
-					Prompt:     bifrost.Ptr(fmt.Sprintf("%.10f", pricingEntry.InputCostPerToken)),
-					Completion: bifrost.Ptr(fmt.Sprintf("%.10f", pricingEntry.OutputCostPerToken)),
+				pricing := &schemas.Pricing{}
+				if pricingEntry.InputCostPerToken != nil {
+					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
+				}
+				if pricingEntry.OutputCostPerToken != nil {
+					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
 				}
 				if pricingEntry.InputCostPerImage != nil {
 					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
 				}
 				if pricingEntry.CacheReadInputTokenCost != nil {
 					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
+				}
+				if pricingEntry.CacheCreationInputTokenCost != nil {
+					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
 				}
 				resp.Data[i].Pricing = pricing
 			}

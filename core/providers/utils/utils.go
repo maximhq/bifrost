@@ -2611,10 +2611,10 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 	if accumulatedResp != nil {
 		// Use accumulated response for attributes (includes full content, tool calls, etc.)
-		tracer.PopulateLLMResponseAttributes(handle, accumulatedResp, err)
+		tracer.PopulateLLMResponseAttributes(ctx, handle, accumulatedResp, err)
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
-		tracer.PopulateLLMResponseAttributes(handle, result, err)
+		tracer.PopulateLLMResponseAttributes(ctx, handle, result, err)
 	}
 
 	// Finalize aggregated post-hook spans before ending the LLM span

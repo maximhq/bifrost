@@ -1302,25 +1302,74 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
-func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filter PricingOverrideFilter) ([]tables.TablePricingOverride, error) {
+func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
 	var overrides []tables.TablePricingOverride
 	q := s.db.WithContext(ctx).Model(&tables.TablePricingOverride{})
-	if filter.ScopeKind != nil {
-		q = q.Where("scope_kind = ?", *filter.ScopeKind)
+	if filters.ScopeKind != nil {
+		q = q.Where("scope_kind = ?", *filters.ScopeKind)
 	}
-	if filter.VirtualKeyID != nil {
-		q = q.Where("virtual_key_id = ?", *filter.VirtualKeyID)
+	if filters.VirtualKeyID != nil {
+		q = q.Where("virtual_key_id = ?", *filters.VirtualKeyID)
 	}
-	if filter.ProviderID != nil {
-		q = q.Where("provider_id = ?", *filter.ProviderID)
+	if filters.ProviderID != nil {
+		q = q.Where("provider_id = ?", *filters.ProviderID)
 	}
-	if filter.ProviderKeyID != nil {
-		q = q.Where("provider_key_id = ?", *filter.ProviderKeyID)
+	if filters.ProviderKeyID != nil {
+		q = q.Where("provider_key_id = ?", *filters.ProviderKeyID)
 	}
 	if err := q.Order("created_at ASC").Find(&overrides).Error; err != nil {
 		return nil, s.parseGormError(err)
 	}
 	return overrides, nil
+}
+
+func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TablePricingOverride{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+	if params.ScopeKind != nil {
+		baseQuery = baseQuery.Where("scope_kind = ?", *params.ScopeKind)
+	}
+	if params.VirtualKeyID != nil {
+		baseQuery = baseQuery.Where("virtual_key_id = ?", *params.VirtualKeyID)
+	}
+	if params.ProviderID != nil {
+		baseQuery = baseQuery.Where("provider_id = ?", *params.ProviderID)
+	}
+	if params.ProviderKeyID != nil {
+		baseQuery = baseQuery.Where("provider_key_id = ?", *params.ProviderKeyID)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var overrides []tables.TablePricingOverride
+	if err := baseQuery.
+		Order("created_at ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&overrides).Error; err != nil {
+		return nil, 0, s.parseGormError(err)
+	}
+	return overrides, totalCount, nil
 }
 
 func (s *RDBConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {

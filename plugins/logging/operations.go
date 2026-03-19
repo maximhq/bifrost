@@ -956,7 +956,6 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	usage := logEntry.TokenUsageParsed
 	cacheDebug := logEntry.CacheDebugParsed
-	scopes := pricingScopesForLog(logEntry)
 
 	// If no cache hit and no usage, we can't calculate cost
 	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) {
@@ -1021,6 +1020,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		resp.SpeechResponse.Usage = logEntry.SpeechOutputParsed.Usage
 	}
 
+	scopes := pricingScopesForLog(logEntry)
 	return p.pricingManager.CalculateCost(resp, &scopes), nil
 }
 
