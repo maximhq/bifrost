@@ -1,1 +1,1 @@
-- feat: required_headers now supports Name=value constraints and env.VAR resolution
+- feat: required_headers changed from string array to map with regex-supported value patterns (default `*` = any value)

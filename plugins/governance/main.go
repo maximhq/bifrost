@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -39,9 +40,9 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory   *bool     `json:"is_vk_mandatory"`
-	RequiredHeaders *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
-	IsEnterprise    bool      `json:"is_enterprise"`
+	IsVkMandatory   *bool              `json:"is_vk_mandatory"`
+	RequiredHeaders *map[string]string `json:"required_headers"` // Pointer to live config map; changes are reflected immediately without restart
+	IsEnterprise    bool               `json:"is_enterprise"`
 }
 
 type InMemoryStore interface {
@@ -85,7 +86,7 @@ type GovernancePlugin struct {
 	cfgMutex sync.RWMutex
 
 	isVkMandatory   *bool
-	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
+	requiredHeaders *map[string]string // pointer to live config map; keys are header names, values are regex patterns ("*" = any value)
 	isEnterprise    bool
 }
 
@@ -150,7 +151,7 @@ func Init(
 
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
-	var requiredHeaders *[]string
+	var requiredHeaders *map[string]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
@@ -259,7 +260,7 @@ func InitFromStore(
 	}
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
-	var requiredHeaders *[]string
+	var requiredHeaders *map[string]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
@@ -880,19 +881,39 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 	return headers, nil
 }
 
+// matchHeaderValue checks whether actual matches the configured pattern.
+// Returns true if the value is acceptable, false otherwise.
+func matchHeaderValue(actual, pattern string) bool {
+	resolvedPattern, err := envutils.ProcessEnvValue(pattern)
+	if err != nil {
+		return false
+	}
+
+	// env var reference → exact comparison against resolved value
+	if strings.HasPrefix(strings.TrimSpace(pattern), "env.") {
+		return actual == resolvedPattern
+	}
+
+	// otherwise → regex match (fall back to exact match on bad pattern)
+	re, err := regexp.Compile("^(?:" + resolvedPattern + ")$")
+	if err != nil {
+		return actual == resolvedPattern
+	}
+	return re.MatchString(actual)
+}
+
 // validateRequiredHeaders checks that all configured required headers are present in the request,
-// and optionally validates their values.
+// and optionally validates their values against a pattern.
 //
-// Each entry in the required headers list can be:
-//   - "Header-Name"              — header must be present (any value accepted)
-//   - "Header-Name=value"        — header must be present AND its value must exactly match "value"
-//   - "Header-Name=env.VAR_NAME" — header must be present AND its value must match the resolved
-//     environment variable ENV_VAR_NAME
-//   - "Header-Name="             — header must be present AND its value must be an empty string
+// Each entry in the required headers map is a key-value pair:
+//   - key:   the header name (matched case-insensitively)
+//   - value: a pattern that the header value must match:
+//     - "*" or ""          — header must be present (any value accepted)
+//     - "env.VAR_NAME"     — header must be present AND its value must match the resolved
+//       environment variable VAR_NAME
+//     - any other string   — treated as a regex pattern; header must be present AND its value
+//       must match the pattern (full match via ^pattern$)
 //
-// Header name matching is case-insensitive. Header values are compared exactly as configured
-// (case-sensitive); an empty string after "=" is a valid constraint that requires the header
-// value to also be empty.
 // Environment variable references in values are resolved at request time via envutils.ProcessEnvValue.
 // If the referenced environment variable is not set, the check treats the value as unresolvable
 // and returns a 400 error.
@@ -902,47 +923,51 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
 		return nil
 	}
+
 	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	if headers == nil {
 		headers = map[string]string{}
 	}
+
 	var missing []string
 	var invalid []string
-	for _, h := range *p.requiredHeaders {
-		name, rawRequiredValue, hasValue := strings.Cut(h, "=")
+	for name, pattern := range *p.requiredHeaders {
 		name = strings.TrimSpace(name)
-		rawRequiredValue = strings.TrimSpace(rawRequiredValue)
+		pattern = strings.TrimSpace(pattern)
+
 		actual, ok := headers[strings.ToLower(name)]
 		if !ok {
 			missing = append(missing, name)
 			continue
 		}
-		if hasValue {
-			requiredValue, err := envutils.ProcessEnvValue(rawRequiredValue)
-			if err != nil || actual != requiredValue {
-				// Env var is referenced but not set — treat as invalid value
-				invalid = append(invalid, name)
-				continue
-			}
+
+		if pattern == "*" || pattern == "" {
+			continue
+		}
+
+		if !matchHeaderValue(actual, pattern) {
+			invalid = append(invalid, name)
 		}
 	}
-	if len(missing) > 0 || len(invalid) > 0 {
-		var parts []string
-		if len(missing) > 0 {
-			parts = append(parts, fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")))
-		}
-		if len(invalid) > 0 {
-			parts = append(parts, fmt.Sprintf("invalid required header value: %s", strings.Join(invalid, ", ")))
-		}
-		return &schemas.BifrostError{
-			Type:       bifrost.Ptr("missing_required_headers"),
-			StatusCode: bifrost.Ptr(400),
-			Error: &schemas.ErrorField{
-				Message: strings.Join(parts, "; "),
-			},
-		}
+
+	if len(missing) == 0 && len(invalid) == 0 {
+		return nil
 	}
-	return nil
+
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")))
+	}
+	if len(invalid) > 0 {
+		parts = append(parts, fmt.Sprintf("invalid required header value: %s", strings.Join(invalid, ", ")))
+	}
+	return &schemas.BifrostError{
+		Type:       bifrost.Ptr("missing_required_headers"),
+		StatusCode: bifrost.Ptr(400),
+		Error: &schemas.ErrorField{
+			Message: strings.Join(parts, "; "),
+		},
+	}
 }
 
 // evaluateGovernanceRequest is a common function that handles virtual key validation

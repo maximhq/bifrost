@@ -4,6 +4,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,11 +31,9 @@ export default function SecurityView() {
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 		allowed_headers: string;
-		required_headers: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
-		required_headers: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -50,7 +49,6 @@ export default function SecurityView() {
 			setLocalValues({
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
-				required_headers: config?.required_headers?.join(", ") || "",
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -82,9 +80,9 @@ export default function SecurityView() {
 			passwordChanged ||
 			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
 
-		const localRequired = localConfig.required_headers?.slice().sort().join(",");
-		const serverRequired = config.required_headers?.slice().sort().join(",");
-		const requiredChanged = localRequired !== serverRequired;
+		const localRequiredSig = Object.entries(localConfig.required_headers || {}).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join(",");
+		const serverRequiredSig = Object.entries(config.required_headers || {}).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join(",");
+		const requiredChanged = localRequiredSig !== serverRequiredSig;
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
@@ -118,9 +116,8 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, allowed_headers: parseArrayFromText(value) }));
 	}, []);
 
-	const handleRequiredHeadersChange = useCallback((value: string) => {
-		setLocalValues((prev) => ({ ...prev, required_headers: value }));
-		setLocalConfig((prev) => ({ ...prev, required_headers: parseArrayFromText(value) }));
+	const handleRequiredHeadersChange = useCallback((value: Record<string, string>) => {
+		setLocalConfig((prev) => ({ ...prev, required_headers: value }));
 	}, []);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
@@ -346,20 +343,17 @@ export default function SecurityView() {
 								Required Headers
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
-								rejected with a 400 error. Header names are case-insensitive. Use <b>Name=value</b> (e.g.{" "}
-								<code>X-Proxy-Token=secret</code>) to also validate the header value (values are matched case-sensitively), or just
-								the name (e.g. <code>X-Tenant-ID</code>) to require presence only. To avoid hardcoding secrets, use an environment
-								variable reference (e.g. <code>X-Proxy-Token=env.MY_SECRET</code>).
+								Headers that must be present on every request. Requests missing any of these headers will be
+								rejected with a 400 error. Header names are case-insensitive. Values are matched as regex patterns
+								(&quot;*&quot; or empty = any value accepted). Use <code>env.VAR_NAME</code> to reference an environment variable.
 							</p>
 						</div>
-						<Textarea
-							id="required-headers"
-							data-testid="required-headers-textarea"
-							className="h-24"
-							placeholder="X-Tenant-ID, X-Proxy-Token=env.MY_SECRET"
-							value={localValues.required_headers}
-							onChange={(e) => handleRequiredHeadersChange(e.target.value)}
+						<HeadersTable
+							value={localConfig.required_headers || {}}
+							onChange={handleRequiredHeadersChange}
+							keyPlaceholder="Header name (e.g. X-Tenant-ID)"
+							valuePlaceholder="Pattern (e.g. *, env.MY_SECRET, us-east-1|eu-west-1)"
+							label="Required Headers"
 						/>
 					</div>
 				</div>

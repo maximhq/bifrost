@@ -6,19 +6,20 @@ icon: "shield-check"
 
 ## Overview
 
-Required headers let you enforce that specific HTTP headers are present on every LLM and MCP request passing through Bifrost. Optionally, you can also require a header to carry a specific value. If a request is missing a required header or carries the wrong value, the governance plugin rejects it with a **400 Bad Request** error before it reaches the provider.
+Required headers let you enforce that specific HTTP headers are present on every LLM and MCP request passing through Bifrost. Optionally, you can require a header to match a specific value pattern (exact string, regex, or environment variable reference). If a request is missing a required header or carries a value that doesn't match the pattern, the governance plugin rejects it with a **400 Bad Request** error before it reaches the provider.
 
 This is useful for:
 - **Tenant isolation** - Require `X-Tenant-ID` to identify the calling tenant
 - **Audit trails** - Require `X-Correlation-ID` for request tracing across services
-- **Proxy token validation** - Require `X-Proxy-Token=secretval` so only callers with the correct token are allowed
+- **Proxy token validation** - Require `X-Proxy-Token` with a secret value from an env var so only callers with the correct token are allowed
+- **Region pinning** - Require `X-Region` matching a regex like `us-east-1|eu-west-1`
 - **Custom routing metadata** - Require headers your infrastructure depends on
 
 <Note>
 Required headers validation requires **governance to be enabled**. The check runs in both `PreLLMHook` and `PreMCPHook`, so it applies to all inference and MCP tool execution requests.
 </Note>
 
-Header name matching is **case-insensitive** — configuring `X-Tenant-ID` will match `x-tenant-id`, `X-TENANT-ID`, or any other casing. Header **values** are compared exactly as configured (case-sensitive).
+Header name matching is **case-insensitive** — configuring `X-Tenant-ID` will match `x-tenant-id`, `X-TENANT-ID`, or any other casing. Value patterns are evaluated as described in the configuration section below.
 
 ---
 
@@ -62,14 +63,13 @@ When a request arrives:
 
 ## Configuration
 
-Each entry in `required_headers` can be:
+`required_headers` is a **map** (object) where each key is a header name and the value is a pattern:
 
-| Format | Behaviour |
-|--------|-----------|
-| `Header-Name` | Header must be **present** (any value accepted) |
-| `Header-Name=value` | Header must be present **and** its value must exactly equal `value` |
-| `Header-Name=env.VAR_NAME` | Header must be present **and** its value must equal the resolved value of environment variable `VAR_NAME` |
-| `Header-Name=` | Header must be present **and** its value must be an empty string |
+| Value pattern | Behaviour |
+|---------------|-----------|
+| `"*"` or `""` | Header must be **present** (any value accepted) |
+| `"env.VAR_NAME"` | Header must be present **and** its value must equal the resolved value of environment variable `VAR_NAME` |
+| Any other string | Treated as a **regex pattern** — header must be present **and** its value must fully match the pattern (anchored with `^` and `$`) |
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -80,36 +80,39 @@ Each entry in `required_headers` can be:
 
 ![Required Headers Configuration](../../media/ui-required-headers-setting.png)
 
-4. Enter a comma-separated list of header names or `Name=value` pairs (e.g., `X-Tenant-ID, X-Proxy-Token=env.MY_SECRET`)
+4. Add header name / value-pattern pairs using the table input (e.g., key: `X-Tenant-ID`, value: `*`)
 5. Click **Save Changes**
 
-Use the `env.VAR_NAME` syntax in the value to reference an environment variable rather than hardcoding a secret.
+Use the `env.VAR_NAME` syntax in the value column to reference an environment variable rather than hardcoding a secret.
 
 Changes take effect immediately — no restart required.
 
 </Tab>
 <Tab title="API">
 
-Include `required_headers` in the `client_config` when updating the configuration:
+Include `required_headers` as an object in the `client_config` when updating the configuration:
 
 ```bash
 curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "required_headers": ["X-Tenant-ID", "X-Proxy-Token=env.MY_SECRET_TOKEN"]
+      "required_headers": {
+        "X-Tenant-ID": "*",
+        "X-Proxy-Token": "env.MY_SECRET_TOKEN"
+      }
     }
   }'
 ```
 
-To clear required headers, pass an empty array:
+To clear required headers, pass an empty object:
 
 ```bash
 curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "required_headers": []
+      "required_headers": {}
     }
   }'
 ```
@@ -122,14 +125,17 @@ Add `required_headers` to the `client` section:
 ```json
 {
   "client": {    
-    "required_headers": ["X-Tenant-ID", "X-Proxy-Token=env.MY_SECRET_TOKEN"]
+    "required_headers": {
+      "X-Tenant-ID": "*",
+      "X-Proxy-Token": "env.MY_SECRET_TOKEN"
+    }
   }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `required_headers` | `string[]` | No | List of header names (or `Name=value` / `Name=env.VAR` entries) that must be present on every request. Name matching is case-insensitive; value matching is case-sensitive. Use the `env.` prefix on the value to avoid hardcoding secrets. |
+| `required_headers` | `object` | No | Map of header names to value patterns. Keys are matched case-insensitively. Values: `"*"` or `""` for presence-only, `"env.VAR"` for environment variable resolution, or any other string as a regex pattern. |
 
 </Tab>
 </Tabs>
@@ -145,7 +151,9 @@ Configure a single required header to enforce tenant identification:
 ```json
 {
   "client": {
-    "required_headers": ["X-Tenant-ID"]
+    "required_headers": {
+      "X-Tenant-ID": "*"
+    }
   }
 }
 ```
@@ -173,7 +181,9 @@ Validate that the caller provides an exact token value. Use an environment varia
 ```json
 {
   "client": {
-    "required_headers": ["X-Proxy-Token=env.MY_PROXY_SECRET"]
+    "required_headers": {
+      "X-Proxy-Token": "env.MY_PROXY_SECRET"
+    }
   }
 }
 ```
@@ -181,7 +191,7 @@ Validate that the caller provides an exact token value. Use an environment varia
 Start Bifrost with the environment variable set:
 
 ```bash
-MY_PROXY_SECRET=secretval ./bifrost-http --config config.json
+MY_PROXY_SECRET=<your-secret> ./bifrost-http --config config.json
 ```
 
 **Valid request:**
@@ -192,19 +202,25 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-You can also use a literal value instead of an env var reference if the value is not sensitive:
+<Note>
+If the referenced environment variable is not set at runtime, requests are rejected with HTTP `400` and the error message includes `invalid required header value` for that header — Bifrost does not fall back to allowing any value.
+</Note>
+
+### Using regex patterns
+
+Restrict header values to a set of allowed regions:
 
 ```json
 {
   "client": {
-    "required_headers": ["X-Proxy-Token=secretval"]
+    "required_headers": {
+      "X-Region": "us-east-1|eu-west-1|ap-southeast-1"
+    }
   }
 }
 ```
 
-<Note>
-If the referenced environment variable is not set at runtime, requests are rejected with HTTP `400`, and the error message includes `invalid required header value` for that header — Bifrost does not fall back to allowing any value.
-</Note>
+Only requests with `X-Region` set to one of those values will pass. Values are anchored — partial matches are rejected.
 
 ### Combining with virtual keys
 
@@ -214,7 +230,10 @@ Required headers work alongside virtual key enforcement. When both are configure
 {
   "client": {
     "enforce_governance_header": true,
-    "required_headers": ["X-Tenant-ID", "X-Proxy-Token=secretval"]
+    "required_headers": {
+      "X-Tenant-ID": "*",
+      "X-Proxy-Token": "env.MY_PROXY_SECRET"
+    }
   }
 }
 ```

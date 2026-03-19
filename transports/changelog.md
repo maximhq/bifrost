@@ -1,4 +1,4 @@
-- feat: document required_headers Name=value and env.VAR syntax in config schema
+- feat: required_headers changed from string array to map with regex-supported value patterns in config schema
 - fix: mcp tools now correctly pass headers to the MCP server
 - fix: ensure tool calls are always detected in mcp agent mode
 - fix: gemini models now correctly return finish_reason "tool_calls" when tool calls are present
