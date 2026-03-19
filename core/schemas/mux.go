@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1947,10 +1948,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			allOutput = append(allOutput, msg)
 		}
 
-		for toolCallID, args := range state.ToolArgumentBuffers {
-			if args == "" {
-				continue
-			}
+		// Collect tool call IDs sorted by outputIndex for deterministic order
+		type toolCallEntry struct {
+			toolCallID  string
+			outputIndex int
+		}
+		var toolCallEntries []toolCallEntry
+		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
+			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
+		}
+		sort.Slice(toolCallEntries, func(i, j int) bool {
+			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
+		})
+
+		for _, entry := range toolCallEntries {
+			toolCallID := entry.toolCallID
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeFunctionCall
 			callName, hasName := state.ToolCallNames[toolCallID]
@@ -1958,14 +1970,14 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if hasName && callName != "" {
 				callNamePtr = &callName
 			}
-			argsValue := args
+			args := state.ToolArgumentBuffers[toolCallID]
 			fcMsg := ResponsesMessage{
 				Type:   &messageType,
 				Status: &statusFinal,
 				ResponsesToolMessage: &ResponsesToolMessage{
 					CallID:    &toolCallID,
 					Name:      callNamePtr,
-					Arguments: &argsValue,
+					Arguments: &args,
 				},
 			}
 			itemID := state.ItemIDs[toolCallID]
