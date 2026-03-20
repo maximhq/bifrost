@@ -46,6 +46,27 @@ import (
 	"gorm.io/gorm"
 )
 
+// #region agent log
+func gwDebugLog(id, message string, data map[string]interface{}, hypothesisID string) {
+	entry := map[string]interface{}{
+		"sessionId":    "8579a9",
+		"id":           id,
+		"timestamp":    time.Now().UnixMilli(),
+		"location":     "config.go",
+		"message":      message,
+		"data":         data,
+		"hypothesisId": hypothesisID,
+	}
+	line, _ := json.Marshal(entry)
+	f, err := os.OpenFile("/Users/akshay/Codebase/universe/bifrost/.cursor/debug-8579a9.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
+}
+
+// #endregion
+
 // StreamChunkInterceptor intercepts streaming chunks before they're sent to clients.
 // Implementations can modify, filter, or observe chunks in real-time.
 // This interface enables proper dependency injection for streaming handlers.
@@ -743,11 +764,33 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		}
 	}
 	config.Providers = providersInConfigStore
+
+	ensurePassthroughProviders(config.Providers)
+
 	return nil
 }
 
-// processProvider processes a single provider configuration from config file
-func processProvider(
+// ensurePassthroughProviders auto-registers minimal configs for passthrough-only
+// providers (e.g. ChatGPT) that work without API keys or explicit configuration.
+func ensurePassthroughProviders(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+	passthroughProviders := []schemas.ModelProvider{
+		schemas.ChatGPT,
+	}
+	for _, p := range passthroughProviders {
+		if _, exists := providers[p]; !exists {
+			providers[p] = configstore.ProviderConfig{}
+			// #region agent log
+			gwDebugLog("passthrough-registered", "Auto-registered passthrough provider", map[string]interface{}{
+				"provider":   string(p),
+				"totalAfter": len(providers),
+			}, "F")
+			// #endregion
+		}
+	}
+}
+
+// processProviderFromFile processes a single provider configuration from config file
+func processProviderFromFile(
 	config *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
@@ -2295,10 +2338,19 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 	defer c.Mu.RUnlock()
 	config, exists := c.Providers[provider]
 	if !exists {
+		// #region agent log
+		keys := make([]string, 0, len(c.Providers))
+		for k := range c.Providers {
+			keys = append(keys, string(k))
+		}
+		gwDebugLog("provider-not-found", "Provider not in config map", map[string]interface{}{
+			"provider":       string(provider),
+			"availableCount": len(c.Providers),
+			"available":      keys,
+		}, "F")
+		// #endregion
 		return nil, ErrNotFound
 	}
-	// Return direct reference for maximum performance - this is used by Bifrost core
-	// CRITICAL: Never modify the returned data as it's shared
 	return &config, nil
 }
 
