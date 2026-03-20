@@ -9,7 +9,7 @@ Bifrost UI is a Next.js-powered web dashboard that serves as the control center 
 ### Key Features
 
 - **Real-time Log Monitoring** - Live streaming dashboard with WebSocket integration
-- **Provider Management** - Configure [15+ AI providers](https://docs.getbifrost.ai/quickstart/gateway/provider-configuration)
+- **Provider Management** - Configure [20+ AI providers](https://docs.getbifrost.ai/quickstart/gateway/provider-configuration)
 - **MCP Integration** - Manage [Model Context Protocol](https://docs.getbifrost.ai/features/mcp) clients for advanced AI capabilities
 - **Plugin System** - Extend functionality with [custom plugins](https://docs.getbifrost.ai/plugins/getting-started)
 - **Analytics Dashboard** - Request metrics, success rates, latency tracking, and token usage

@@ -161,6 +161,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Replicate,
 		schemas.VLLM,
 		schemas.Runway,
+		schemas.Copilot,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -447,6 +448,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Copilot:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.GITHUB_COPILOT_TOKEN"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -770,6 +780,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10,
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Copilot:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     0, // Fail fast in tests; token errors are not retryable
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                8 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -1405,6 +1428,54 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:    schemas.Copilot,
+		ChatModel:   "gpt-4o",
+		VisionModel: "gpt-4o",
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Copilot, Model: "gpt-4o-mini"},
+		},
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not supported
+			TextCompletionStream:  false, // Not supported
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              false, // Copilot API does not support external image URLs
+			ImageBase64:           true,
+			MultipleImages:        false, // Copilot API does not support external image URLs
+			FileBase64:            false, // Copilot API does not support inline document inputs
+			FileURL:               false, // Copilot API does not support inline document inputs
+			CompleteEnd2End:       false, // CompleteEnd2End uses external image URLs
+			StructuredOutputs:     true,
+			Embedding:             false, // Not supported
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			ImageGeneration:       false, // Not supported
+			ImageGenerationStream: false, // Not supported
+			ImageEdit:             false, // Not supported
+			ImageEditStream:       false, // Not supported
+			ImageVariation:        false, // Not supported
+			BatchCreate:           false, // Not supported
+			BatchList:             false, // Not supported
+			BatchRetrieve:         false, // Not supported
+			BatchCancel:           false, // Not supported
+			BatchResults:          false, // Not supported
+			FileUpload:            false, // Not supported
+			FileList:              false, // Not supported
+			FileRetrieve:          false, // Not supported
+			FileDelete:            false, // Not supported
+			FileContent:           false, // Not supported
+			ListModels:            true,
 		},
 	},
 }

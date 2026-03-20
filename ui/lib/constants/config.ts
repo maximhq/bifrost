@@ -48,6 +48,7 @@ export const ModelPlaceholders = {
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
+	copilot: "e.g. gpt-4o, gpt-4o-mini, claude-sonnet-4",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -73,6 +74,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	replicate: true,
 	runway: true,
 	vllm: false,
+	copilot: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -83,7 +85,6 @@ export const DefaultNetworkConfig = {
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
 	ca_cert_pem: "",
-	stream_idle_timeout_in_seconds: 60,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {

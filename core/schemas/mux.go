@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1059,6 +1060,70 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 		// Handle Verbosity from Text config
 		if brr.Params.Text != nil && brr.Params.Text.Verbosity != nil {
 			bcr.Params.Verbosity = brr.Params.Text.Verbosity
+		}
+
+		// Handle Text.Format → ResponseFormat (json_object / json_schema)
+		if brr.Params.Text != nil && brr.Params.Text.Format != nil {
+			format := brr.Params.Text.Format
+			switch format.Type {
+			case "json_object":
+				var rf interface{} = map[string]interface{}{"type": "json_object"}
+				bcr.Params.ResponseFormat = &rf
+			case "json_schema":
+				// Resolve name: Format.Name > JSONSchema.Name > default
+				name := "response_schema"
+				if format.JSONSchema != nil && format.JSONSchema.Name != nil {
+					name = *format.JSONSchema.Name
+				}
+				if format.Name != nil {
+					name = *format.Name
+				}
+
+				// Resolve strict: JSONSchema.Strict takes precedence over the outer Format.Strict
+				// (the inner explicit schema value overrides the top-level convenience field).
+				var strictVal bool
+				if format.Strict != nil {
+					strictVal = *format.Strict
+				}
+				if format.JSONSchema != nil && format.JSONSchema.Strict != nil {
+					strictVal = *format.JSONSchema.Strict
+				}
+
+				// Build the inner schema object
+				var schema interface{} = map[string]interface{}{}
+				if format.JSONSchema != nil {
+					if format.JSONSchema.Schema != nil {
+						schema = *format.JSONSchema.Schema
+					} else {
+						data, err := json.Marshal(format.JSONSchema)
+						if err == nil {
+							var schemaMap map[string]interface{}
+							if err := json.Unmarshal(data, &schemaMap); err == nil {
+								// Remove metadata fields that belong at the json_schema wrapper level
+								delete(schemaMap, "name")
+								delete(schemaMap, "strict")
+								delete(schemaMap, "description")
+								schema = schemaMap
+							}
+						}
+					}
+				}
+
+				jsonSchemaObj := map[string]interface{}{
+					"name":   name,
+					"strict": strictVal,
+					"schema": schema,
+				}
+				// Preserve description at the json_schema wrapper level (not inside the schema object)
+				if format.JSONSchema != nil && format.JSONSchema.Description != nil {
+					jsonSchemaObj["description"] = *format.JSONSchema.Description
+				}
+				var rf interface{} = map[string]interface{}{
+					"type":        "json_schema",
+					"json_schema": jsonSchemaObj,
+				}
+				bcr.Params.ResponseFormat = &rf
+			}
 		}
 	}
 
