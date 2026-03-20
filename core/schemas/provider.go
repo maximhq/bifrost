@@ -15,7 +15,8 @@ const (
 	DefaultMaxConnDurationInSeconds  = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
 	DefaultBufferSize                = 5000
 	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 256
+	DefaultStreamBufferSize              = 256
+	DefaultStreamIdleTimeoutInSeconds    = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
 )
 
 // Pre-defined errors for provider operations
@@ -56,6 +57,7 @@ type NetworkConfig struct {
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`     // Disables TLS certificate verification for provider connections
 	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`              // PEM-encoded CA certificate to trust for provider endpoint connections
+	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -72,6 +74,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
+		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -86,6 +89,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.MaxRetries = alias.MaxRetries
 	nc.InsecureSkipVerify = alias.InsecureSkipVerify
 	nc.CACertPEM = alias.CACertPEM
+	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -113,6 +117,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
+		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -121,10 +126,11 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
 		// Convert time.Duration (nanoseconds) to milliseconds
-		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
-		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
-		InsecureSkipVerify:  nc.InsecureSkipVerify,
-		CACertPEM:           nc.CACertPEM,
+		RetryBackoffInitial:        int64(nc.RetryBackoffInitial / time.Millisecond),
+		RetryBackoffMax:            int64(nc.RetryBackoffMax / time.Millisecond),
+		InsecureSkipVerify:         nc.InsecureSkipVerify,
+		CACertPEM:                  nc.CACertPEM,
+		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
 	}
 
 	return json.Marshal(alias)
@@ -148,6 +154,7 @@ var DefaultNetworkConfig = NetworkConfig{
 	MaxRetries:                     DefaultMaxRetries,
 	RetryBackoffInitial:            DefaultRetryBackoffInitial,
 	RetryBackoffMax:                DefaultRetryBackoffMax,
+	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -488,6 +495,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.RetryBackoffMax == 0 {
 		config.NetworkConfig.RetryBackoffMax = DefaultRetryBackoffMax
+	}
+
+	if config.NetworkConfig.StreamIdleTimeoutInSeconds <= 0 {
+		config.NetworkConfig.StreamIdleTimeoutInSeconds = DefaultStreamIdleTimeoutInSeconds
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races

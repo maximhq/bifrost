@@ -823,6 +823,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Start streaming in a goroutine
 	go func() {
 		defer func() {
@@ -834,6 +836,11 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			close(responseChan)
 		}()
 		defer resp.Body.Close()
+
+		// Wrap body with idle timeout to detect stalled streams.
+		idleReader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx))
+		defer stopIdleTimeout()
+
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
 		defer stopCancellation()
@@ -849,7 +856,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(resp.Body, payloadBuf)
+			message, err := decoder.Decode(idleReader, payloadBuf)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -1035,6 +1042,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Start streaming in a goroutine
 	go func() {
 		defer func() {
@@ -1046,6 +1055,11 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			close(responseChan)
 		}()
 		defer resp.Body.Close()
+
+		// Wrap body with idle timeout to detect stalled streams.
+		idleReader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx))
+		defer stopIdleTimeout()
+
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
 		defer stopCancellation()
@@ -1081,7 +1095,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(resp.Body, payloadBuf)
+			message, err := decoder.Decode(idleReader, payloadBuf)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -1380,6 +1394,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	// Start streaming in a goroutine
 	go func() {
 		defer func() {
@@ -1392,6 +1408,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
+
+		// Wrap body with idle timeout to detect stalled streams.
+		idleReader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx))
+		defer stopIdleTimeout()
+
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
 		defer stopCancellation()
@@ -1425,7 +1446,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(resp.Body, payloadBuf)
+			message, err := decoder.Decode(idleReader, payloadBuf)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -3543,6 +3564,23 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
+		if isCountTokensUnsupported(bifrostErr) {
+			estimated := estimateTokenCount(jsonData)
+			return &schemas.BifrostCountTokensResponse{
+				Model:       deployment,
+				InputTokens: estimated,
+				TotalTokens: &estimated,
+				Object:      "response.input_tokens",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider:                providerName,
+					RequestType:             schemas.CountTokensRequest,
+					ModelRequested:          request.Model,
+					ModelDeployment:         deployment,
+					Latency:                 latency.Milliseconds(),
+					ProviderResponseHeaders: providerResponseHeaders,
+				},
+			}, nil
+		}
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 

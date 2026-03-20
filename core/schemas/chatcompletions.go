@@ -409,30 +409,39 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Normalized returns a shallow copy of the ToolFunctionParameters with all
-// OrderedMap keys sorted using JSON Schema priority ordering (type,
-// description, properties, required first, then alphabetically). The copy
+// Normalized returns a shallow copy of the ToolFunctionParameters with JSON
+// Schema structural keys sorted by priority (type, description, properties,
+// required first, then alphabetically), while preserving the client's original
+// ordering of user-defined property names inside "properties" maps. The copy
 // shares primitive values with the original but has independent key slices,
 // so sorting does not mutate the caller's data.
 //
+// User-defined property names (e.g., "chain_of_thought", "answer") are kept
+// in their original order because LLMs generate structured output fields in
+// schema-declared order. Reordering them alphabetically can degrade output
+// quality (e.g., forcing the model to write an answer before its reasoning).
+//
 // The captured keyOrder is cleared so the struct field declaration order is
 // used for the top-level keys. This produces deterministic JSON serialization
-// regardless of the client's original key ordering, which is critical for
-// Anthropic's prefix-based prompt caching.
+// regardless of the client's original structural key ordering, which is
+// critical for Anthropic's prefix-based prompt caching.
 func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 	if t == nil {
 		return nil
 	}
 	out := *t
 	out.keyOrder = JSONKeyOrder{}
-	out.Properties = t.Properties.SortedCopy()
-	out.Defs = t.Defs.SortedCopy()
-	out.Definitions = t.Definitions.SortedCopy()
-	out.Items = t.Items.SortedCopy()
+	// Properties contains user-defined field names whose order is semantically
+	// meaningful for LLM structured output generation. Preserve their key order
+	// while sorting nested schema structural keys for caching determinism.
+	out.Properties = t.Properties.preserveKeysWithPropertyAwareness()
+	out.Defs = t.Defs.SortedCopyPreservingProperties()
+	out.Definitions = t.Definitions.SortedCopyPreservingProperties()
+	out.Items = t.Items.SortedCopyPreservingProperties()
 	if len(t.AnyOf) > 0 {
 		out.AnyOf = make([]OrderedMap, len(t.AnyOf))
 		for i := range t.AnyOf {
-			if cp := t.AnyOf[i].SortedCopy(); cp != nil {
+			if cp := t.AnyOf[i].SortedCopyPreservingProperties(); cp != nil {
 				out.AnyOf[i] = *cp
 			}
 		}
@@ -440,7 +449,7 @@ func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 	if len(t.OneOf) > 0 {
 		out.OneOf = make([]OrderedMap, len(t.OneOf))
 		for i := range t.OneOf {
-			if cp := t.OneOf[i].SortedCopy(); cp != nil {
+			if cp := t.OneOf[i].SortedCopyPreservingProperties(); cp != nil {
 				out.OneOf[i] = *cp
 			}
 		}
@@ -448,7 +457,7 @@ func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 	if len(t.AllOf) > 0 {
 		out.AllOf = make([]OrderedMap, len(t.AllOf))
 		for i := range t.AllOf {
-			if cp := t.AllOf[i].SortedCopy(); cp != nil {
+			if cp := t.AllOf[i].SortedCopyPreservingProperties(); cp != nil {
 				out.AllOf[i] = *cp
 			}
 		}
@@ -456,7 +465,7 @@ func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 	if t.AdditionalProperties != nil && t.AdditionalProperties.AdditionalPropertiesMap != nil {
 		out.AdditionalProperties = &AdditionalPropertiesStruct{
 			AdditionalPropertiesBool: t.AdditionalProperties.AdditionalPropertiesBool,
-			AdditionalPropertiesMap:  t.AdditionalProperties.AdditionalPropertiesMap.SortedCopy(),
+			AdditionalPropertiesMap:  t.AdditionalProperties.AdditionalPropertiesMap.SortedCopyPreservingProperties(),
 		}
 	}
 	switch v := t.Default.(type) {
@@ -1030,9 +1039,10 @@ const (
 type BifrostReasoningDetailsType string
 
 const (
-	BifrostReasoningDetailsTypeSummary   BifrostReasoningDetailsType = "reasoning.summary"
-	BifrostReasoningDetailsTypeEncrypted BifrostReasoningDetailsType = "reasoning.encrypted"
-	BifrostReasoningDetailsTypeText      BifrostReasoningDetailsType = "reasoning.text"
+	BifrostReasoningDetailsTypeSummary       BifrostReasoningDetailsType = "reasoning.summary"
+	BifrostReasoningDetailsTypeEncrypted     BifrostReasoningDetailsType = "reasoning.encrypted"
+	BifrostReasoningDetailsTypeText          BifrostReasoningDetailsType = "reasoning.text"
+	BifrostReasoningDetailsTypeContentBlocks BifrostReasoningDetailsType = "bifrost.content_blocks"
 )
 
 // Not in OpenAI's spec, but needed to support inter provider reasoning capabilities.

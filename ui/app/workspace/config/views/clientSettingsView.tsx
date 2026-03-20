@@ -33,7 +33,10 @@ const SECURITY_HEADERS = [
 
 // Helper to check if a header is a security header
 function isSecurityHeader(header: string): boolean {
-	return SECURITY_HEADERS.includes(header.toLowerCase().trim());
+	const h = header.toLowerCase().trim();
+	// Wildcard patterns are not literal security headers
+	if (h.includes("*")) return false;
+	return SECURITY_HEADERS.includes(h);
 }
 
 // Helper to compare header filter configs
@@ -433,6 +436,14 @@ export default function ClientSettingsView() {
 									<li>
 										<span className="font-medium">Denylist:</span> Headers in the denylist are always blocked from forwarding
 									</li>
+									<li>
+										<span className="font-medium">Wildcards:</span> Use{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match
+										prefixes (e.g.,{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
+										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> alone to match all headers.
+									</li>
 								</ul>
 							</div>
 							<div>
@@ -486,7 +497,8 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. custom-id, anthropic-beta"
+									placeholder="e.g. anthropic-*, custom-id"
+									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
@@ -529,7 +541,8 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-id"
+									placeholder="e.g. x-internal-*"
+									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&

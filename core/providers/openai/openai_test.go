@@ -21,6 +21,7 @@ func TestOpenAI(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.OpenAI,
@@ -103,6 +104,7 @@ func TestOpenAI(t *testing.T) {
 			ContainerFileRetrieve: true,
 			ContainerFileContent:  true,
 			ContainerFileDelete:   true,
+			PromptCaching:         true,
 			PassthroughAPI:        true,
 			WebSocketResponses:    true,
 			Realtime:              false,
@@ -113,5 +115,4 @@ func TestOpenAI(t *testing.T) {
 	t.Run("OpenAITests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

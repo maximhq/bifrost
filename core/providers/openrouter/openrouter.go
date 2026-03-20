@@ -64,12 +64,7 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
-// validationModel is a free model used to validate API keys.
-// OpenRouter's /v1/models endpoint doesn't require authentication,
-// so we make a minimal chat completion call to verify the key is valid.
-const validationModel = "meta-llama/llama-3.2-1b-instruct:free"
-
-// validateKey makes a minimal chat completion request to verify the API key is valid.
+// validateKey verifies the API key is valid using OpenRouter's /v1/auth/key endpoint.
 // OpenRouter's /v1/models endpoint doesn't require authentication, so list models
 // will succeed even with an invalid key. This method catches invalid keys.
 func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
@@ -78,26 +73,21 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 		return nil // Skip validation for empty keys
 	}
 
-	// Build minimal chat completion request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"))
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/auth/key")
+	req.Header.SetMethod(http.MethodGet)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
-
-	// Minimal request body: single "hi" message with max_tokens=1
-	requestBody := []byte(`{"model":"` + validationModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":1}`)
-	req.SetBody(requestBody)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Make request
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return bifrostErr
 	}
@@ -105,12 +95,12 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	// Check for auth errors (401, 403)
 	statusCode := resp.StatusCode()
 	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
-		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+		return openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
 	}
 
 	// Any 4xx/5xx error indicates the key might be invalid
 	if statusCode >= 400 {
-		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+		return openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
 	}
 
 	return nil
@@ -120,6 +110,16 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 // Returns the response and latency, or an error if the request fails.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
+
+	// Validate the key first using /v1/auth/key (only during provider add/update).
+	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
+	shouldValidate := false
+	if v, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); ok && v {
+		shouldValidate = true
+		if validateErr := provider.validateKey(ctx, key); validateErr != nil {
+			return nil, validateErr
+		}
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -139,25 +139,50 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	}
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
+		if shouldValidate {
+			// Key is valid (validated above) but transport error on models endpoint.
+			// Return empty response; allowed models will be backfilled below.
+			return &schemas.BifrostListModelsResponse{}, nil
+		}
 		return nil, bifrostErr
 	}
 
 	// Handle error response
+	modelsFetched := true
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
-		return nil, bifrostErr
+		if shouldValidate {
+			// Key is valid (validated above) but /v1/models returned error (e.g., privacy/guardrail settings).
+			// Continue with empty response; allowed models will be backfilled below.
+			modelsFetched = false
+		} else {
+			bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+			return nil, bifrostErr
+		}
 	}
 
-	// Copy response body before releasing
-	responseBody := append([]byte(nil), resp.Body()...)
-
 	var openrouterResponse schemas.BifrostListModelsResponse
-	// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	if modelsFetched {
+		// Copy response body before releasing
+		responseBody := append([]byte(nil), resp.Body()...)
+
+		// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			openrouterResponse.ExtraFields.RawRequest = rawRequest
+		}
+
+		// Set raw response if enabled
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			openrouterResponse.ExtraFields.RawResponse = rawResponse
+		}
 	}
 
 	// Filter by key.Models
@@ -195,24 +220,6 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	}
 
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		openrouterResponse.ExtraFields.RawRequest = rawRequest
-	}
-
-	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		openrouterResponse.ExtraFields.RawResponse = rawResponse
-	}
-
-	// Validate the key with a minimal chat completion request (only during provider add/update).
-	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
-	if validateKeys, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); ok && validateKeys {
-		if validateErr := provider.validateKey(ctx, key); validateErr != nil {
-			return nil, validateErr
-		}
-	}
 
 	return &openrouterResponse, nil
 }

@@ -1,0 +1,97 @@
+---
+title: "v1.4.13"
+description: "v1.4.13 changelog - 2026-03-17"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.13
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.13
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.13
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.13">
+## ✨ Features
+
+- **Plugin Sequencing** — Added plugin execution ordering with placement and priority controls for custom plugins relative to built-in plugins
+- **Groq Speech** — Added speech synthesis (TTS) and transcription (STT) support for Groq provider
+- **Gemini Model Metadata** — Added support for Gemini metadata endpoint (/v1beta/models/{model}) (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- **Wildcard Header Forwarding** — Added wildcard pattern support in header forwarding configuration
+- **Log Metadata Columns** — Added metadata columns in logs and filters for richer observability
+- **Prompt Caching Improvements** — Preserved JSON key ordering for LLM prompt caching using byte-level operations
+- **Azure GCC Cloud Support** — Added Azure cloud environment configuration for GCC High and DoD environments
+- **Connection Pool Management** — Added connection lifetime limits and optimized pool behavior to prevent stale connections
+
+## 🐞 Fixed
+
+- **MCP Tool Headers** — Fixed MCP tools not passing required headers to the MCP server
+- **MCP Tool Call Detection** — Fixed tool calls not being detected in MCP agent mode when providers return "stop" finish reason
+- **Gemini Finish Reason** — Fixed Gemini models not returning correct "tool_calls" finish reason
+- **Prompt Cascade Deletion** — Fixed manual cascade deletion for prompt entities
+
+## 🔒 Security
+
+- **Container Base Image** — Upgraded Node and Alpine base images to include latest security patches
+
+</Update>
+<Update label="Core" description="1.4.10">
+- feat: added plugin execution ordering with placement and priority controls
+- feat: added speech synthesis (TTS) and transcription (STT) support for Groq provider
+- feat: added support for Gemini metadata endpoint (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: preserved JSON key ordering for prompt caching using byte-level operations with gjson/sjson
+- feat: improved fasthttp connection pooling with connection lifetime limits and MaxConnDuration
+- fix: MCP tools now correctly pass headers to the MCP server
+- fix: ensure tool calls are always detected in MCP agent mode
+- fix: Gemini models now correctly return finish_reason "tool_calls" when tool calls are present
+
+</Update>
+<Update label="Framework" description="1.2.29">
+- feat: added plugin sequencing with placement and order fields in plugin configuration
+- feat: added metadata columns in logs and filters
+- fix: manual cascade deletion for prompt entities
+- chore: upgraded core to v1.4.9
+
+</Update>
+<Update label="governance" description="1.4.29">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="jsonparser" description="1.4.28">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="litellmcompat" description="0.0.18">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="logging" description="1.4.29">
+- feat: added metadata columns support in log capture
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="maxim" description="1.5.27">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="mocker" description="1.4.28">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="otel" description="1.1.28">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="semanticcache" description="1.4.27">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>
+<Update label="telemetry" description="1.4.29">
+- chore: upgraded core to v1.4.9 and framework to v1.2.28
+
+</Update>

@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -366,7 +368,7 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 
 func convertSchemaToMap(schema *Schema) *schemas.OrderedMap {
 	// Convert map[string]*Schema to map[string]interface{} using JSON marshaling
-	data, err := sonic.Marshal(schema.Properties)
+	data, err := providerUtils.MarshalSorted(schema.Properties)
 	if err != nil {
 		return schemas.NewOrderedMap()
 	}
@@ -1111,6 +1113,7 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 
 	if params.Properties != nil && params.Properties.Len() > 0 {
 		schema.Properties = make(map[string]*Schema)
+		schema.PropertyOrdering = params.Properties.Keys()
 		params.Properties.Range(func(k string, v interface{}) bool {
 			schema.Properties[k] = convertPropertyToSchema(v)
 			return true
@@ -1234,12 +1237,14 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				}
 			case *schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
 				})
 			case schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
@@ -1523,7 +1528,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		// must be sent in a single message with only functionResponse parts (no text parts)
 		if isToolResponse {
 			// Parse the response content
-			var responseData map[string]any
+			var responseData json.RawMessage
 			var contentStr string
 
 			if message.Content != nil {
@@ -1544,18 +1549,21 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 				}
 			}
 
-			// Try to unmarshal as JSON
+			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object)
 			if contentStr != "" {
-				err := sonic.Unmarshal([]byte(contentStr), &responseData)
-				if err != nil {
-					// If unmarshaling fails, wrap the original string to preserve it
-					responseData = map[string]any{
+				var buf bytes.Buffer
+				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' {
+					// Valid JSON object — use raw bytes directly
+					responseData = json.RawMessage(buf.Bytes())
+				} else {
+					// Not valid JSON or not an object — wrap to preserve content
+					responseData, _ = providerUtils.MarshalSorted(map[string]any{
 						"content": contentStr,
-					}
+					})
 				}
 			} else {
-				// If no content at all, use empty map to avoid nil
-				responseData = map[string]any{}
+				// If no content at all, use empty object to avoid nil
+				responseData = json.RawMessage(`{}`)
 			}
 
 			// Use ToolCallID if available, ensuring it's not nil
@@ -1720,10 +1728,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
-					// Create function call part - simplified implementation
-					argsMap := make(map[string]any)
+					// Preserve original key ordering of tool arguments for prompt caching.
+					var argsRaw json.RawMessage
 					if toolCall.Function.Arguments != "" {
-						sonic.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+							argsRaw = buf.Bytes()
+						} else {
+							argsRaw = json.RawMessage("{}")
+						}
+					} else {
+						argsRaw = json.RawMessage("{}")
 					}
 					// Handle ID: use it if available, otherwise fallback to function name
 					callID := *toolCall.Function.Name
@@ -1744,7 +1759,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						FunctionCall: &FunctionCall{
 							ID:   callID,
 							Name: *toolCall.Function.Name,
-							Args: argsMap,
+							Args: argsRaw,
 						},
 					}
 					// Store the mapping for later use in FunctionResponse
@@ -2079,7 +2094,7 @@ func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *S
 		}
 	} else if responseSchema != nil {
 		// Convert responseSchema to map using JSON marshaling and type normalization
-		data, err := sonic.Marshal(responseSchema)
+		data, err := providerUtils.MarshalSorted(responseSchema)
 		if err != nil {
 			// If marshaling fails, fall back to json_object mode
 			return &schemas.ResponsesTextConfig{
@@ -2311,18 +2326,19 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	}
 
 	// Try to extract "output" field first
-	if outputVal, ok := funcResp.Response["output"]; ok {
-		if outputStr, ok := outputVal.(string); ok {
-			return outputStr
+	var respMap map[string]json.RawMessage
+	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil {
+		if outputVal, ok := respMap["output"]; ok {
+			var outputStr string
+			if err := sonic.Unmarshal(outputVal, &outputStr); err == nil {
+				return outputStr
+			}
+			return string(outputVal)
 		}
 	}
 
-	// If no "output" key, marshal the entire response
-	if jsonResponse, err := sonic.Marshal(funcResp.Response); err == nil {
-		return string(jsonResponse)
-	}
-
-	return ""
+	// If no "output" key or unmarshal failed, return raw JSON
+	return string(funcResp.Response)
 }
 
 // decodeBase64StringToBytes decodes a base64-encoded string into raw bytes.
@@ -2383,7 +2399,8 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	req.SetRequestURI(imageURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return "", fmt.Errorf("failed to download image: %v", bifrostErr)
 	}

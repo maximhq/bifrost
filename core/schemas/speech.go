@@ -56,7 +56,7 @@ type SpeechParameters struct {
 	Speed          *float64          `json:"speed,omitempty"`
 
 	LanguageCode                    *string                                `json:"language_code,omitempty"`
-	PronunciationDictionaryLocators []SpeechPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators"`
+	PronunciationDictionaryLocators []SpeechPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators,omitempty"`
 	EnableLogging                   *bool                                  `json:"enable_logging,omitempty"`
 	OptimizeStreamingLatency        *bool                                  `json:"optimize_streaming_latency,omitempty"`
 	WithTimestamps                  *bool                                  `json:"with_timestamps,omitempty"` // Returns character-level timing information

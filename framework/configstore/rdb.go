@@ -935,6 +935,44 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	}, nil
 }
 
+// GetMCPClientsPaginated retrieves MCP clients with pagination and optional search.
+func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableMCPClient{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var clients []tables.TableMCPClient
+	if err := baseQuery.
+		Order("created_at ASC, client_id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&clients).Error; err != nil {
+		return nil, 0, err
+	}
+	return clients, totalCount, nil
+}
+
 // GetMCPClientByID retrieves an MCP client by ID from the database.
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient
@@ -2058,6 +2096,46 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 	return teams, nil
 }
 
+// GetTeamsPaginated retrieves teams with pagination, filtering, and search support.
+func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableTeam{})
+
+	if params.CustomerID != "" {
+		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
+	}
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var teams []tables.TableTeam
+	if err := baseQuery.
+		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&teams).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return teams, totalCount, nil
+}
+
 // GetTeam retrieves a specific team from the database.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
@@ -2151,6 +2229,38 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 		return nil, err
 	}
 	return customers, nil
+}
+
+// GetCustomersPaginated retrieves customers with pagination and optional search filtering.
+func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableCustomer{})
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var customers []tables.TableCustomer
+	if err := baseQuery.
+		Preload("Teams").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	return customers, totalCount, nil
 }
 
 // GetCustomer retrieves a specific customer from the database.
@@ -2451,7 +2561,7 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 }
 
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
-// rules by priority ASC, created_at DESC; targets by weight DESC for deterministic ordering.
+// rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
 	q := s.db.WithContext(ctx).
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
@@ -2460,7 +2570,7 @@ func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]ta
 				Order("COALESCE(model, '') ASC").
 				Order("COALESCE(key_id, '') ASC")
 		}).
-		Order("priority ASC, created_at DESC")
+		Order("priority ASC, created_at DESC, id ASC")
 	for _, scope := range scopes {
 		q = scope(q)
 	}
@@ -2474,6 +2584,50 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 		return nil, err
 	}
 	return rules, nil
+}
+
+// GetRoutingRulesPaginated retrieves routing rules with pagination and optional search filtering.
+func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableRoutingRule{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var rules []tables.TableRoutingRule
+	if err := baseQuery.
+		Preload("Targets", func(db *gorm.DB) *gorm.DB {
+			return db.Order("weight DESC").
+				Order("COALESCE(provider, '') ASC").
+				Order("COALESCE(model, '') ASC").
+				Order("COALESCE(key_id, '') ASC")
+		}).
+		Order("priority ASC, created_at DESC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&rules).Error; err != nil {
+		return nil, 0, err
+	}
+	return rules, totalCount, nil
 }
 
 // GetRoutingRulesByScope retrieves routing rules by scope and scope ID, ordered by priority ASC.
@@ -2657,6 +2811,45 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 		return nil, err
 	}
 	return modelConfigs, nil
+}
+
+func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableModelConfig{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var modelConfigs []tables.TableModelConfig
+	if err := baseQuery.
+		Preload("Budget").
+		Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, 0, err
+	}
+	return modelConfigs, totalCount, nil
 }
 
 // GetModelConfig retrieves a specific model config from the database by model name and optional provider.

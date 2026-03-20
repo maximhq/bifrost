@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -89,7 +90,7 @@ type BedrockBatchJobSummary struct {
 // BedrockBatchResultRecord represents a single result record in Bedrock batch output JSONL.
 type BedrockBatchResultRecord struct {
 	RecordID    string                 `json:"recordId"`
-	ModelOutput map[string]interface{} `json:"modelOutput,omitempty"`
+	ModelOutput json.RawMessage        `json:"modelOutput,omitempty"`
 	Error       *BedrockBatchError     `json:"error,omitempty"`
 }
 
@@ -165,9 +166,17 @@ func parseBatchResultsJSONL(content []byte, provider *BedrockProvider) ([]schema
 		}
 
 		if bedrockResult.ModelOutput != nil {
-			resultItem.Response = &schemas.BatchResultResponse{
-				StatusCode: 200,
-				Body:       bedrockResult.ModelOutput,
+			var bodyMap map[string]interface{}
+			if err := sonic.Unmarshal(bedrockResult.ModelOutput, &bodyMap); err == nil {
+				resultItem.Response = &schemas.BatchResultResponse{
+					StatusCode: 200,
+					Body:       bodyMap,
+				}
+			} else {
+				resultItem.Error = &schemas.BatchResultError{
+					Code:    "parse_error",
+					Message: fmt.Sprintf("failed to parse model output: %v", err),
+				}
 			}
 		}
 

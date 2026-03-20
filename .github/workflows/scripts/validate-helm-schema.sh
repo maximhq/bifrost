@@ -558,6 +558,36 @@ else
   echo "✅ Plugin items required fields match: [$CONFIG_PLUGIN_ITEMS_REQUIRED]"
 fi
 
+# Check plugin item properties completeness (all config properties must exist in helm custom items)
+echo ""
+echo "🔍 Checking plugin item property completeness..."
+
+CONFIG_PLUGIN_PROPS=$(jq -r '.properties.plugins.items.properties | keys | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_CUSTOM_PLUGIN_PROPS=$(jq -r '.properties.bifrost.properties.plugins.properties.custom.items.properties | keys | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+# Check each config property exists in helm custom items
+for prop in $(echo "$CONFIG_PLUGIN_PROPS" | tr ',' '\n'); do
+  if ! echo "$HELM_CUSTOM_PLUGIN_PROPS" | tr ',' '\n' | grep -qx "$prop"; then
+    echo "❌ Plugin property '$prop' exists in config.schema.json but missing from helm custom plugin items"
+    ERRORS=$((ERRORS + 1))
+  else
+    echo "✅ Plugin property '$prop' present in both schemas"
+  fi
+done
+
+# Verify placement enum values match
+CONFIG_PLACEMENT_ENUM=$(jq -r '.properties.plugins.items.properties.placement.enum // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PLACEMENT_ENUM=$(jq -r '.properties.bifrost.properties.plugins.properties.custom.items.properties.placement.enum // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PLACEMENT_ENUM" != "$HELM_PLACEMENT_ENUM" ]; then
+  echo "❌ Plugin placement enum mismatch:"
+  echo "   Config: [$CONFIG_PLACEMENT_ENUM]"
+  echo "   Helm:   [$HELM_PLACEMENT_ENUM]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Plugin placement enum values match: [$CONFIG_PLACEMENT_ENUM]"
+fi
+
 # Check maxim plugin config required fields (api_key)
 # Note: Helm allows either config.api_key OR secretRef.name via anyOf
 CONFIG_MAXIM_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "maxim") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")

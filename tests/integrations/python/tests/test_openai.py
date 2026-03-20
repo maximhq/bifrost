@@ -2117,6 +2117,41 @@ class TestOpenAIIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking")
     )
+    def test_37a_chat_reasoning_content_is_string(self, test_config, provider, model, vk_enabled):
+        """Test Case 37a: Chat completion with reasoning returns content as string, not array"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        model_to_use = format_provider_model(provider, model)
+
+        try:
+            response = client.chat.completions.create(
+                model=model_to_use,
+                messages=RESPONSES_REASONING_INPUT,
+                max_tokens=1200,
+                extra_body={
+                    "reasoning": {
+                        "effort": "high",
+                    },
+                },
+            )
+
+            # Core assertion: content must be a string, not a list/array
+            content = response.choices[0].message.content
+            assert content is not None, "Response content should not be None"
+            assert isinstance(content, str), (
+                f"Expected message.content to be a string, got {type(content).__name__}: {content!r}"
+            )
+            assert len(content) > 0, "Response content should not be empty"
+
+        except Exception as e:
+            error_str = str(e)
+            if "does not support" in error_str.lower() or "not available" in error_str.lower() or "not supported" in error_str.lower():
+                pytest.skip(f"Reasoning not supported for {provider}/{model}: {error_str}")
+            raise
+
+    @skip_if_no_api_key("openai")
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking")
+    )
     def test_38_responses_reasoning(self, test_config, provider, model, vk_enabled):
         """Test Case 38: Responses API with reasoning (gpt-5 model)"""
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)

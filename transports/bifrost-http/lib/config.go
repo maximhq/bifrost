@@ -59,8 +59,8 @@ type StreamChunkInterceptor interface {
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
-	// GetHeaderFilterConfig returns the global header filter configuration
-	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
+	// GetHeaderMatcher returns the precompiled header matcher for header filtering
+	GetHeaderMatcher() *HeaderMatcher
 	// GetAvailableProviders returns the list of available providers
 	GetAvailableProviders() []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
@@ -328,6 +328,9 @@ type Config struct {
 	StreamingDecompressThreshold int64
 	// WebSocket configuration for WS gateway features (Responses WS mode, Realtime API).
 	WebSocketConfig *schemas.WebSocketConfig
+
+	// Precompiled header matcher for header filtering. Rebuilt on config change.
+	headerMatcher atomic.Pointer[HeaderMatcher]
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -472,6 +475,8 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	// NOTE: We follow a standard practice: store -> config file -> update store.
 	// Load client config
 	loadClientConfigFromFile(ctx, config, &configData)
+	// Compile header filter config into optimized matcher
+	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// Load providers config with hash reconciliation
 	if err = loadProvidersFromFile(ctx, config, &configData); err != nil {
 		return nil, err
@@ -1996,6 +2001,8 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	if err = loadDefaultClientConfig(ctx, config); err != nil {
 		return nil, err
 	}
+	// Compile header filter config into optimized matcher
+	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// Initialize logs store
 	if err = initDefaultLogsStore(ctx, config, logsDBPath); err != nil {
 		return nil, err
@@ -2553,20 +2560,21 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
 }
 
-// GetHeaderFilterConfig returns the global header filter configuration
-// Note: This method doesn't use locking for performance. In rare cases during
-// config updates, it may return stale data, but this is acceptable since pointer
-// reads are atomic and won't cause panics.
-func (c *Config) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
-	return c.ClientConfig.HeaderFilterConfig
+// GetHeaderMatcher returns the precompiled header matcher for header filtering.
+// Lock-free via atomic pointer; safe for concurrent reads from hot paths.
+func (c *Config) GetHeaderMatcher() *HeaderMatcher {
+	return c.headerMatcher.Load()
 }
 
-// GetLoadedLLMPlugins returns the current snapshot of loaded LLM plugins.
-// This method is lock-free and safe for concurrent access from hot paths.
-// It returns the plugin slice from the atomic pointer, which is safe to iterate
-// even if plugins are being updated concurrently.
-// Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
+// SetHeaderMatcher atomically stores a new precompiled header matcher.
+// Called when header filter config changes.
+func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
+	c.headerMatcher.Store(m)
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
+// This method is lock-free and safe for concurrent access from hot paths.
+// Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
 func (c *Config) GetPluginOrder() []string {
 	plugins := c.BasePlugins.Load()
 	if plugins == nil {

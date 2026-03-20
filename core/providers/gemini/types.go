@@ -13,6 +13,7 @@ import (
 
 	"cloud.google.com/go/civil"
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -297,7 +298,7 @@ func (i *Interval) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(i),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -335,7 +336,7 @@ func (i *Interval) MarshalJSON() ([]byte, error) {
 		aux.EndTime = (*time.Time)(&i.EndTime)
 	}
 
-	return json.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // GoogleSearch is a tool to support Google Search in Model. Powered by Google.
@@ -360,7 +361,7 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(g),
 	}
 
-	if err := json.Unmarshal(data, aux); err != nil {
+	if err := sonic.Unmarshal(data, aux); err != nil {
 		return err
 	}
 
@@ -747,7 +748,7 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(t),
 	}
 
-	if err := json.Unmarshal(data, aux); err != nil {
+	if err := sonic.Unmarshal(data, aux); err != nil {
 		return err
 	}
 
@@ -995,7 +996,7 @@ func (p *PrebuiltVoiceConfig) UnmarshalJSON(data []byte) error {
 		VoiceName string `json:"voice_name,omitempty"`
 	}
 	var aux Alias
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	p.VoiceName = aux.VoiceName
@@ -1008,7 +1009,7 @@ func (p PrebuiltVoiceConfig) MarshalJSON() ([]byte, error) {
 	type Alias struct {
 		VoiceName string `json:"voiceName,omitempty"`
 	}
-	return json.Marshal(Alias(p))
+	return providerUtils.MarshalSorted(Alias(p))
 }
 
 // VoiceConfig represents the configuration for the voice to use.
@@ -1024,7 +1025,7 @@ func (v *VoiceConfig) UnmarshalJSON(data []byte) error {
 		PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 	}
 	var aux Alias
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	v.PrebuiltVoiceConfig = aux.PrebuiltVoiceConfig
@@ -1037,7 +1038,7 @@ func (v VoiceConfig) MarshalJSON() ([]byte, error) {
 	type Alias struct {
 		PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuiltVoiceConfig,omitempty"`
 	}
-	return json.Marshal(Alias(v))
+	return providerUtils.MarshalSorted(Alias(v))
 }
 
 // SpeakerVoiceConfig represents the configuration for the speaker to use.
@@ -1201,7 +1202,7 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	}
 
 	var aux PartAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -1255,7 +1256,7 @@ func (b *Blob) UnmarshalJSON(data []byte) error {
 	}
 
 	var aux BlobAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -1345,8 +1346,8 @@ type FunctionCall struct {
 	// `function_call` and return the response with the matching `id`.
 	ID string `json:"id,omitempty"`
 	// Optional. The function parameters and values in JSON object format. See [FunctionDeclaration.parameters]
-	// for parameter details.
-	Args map[string]any `json:"args,omitempty"`
+	// for parameter details. Uses json.RawMessage to preserve key ordering for prompt caching.
+	Args json.RawMessage `json:"args,omitempty"`
 	// Required. The name of the function to call. Matches [FunctionDeclaration.Name].
 	Name string `json:"name,omitempty"`
 }
@@ -1373,7 +1374,7 @@ type FunctionResponse struct {
 	// Required. The function response in JSON object format. Use "output" key to specify
 	// function output and "error" key to specify error details (if any). If "output" and
 	// "error" keys are not specified, then whole "response" is treated as function output.
-	Response map[string]any `json:"response,omitempty"`
+	Response json.RawMessage `json:"response,omitempty"`
 }
 
 // ==================== RESPONSE TYPES ====================
@@ -1479,7 +1480,7 @@ type dateJSON civil.Date
 
 func (d *dateJSON) UnmarshalJSON(data []byte) error {
 	m := make(map[string]int)
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := sonic.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("failed to unmarshal date from map: %w", err)
 	}
 
@@ -1503,7 +1504,7 @@ func (d *dateJSON) UnmarshalJSON(data []byte) error {
 func (d *dateJSON) MarshalJSON() ([]byte, error) {
 	m := make(map[string]int)
 	if d == nil || (civil.Date)(*d).IsZero() {
-		return json.Marshal(nil)
+		return providerUtils.MarshalSorted(nil)
 	}
 	if d.Year != 0 {
 		m["year"] = d.Year
@@ -1514,7 +1515,7 @@ func (d *dateJSON) MarshalJSON() ([]byte, error) {
 	if d.Day != 0 {
 		m["day"] = d.Day
 	}
-	return json.Marshal(m)
+	return providerUtils.MarshalSorted(m)
 }
 
 func (c *Citation) UnmarshalJSON(data []byte) error {
@@ -1526,7 +1527,7 @@ func (c *Citation) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(c),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -1550,7 +1551,7 @@ func (c *Citation) MarshalJSON() ([]byte, error) {
 		aux.PublicationDate = (*dateJSON)(&c.PublicationDate)
 	}
 
-	return json.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // Citation information when the model quotes another source.
@@ -1854,7 +1855,7 @@ func (g *GenerateContentResponse) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(g),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -1878,7 +1879,7 @@ func (g *GenerateContentResponse) MarshalJSON() ([]byte, error) {
 		aux.CreateTime = (*time.Time)(&g.CreateTime)
 	}
 
-	return json.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 type GeminiGenerationError struct {
@@ -1973,7 +1974,7 @@ type GeminiBatchStats struct {
 
 // MarshalJSON implements the json.Marshaler interface.
 func (g *GeminiBatchStats) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
+	return providerUtils.MarshalSorted(struct {
 		RequestCount           string `json:"requestCount"`
 		PendingRequestCount    string `json:"pendingRequestCount"`
 		SuccessfulRequestCount string `json:"successfulRequestCount"`
@@ -1992,7 +1993,7 @@ func (g *GeminiBatchStats) UnmarshalJSON(data []byte) error {
 		PendingRequestCount    string `json:"pendingRequestCount"`
 		SuccessfulRequestCount string `json:"successfulRequestCount"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	if raw.RequestCount != "" {
@@ -2344,7 +2345,7 @@ func (v *VideoImageData) UnmarshalJSON(data []byte) error {
 	}
 
 	var aux VideoImageDataAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -2502,7 +2503,7 @@ type HTTPOptions struct {
 	// The structure must match the backend API's request structure.
 	//   - VertexAI backend API docs: https://cloud.google.com/vertex-ai/docs/reference/rest
 	//   - GeminiAPI backend API docs: https://ai.google.dev/api/rest
-	ExtraBody map[string]any `json:"extraBody,omitempty"`
+	ExtraBody json.RawMessage `json:"extraBody,omitempty"`
 	// Optional. A function that allows for request body customization.
 	// It is executed after ExtraBody has been merged, offering more advanced
 	// control over the request body than the static ExtraBody.
@@ -2611,12 +2612,12 @@ type GenerateVideosOperation struct {
 	// progress information and common metadata such as create time. Some services might
 	// not provide such metadata. Any method that returns a long-running operation should
 	// document the metadata type, if any.
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 	// If the value is `false`, it means the operation is still in progress. If `true`,
 	// the operation is completed, and either `error` or `response` is available.
 	Done bool `json:"done,omitempty"`
 	// Optional. The error result of the operation in case of failure or cancellation.
-	Error map[string]any `json:"error,omitempty"`
+	Error json.RawMessage `json:"error,omitempty"`
 	// Optional. The long-running operation response payload.
 	Response *GenerateVideosOperationResponse `json:"response,omitempty"`
 }

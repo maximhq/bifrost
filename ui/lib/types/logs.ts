@@ -495,6 +495,7 @@ export interface LogFilters {
 	max_tokens?: number;
 	missing_cost_only?: boolean;
 	content_search?: string;
+	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 export interface Pagination {
@@ -658,6 +659,7 @@ export type ResponsesMessageType =
 	| "computer_call"
 	| "computer_call_output"
 	| "web_search_call"
+	| "web_fetch_call"
 	| "function_call"
 	| "function_call_output"
 	| "code_interpreter_call"

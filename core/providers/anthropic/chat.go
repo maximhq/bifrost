@@ -3,12 +3,19 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// contentBlockMeta stores type and length of a content block for multi-turn reconstruction.
+type contentBlockMeta struct {
+	T string `json:"t"` // "thinking" or "text"
+	L int    `json:"l"` // length in UTF-8 bytes
+}
 
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
@@ -53,9 +60,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
 				delete(anthropicReq.ExtraParams, "context_management")
 				anthropicReq.ContextManagement = cm
-			} else if data, err := json.Marshal(cmVal); err == nil {
+			} else if data, err := providerUtils.MarshalSorted(cmVal); err == nil {
 				var cm ContextManagement
-				if json.Unmarshal(data, &cm) == nil {
+				if sonic.Unmarshal(data, &cm) == nil {
 					delete(anthropicReq.ExtraParams, "context_management")
 					anthropicReq.ContextManagement = &cm
 				}
@@ -327,20 +334,97 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 			var content []AnthropicContentBlock
 
-			// First add reasoning details
+			// Extract block metadata and signatures from reasoning details
+			var blockMeta []contentBlockMeta
+			var signatures []*string // signatures for thinking blocks, in order
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ReasoningDetails != nil {
-				for _, reasoningDetail := range msg.ChatAssistantMessage.ReasoningDetails {
+				for _, rd := range msg.ChatAssistantMessage.ReasoningDetails {
+					if rd.Type == schemas.BifrostReasoningDetailsTypeContentBlocks {
+						// Extract block boundary metadata
+						if rd.Text != nil {
+							sonic.Unmarshal([]byte(*rd.Text), &blockMeta)
+						}
+						continue
+					}
+					if rd.Type == schemas.BifrostReasoningDetailsTypeText {
+						signatures = append(signatures, rd.Signature)
+					}
+					// Add reasoning details as thinking blocks
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
-						Signature: reasoningDetail.Signature,
-						Thinking:  reasoningDetail.Text,
+						Signature: rd.Signature,
+						Thinking:  rd.Text,
 					})
 				}
 			}
 
 			if msg.Content != nil {
-				// Convert text content
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" && len(blockMeta) > 1 {
+					// Reconstruct original blocks from combined string using boundaries
+					combined := *msg.Content.ContentStr
+					expectedLen := 0
+					for i, bm := range blockMeta {
+						expectedLen += bm.L
+						if i > 0 {
+							expectedLen += 2 // \n\n separator
+						}
+					}
+
+					valid := expectedLen == len(combined)
+					if valid {
+						pos := 0
+						for i, bm := range blockMeta {
+							if bm.L < 0 || bm.L > len(combined)-pos {
+								valid = false
+								break
+							}
+							nextPos := pos + bm.L
+							if i < len(blockMeta)-1 && (len(combined)-nextPos < 2 || combined[nextPos:nextPos+2] != "\n\n") {
+								valid = false
+								break
+							}
+							if i < len(blockMeta)-1 {
+								pos = nextPos + 2
+							} else {
+								pos = nextPos
+							}
+						}
+					}
+					if valid {
+						// Clear thinking blocks added above — we'll reconstruct from the combined string
+						content = content[:0]
+						sigIdx := 0
+						pos := 0
+						for _, bm := range blockMeta {
+							blockText := combined[pos : pos+bm.L]
+							if bm.T == "thinking" {
+								var sig *string
+								if sigIdx < len(signatures) {
+									sig = signatures[sigIdx]
+									sigIdx++
+								}
+								content = append(content, AnthropicContentBlock{
+									Type:      AnthropicContentBlockTypeThinking,
+									Thinking:  &blockText,
+									Signature: sig,
+								})
+							} else {
+								content = append(content, AnthropicContentBlock{
+									Type: AnthropicContentBlockTypeText,
+									Text: &blockText,
+								})
+							}
+							pos += bm.L + 2
+						}
+					} else {
+						// Boundaries don't match (content was modified), fall back to single text block
+						content = append(content, AnthropicContentBlock{
+							Type: AnthropicContentBlockTypeText,
+							Text: msg.Content.ContentStr,
+						})
+					}
+				} else if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+					// No block metadata — single text block
 					content = append(content, AnthropicContentBlock{
 						Type: AnthropicContentBlockTypeText,
 						Text: msg.Content.ContentStr,
@@ -371,11 +455,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						Name: toolCall.Function.Name,
 					}
 
-					// Parse arguments JSON to interface{}
+					// Preserve original key ordering of tool arguments for prompt caching.
+					// Using json.RawMessage avoids the map[string]interface{} round-trip
+					// that would destroy key order.
 					if toolCall.Function.Arguments != "" {
-						var input interface{}
-						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err == nil {
-							toolUse.Input = input
+						if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
+							toolUse.Input = json.RawMessage(compacted)
+						} else {
+							// Preserve original payload instead of silently dropping args.
+							toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
 						}
 					}
 
@@ -453,7 +541,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 						// This is a structured output tool - convert to text content
 						var jsonStr string
 						if c.Input != nil {
-							if argBytes, err := sonic.Marshal(c.Input); err == nil {
+							if argBytes, err := providerUtils.MarshalSorted(c.Input); err == nil {
 								jsonStr = string(argBytes)
 							} else {
 								jsonStr = fmt.Sprintf("%v", c.Input)
@@ -471,7 +559,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 					// Marshal the input to JSON string
 					if c.Input != nil {
-						args, err := json.Marshal(c.Input)
+						args, err := providerUtils.MarshalSorted(c.Input)
 						if err != nil {
 							function.Arguments = fmt.Sprintf("%v", c.Input)
 						} else {
@@ -502,9 +590,64 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
-	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-		contentStr = contentBlocks[0].Text
-		contentBlocks = nil
+	if len(contentBlocks) > 0 {
+		allText := true
+		for _, block := range contentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText {
+				allText = false
+				break
+			}
+		}
+		if allText {
+			needsCombine := len(contentBlocks) > 1 || len(reasoningDetails) > 0
+			if !needsCombine {
+				// Single text block, no thinking — simple collapse
+				contentStr = contentBlocks[0].Text
+			} else {
+				// Combine thinking (first) + text blocks into a single string
+				var parts []string
+				var blockMeta []contentBlockMeta
+
+				// Thinking blocks first
+				for _, rd := range reasoningDetails {
+					if rd.Type == schemas.BifrostReasoningDetailsTypeText && rd.Text != nil {
+						parts = append(parts, *rd.Text)
+						blockMeta = append(blockMeta, contentBlockMeta{T: "thinking", L: len(*rd.Text)})
+					}
+				}
+
+				// Then text blocks top to bottom
+				for _, block := range contentBlocks {
+					if block.Text != nil {
+						parts = append(parts, *block.Text)
+						blockMeta = append(blockMeta, contentBlockMeta{T: "text", L: len(*block.Text)})
+					}
+				}
+
+				joined := strings.Join(parts, "\n\n")
+				contentStr = &joined
+
+				// Record boundaries for multi-turn reconstruction
+				if len(blockMeta) > 1 {
+					if metaJSON, err := providerUtils.MarshalSorted(blockMeta); err == nil {
+						metaStr := string(metaJSON)
+						reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+							Index: len(reasoningDetails),
+							Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
+							Text:  &metaStr,
+						})
+					}
+				}
+
+				// Clear thinking text from reasoning_details (keep signature only)
+				for i := range reasoningDetails {
+					if reasoningDetails[i].Type == schemas.BifrostReasoningDetailsTypeText {
+						reasoningDetails[i].Text = nil
+					}
+				}
+			}
+			contentBlocks = nil
+		}
 	}
 
 	// Create a single choice with the collected content
@@ -663,21 +806,24 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		// Add tool calls as tool_use content
 		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil && choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-				// Parse arguments JSON string back to map
-				var input map[string]interface{}
+				// Parse arguments JSON string to raw message
+				var inputRaw json.RawMessage
 				if toolCall.Function.Arguments != "" {
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-						input = map[string]interface{}{}
+					// Validate it's valid JSON, otherwise use empty object
+					if json.Valid([]byte(toolCall.Function.Arguments)) {
+						inputRaw = json.RawMessage(toolCall.Function.Arguments)
+					} else {
+						inputRaw = json.RawMessage("{}")
 					}
 				} else {
-					input = map[string]interface{}{}
+					inputRaw = json.RawMessage("{}")
 				}
 
 				content = append(content, AnthropicContentBlock{
 					Type:  AnthropicContentBlockTypeToolUse,
 					ID:    toolCall.ID,
 					Name:  toolCall.Function.Name,
-					Input: input,
+					Input: inputRaw,
 				})
 			}
 		}
@@ -1053,7 +1199,7 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 	}
 
 	// Marshal to JSON and format as SSE
-	jsonData, err := json.Marshal(streamResp)
+	jsonData, err := providerUtils.MarshalSorted(streamResp)
 	if err != nil {
 		return ""
 	}
@@ -1069,7 +1215,7 @@ func ToAnthropicChatStreamError(bifrostErr *schemas.BifrostError) string {
 		return ""
 	}
 	// Marshal to JSON
-	jsonData, err := json.Marshal(errorResp)
+	jsonData, err := providerUtils.MarshalSorted(errorResp)
 	if err != nil {
 		return ""
 	}
