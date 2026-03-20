@@ -1,0 +1,1912 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Inference with Bifrost Features",
+    "description": "Combined test suite: Async Inference, Fallbacks, Management E2E Flows, Rate Limit, Session Stickiness, and VK Governance Routing.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "embed_job_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "poll_retries",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "embed_poll_retries",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "fallback_provider",
+      "value": "anthropic",
+      "type": "string"
+    },
+    {
+      "key": "fallback_model",
+      "value": "claude-3-5-sonnet-20241022",
+      "type": "string"
+    },
+    {
+      "key": "customer_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "team_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "session_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Async Inference",
+      "item": [
+        {
+          "name": "Submit Chat Completion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('poll_retries', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 404) {",
+                  "  pm.test('Async not configured (404)', function() { pm.expect(true).to.be.true; });",
+                  "  if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+                  "    postman.setNextRequest('Submit with stream (expect 400)');",
+                  "  }",
+                  "  return;",
+                  "}",
+                  "pm.test('Status 202', function() { pm.expect(code).to.equal(202); });",
+                  "if (code === 202) {",
+                  "  var json = pm.response.json();",
+                  "  pm.test('Has job_id', function() { pm.expect(json.id).to.be.a('string'); });",
+                  "  pm.test('Status is pending', function() { pm.expect(json.status).to.equal('pending'); });",
+                  "  pm.collectionVariables.set('job_id', json.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/async/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Poll Chat Completion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+                  "var json = pm.response.json();",
+                  "var status = json.status;",
+                  "if (status === 'pending' || status === 'processing') {",
+                  "  pm.test('HTTP 202 while pending/processing', function() { pm.expect(code).to.equal(202); });",
+                  "  var retries = parseInt(pm.collectionVariables.get('poll_retries') || '0', 10);",
+                  "  if (retries < 10) {",
+                  "    pm.collectionVariables.set('poll_retries', String(retries + 1));",
+                  "    var end = Date.now() + 3000;",
+                  "    while (Date.now() < end) {}",
+                  "    if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+                  "      postman.setNextRequest('Poll Chat Completion');",
+                  "    }",
+                  "  } else {",
+                  "    pm.test('Job completed or max retries', function() { pm.expect(status).to.be.oneOf(['completed', 'failed']); });",
+                  "  }",
+                  "} else if (status === 'completed') {",
+                  "  pm.test('HTTP 200 when completed', function() { pm.expect(code).to.equal(200); });",
+                  "  pm.test('Job completed', function() { pm.expect(status).to.equal('completed'); });",
+                  "  pm.test('Has result', function() { pm.expect(json.result).to.not.be.undefined; });",
+                  "  pm.test('Result has choices with content', function() {",
+                  "    pm.expect(json.result).to.have.property('choices').that.is.an('array').and.has.length.above(0);",
+                  "    pm.expect(json.result.choices[0]).to.have.property('message');",
+                  "    pm.expect(json.result.choices[0].message).to.have.property('content').that.is.a('string');",
+                  "  });",
+                  "} else if (status === 'failed') {",
+                  "  pm.test('HTTP 200 when failed', function() { pm.expect(code).to.equal(200); });",
+                  "  pm.test('Job failed (acceptable)', function() { pm.expect(status).to.equal('failed'); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/async/chat/completions/{{job_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions",
+                "{{job_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit Embedding with TTL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('embed_poll_retries', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('Status 202', function() { pm.expect(code).to.equal(202); });",
+                  "if (code === 202) {",
+                  "  var json = pm.response.json();",
+                  "  pm.collectionVariables.set('embed_job_id', json.id);",
+                  "  pm.test('expires_at is set when TTL provided', function() { pm.expect(json.expires_at).to.not.be.undefined; });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-async-job-result-ttl",
+                "value": "60"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/async/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Poll Embedding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+                  "var json = pm.response.json();",
+                  "var status = json.status;",
+                  "if (status === 'pending' || status === 'processing') {",
+                  "  pm.test('HTTP 202 while pending/processing', function() { pm.expect(code).to.equal(202); });",
+                  "  var retries = parseInt(pm.collectionVariables.get('embed_poll_retries') || '0', 10);",
+                  "  if (retries < 10) {",
+                  "    pm.collectionVariables.set('embed_poll_retries', String(retries + 1));",
+                  "    var end = Date.now() + 3000;",
+                  "    while (Date.now() < end) {}",
+                  "    if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+                  "      postman.setNextRequest('Poll Embedding');",
+                  "    }",
+                  "  }",
+                  "} else if (status === 'completed') {",
+                  "  pm.test('HTTP 200 when completed', function() { pm.expect(code).to.equal(200); });",
+                  "  pm.test('Embedding job completed', function() { pm.expect(status).to.equal('completed'); });",
+                  "  pm.test('Result has embedding data', function() {",
+                  "    pm.expect(json.result).to.not.be.undefined;",
+                  "    pm.expect(json.result).to.have.property('data').that.is.an('array').and.has.length.above(0);",
+                  "    pm.expect(json.result.data[0]).to.have.property('embedding').that.is.an('array');",
+                  "  });",
+                  "} else if (status === 'failed') {",
+                  "  pm.test('HTTP 200 when failed', function() { pm.expect(code).to.equal(200); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/async/embeddings/{{embed_job_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "embeddings",
+                "{{embed_job_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit with stream (expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 404) { pm.test('Skip - async not configured', function() { pm.expect(true).to.be.true; }); return; }",
+                  "pm.test('Streaming not supported on async - expect 400', function() { pm.expect(code).to.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/async/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fallbacks",
+      "item": [
+        {
+          "name": "Chat Completion with fallbacks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var extra = json.extra_fields || {};",
+                  "  var providerUsed = extra.provider || json.provider;",
+                  "  var allowed = ['openai', 'anthropic'];",
+                  "  pm.test('Provider is openai or anthropic', function() {",
+                  "    pm.expect(providerUsed).to.be.oneOf(allowed);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"anthropic/claude-3-5-sonnet-20241022\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Forced fallback (invalid primary)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var extra = json.extra_fields || {};",
+                  "  var providerUsed = extra.provider || json.provider;",
+                  "  pm.test('Provider is openai (fallback)', function() {",
+                  "    pm.expect(String(providerUsed).toLowerCase()).to.equal('openai');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/nonexistent-model-xyz\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"openai/gpt-4o\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "All fallbacks fail",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Status is non-2xx', function() { pm.expect(code).to.not.be.within(200, 299); });",
+                  "if (code >= 400) {",
+                  "  try {",
+                  "    var json = pm.response.json();",
+                  "    var msg = (json.error && json.error.message) ? json.error.message : (json.message || '');",
+                  "    pm.test('Error response has message', function() {",
+                  "      pm.expect(msg).to.be.a('string').and.not.be.empty;",
+                  "    });",
+                  "  } catch (e) {}",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/nonexistent-1\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"fallbacks\": [\"openai/nonexistent-2\"],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Management Flows",
+      "item": [
+        {
+          "name": "Flow A - List Providers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List Providers returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow A - List Keys",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('List Keys returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow A - Chat Completion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat Completion returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Create Customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = { name: 'Mgmt Flow Customer ' + Date.now(), email: 'mgmt@example.com' };",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create Customer returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  pm.test('Response contains customer object', function() { pm.expect(json.customer || json).to.be.an('object'); });",
+                  "  var c = json.customer || json;",
+                  "  pm.test('Customer has non-empty id', function() { pm.expect(c.id).to.be.a('string').and.not.be.empty; });",
+                  "  if (c.id) pm.collectionVariables.set('customer_id', c.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Create Team",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cid = pm.collectionVariables.get('customer_id');",
+                  "var body = { name: 'Mgmt Flow Team ' + Date.now() };",
+                  "if (cid) body.customer_id = cid;",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create Team returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  pm.test('Response contains team object', function() { pm.expect(json.team || json).to.be.an('object'); });",
+                  "  var t = json.team || json;",
+                  "  pm.test('Team has non-empty id', function() { pm.expect(t.id).to.be.a('string').and.not.be.empty; });",
+                  "  if (t.id) pm.collectionVariables.set('team_id', t.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Create VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var tid = pm.collectionVariables.get('team_id');",
+                  "var body = { name: 'Mgmt Flow VK ' + Date.now() };",
+                  "if (tid) body.team_id = tid;",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+                  "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+                  "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+                  "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+                  "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Chat Completion with VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Delete Team",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete Team returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "teams",
+                "{{team_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow B - Delete Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete Customer returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "customers",
+                "{{customer_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Create VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = { name: 'Lifecycle VK ' + Date.now() };",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+                  "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+                  "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+                  "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+                  "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Chat Completion with VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Update VK (rename)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ name: 'Lifecycle VK Renamed ' + Date.now() });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Update VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Chat Completion after rename",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat after rename returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Deactivate VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({ is_active: false });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Deactivate VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Chat with deactivated VK (expect 403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Deactivated VK returns 403', function() { pm.expect(code).to.equal(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Flow C - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rate Limit",
+      "item": [
+        {
+          "name": "Setup - Create VK with rate limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'Rate Limit Test VK ' + ts,",
+                  "  rate_limit: {",
+                  "    request_max_limit: 2,",
+                  "    request_reset_duration: '1m'",
+                  "  }",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+                  "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+                  "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+                  "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+                  "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion #1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request 1: 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion #2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request 2: 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion #3 (expect 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Request 3: 429 rate limited', function() { pm.expect(code).to.equal(429); });",
+                  "if (code === 429) {",
+                  "  var json = pm.response.json();",
+                  "  var errType = (json.type || (json.error && json.error.type) || '').toString();",
+                  "  if (errType) {",
+                  "    pm.test('Error type indicates rate limit', function() {",
+                  "      pm.expect(errType).to.match(/request_limited|rate_limited|token_limited/);",
+                  "    });",
+                  "  }",
+                  "  pm.test('Error has message', function() {",
+                  "    pm.expect(json.error).to.be.an('object');",
+                  "    pm.expect(json.error.message).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vkId = pm.collectionVariables.get('vk_id');",
+                  "if (!vkId) { pm.test('Teardown skipped - no VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+                  "var code = pm.response.code;",
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Session Stickiness",
+      "item": [
+        {
+          "name": "Chat Completion with session ID",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var sid = 'test-session-' + Date.now();",
+                  "pm.collectionVariables.set('session_id', sid);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{session_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion with same session ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{session_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion with different session ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "test-session-other-{{$timestamp}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion with session TTL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "test-session-ttl"
+              },
+              {
+                "key": "x-bf-session-ttl",
+                "value": "60"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "VK Routing",
+      "item": [
+        {
+          "name": "Setup - Create VK with provider config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ts = Date.now();",
+                  "var body = {",
+                  "  name: 'Routing Test VK ' + ts,",
+                  "  provider_configs: [{",
+                  "    provider: pm.collectionVariables.get('provider') || 'openai',",
+                  "    weight: 1.0,",
+                  "    allowed_models: [pm.collectionVariables.get('chat_model') || 'gpt-4o']",
+                  "  }]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var vk = json.virtual_key || json;",
+                  "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+                  "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+                  "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+                  "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+                  "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion - model without provider prefix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var extra = json.extra_fields || {};",
+                  "  var providerUsed = extra.provider;",
+                  "  var expected = (pm.collectionVariables.get('provider') || 'openai').toLowerCase();",
+                  "  pm.test('Provider matches VK config', function() {",
+                  "    pm.expect(String(providerUsed).toLowerCase()).to.equal(expected);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion - explicit provider prefix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Status is 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var json = pm.response.json();",
+                  "  var extra = json.extra_fields || {};",
+                  "  var providerUsed = extra.provider;",
+                  "  var expected = (pm.collectionVariables.get('provider') || 'openai').toLowerCase();",
+                  "  pm.test('Provider matches VK config (explicit prefix)', function() {",
+                  "    pm.expect(String(providerUsed).toLowerCase()).to.equal(expected);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion - blocked model (expect 403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Model blocked - expect 4xx', function() { pm.expect(code).to.be.oneOf([400, 403]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nonexistent-model\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Teardown - Delete VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vkId = pm.collectionVariables.get('vk_id');",
+                  "if (!vkId) { pm.test('Teardown skipped - no VK to delete', function() { pm.expect(true).to.be.true; }); return; }",
+                  "var code = pm.response.code;",
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

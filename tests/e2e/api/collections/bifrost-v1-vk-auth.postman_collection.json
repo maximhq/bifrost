@@ -1,0 +1,696 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Auth",
+    "description": "Virtual key authentication tests for inference endpoints. Self-provisions a VK, runs inference with/without VK, tests rejection cases, and cleans up.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "responses_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "enforce_auth",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Create Virtual Key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Auth Test ' + timestamp;",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 200 or 201', function() { pm.expect(code).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.match(/^sk-bf-/);",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Auth Test\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inference Without VK",
+      "item": [
+        {
+          "name": "Chat Completion - No VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var enforceAuth = (pm.environment && pm.environment.get('enforce_auth')) || pm.collectionVariables.get('enforce_auth') || '';",
+                  "if (enforceAuth === '1' || String(enforceAuth).toLowerCase() === 'true') {",
+                  "  pm.test('Without VK and enforce_auth: expect 401', function() { pm.expect(code).to.equal(401); });",
+                  "} else {",
+                  "  pm.test('Without VK and no enforce_auth: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embedding - No VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var enforceAuth = (pm.environment && pm.environment.get('enforce_auth')) || pm.collectionVariables.get('enforce_auth') || '';",
+                  "if (enforceAuth === '1' || String(enforceAuth).toLowerCase() === 'true') {",
+                  "  pm.test('Without VK and enforce_auth: expect 401', function() { pm.expect(code).to.equal(401); });",
+                  "} else {",
+                  "  pm.test('Without VK and no enforce_auth: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses - No VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "var enforceAuth = (pm.environment && pm.environment.get('enforce_auth')) || pm.collectionVariables.get('enforce_auth') || '';",
+                  "if (enforceAuth === '1' || String(enforceAuth).toLowerCase() === 'true') {",
+                  "  pm.test('Without VK and enforce_auth: expect 401', function() { pm.expect(code).to.equal(401); });",
+                  "} else {",
+                  "  pm.test('Without VK and no enforce_auth: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": \"Say hello\",\n  \"max_output_tokens\": 50\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inference With VK (x-bf-vk)",
+      "item": [
+        {
+          "name": "Chat Completion - x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('With valid VK: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embedding - x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('With valid VK: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses - x-bf-vk",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('With valid VK: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": \"Say hello\",\n  \"max_output_tokens\": 50\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inference With VK (Authorization Bearer)",
+      "item": [
+        {
+          "name": "Chat Completion - Authorization Bearer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('With Bearer VK: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inference With VK (x-api-key)",
+      "item": [
+        {
+          "name": "Chat Completion - x-api-key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('With x-api-key VK: expect 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rejection - Invalid VK",
+      "item": [
+        {
+          "name": "Chat Completion - x-bf-vk invalid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Invalid VK: expect 403', function() { pm.expect(code).to.equal(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "invalid-not-a-real-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion - x-bf-vk nonexistent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Nonexistent VK: expect 403', function() { pm.expect(code).to.equal(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-00000000-0000-0000-0000-000000000000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown - Deactivate",
+      "item": [
+        {
+          "name": "Deactivate Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Deactivate VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"is_active\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completion - Deactivated VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Deactivated VK: expect 403', function() { pm.expect(code).to.equal(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vk_value}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],\n  \"max_completion_tokens\": 10,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown - Delete",
+      "item": [
+        {
+          "name": "Delete Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
