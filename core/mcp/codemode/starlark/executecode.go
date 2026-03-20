@@ -331,8 +331,14 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		},
 	}
 
-	// Set up cancellation check
+	// Set up cancellation check — watch the context and cancel the Starlark
+	// thread so that infinite loops and other long-running scripts are interrupted
+	// when the execution timeout fires.
 	thread.SetLocal("context", timeoutCtx)
+	go func() {
+		<-timeoutCtx.Done()
+		thread.Cancel(timeoutCtx.Err().Error())
+	}()
 
 	// Step 4: Configure Starlark dialect options for a Python-like experience
 	starlarkOpts := &syntax.FileOptions{

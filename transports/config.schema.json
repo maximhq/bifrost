@@ -1610,7 +1610,7 @@
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools to execute for this MCP config",
+          "description": "Include-only list of tools this Virtual Key is permitted to execute from this MCP client. ['*'] means all tools allowed, [] means no tools allowed (deny-by-default).",
           "items": {
             "type": "string"
           }
@@ -2278,6 +2278,13 @@
         "tool_sync_interval": {
           "type": "string",
           "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+        },
+        "allowed_extra_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlist of request-level headers that callers may forward to this MCP server at execution time. Use ['*'] to allow all headers."
         },
         "is_ping_available": {
           "type": "boolean",

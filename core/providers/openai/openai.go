@@ -1132,6 +1132,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 		var finishReason *string
 		var messageID string
+		var created int
 		forwardedTerminalFinishReason := false
 
 		for {
@@ -1315,6 +1316,9 @@ func HandleOpenAIChatCompletionStreaming(
 				if response.ID != "" && messageID == "" {
 					messageID = response.ID
 				}
+				if response.Created != 0 && created == 0 {
+					created = response.Created
+				}
 
 				// Handle regular content chunks, including reasoning
 				if choice.ChatStreamResponseChoice != nil &&
@@ -1355,7 +1359,7 @@ func HandleOpenAIChatCompletionStreaming(
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
 			}
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, streamRequestType, providerName, request.Model)
+			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, streamRequestType, providerName, request.Model, created)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}

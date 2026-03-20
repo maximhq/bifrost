@@ -760,8 +760,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -821,8 +821,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int

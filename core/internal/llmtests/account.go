@@ -179,7 +179,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -188,7 +188,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -197,7 +197,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -205,7 +205,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -222,7 +222,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -255,7 +255,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.COHERE_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -264,7 +264,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
@@ -286,7 +286,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 			{
 				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
@@ -346,7 +346,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.MISTRAL_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -355,7 +355,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.GROQ_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -364,7 +364,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.PARASAIL_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -373,7 +373,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.ELEVENLABS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -382,7 +382,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.PERPLEXITY_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -391,7 +391,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.CEREBRAS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -400,7 +400,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.GEMINI_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -409,7 +409,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.OPENROUTER_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -418,7 +418,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.HUGGING_FACE_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -427,7 +427,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.NEBIUS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -436,7 +436,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.XAI_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -445,7 +445,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -454,7 +454,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},

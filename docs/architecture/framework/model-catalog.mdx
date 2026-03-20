@@ -258,11 +258,11 @@ This cross-provider logic powers Bifrost's intelligent routing capabilities. See
 Validate if a model is allowed for a specific provider based on an allowed models list. This method is used internally by governance and load balancing plugins.
 
 ```go
-// Empty allowedModels - uses catalog to determine support
+// ["*"] wildcard - uses catalog to determine support
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{}, // empty = check catalog
+    schemas.WhiteList{"*"}, // wildcard = check catalog
 )
 // Returns: true (catalog knows OpenRouter supports openai/gpt-4o)
 
@@ -270,7 +270,7 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
+    schemas.WhiteList{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
 )
 // Returns: true (strips "openai/" prefix and matches "gpt-4o")
 
@@ -278,14 +278,19 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenAI,
     "gpt-4o",
-    []string{"gpt-4o", "gpt-4o-mini"},
+    schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
 )
 // Returns: true (direct match)
 ```
 
 **Behavior**:
-- **Empty `allowedModels`**: Delegates to `GetProvidersForModel` (includes cross-provider logic)
-- **Non-empty `allowedModels`**: Checks for both direct matches and provider-prefixed entries
+- **`["*"]` wildcard**: Delegates to `GetProvidersForModel` (includes cross-provider logic) — this is the "allow all via catalog" mode
+- **Non-empty explicit list**: Checks for both direct matches and provider-prefixed entries
+- **Empty slice (`[]string{}` / empty `schemas.WhiteList`)**: Returns `false` (deny-all) — mirrors the config deny-by-default semantics
+
+<Note>
+In `config.json` and the governance API, `allowed_models: []` (empty array) means **deny all models** (deny-by-default, v1.5.0+). The Go helper `IsModelAllowedForProvider` behaves the same way: an empty `allowedModels` slice also returns `false`. Use `["*"]` to allow all models validated through the catalog.
+</Note>
   - Direct: `"gpt-4o"` matches `"gpt-4o"`
   - Prefixed: `"openai/gpt-4o"` matches request for `"gpt-4o"` (prefix stripped)
 
