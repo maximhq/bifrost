@@ -185,6 +185,8 @@ var imageGenerationParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"num_inference_steps": true,
 	"user":                true,
+	"aspect_ratio":        true,
+	"input_images":        true,
 }
 
 // imageEditParamsKnownFields contains known fields for image edit requests
