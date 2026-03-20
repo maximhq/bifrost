@@ -175,6 +175,13 @@ compare_struct_to_schema \
   "state" \
   "config_hash"
 
+# PluginConfig — core/schemas/plugin.go → .properties.plugins.items.properties
+compare_struct_to_schema \
+  "Plugin Config" \
+  "$REPO_ROOT/core/schemas/plugin.go" \
+  "PluginConfig" \
+  '.properties.plugins.items.properties'
+
 # Summary
 echo ""
 echo "========================================================"
