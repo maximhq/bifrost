@@ -67,13 +67,12 @@ export function LogsDataTable({
 		[columns],
 	);
 
-	const fixedColumnIds = useMemo(() => new Set(["status", "actions"]), []);
+	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
 
 	// Column config: order, visibility, pinning — persisted in URL
 	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
 		columnIds,
 		paramName: "cols",
-		fixedColumns: { left: ["status"], right: ["actions"] },
 	});
 
 	// Measure actual header cell widths for pixel-perfect pin offsets

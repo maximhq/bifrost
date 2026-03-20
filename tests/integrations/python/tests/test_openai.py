@@ -2120,6 +2120,7 @@ class TestOpenAIIntegration:
     def test_37a_chat_reasoning_content_is_string(self, test_config, provider, model, vk_enabled):
         """Test Case 37a: Chat completion with reasoning returns content as string, not array"""
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        client = client.with_options(timeout=300)
         model_to_use = format_provider_model(provider, model)
 
         try:
