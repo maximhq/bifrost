@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
+	"github.com/maximhq/bifrost/core/providers/chatgpt"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -44,7 +45,31 @@ import (
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
+
+	"encoding/json"
+	"os"
 )
+
+// #region agent log
+func coreDebugLog(id, message string, data map[string]interface{}, hypothesisID string) {
+	entry := map[string]interface{}{
+		"sessionId":    "8579a9",
+		"id":           id,
+		"timestamp":    time.Now().UnixMilli(),
+		"location":     "bifrost.go(core)",
+		"message":      message,
+		"data":         data,
+		"hypothesisId": hypothesisID,
+	}
+	line, _ := json.Marshal(entry)
+	f, err := os.OpenFile("/Users/akshay/Codebase/universe/bifrost/.cursor/debug-8579a9.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
+}
+
+// #endregion
 
 // ChannelMessage represents a message passed through the request channel.
 // It contains the request, response and error channels, and the request type.
@@ -3614,6 +3639,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.ChatGPT:
+		return chatgpt.NewChatGPTProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -3699,12 +3726,34 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
+		// #region agent log
+		coreDebugLog("get-config-fail", "GetConfigForProvider failed", map[string]interface{}{
+			"provider": string(providerKey),
+			"error":    err.Error(),
+		}, "H")
+		// #endregion
 		return nil, fmt.Errorf("failed to get config for provider: %v", err)
 	}
 	if config == nil {
+		// #region agent log
+		coreDebugLog("config-nil", "Config is nil for provider", map[string]interface{}{
+			"provider": string(providerKey),
+		}, "H")
+		// #endregion
 		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
 	}
+	// #region agent log
+	coreDebugLog("prepare-provider", "About to prepareProvider", map[string]interface{}{
+		"provider": string(providerKey),
+	}, "H")
+	// #endregion
 	if err := bifrost.prepareProvider(providerKey, config); err != nil {
+		// #region agent log
+		coreDebugLog("prepare-fail", "prepareProvider failed", map[string]interface{}{
+			"provider": string(providerKey),
+			"error":    err.Error(),
+		}, "H")
+		// #endregion
 		return nil, err
 	}
 	pqValue, ok := bifrost.requestQueues.Load(providerKey)
@@ -4248,8 +4297,21 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	provider, model, _ := req.GetRequestFields()
+	// #region agent log
+	coreDebugLog("try-request", "tryRequest entry", map[string]interface{}{
+		"provider":    string(provider),
+		"model":       model,
+		"requestType": string(req.RequestType),
+	}, "H")
+	// #endregion
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
+		// #region agent log
+		coreDebugLog("queue-fail", "getProviderQueue failed", map[string]interface{}{
+			"provider": string(provider),
+			"error":    err.Error(),
+		}, "H")
+		// #endregion
 		bifrostErr := newBifrostError(err)
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
