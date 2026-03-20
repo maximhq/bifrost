@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,9 +79,6 @@ func buildOAuthHTTPClient(config *lib.Config) *http.Client {
 		return &http.Client{Timeout: 30 * time.Second}
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	if pc.SkipTLSVerify {
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} // #nosec G402 — user-configured skip
-	}
 	return &http.Client{Timeout: 30 * time.Second, Transport: tr}
 }
 
@@ -110,7 +106,8 @@ func (h *CopilotHandler) initiateDeviceLogin(ctx *fasthttp.RequestCtx) {
 	}.Encode()
 
 	// Derive a stdlib context so that request deadlines propagate as cancellation.
-	stdCtx := fasthttpStdContext(ctx)
+	stdCtx, cancel := fasthttpStdContext(ctx)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(stdCtx, http.MethodPost, h.deviceCodeURL, strings.NewReader(body))
 	if err != nil {
@@ -185,7 +182,8 @@ func (h *CopilotHandler) pollDeviceLogin(ctx *fasthttp.RequestCtx) {
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 	}.Encode()
 
-	stdCtx := fasthttpStdContext(ctx)
+	stdCtx, cancel := fasthttpStdContext(ctx)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(stdCtx, http.MethodPost, h.accessTokenURL, strings.NewReader(body))
 	if err != nil {
@@ -258,10 +256,9 @@ func (h *CopilotHandler) pollDeviceLogin(ctx *fasthttp.RequestCtx) {
 // set on the fasthttp.RequestCtx. This avoids using RequestCtx directly as a
 // context.Context parent (which can panic in test harnesses where the connection
 // is nil).
-func fasthttpStdContext(ctx *fasthttp.RequestCtx) context.Context {
+func fasthttpStdContext(ctx *fasthttp.RequestCtx) (context.Context, context.CancelFunc) {
 	if deadline, ok := ctx.Deadline(); ok {
-		stdCtx, _ := context.WithDeadline(context.Background(), deadline)
-		return stdCtx
+		return context.WithDeadline(context.Background(), deadline)
 	}
-	return context.Background()
+	return context.Background(), func() {}
 }

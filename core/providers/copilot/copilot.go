@@ -69,10 +69,15 @@ func (provider *CopilotProvider) getOrCreateTokenManager(key schemas.Key) *copil
 		if entry.accessToken == currentToken {
 			return entry.tm
 		}
-		// OAuth token has been rotated — replace with a fresh manager.
+		// OAuth token has been rotated — atomically replace with a fresh manager.
 		tm := newCopilotTokenManager(currentToken, provider.client, provider.logger)
-		provider.tokenManagers.Store(key.ID, &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken})
-		return tm
+		newEntry := &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken}
+		if provider.tokenManagers.CompareAndSwap(key.ID, val, newEntry) {
+			return tm
+		}
+		// Another goroutine won the swap — use theirs.
+		winner, _ := provider.tokenManagers.Load(key.ID)
+		return winner.(*CopilotTokenManagerEntry).tm
 	}
 	// First request for this key — use LoadOrStore so concurrent callers share one manager.
 	tm := newCopilotTokenManager(currentToken, provider.client, provider.logger)
