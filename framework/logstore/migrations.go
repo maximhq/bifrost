@@ -32,6 +32,10 @@ const (
 	// perfIndexAdvisoryLockKey serializes the background performance index build
 	// (trigram + routing engine GIN indexes) across cluster nodes.
 	perfIndexAdvisoryLockKey = 1000003
+
+	// dashboardEnhancementsAdvisoryLockKey serializes the background dashboard
+	// enhancements work (backfill + covering index rebuild) across cluster nodes.
+	dashboardEnhancementsAdvisoryLockKey = 1000004
 )
 
 // advisoryLock holds a dedicated connection and the advisory lock key.
@@ -93,6 +97,12 @@ func acquireGINIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error
 // acquirePerfIndexLock acquires the serialization lock for the background performance index build.
 func acquirePerfIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
 	return acquireAdvisoryLock(ctx, db, perfIndexAdvisoryLockKey, "perf_index")
+}
+
+// acquireDashboardEnhancementsLock acquires the serialization lock for the background
+// dashboard enhancements work (backfill + covering index rebuild).
+func acquireDashboardEnhancementsLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
+	return acquireAdvisoryLock(ctx, db, dashboardEnhancementsAdvisoryLockKey, "dashboard_enhancements")
 }
 
 // triggerMigrations runs all registered logstore schema migrations in order under a
@@ -1913,9 +1923,10 @@ func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddDashboardEnhancements adds cached_read_tokens column to logs table,
-// updates the histogram covering index to include it, and adds MCP histogram covering index.
-// All in a single migration to keep schema changes atomic.
+// migrationAddDashboardEnhancements adds cached_read_tokens column to logs table.
+// The expensive backfill, covering index rebuild, and MCP index creation are deferred
+// to ensureDashboardEnhancements (called post-startup in a background goroutine) so
+// they do not block pod startup on large tables.
 func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = false
@@ -1924,141 +1935,114 @@ func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			dbMigrator := tx.Migrator()
-			dialect := tx.Dialector.Name()
 
-			// Step 1: Add cached_read_tokens column to logs
 			if !dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
 				if err := dbMigrator.AddColumn(&Log{}, "CachedReadTokens"); err != nil {
 					return fmt.Errorf("failed to add cached_read_tokens column: %w", err)
 				}
 			}
-
-			// Step 2: Backfill cached_read_tokens from token_usage JSON
-			var backfillSQL string
-			switch dialect {
-			case "sqlite":
-				backfillSQL = `UPDATE logs SET
-					cached_read_tokens = COALESCE(json_extract(token_usage, '$.prompt_tokens_details.cached_read_tokens'), 0)
-					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null' AND json_valid(token_usage)`
-			case "mysql":
-				backfillSQL = `UPDATE logs SET
-					cached_read_tokens = COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(token_usage, '$.prompt_tokens_details.cached_read_tokens')) AS SIGNED), 0)
-					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null' AND JSON_VALID(token_usage)`
-			default: // postgres
-				backfillSQL = `UPDATE logs SET
-					cached_read_tokens = COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0)
-					WHERE token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
-					AND token_usage ~ '^\s*\{.*\}\s*$'`
-			}
-			if err := tx.Exec(backfillSQL).Error; err != nil {
-				return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
-			}
-
-			// Step 3: Drop and recreate covering index with cached_read_tokens
-			if dbMigrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
-				switch dialect {
-				case "mysql":
-					if err := tx.Exec("DROP INDEX idx_logs_histogram_cover ON logs").Error; err != nil {
-						return fmt.Errorf("failed to drop old covering index: %w", err)
-					}
-				default:
-					if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover").Error; err != nil {
-						return fmt.Errorf("failed to drop old covering index: %w", err)
-					}
-				}
-			}
-
-			var createLogsIndexSQL string
-			switch dialect {
-			case "mysql":
-				createLogsIndexSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
-					status(50), timestamp,
-					selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
-					model(50), cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
-				)`
-			default:
-				createLogsIndexSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
-					status, timestamp,
-					selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
-					model, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
-				)`
-			}
-			if err := tx.Exec(createLogsIndexSQL).Error; err != nil {
-				return fmt.Errorf("failed to create updated covering index: %w", err)
-			}
-
-			// Step 4: Add MCP histogram covering index
-			if !dbMigrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_histogram_cover") {
-				var createMCPIndexSQL string
-				switch dialect {
-				case "mysql":
-					createMCPIndexSQL = `CREATE INDEX idx_mcp_logs_histogram_cover ON mcp_tool_logs(
-						status(50), timestamp, tool_name(50), server_label(50), virtual_key_id(50), cost
-					)`
-				default:
-					createMCPIndexSQL = `CREATE INDEX IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
-						status, timestamp, tool_name, server_label, virtual_key_id, cost
-					)`
-				}
-				if err := tx.Exec(createMCPIndexSQL).Error; err != nil {
-					return fmt.Errorf("failed to create MCP histogram covering index: %w", err)
-				}
-			}
-
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			dbMigrator := tx.Migrator()
-			dialect := tx.Dialector.Name()
 
-			// Drop MCP covering index
-			if dbMigrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_histogram_cover") {
-				switch dialect {
-				case "mysql":
-					_ = tx.Exec("DROP INDEX idx_mcp_logs_histogram_cover ON mcp_tool_logs")
-				default:
-					_ = tx.Exec("DROP INDEX IF EXISTS idx_mcp_logs_histogram_cover")
-				}
-			}
-
-			// Revert covering index to original (without cached_read_tokens)
-			if dbMigrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
-				switch dialect {
-				case "mysql":
-					_ = tx.Exec("DROP INDEX idx_logs_histogram_cover ON logs")
-				default:
-					_ = tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover")
-				}
-			}
-			var revertSQL string
-			switch dialect {
-			case "mysql":
-				revertSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
-					status(50), timestamp,
-					selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
-					model(50), cost, prompt_tokens, completion_tokens, total_tokens
-				)`
-			default:
-				revertSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
-					status, timestamp,
-					selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
-					model, cost, prompt_tokens, completion_tokens, total_tokens
-				)`
-			}
-			_ = tx.Exec(revertSQL)
-
-			// Drop cached_read_tokens column
 			if dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
 				_ = dbMigrator.DropColumn(&Log{}, "cached_read_tokens")
 			}
-
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running dashboard enhancements migration: %s", err.Error())
 	}
+	return nil
+}
+
+// ensureDashboardEnhancements performs the expensive dashboard migration work that was
+// deferred from migrationAddDashboardEnhancements: backfilling cached_read_tokens from
+// the token_usage JSON, rebuilding the histogram covering index to include the new column,
+// and creating the MCP histogram covering index.
+//
+// This is intentionally separate so that the long-running UPDATE and index rebuild do not
+// block pod startup. Callers that want non-blocking behaviour should invoke this in a
+// goroutine (see postgres.go). All operations are idempotent and safe to re-run.
+func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	lock, err := acquireDashboardEnhancementsLock(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer lock.release(context.Background())
+
+	// Backfill cached_read_tokens from token_usage JSON.
+	// The extra `AND cached_read_tokens = 0` plus `AND COALESCE(...) > 0` makes
+	// re-runs cheap: rows already backfilled have non-zero values (skipped),
+	// and rows with genuinely zero cached tokens are also skipped (correct as-is).
+	backfillSQL := `UPDATE logs SET
+		cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
+		WHERE cached_read_tokens = 0
+		AND token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
+		AND token_usage ~ '^\s*\{.*\}\s*$'
+		AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0`
+	if err := db.WithContext(ctx).Exec(backfillSQL).Error; err != nil {
+		return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
+	}
+
+	// Rebuild histogram covering index with cached_read_tokens included,
+	// but only if missing or invalid (skip if already healthy).
+	var logsIndexValid bool
+	if err := db.WithContext(ctx).Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = 'logs'
+		  AND ic.relname = 'idx_logs_histogram_cover'
+	`).Scan(&logsIndexValid).Error; err != nil {
+		return fmt.Errorf("failed to check logs histogram index validity: %w", err)
+	}
+	if !logsIndexValid {
+		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+			return fmt.Errorf("failed to drop old covering index: %w", err)
+		}
+		createLogsIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_histogram_cover ON logs(
+			status, timestamp,
+			selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+			model, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
+		)`
+		if err := db.WithContext(ctx).Exec(createLogsIndexSQL).Error; err != nil {
+			return fmt.Errorf("failed to create updated covering index: %w", err)
+		}
+	}
+
+	// Create MCP histogram covering index if missing or invalid.
+	var mcpIndexValid bool
+	if err := db.WithContext(ctx).Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = 'mcp_tool_logs'
+		  AND ic.relname = 'idx_mcp_logs_histogram_cover'
+	`).Scan(&mcpIndexValid).Error; err != nil {
+		return fmt.Errorf("failed to check MCP histogram index validity: %w", err)
+	}
+	if !mcpIndexValid {
+		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_mcp_logs_histogram_cover").Error; err != nil {
+			return fmt.Errorf("failed to drop invalid MCP histogram index: %w", err)
+		}
+		createMCPIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
+			status, timestamp, tool_name, server_label, virtual_key_id, cost
+		)`
+		if err := db.WithContext(ctx).Exec(createMCPIndexSQL).Error; err != nil {
+			return fmt.Errorf("failed to create MCP histogram covering index: %w", err)
+		}
+	}
+
 	return nil
 }
 

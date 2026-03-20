@@ -369,6 +369,7 @@ export function LogsVolumeChart({
 								<ResponsiveContainer width="100%" height="100%">
 									<BarChart
 										data={chartData}
+										margin={{ top: 6, right: 4, left: 12, bottom: 0 }}
 										onMouseDown={handleMouseDown}
 										onMouseMove={handleMouseMove}
 										onMouseUp={handleMouseUp}

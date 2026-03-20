@@ -117,5 +117,16 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		logger.Info("logstore: performance indexes are ready")
 	}()
 
+	// Run the expensive dashboard enhancements (backfill cached_read_tokens,
+	// rebuild covering index, create MCP covering index) in a background
+	// goroutine so pod startup is not blocked on large tables.
+	go func() {
+		if err := ensureDashboardEnhancements(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+			return
+		}
+		logger.Info("logstore: dashboard enhancements completed")
+	}()
+
 	return d, nil
 }
