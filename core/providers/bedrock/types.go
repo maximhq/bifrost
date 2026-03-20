@@ -754,6 +754,22 @@ type BedrockBackgroundRemovalParams struct {
 	Image string `json:"image"` // Base64-encoded image
 }
 
+// StabilityAIImageGenerationRequest represents the request format for Stability AI models on Bedrock
+// (e.g. stability.stable-image-core-v1:1, stability.stable-image-ultra-v1:1)
+type StabilityAIImageGenerationRequest struct {
+	Prompt         string                 `json:"prompt"`
+	AspectRatio    *string                `json:"aspect_ratio,omitempty"`
+	OutputFormat   *string                `json:"output_format,omitempty"`
+	Seed           *int                   `json:"seed,omitempty"`
+	NegativePrompt *string                `json:"negative_prompt,omitempty"`
+	ExtraParams    map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (req *StabilityAIImageGenerationRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
 // BedrockImageGenerationResponse represents a Bedrock image generation response
 type BedrockImageGenerationResponse struct {
 	Images    []string `json:"images"`    // list of Base64 encoded images

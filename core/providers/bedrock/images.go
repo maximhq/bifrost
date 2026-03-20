@@ -34,6 +34,53 @@ func mapQualityToBedrock(quality *string) *string {
 	}
 }
 
+// isStabilityAIModel returns true if the model is a Stability AI model (starts with "stability.")
+func isStabilityAIModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "stability.")
+}
+
+// ToStabilityAIImageGenerationRequest converts a Bifrost image generation request to the Stability AI
+// flat request format used by Bedrock (stability.stable-image-* models).
+func ToStabilityAIImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) (*StabilityAIImageGenerationRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	if request.Input == nil {
+		return nil, fmt.Errorf("request.Input is required")
+	}
+
+	req := &StabilityAIImageGenerationRequest{
+		Prompt: request.Input.Prompt,
+	}
+
+	if request.Params != nil {
+		if request.Params.AspectRatio != nil {
+			req.AspectRatio = request.Params.AspectRatio
+		}
+		if request.Params.OutputFormat != nil {
+			req.OutputFormat = request.Params.OutputFormat
+		}
+		if request.Params.Seed != nil {
+			req.Seed = request.Params.Seed
+		}
+		if request.Params.NegativePrompt != nil {
+			req.NegativePrompt = request.Params.NegativePrompt
+		}
+		if request.Params.ExtraParams != nil {
+			// aspect_ratio may also arrive via ExtraParams if not in knownFields; skip if already set
+			if req.AspectRatio == nil {
+				if ar, ok := schemas.SafeExtractStringPointer(request.Params.ExtraParams["aspect_ratio"]); ok {
+					delete(request.Params.ExtraParams, "aspect_ratio")
+					req.AspectRatio = ar
+				}
+			}
+			req.ExtraParams = request.Params.ExtraParams
+		}
+	}
+
+	return req, nil
+}
+
 // ToBedrockImageGenerationRequest converts a Bifrost image generation request to a Bedrock image generation request
 func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) (*BedrockImageGenerationRequest, error) {
 	if request == nil {
