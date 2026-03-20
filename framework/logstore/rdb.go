@@ -354,11 +354,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	}
 
 	// Execute main query with sorting and pagination.
-	// Omit large raw_request/raw_response blobs from the list — they are only
-	// needed when a user opens the detail view for a single log entry, where
-	// they are fetched via the dedicated GET /api/logs/:id endpoint.
+	// Use an explicit SELECT to omit large output/detail TEXT columns and to
+	// extract only the last element from input history JSON arrays via SQL —
+	// the table view only renders the last message, so the full conversation
+	// never needs to be loaded into Go memory.
 	var logs []Log
-	mainQuery := baseQuery.Order(orderClause).Omit("raw_request", "raw_response")
+	mainQuery := baseQuery.Order(orderClause).Select(s.listSelectColumns())
 
 	if pagination.Limit > 0 {
 		mainQuery = mainQuery.Limit(pagination.Limit)
@@ -396,6 +397,45 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		},
 		HasLogs: hasLogs,
 	}, nil
+}
+
+// listSelectColumns returns a SELECT clause for list queries that omits large
+// output/detail TEXT columns and uses SQL JSON functions to extract only the
+// last element from input_history and responses_input_history arrays.
+func (s *RDBLogStore) listSelectColumns() string {
+	baseCols := strings.Join([]string{
+		"id", "parent_request_id", "timestamp", "object_type", "provider", "model",
+		"number_of_retries", "fallback_index",
+		"selected_key_id", "selected_key_name",
+		"virtual_key_id", "virtual_key_name",
+		"routing_engines_used", "routing_rule_id", "routing_rule_name",
+		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
+		"latency", "token_usage", "cost", "status", "error_details", "stream",
+		"content_summary", "metadata",
+		"is_large_payload_request", "is_large_payload_response",
+		"prompt_tokens", "completion_tokens", "total_tokens",
+		"created_at",
+	}, ", ")
+
+	var inputHistoryExpr, responsesInputExpr string
+	switch s.db.Dialector.Name() {
+	case "postgres":
+		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			THEN jsonb_build_array(input_history::jsonb->-1)::text
+			ELSE input_history END AS input_history`
+		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
+			ELSE responses_input_history END AS responses_input_history`
+	default: // sqlite
+		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+			THEN json_array(json_extract(input_history, '$[' || (json_array_length(input_history) - 1) || ']'))
+			ELSE input_history END AS input_history`
+		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+			THEN json_array(json_extract(responses_input_history, '$[' || (json_array_length(responses_input_history) - 1) || ']'))
+			ELSE responses_input_history END AS responses_input_history`
+	}
+
+	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr
 }
 
 // GetStats calculates statistics for logs matching the given filters.

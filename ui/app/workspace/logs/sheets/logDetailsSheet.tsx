@@ -88,17 +88,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	if (!log) return null;
 
-	// Merge raw fields from the dedicated single-log fetch (list query omits them for performance).
-	// Guard against stale data: only use fullLog if it belongs to the currently opened log entry.
-	const rawRequest = fullLog?.id === log.id ? fullLog.raw_request : log.raw_request;
-	const rawResponse = fullLog?.id === log.id ? fullLog.raw_response : log.raw_response;
-	const passthroughRequestBody = fullLog?.id === log.id ? fullLog.passthrough_request_body : log.passthrough_request_body;
-	const passthroughResponseBody = fullLog?.id === log.id ? fullLog.passthrough_response_body : log.passthrough_response_body;
+	// The list query omits large fields for performance (output_message, tools, params, etc.).
+	// Use the full log from the dedicated single-log fetch as the primary data source for the
+	// detail sheet, falling back to the list entry while the fetch is in flight.
+	const displayLog = fullLog?.id === log.id ? fullLog : log;
 
-	const isContainer = isContainerOperation(log.object);
-	const isPassthrough = isPassthroughOperation(log.object);
+	const isContainer = isContainerOperation(displayLog.object);
+	const isPassthrough = isPassthroughOperation(displayLog.object);
 	const passthroughParams = isPassthrough
-		? (log.params as {
+		? (displayLog.params as {
 			method?: string;
 			path?: string;
 			raw_query?: string;
@@ -108,17 +106,21 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	// Taking out tool call
 	let toolsParameter = null;
-	if (log.params?.tools) {
+	if (displayLog.params?.tools) {
 		try {
-			toolsParameter = JSON.stringify(log.params.tools, null, 2);
+			toolsParameter = JSON.stringify(displayLog.params.tools, null, 2);
 		} catch (ignored) { }
 	}
 
 	// Extract audio format from request params
 	// Format can be in params.audio?.format or params.extra_params?.audio?.format
-	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
-	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
-	const videoListOutput = log.video_list_output;
+	const audioFormat = (displayLog.params as any)?.audio?.format || (displayLog.params as any)?.extra_params?.audio?.format || undefined;
+	const rawRequest = displayLog.raw_request;
+	const rawResponse = displayLog.raw_response;
+	const passthroughRequestBody = displayLog.passthrough_request_body;
+	const passthroughResponseBody = displayLog.passthrough_response_body;
+	const videoOutput = displayLog.video_generation_output || displayLog.video_retrieve_output || displayLog.video_download_output;
+	const videoListOutput = displayLog.video_list_output;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -126,31 +128,31 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-							{log.id && (
+							{displayLog.id && (
 								<p className="text-md max-w-full truncate">
 									Request ID:{" "}
 									<code
 										className="text-normal cursor-pointer"
 										onClick={() => {
 											navigator.clipboard
-												.writeText(log.id)
+												.writeText(displayLog.id)
 												.then(() => toast.success("Request ID copied"))
 												.catch(() => toast.error("Failed to copy"));
 										}}
 									>
-										{log.id}
+										{displayLog.id}
 									</code>
 								</p>
 							)}
-							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
-								{log.status}
+							<Badge variant="outline" className={`${StatusColors[displayLog.status as Status]} uppercase`}>
+								{displayLog.status}
 							</Badge>
-							{log.metadata?.isAsyncRequest ? (
+							{displayLog.metadata?.isAsyncRequest ? (
 								<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
 									Async
 								</Badge>
 							) : null}
-							{(log.is_large_payload_request || log.is_large_payload_response) && (
+							{(displayLog.is_large_payload_request || displayLog.is_large_payload_response) && (
 								<Badge
 									variant="outline"
 									className="border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
@@ -168,7 +170,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem onClick={() => copyRequestBody(log)} data-testid="logdetails-copy-request-body-button">
+								<DropdownMenuItem onClick={() => copyRequestBody(displayLog)} data-testid="logdetails-copy-request-body-button">
 									<Clipboard className="h-4 w-4" />
 									Copy request body
 								</DropdownMenuItem>
@@ -189,7 +191,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<AlertDialogCancel>Cancel</AlertDialogCancel>
 								<AlertDialogAction
 									onClick={() => {
-										handleDelete(log);
+										handleDelete(displayLog);
 										onOpenChange(false);
 									}}
 								>
@@ -206,19 +208,19 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<LogEntryDetailsView
 								className="w-full"
 								label="Start Timestamp"
-								value={moment(log.timestamp).format("YYYY-MM-DD HH:mm:ss A")}
+								value={moment(displayLog.timestamp).format("YYYY-MM-DD HH:mm:ss A")}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
 								label="End Timestamp"
-								value={moment(log.timestamp)
-									.add(log.latency || 0, "ms")
+								value={moment(displayLog.timestamp)
+									.add(displayLog.latency || 0, "ms")
 									.format("YYYY-MM-DD HH:mm:ss A")}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
 								label="Latency"
-								value={isNaN(log.latency || 0) ? "NA" : <div>{(log.latency || 0)?.toFixed(2)}ms</div>}
+								value={isNaN(displayLog.latency || 0) ? "NA" : <div>{(displayLog.latency || 0)?.toFixed(2)}ms</div>}
 							/>
 						</div>
 					</div>
@@ -231,37 +233,37 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Provider"
 								value={
 									<Badge variant="secondary" className={`uppercase`}>
-										<RenderProviderIcon provider={log.provider as ProviderIconType} size="sm" />
-										{log.provider}
+										<RenderProviderIcon provider={displayLog.provider as ProviderIconType} size="sm" />
+										{displayLog.provider}
 									</Badge>
 								}
 							/>
-							{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
+							{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={displayLog.model} />}
 							<LogEntryDetailsView
 								className="w-full"
 								label="Type"
 								value={
 									<div
-										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+										className={`${RequestTypeColors[displayLog.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
 											} rounded-sm px-3 py-1`}
 									>
-										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+										{RequestTypeLabels[displayLog.object as keyof typeof RequestTypeLabels] ?? displayLog.object ?? "unknown"}
 									</div>
 								}
 							/>
-							{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
-							{log.number_of_retries > 0 && (
-								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
+							{displayLog.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={displayLog.selected_key.name} />}
+							{displayLog.number_of_retries > 0 && (
+								<LogEntryDetailsView className="w-full" label="Number of Retries" value={displayLog.number_of_retries} />
 							)}
-							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
-							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
-							{log.routing_engines_used && log.routing_engines_used.length > 0 && (
+							{displayLog.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={displayLog.fallback_index} />}
+							{displayLog.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={displayLog.virtual_key.name} />}
+							{displayLog.routing_engines_used && displayLog.routing_engines_used.length > 0 && (
 								<LogEntryDetailsView
 									className="w-full"
 									label="Routing Engines Used"
 									value={
 										<div className="flex flex-wrap gap-2">
-											{log.routing_engines_used.map((engine) => (
+											{displayLog.routing_engines_used.map((engine) => (
 												<Badge
 													key={engine}
 													className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}
@@ -276,16 +278,16 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									}
 								/>
 							)}
-							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
+							{displayLog.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={displayLog.routing_rule.name} />}
 
 							{/* Display audio params if present */}
-							{(log.params as any)?.audio && (
+							{(displayLog.params as any)?.audio && (
 								<>
-									{(log.params as any).audio.format && (
-										<LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />
+									{(displayLog.params as any).audio.format && (
+										<LogEntryDetailsView className="w-full" label="Audio Format" value={(displayLog.params as any).audio.format} />
 									)}
-									{(log.params as any).audio.voice && (
-										<LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />
+									{(displayLog.params as any).audio.voice && (
+										<LogEntryDetailsView className="w-full" label="Audio Voice" value={(displayLog.params as any).audio.voice} />
 									)}
 								</>
 							)}
@@ -312,9 +314,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</>
 							)}
 
-							{log.params &&
-								Object.keys(log.params).length > 0 &&
-								Object.entries(log.params)
+							{displayLog.params &&
+								Object.keys(displayLog.params).length > 0 &&
+								Object.entries(displayLog.params)
 									.filter(([key]) => {
 										const passthroughKeys = ["method", "path", "raw_query", "status_code"];
 										return (
@@ -328,73 +330,73 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
 					</div>
-					{log.status === "success" && !isContainer && !isPassthrough && (
+					{displayLog.status === "success" && !isContainer && !isPassthrough && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
 								<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
-									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
-									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
-									<LogEntryDetailsView className="w-full" label="Cost" value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"} />
-									{log.token_usage?.prompt_tokens_details && (
+									<LogEntryDetailsView className="w-full" label="Input Tokens" value={displayLog.token_usage?.prompt_tokens || "-"} />
+									<LogEntryDetailsView className="w-full" label="Output Tokens" value={displayLog.token_usage?.completion_tokens || "-"} />
+									<LogEntryDetailsView className="w-full" label="Total Tokens" value={displayLog.token_usage?.total_tokens || "-"} />
+									<LogEntryDetailsView className="w-full" label="Cost" value={displayLog.cost != null ? `$${parseFloat(displayLog.cost.toFixed(6))}` : "-"} />
+									{displayLog.token_usage?.prompt_tokens_details && (
 										<>
-											{(log.token_usage.prompt_tokens_details.cached_read_tokens) && (
+											{(displayLog.token_usage.prompt_tokens_details.cached_read_tokens) && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Cache Read Tokens"
 													value={
-														(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0)
+														(displayLog.token_usage.prompt_tokens_details.cached_read_tokens ?? 0)
 													}
 												/>
 											)}
-											{(log.token_usage.prompt_tokens_details.cached_write_tokens) && (
+											{(displayLog.token_usage.prompt_tokens_details.cached_write_tokens) && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Cache Write Tokens"
 													value={
-														(log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0)
+														(displayLog.token_usage.prompt_tokens_details.cached_write_tokens ?? 0)
 													}
 												/>
 											)}
-											{log.token_usage.prompt_tokens_details.audio_tokens && (
+											{displayLog.token_usage.prompt_tokens_details.audio_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Input Audio Tokens"
-													value={log.token_usage.prompt_tokens_details.audio_tokens || "-"}
+													value={displayLog.token_usage.prompt_tokens_details.audio_tokens || "-"}
 												/>
 											)}
 										</>
 									)}
-									{log.token_usage?.completion_tokens_details && (
+									{displayLog.token_usage?.completion_tokens_details && (
 										<>
-											{log.token_usage.completion_tokens_details.reasoning_tokens && (
+											{displayLog.token_usage.completion_tokens_details.reasoning_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Reasoning Tokens"
-													value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"}
+													value={displayLog.token_usage.completion_tokens_details.reasoning_tokens || "-"}
 												/>
 											)}
-											{log.token_usage.completion_tokens_details.audio_tokens && (
+											{displayLog.token_usage.completion_tokens_details.audio_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Output Audio Tokens"
-													value={log.token_usage.completion_tokens_details.audio_tokens || "-"}
+													value={displayLog.token_usage.completion_tokens_details.audio_tokens || "-"}
 												/>
 											)}
-											{log.token_usage.completion_tokens_details.accepted_prediction_tokens && (
+											{displayLog.token_usage.completion_tokens_details.accepted_prediction_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Accepted Prediction Tokens"
-													value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
+													value={displayLog.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
 												/>
 											)}
-											{log.token_usage.completion_tokens_details.rejected_prediction_tokens && (
+											{displayLog.token_usage.completion_tokens_details.rejected_prediction_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Rejected Prediction Tokens"
-													value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
+													value={displayLog.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
 												/>
 											)}
 										</>
@@ -402,7 +404,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</div>
 							</div>
 							{(() => {
-								const params = log.params as any;
+								const params = displayLog.params as any;
 								const reasoning = params?.reasoning;
 								if (!reasoning || typeof reasoning !== "object" || Object.keys(reasoning).length === 0) {
 									return null;
@@ -452,55 +454,55 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									</>
 								);
 							})()}
-							{log.cache_debug && (
+							{displayLog.cache_debug && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-4">
-										<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
+										<BlockHeader title={`Caching Details (${displayLog.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
 										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-											{log.cache_debug.cache_hit ? (
+											{displayLog.cache_debug.cache_hit ? (
 												<>
 													<LogEntryDetailsView
 														className="w-full"
 														label="Cache Type"
 														value={
 															<Badge variant="secondary" className={`uppercase`}>
-																{log.cache_debug.hit_type}
+																{displayLog.cache_debug.hit_type}
 															</Badge>
 														}
 													/>
-													{/* <LogEntryDetailsView className="w-full" label="Cache ID" value={log.cache_debug.cache_id} /> */}
-													{log.cache_debug.hit_type === "semantic" && (
+													{/* <LogEntryDetailsView className="w-full" label="Cache ID" value={displayLog.cache_debug.cache_id} /> */}
+													{displayLog.cache_debug.hit_type === "semantic" && (
 														<>
-															{log.cache_debug.provider_used && (
+															{displayLog.cache_debug.provider_used && (
 																<LogEntryDetailsView
 																	className="w-full"
 																	label="Embedding Provider"
 																	value={
 																		<Badge variant="secondary" className={`uppercase`}>
-																			{log.cache_debug.provider_used}
+																			{displayLog.cache_debug.provider_used}
 																		</Badge>
 																	}
 																/>
 															)}
-															{log.cache_debug.model_used && (
-																<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
+															{displayLog.cache_debug.model_used && (
+																<LogEntryDetailsView className="w-full" label="Embedding Model" value={displayLog.cache_debug.model_used} />
 															)}
-															{log.cache_debug.threshold && (
-																<LogEntryDetailsView className="w-full" label="Threshold" value={log.cache_debug.threshold || "-"} />
+															{displayLog.cache_debug.threshold && (
+																<LogEntryDetailsView className="w-full" label="Threshold" value={displayLog.cache_debug.threshold || "-"} />
 															)}
-															{log.cache_debug.similarity && (
+															{displayLog.cache_debug.similarity && (
 																<LogEntryDetailsView
 																	className="w-full"
 																	label="Similarity Score"
-																	value={log.cache_debug.similarity?.toFixed(2) || "-"}
+																	value={displayLog.cache_debug.similarity?.toFixed(2) || "-"}
 																/>
 															)}
-															{log.cache_debug.input_tokens && (
+															{displayLog.cache_debug.input_tokens && (
 																<LogEntryDetailsView
 																	className="w-full"
 																	label="Embedding Input Tokens"
-																	value={log.cache_debug.input_tokens}
+																	value={displayLog.cache_debug.input_tokens}
 																/>
 															)}
 														</>
@@ -508,22 +510,22 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 												</>
 											) : (
 												<>
-													{log.cache_debug.provider_used && (
+													{displayLog.cache_debug.provider_used && (
 														<LogEntryDetailsView
 															className="w-full"
 															label="Embedding Provider"
 															value={
 																<Badge variant="secondary" className={`uppercase`}>
-																	{log.cache_debug.provider_used}
+																	{displayLog.cache_debug.provider_used}
 																</Badge>
 															}
 														/>
 													)}
-													{log.cache_debug.model_used && (
-														<LogEntryDetailsView className="w-full" label="Embedding Model" value={log.cache_debug.model_used} />
+													{displayLog.cache_debug.model_used && (
+														<LogEntryDetailsView className="w-full" label="Embedding Model" value={displayLog.cache_debug.model_used} />
 													)}
-													{log.cache_debug.input_tokens && (
-														<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={log.cache_debug.input_tokens} />
+													{displayLog.cache_debug.input_tokens && (
+														<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={displayLog.cache_debug.input_tokens} />
 													)}
 												</>
 											)}
@@ -531,13 +533,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									</div>
 								</>
 							)}
-							{log.metadata && Object.keys(log.metadata).filter((k) => k !== "isAsyncRequest").length > 0 && (
+							{displayLog.metadata && Object.keys(displayLog.metadata).filter((k) => k !== "isAsyncRequest").length > 0 && (
 								<>
 									<DottedSeparator />
 									<div className="space-y-4">
 										<BlockHeader title="Metadata" />
 										<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
-											{Object.entries(log.metadata)
+											{Object.entries(displayLog.metadata)
 												.filter(([key]) => key !== "isAsyncRequest")
 												.map(([key, value]) => (
 													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
@@ -549,15 +551,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</>
 					)}
 				</div>
-				{log.routing_engine_logs && (
-					<CollapsibleBox title="Routing Decision Logs" onCopy={() => log.routing_engine_logs || ""}>
+				{displayLog.routing_engine_logs && (
+					<CollapsibleBox title="Routing Decision Logs" onCopy={() => displayLog.routing_engine_logs || ""}>
 						<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-							{log.routing_engine_logs}
+							{displayLog.routing_engine_logs}
 						</div>
 					</CollapsibleBox>
 				)}
 				{toolsParameter && (
-					<CollapsibleBox title={`Tools (${log.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
+					<CollapsibleBox title={`Tools (${displayLog.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
@@ -570,51 +572,51 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						/>
 					</CollapsibleBox>
 				)}
-				{log.params?.instructions && (
-					<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
+				{displayLog.params?.instructions && (
+					<CollapsibleBox title="Instructions" onCopy={() => displayLog.params?.instructions || ""}>
 						<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-							{log.params.instructions}
+							{displayLog.params.instructions}
 						</div>
 					</CollapsibleBox>
 				)}
 
 				{/* Speech and Transcription Views */}
-				{(log.speech_input || log.speech_output) && (
-					<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+				{(displayLog.speech_input || displayLog.speech_output) && (
+					<SpeechView speechInput={displayLog.speech_input} speechOutput={displayLog.speech_output} isStreaming={displayLog.stream} />
 				)}
 
-				{(log.transcription_input || log.transcription_output) && (
+				{(displayLog.transcription_input || displayLog.transcription_output) && (
 					<TranscriptionView
-						transcriptionInput={log.transcription_input}
-						transcriptionOutput={log.transcription_output}
-						isStreaming={log.stream}
+						transcriptionInput={displayLog.transcription_input}
+						transcriptionOutput={displayLog.transcription_output}
+						isStreaming={displayLog.stream}
 					/>
 				)}
 
-				{(log.image_generation_input || log.image_generation_output) && (
-					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
+				{(displayLog.image_generation_input || displayLog.image_generation_output) && (
+					<ImageView imageInput={displayLog.image_generation_input} imageOutput={displayLog.image_generation_output} requestType={displayLog.object} />
 				)}
 
-				{(log.video_generation_input || videoOutput || videoListOutput) && (
+				{(displayLog.video_generation_input || videoOutput || videoListOutput) && (
 					<VideoView
-						videoInput={log.video_generation_input}
+						videoInput={displayLog.video_generation_input}
 						videoOutput={videoOutput}
 						videoListOutput={videoListOutput}
-						requestType={log.object}
+						requestType={displayLog.object}
 					/>
 				)}
 
-				{log.list_models_output && (
+				{displayLog.list_models_output && (
 					<CollapsibleBox
-						title={`List Models Output (${log.list_models_output.length})`}
-						onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+						title={`List Models Output (${displayLog.list_models_output.length})`}
+						onCopy={() => JSON.stringify(displayLog.list_models_output, null, 2)}
 					>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
 							maxHeight={450}
 							wrap={true}
-							code={JSON.stringify(log.list_models_output, null, 2)}
+							code={JSON.stringify(displayLog.list_models_output, null, 2)}
 							lang="json"
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
@@ -653,69 +655,69 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				})()}
 
 				{/* Show conversation history for chat/text completions */}
-				{log.input_history && log.input_history.length > 1 && (
+				{displayLog.input_history && displayLog.input_history.length > 1 && (
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Conversation History</div>
-						{log.input_history.slice(0, -1).map((message, index) => (
+						{displayLog.input_history.slice(0, -1).map((message, index) => (
 							<LogChatMessageView key={index} message={message} audioFormat={audioFormat} />
 						))}
 					</>
 				)}
 
 				{/* Show input for chat/text completions */}
-				{log.input_history && log.input_history.length > 0 && (
+				{displayLog.input_history && displayLog.input_history.length > 0 && (
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} audioFormat={audioFormat} />
+						<LogChatMessageView message={displayLog.input_history[displayLog.input_history.length - 1]} audioFormat={audioFormat} />
 					</>
 				)}
 
 				{/* Show input history for responses API */}
-				{log.responses_input_history && log.responses_input_history.length > 0 && (
+				{displayLog.responses_input_history && displayLog.responses_input_history.length > 0 && (
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-						<LogResponsesMessageView messages={log.responses_input_history} />
+						<LogResponsesMessageView messages={displayLog.responses_input_history} />
 					</>
 				)}
 
-				{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
+				{displayLog.is_large_payload_request && !displayLog.input_history?.length && !displayLog.responses_input_history?.length && (
 					<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 						Large payload request — input content was streamed directly to the provider and is not available for display.
-						{log.raw_request && " A truncated preview is available in the Raw Request section below."}
+						{displayLog.raw_request && " A truncated preview is available in the Raw Request section below."}
 					</div>
 				)}
 
-				{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
+				{displayLog.is_large_payload_response && !displayLog.output_message && !displayLog.responses_output?.length && displayLog.status !== "processing" && (
 					<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
 						Large payload response — response content was streamed directly to the client and is not available for display.
-						{log.raw_response && " A truncated preview is available in the Raw Response section below."}
+						{displayLog.raw_response && " A truncated preview is available in the Raw Response section below."}
 					</div>
 				)}
 
-				{log.status !== "processing" && (
+				{displayLog.status !== "processing" && (
 					<>
-						{log.output_message && !log.error_details?.error.message && (
+						{displayLog.output_message && !displayLog.error_details?.error.message && (
 							<>
 								<div className="mt-4 flex w-full items-center gap-2">
 									<div className="text-sm font-medium">Response</div>
 								</div>
-								<LogChatMessageView message={log.output_message} audioFormat={audioFormat} />
+								<LogChatMessageView message={displayLog.output_message} audioFormat={audioFormat} />
 							</>
 						)}
-						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error.message && (
+						{displayLog.responses_output && displayLog.responses_output.length > 0 && !displayLog.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Response</div>
-								<LogResponsesMessageView messages={log.responses_output} />
+								<LogResponsesMessageView messages={displayLog.responses_output} />
 							</>
 						)}
-						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
+						{displayLog.embedding_output && displayLog.embedding_output.length > 0 && !displayLog.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
 								<LogChatMessageView
 									message={{
 										role: "assistant",
 										content: JSON.stringify(
-											log.embedding_output.map((embedding) => embedding.embedding),
+											displayLog.embedding_output.map((embedding) => embedding.embedding),
 											null,
 											2,
 										),
@@ -723,18 +725,18 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								/>
 							</>
 						)}
-						{log.rerank_output && !log.error_details?.error.message && (
+						{displayLog.rerank_output && !displayLog.error_details?.error.message && (
 							<>
 								<CollapsibleBox
-									title={`Rerank Output (${log.rerank_output.length})`}
-									onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
+									title={`Rerank Output (${displayLog.rerank_output.length})`}
+									onCopy={() => JSON.stringify(displayLog.rerank_output, null, 2)}
 								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
 										maxHeight={450}
 										wrap={true}
-										code={JSON.stringify(log.rerank_output, null, 2)}
+										code={JSON.stringify(displayLog.rerank_output, null, 2)}
 										lang="json"
 										readonly={true}
 										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
@@ -775,13 +777,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						{rawRequest && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
-									Raw Request sent to <span className="font-medium capitalize">{log.provider}</span>
-									{log.is_large_payload_request && (
+									Raw Request sent to <span className="font-medium capitalize">{displayLog.provider}</span>
+									{displayLog.is_large_payload_request && (
 										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
 									)}
 								</div>
 								<CollapsibleBox
-									title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
+									title={displayLog.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
 									onCopy={() => formatJsonSafe(rawRequest)}
 								>
 									<CodeEditor
@@ -800,13 +802,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						{rawResponse && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
-									Raw Response from <span className="font-medium capitalize">{log.provider}</span>
-									{log.is_large_payload_response && (
+									Raw Response from <span className="font-medium capitalize">{displayLog.provider}</span>
+									{displayLog.is_large_payload_response && (
 										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
 									)}
 								</div>
 								<CollapsibleBox
-									title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
+									title={displayLog.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
 									onCopy={() => formatJsonSafe(rawResponse)}
 								>
 									<CodeEditor
@@ -822,31 +824,31 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
-						{log.error_details?.error.message && (
+						{displayLog.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
-								<CollapsibleBox title="Error" onCopy={() => log.error_details?.error.message || ""}>
+								<CollapsibleBox title="Error" onCopy={() => displayLog.error_details?.error.message || ""}>
 									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-										{log.error_details.error.message}
+										{displayLog.error_details.error.message}
 									</div>
 								</CollapsibleBox>
 							</>
 						)}
-						{log.error_details?.error.error && (
+						{displayLog.error_details?.error.error && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error Details</div>
 								<CollapsibleBox
 									title="Details"
 									onCopy={() =>
-										typeof log.error_details?.error.error === "string"
-											? log.error_details.error.error
-											: JSON.stringify(log.error_details?.error.error, null, 2)
+										typeof displayLog.error_details?.error.error === "string"
+											? displayLog.error_details.error.error
+											: JSON.stringify(displayLog.error_details?.error.error, null, 2)
 									}
 								>
 									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-										{typeof log.error_details?.error.error === "string"
-											? log.error_details.error.error
-											: JSON.stringify(log.error_details?.error.error, null, 2)}
+										{typeof displayLog.error_details?.error.error === "string"
+											? displayLog.error_details.error.error
+											: JSON.stringify(displayLog.error_details?.error.error, null, 2)}
 									</div>
 								</CollapsibleBox>
 							</>
