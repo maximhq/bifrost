@@ -36,6 +36,10 @@ const (
 	// dashboardEnhancementsAdvisoryLockKey serializes the background dashboard
 	// enhancements work (backfill + covering index rebuild) across cluster nodes.
 	dashboardEnhancementsAdvisoryLockKey = 1000004
+
+	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
+	// refreshes across cluster nodes so only one replica refreshes at a time.
+	matviewRefreshAdvisoryLockKey = 1000005
 )
 
 // advisoryLock holds a dedicated connection and the advisory lock key.
@@ -1798,7 +1802,7 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 					if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT").Error; err != nil {
 						return fmt.Errorf("failed to clean invalid metadata values: %w", err)
 					}
-				} else {					
+				} else {
 					// Go-based batch validation for PostgreSQL < 16.
 					type metadataRow struct {
 						ID       string
@@ -1836,7 +1840,7 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 							break
 						}
 					}
-				}				
+				}
 			}
 			return nil
 		},

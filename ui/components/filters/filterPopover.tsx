@@ -31,20 +31,32 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 	const availableRoutingEngines = filterData?.routing_engines || [];
 	const availableMetadataKeys = filterData?.metadata_keys || {};
 
-	// Create mappings from name to ID for keys, virtual keys, and routing rules
-	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
-	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
-	const routingRuleNameToId = new Map(availableRoutingRules.map((rule) => [rule.name, rule.id]));
+	// Create mappings from name to ALL matching IDs (handles duplicate names from deleted keys)
+	const groupByName = (items: { name: string; id: string }[]) => {
+		const map = new Map<string, string[]>();
+		for (const item of items) {
+			const ids = map.get(item.name) || [];
+			ids.push(item.id);
+			map.set(item.name, ids);
+		}
+		return map;
+	};
+	const selectedKeyNameToIds = groupByName(availableSelectedKeys);
+	const virtualKeyNameToIds = groupByName(availableVirtualKeys);
+	const routingRuleNameToIds = groupByName(availableRoutingRules);
+
+	// Deduplicate by name to avoid React key collisions (e.g. multiple deleted keys with the same name)
+	const dedup = (items: { name: string }[]) => [...new Map(items.map((i) => [i.name, i])).values()].map((i) => i.name);
 
 	const FILTER_OPTIONS: Record<string, string[]> = {
 		Status: [...Statuses],
 		Providers: providersLoading ? [] : availableProviders.map((provider) => provider.name),
 		Type: [...RequestTypes],
 		Models: filterDataLoading ? [] : availableModels,
-		"Selected Keys": filterDataLoading ? [] : availableSelectedKeys.map((key) => key.name),
-		"Virtual Keys": filterDataLoading ? [] : availableVirtualKeys.map((key) => key.name),
+		"Selected Keys": filterDataLoading ? [] : dedup(availableSelectedKeys),
+		"Virtual Keys": filterDataLoading ? [] : dedup(availableVirtualKeys),
 		"Routing Engines": filterDataLoading ? [] : availableRoutingEngines,
-		"Routing Rules": filterDataLoading ? [] : availableRoutingRules.map((rule) => rule.name),
+		"Routing Rules": filterDataLoading ? [] : dedup(availableRoutingRules),
 	};
 
 	// Add dynamic metadata categories
@@ -67,11 +79,12 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 		"Routing Engines": "routing_engine_used",
 	};
 
-	const resolveValueForCategory = (category: string, value: string): string => {
-		if (category === "Selected Keys") return selectedKeyNameToId.get(value) || value;
-		if (category === "Virtual Keys") return virtualKeyNameToId.get(value) || value;
-		if (category === "Routing Rules") return routingRuleNameToId.get(value) || value;
-		return value;
+	// Resolves a display name to all matching IDs for key/rule categories
+	const resolveValuesForCategory = (category: string, value: string): string[] => {
+		if (category === "Selected Keys") return selectedKeyNameToIds.get(value) || [value];
+		if (category === "Virtual Keys") return virtualKeyNameToIds.get(value) || [value];
+		if (category === "Routing Rules") return routingRuleNameToIds.get(value) || [value];
+		return [value];
 	};
 
 	const handleFilterSelect = (category: string, value: string) => {
@@ -105,12 +118,14 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 		}
 
 		const filterKey = filterKeyMap[category];
-		const resolved = resolveValueForCategory(category, value);
+		const resolvedIds = resolveValuesForCategory(category, value);
 
 		const currentValues = (filters[filterKey] as string[]) || [];
-		const newValues = currentValues.includes(resolved)
-			? currentValues.filter((v) => v !== resolved)
-			: [...currentValues, resolved];
+		// Check if ALL resolved IDs are already selected (toggle all together)
+		const allSelected = resolvedIds.every((id) => currentValues.includes(id));
+		const newValues = allSelected
+			? currentValues.filter((v) => !resolvedIds.includes(v))
+			: [...currentValues, ...resolvedIds.filter((id) => !currentValues.includes(id))];
 
 		onFilterChange(filterKey, newValues);
 	};
@@ -124,9 +139,26 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 
 		const filterKey = filterKeyMap[category];
 		const currentValues = filters[filterKey];
-		const resolved = resolveValueForCategory(category, value);
+		const resolvedIds = resolveValuesForCategory(category, value);
 
-		return Array.isArray(currentValues) && currentValues.includes(resolved);
+		return Array.isArray(currentValues) && resolvedIds.every((id) => currentValues.includes(id));
+	};
+
+	// Count unique visible names for ID-based categories (avoids inflated badge when
+	// multiple backing IDs share the same display name due to deduplication).
+	const countUniqueNames = (ids: string[], nameToIds: Map<string, string[]>): number => {
+		const seen = new Set<string>();
+		for (const [name, mappedIds] of nameToIds) {
+			if (mappedIds.some((id) => ids.includes(id))) {
+				seen.add(name);
+			}
+		}
+		return seen.size;
+	};
+	const dedupedCountKeys: Record<string, Map<string, string[]>> = {
+		selected_key_ids: selectedKeyNameToIds,
+		virtual_key_ids: virtualKeyNameToIds,
+		routing_rule_ids: routingRuleNameToIds,
 	};
 
 	const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
@@ -135,7 +167,8 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 			return count;
 		}
 		if (Array.isArray(value)) {
-			return count + value.length;
+			const nameMap = dedupedCountKeys[key];
+			return count + (nameMap ? countUniqueNames(value, nameMap) : value.length);
 		}
 		return count + (value ? 1 : 0);
 	}, 0) + (filters.metadata_filters ? Object.keys(filters.metadata_filters).length : 0);

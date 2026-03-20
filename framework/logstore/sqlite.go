@@ -42,5 +42,6 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 	if err := triggerMigrations(ctx, db); err != nil {
 		return nil, err
 	}
+
 	return s, nil
 }

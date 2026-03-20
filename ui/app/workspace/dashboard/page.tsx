@@ -276,16 +276,13 @@ export default function DashboardPage() {
 	const providerTokenProviders = useMemo(() => sanitizeSeriesLabels(providerTokenData?.providers), [providerTokenData?.providers]);
 	const providerLatencyProviders = useMemo(() => sanitizeSeriesLabels(providerLatencyData?.providers), [providerLatencyData?.providers]);
 
-	// Fetch all Overview data
+	// Fetch Overview tab data (5 calls)
 	const fetchOverviewData = useCallback(async () => {
 		setLoadingHistogram(true);
 		setLoadingTokens(true);
 		setLoadingCost(true);
 		setLoadingModels(true);
 		setLoadingLatency(true);
-		setLoadingProviderCost(true);
-		setLoadingProviderTokens(true);
-		setLoadingProviderLatency(true);
 
 		const fetchFilters = { filters };
 
@@ -295,18 +292,12 @@ export default function DashboardPage() {
 			costResult,
 			modelResult,
 			latencyResult,
-			providerCostResult,
-			providerTokenResult,
-			providerLatencyResult,
 		] = await Promise.all([
 			triggerHistogram(fetchFilters, false),
 			triggerTokens(fetchFilters, false),
 			triggerCost(fetchFilters, false),
 			triggerModels(fetchFilters, false),
 			triggerLatency(fetchFilters, false),
-			triggerProviderCost(fetchFilters, false),
-			triggerProviderTokens(fetchFilters, false),
-			triggerProviderLatency(fetchFilters, false),
 		]);
 
 		setHistogramData(histogramResult.data ?? null);
@@ -319,6 +310,33 @@ export default function DashboardPage() {
 		setLoadingModels(false);
 		setLatencyData(latencyResult.data ?? null);
 		setLoadingLatency(false);
+	}, [
+		filters,
+		triggerHistogram,
+		triggerTokens,
+		triggerCost,
+		triggerModels,
+		triggerLatency,
+	]);
+
+	// Fetch Provider Usage tab data (3 calls)
+	const fetchProviderData = useCallback(async () => {
+		setLoadingProviderCost(true);
+		setLoadingProviderTokens(true);
+		setLoadingProviderLatency(true);
+
+		const fetchFilters = { filters };
+
+		const [
+			providerCostResult,
+			providerTokenResult,
+			providerLatencyResult,
+		] = await Promise.all([
+			triggerProviderCost(fetchFilters, false),
+			triggerProviderTokens(fetchFilters, false),
+			triggerProviderLatency(fetchFilters, false),
+		]);
+
 		setProviderCostData(providerCostResult.data ?? null);
 		setLoadingProviderCost(false);
 		setProviderTokenData(providerTokenResult.data ?? null);
@@ -327,11 +345,6 @@ export default function DashboardPage() {
 		setLoadingProviderLatency(false);
 	}, [
 		filters,
-		triggerHistogram,
-		triggerTokens,
-		triggerCost,
-		triggerModels,
-		triggerLatency,
 		triggerProviderCost,
 		triggerProviderTokens,
 		triggerProviderLatency,
@@ -339,7 +352,6 @@ export default function DashboardPage() {
 
 	// Fetch MCP data
 	const fetchMcpData = useCallback(async () => {
-		const gen = mcpFetchGenRef.current;
 		setLoadingMcpHistogram(true);
 		setLoadingMcpCost(true);
 		setLoadingMcpTopTools(true);
@@ -352,8 +364,6 @@ export default function DashboardPage() {
 			triggerMcpTopTools(fetchFilters, false),
 		]);
 
-		if (gen !== mcpFetchGenRef.current) return;
-
 		setMcpHistogramData(mcpHistResult.data ?? null);
 		setLoadingMcpHistogram(false);
 		setMcpCostData(mcpCostResult.data ?? null);
@@ -364,104 +374,117 @@ export default function DashboardPage() {
 
 	// Fetch Rankings data
 	const fetchRankingsData = useCallback(async () => {
-		const gen = rankingsFetchGenRef.current;
 		setLoadingRankings(true);
 		const result = await triggerRankings({ filters }, false);
-		if (gen !== rankingsFetchGenRef.current) return;
 		setRankingsData(result.data ?? null);
 		setLoadingRankings(false);
 	}, [filters, triggerRankings]);
 
-	// Track whether MCP data has been fetched for the current filter set
-	const mcpDataFetchedRef = useRef(false);
-	const mcpDataLoadingRef = useRef(false);
-	const mcpFetchGenRef = useRef(0);
+	// --- Lazy-load refs: each tab fetches only once per filter change ---
+	const overviewFetchedRef = useRef(false);
+	const overviewLoadingRef = useRef(false);
+	const overviewGenRef = useRef(0);
 
-	// Reset MCP loaded-flag when MCP-specific filters change
-	useEffect(() => {
-		mcpDataFetchedRef.current = false;
-		mcpDataLoadingRef.current = false;
-		mcpFetchGenRef.current += 1;
-	}, [mcpFilters]);
+	const providerFetchedRef = useRef(false);
+	const providerLoadingRef = useRef(false);
+	const providerGenRef = useRef(0);
+
+	const mcpFetchedRef = useRef(false);
+	const mcpLoadingRef = useRef(false);
+	const mcpGenRef = useRef(0);
+
+	const rankingsFetchedRef = useRef(false);
+	const rankingsLoadingRef = useRef(false);
+	const rankingsGenRef = useRef(0);
+
+	const ensureOverviewDataLoaded = useCallback(async () => {
+		if (overviewFetchedRef.current || overviewLoadingRef.current) return;
+		const gen = overviewGenRef.current;
+		overviewLoadingRef.current = true;
+		try {
+			await fetchOverviewData();
+			if (gen === overviewGenRef.current) overviewFetchedRef.current = true;
+		} finally {
+			if (gen === overviewGenRef.current) overviewLoadingRef.current = false;
+		}
+	}, [fetchOverviewData]);
+
+	const ensureProviderDataLoaded = useCallback(async () => {
+		if (providerFetchedRef.current || providerLoadingRef.current) return;
+		const gen = providerGenRef.current;
+		providerLoadingRef.current = true;
+		try {
+			await fetchProviderData();
+			if (gen === providerGenRef.current) providerFetchedRef.current = true;
+		} finally {
+			if (gen === providerGenRef.current) providerLoadingRef.current = false;
+		}
+	}, [fetchProviderData]);
 
 	const ensureMcpDataLoaded = useCallback(async () => {
-		if (mcpDataFetchedRef.current || mcpDataLoadingRef.current) {
-			return;
-		}
-
-		const gen = mcpFetchGenRef.current;
-		mcpDataLoadingRef.current = true;
+		if (mcpFetchedRef.current || mcpLoadingRef.current) return;
+		const gen = mcpGenRef.current;
+		mcpLoadingRef.current = true;
 		try {
 			await fetchMcpData();
-			if (gen === mcpFetchGenRef.current) {
-				mcpDataFetchedRef.current = true;
-			}
+			if (gen === mcpGenRef.current) mcpFetchedRef.current = true;
 		} finally {
-			if (gen === mcpFetchGenRef.current) {
-				mcpDataLoadingRef.current = false;
-			}
+			if (gen === mcpGenRef.current) mcpLoadingRef.current = false;
 		}
 	}, [fetchMcpData]);
 
-	// Track whether Rankings data has been fetched for the current filter set
-	const rankingsDataFetchedRef = useRef(false);
-	const rankingsDataLoadingRef = useRef(false);
-	const rankingsFetchGenRef = useRef(0);
-
 	const ensureRankingsDataLoaded = useCallback(async () => {
-		if (rankingsDataFetchedRef.current || rankingsDataLoadingRef.current) {
-			return;
-		}
-
-		const gen = rankingsFetchGenRef.current;
-		rankingsDataLoadingRef.current = true;
+		if (rankingsFetchedRef.current || rankingsLoadingRef.current) return;
+		const gen = rankingsGenRef.current;
+		rankingsLoadingRef.current = true;
 		try {
 			await fetchRankingsData();
-			if (gen === rankingsFetchGenRef.current) {
-				rankingsDataFetchedRef.current = true;
-			}
+			if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true;
 		} finally {
-			if (gen === rankingsFetchGenRef.current) {
-				rankingsDataLoadingRef.current = false;
-			}
+			if (gen === rankingsGenRef.current) rankingsLoadingRef.current = false;
 		}
 	}, [fetchRankingsData]);
 
-	// Fetch overview data on mount and when filters change
+	// Reset all lazy-load flags when filters change (not on tab switch)
 	useEffect(() => {
-		fetchOverviewData();
-		rankingsDataFetchedRef.current = false;
-		rankingsDataLoadingRef.current = false;
-		rankingsFetchGenRef.current += 1;
-	}, [fetchOverviewData]);
+		overviewFetchedRef.current = false;
+		overviewLoadingRef.current = false;
+		overviewGenRef.current += 1;
+		providerFetchedRef.current = false;
+		providerLoadingRef.current = false;
+		providerGenRef.current += 1;
+		rankingsFetchedRef.current = false;
+		rankingsLoadingRef.current = false;
+		rankingsGenRef.current += 1;
+	}, [filters]);
 
-	// Warm MCP and Rankings data in the background so switching tabs feels instant
 	useEffect(() => {
-		if (urlState.tab === "mcp" || urlState.tab === "rankings") {
-			return;
-		}
+		mcpFetchedRef.current = false;
+		mcpLoadingRef.current = false;
+		mcpGenRef.current += 1;
+	}, [mcpFilters]);
 
+	// Fetch current tab's data when filters change or tab switches
+	// The ensure* functions are no-ops if data is already loaded for the current filters
+	useEffect(() => {
+		const tab = urlState.tab || "overview";
+		if (tab === "overview") void ensureOverviewDataLoaded();
+		else if (tab === "provider-usage") void ensureProviderDataLoaded();
+		else if (tab === "rankings") void ensureRankingsDataLoaded();
+		else if (tab === "mcp") void ensureMcpDataLoaded();
+	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
+
+	// Warm other tabs in the background after 150ms
+	useEffect(() => {
+		const tab = urlState.tab || "overview";
 		const timeoutId = window.setTimeout(() => {
-			void ensureMcpDataLoaded();
-			void ensureRankingsDataLoaded();
+			if (tab !== "overview") void ensureOverviewDataLoaded();
+			if (tab !== "provider-usage") void ensureProviderDataLoaded();
+			if (tab !== "mcp") void ensureMcpDataLoaded();
+			if (tab !== "rankings") void ensureRankingsDataLoaded();
 		}, 150);
-
 		return () => window.clearTimeout(timeoutId);
-	}, [urlState.tab, ensureMcpDataLoaded, ensureRankingsDataLoaded]);
-
-	// Fetch MCP data immediately when tab switches to MCP
-	useEffect(() => {
-		if (urlState.tab === "mcp") {
-			void ensureMcpDataLoaded();
-		}
-	}, [urlState.tab, ensureMcpDataLoaded]);
-
-	// Fetch Rankings data immediately when tab switches to Rankings
-	useEffect(() => {
-		if (urlState.tab === "rankings") {
-			void ensureRankingsDataLoaded();
-		}
-	}, [urlState.tab, ensureRankingsDataLoaded]);
+	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureMcpDataLoaded, ensureRankingsDataLoaded]);
 
 	// Handle time period change
 	const handlePeriodChange = useCallback(
