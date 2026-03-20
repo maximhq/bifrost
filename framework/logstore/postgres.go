@@ -107,5 +107,15 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		logger.Info("logstore: metadata GIN index is ready")
 	}()
 
+	// Ensure performance GIN indexes (trigram for content search, array for
+	// routing engines) exist and are valid. Same non-blocking pattern as above.
+	go func() {
+		if err := ensurePerformanceIndexes(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+			return
+		}
+		logger.Info("logstore: performance indexes are ready")
+	}()
+
 	return d, nil
 }

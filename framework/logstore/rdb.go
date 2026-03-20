@@ -29,6 +29,19 @@ func isValidMetadataKey(key string) bool {
 
 const bulkUpdateCostChunkSize = 500
 
+const (
+	// defaultMaxQueryLimit is a safety cap for unbounded queries (FindAll, FindAllDistinct).
+	defaultMaxQueryLimit = 10000
+	// defaultMaxSearchLimit is the maximum number of rows returned by SearchLogs / SearchMCPToolLogs.
+	defaultMaxSearchLimit = 1000
+	// defaultMaxRankingsLimit caps the number of model+provider groups returned by GetModelRankings.
+	defaultMaxRankingsLimit = 100
+	// defaultFilterDataCutoffDays limits GetDistinct* filter-data queries to recent data.
+	defaultFilterDataCutoffDays = 30
+	// defaultFilterDataLimit caps the number of distinct values returned by filter-data queries.
+	defaultFilterDataLimit = 500
+)
+
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
 	db     *gorm.DB
@@ -82,34 +95,48 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
-		// Use delimiter-aware matching to avoid partial token matches
-		var engineConditions []string
-		var engineArgs []interface{}
-
-		// Use dialect-aware concatenation expression
 		dialect := s.db.Dialector.Name()
-		var concatExpr string
-		switch dialect {
-		case "sqlite":
-			// SQLite: use || operator for string concatenation
-			concatExpr = "',' || routing_engines_used || ','"
-		default:
-			// MySQL, Postgres, and others: use CONCAT function
-			concatExpr = "CONCAT(',', routing_engines_used, ',')"
-		}
 
+		// Collect non-empty engine values
+		var engines []string
 		for _, engine := range filters.RoutingEngineUsed {
 			engine = strings.TrimSpace(engine)
-			if engine == "" {
-				continue // Skip empty engine filters
+			if engine != "" {
+				engines = append(engines, engine)
 			}
-			// Match whole comma-separated tokens: expr LIKE '%,engine,%'
-			engineConditions = append(engineConditions, concatExpr+" LIKE ?")
-			engineArgs = append(engineArgs, "%,"+engine+",%")
 		}
-		// Build OR condition: (expr LIKE ? OR expr LIKE ? ...)
-		if len(engineConditions) > 0 {
-			baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+
+		if len(engines) > 0 {
+			switch dialect {
+			case "postgres":
+				// Use array overlap operator which can leverage the GIN index on
+				// string_to_array(routing_engines_used, ',').
+				placeholders := make([]string, len(engines))
+				args := make([]interface{}, len(engines))
+				for i, e := range engines {
+					placeholders[i] = "?"
+					args[i] = e
+				}
+				baseQuery = baseQuery.Where(
+					"string_to_array(routing_engines_used, ',') && ARRAY["+strings.Join(placeholders, ",")+"]::text[]",
+					args...,
+				)
+			default:
+				// SQLite and others: use delimiter-aware LIKE matching
+				var engineConditions []string
+				var engineArgs []interface{}
+				var concatExpr string
+				if dialect == "sqlite" {
+					concatExpr = "',' || routing_engines_used || ','"
+				} else {
+					concatExpr = "CONCAT(',', routing_engines_used, ',')"
+				}
+				for _, engine := range engines {
+					engineConditions = append(engineConditions, concatExpr+" LIKE ?")
+					engineArgs = append(engineArgs, "%,"+engine+",%")
+				}
+				baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+			}
 		}
 	}
 	if filters.StartTime != nil {
@@ -141,7 +168,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
 	}
 	if filters.ContentSearch != "" {
-		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
+		dialect := s.db.Dialector.Name()
+		if dialect == "postgres" {
+			baseQuery = baseQuery.Where("to_tsvector('simple', content_summary) @@ plainto_tsquery('simple', ?)", filters.ContentSearch)
+		} else {
+			baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
+		}
 	}
 	if len(filters.MetadataFilters) > 0 {
 		// Single NULL guard for all metadata filters
@@ -360,9 +392,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	var logs []Log
 	mainQuery := baseQuery.Order(orderClause).Omit("raw_request", "raw_response")
 
-	if pagination.Limit > 0 {
-		mainQuery = mainQuery.Limit(pagination.Limit)
+	limit := pagination.Limit
+	if limit <= 0 || limit > defaultMaxSearchLimit {
+		limit = defaultMaxSearchLimit
 	}
+	pagination.Limit = limit
+	mainQuery = mainQuery.Limit(limit)
 	if pagination.Offset > 0 {
 		mainQuery = mainQuery.Offset(pagination.Offset)
 	}
@@ -1215,6 +1250,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		Select(selectClause).
 		Group("model, provider").
 		Order("total_requests DESC").
+		Limit(defaultMaxRankingsLimit).
 		Find(&currentResults).Error; err != nil {
 		return nil, fmt.Errorf("failed to get model rankings: %w", err)
 	}
@@ -1238,6 +1274,19 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
 		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
 		prevQuery = prevQuery.Where("model IS NOT NULL AND model != ''")
+
+		// Only fetch previous-period data for (model, provider) pairs that
+		// appear in the current ranking so trend computation is accurate even
+		// when the previous period has more groups than the limit.
+		if len(currentResults) > 0 {
+			pairConditions := make([]string, len(currentResults))
+			pairArgs := make([]interface{}, 0, len(currentResults)*2)
+			for i, r := range currentResults {
+				pairConditions[i] = "(model = ? AND provider = ?)"
+				pairArgs = append(pairArgs, r.Model, r.Provider)
+			}
+			prevQuery = prevQuery.Where(strings.Join(pairConditions, " OR "), pairArgs...)
+		}
 
 		var prevResults []struct {
 			Model         string          `gorm:"column:model"`
@@ -1862,11 +1911,13 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 }
 
 // GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
+// Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var models []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("model IS NOT NULL AND model != ''").
-		Distinct("model").Pluck("model", &models).Error
+		Where("model IS NOT NULL AND model != '' AND timestamp >= ?", cutoff).
+		Distinct("model").Limit(defaultFilterDataLimit).Pluck("model", &models).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct models: %w", err)
 	}
@@ -1893,10 +1944,12 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
 		return nil, fmt.Errorf("invalid name column: %s", nameCol)
 	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var results []KeyPairResult
 	err := s.db.WithContext(ctx).Model(&Log{}).
 		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
-		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != ''", idCol, idCol, nameCol, nameCol)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != '' AND timestamp >= ?", idCol, idCol, nameCol, nameCol), cutoff).
+		Limit(defaultFilterDataLimit).
 		Find(&results).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
@@ -1905,11 +1958,13 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 }
 
 // GetDistinctRoutingEngines returns all unique routing engine values from the comma-separated column.
+// Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var rawValues []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("routing_engines_used IS NOT NULL AND routing_engines_used != ''").
-		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
+		Where("routing_engines_used IS NOT NULL AND routing_engines_used != '' AND timestamp >= ?", cutoff).
+		Distinct("routing_engines_used").Limit(defaultFilterDataLimit).Pluck("routing_engines_used", &rawValues).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
 	}
@@ -1945,10 +2000,11 @@ const (
 // GetDistinctMetadataKeys returns unique metadata keys and their distinct values from recent logs.
 // It scans a bounded number of recent rows to avoid memory bloat on large tables.
 func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var metadataStrings []string
 	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("metadata IS NOT NULL AND metadata != '' AND metadata != '{}'").
-		Distinct("metadata").
+		Where("metadata IS NOT NULL AND metadata != '' AND metadata != '{}' AND timestamp >= ?", cutoff).
+		Order("timestamp DESC").
 		Limit(maxMetadataRows).
 		Pluck("metadata", &metadataStrings).Error
 	if err != nil {
@@ -2007,7 +2063,7 @@ func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][
 // FindAll finds all log entries from the database.
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
-	if err := s.db.WithContext(ctx).Select(fields).Where(query).Find(&logs).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(fields).Where(query).Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
@@ -2046,7 +2102,7 @@ func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...
 		}
 		db = db.Distinct(args...)
 	}
-	if err := db.Find(&logs).Error; err != nil {
+	if err := db.Limit(defaultMaxQueryLimit).Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}
@@ -2144,7 +2200,13 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if filters.ContentSearch != "" {
 		// Search in both arguments and result fields
-		baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", "%"+filters.ContentSearch+"%", "%"+filters.ContentSearch+"%")
+		dialect := s.db.Dialector.Name()
+		if dialect == "postgres" {
+			baseQuery = baseQuery.Where("(to_tsvector('simple', arguments) @@ plainto_tsquery('simple', ?) OR to_tsvector('simple', result) @@ plainto_tsquery('simple', ?))", filters.ContentSearch, filters.ContentSearch)
+		} else {
+			search := "%" + filters.ContentSearch + "%"
+			baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", search, search)
+		}
 	}
 	return baseQuery
 }
@@ -2239,9 +2301,12 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	var logs []MCPToolLog
 	mainQuery := baseQuery.Order(orderClause)
 
-	if pagination.Limit > 0 {
-		mainQuery = mainQuery.Limit(pagination.Limit)
+	limit := pagination.Limit
+	if limit <= 0 || limit > defaultMaxSearchLimit {
+		limit = defaultMaxSearchLimit
 	}
+	pagination.Limit = limit
+	mainQuery = mainQuery.Limit(limit)
 	if pagination.Offset > 0 {
 		mainQuery = mainQuery.Offset(pagination.Offset)
 	}
@@ -2375,9 +2440,13 @@ func (s *RDBLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) err
 }
 
 // GetAvailableToolNames returns all unique tool names from the MCP tool logs.
+// Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var toolNames []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("tool_name").Pluck("tool_name", &toolNames)
+	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
+		Where("tool_name IS NOT NULL AND tool_name != '' AND timestamp >= ?", cutoff).
+		Distinct("tool_name").Limit(defaultFilterDataLimit).Pluck("tool_name", &toolNames)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available tool names: %w", result.Error)
 	}
@@ -2385,9 +2454,13 @@ func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, erro
 }
 
 // GetAvailableServerLabels returns all unique server labels from the MCP tool logs.
+// Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var serverLabels []string
-	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("server_label").Where("server_label != ''").Pluck("server_label", &serverLabels)
+	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).
+		Where("server_label IS NOT NULL AND server_label != '' AND timestamp >= ?", cutoff).
+		Distinct("server_label").Limit(defaultFilterDataLimit).Pluck("server_label", &serverLabels)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
@@ -2395,12 +2468,15 @@ func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, e
 }
 
 // GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs.
+// Scoped to recent data to avoid full table scans.
 func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var logs []MCPToolLog
 	result := s.db.WithContext(ctx).
 		Model(&MCPToolLog{}).
 		Select("DISTINCT virtual_key_id, virtual_key_name").
-		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''").
+		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != '' AND timestamp >= ?", cutoff).
+		Limit(defaultFilterDataLimit).
 		Find(&logs)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
@@ -2644,11 +2720,27 @@ func (s *RDBLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map
 
 // DeleteExpiredAsyncJobs deletes async jobs whose expires_at has passed.
 // Only deletes jobs that have a non-null expires_at (i.e., completed or failed jobs).
+// Deletes in batches to avoid long-running transactions that hold row locks.
 func (s *RDBLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
-	result := s.db.WithContext(ctx).
-		Where("expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC()).
-		Delete(&AsyncJob{})
-	return result.RowsAffected, result.Error
+	now := time.Now().UTC()
+	const batchLimit = 100
+	var totalDeleted int64
+	for {
+		result := s.db.WithContext(ctx).
+			Where("id IN (?)",
+				s.db.Model(&AsyncJob{}).Select("id").
+					Where("expires_at IS NOT NULL AND expires_at < ?", now).
+					Limit(batchLimit),
+			).Delete(&AsyncJob{})
+		if result.Error != nil {
+			return totalDeleted, result.Error
+		}
+		totalDeleted += result.RowsAffected
+		if result.RowsAffected < batchLimit {
+			break
+		}
+	}
+	return totalDeleted, nil
 }
 
 // DeleteStaleAsyncJobs deletes async jobs stuck in "processing" status since before the given time.
