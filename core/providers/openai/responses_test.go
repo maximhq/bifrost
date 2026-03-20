@@ -1412,6 +1412,94 @@ func TestResponsesTool_EdgeCases(t *testing.T) {
 	})
 }
 
+func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
+	// Create function tool with unsorted properties
+	unsortedParams := &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("zebra", map[string]interface{}{"type": "string"}),
+			schemas.KV("alpha", map[string]interface{}{"type": "number"}),
+		),
+		Required: []string{"zebra"},
+	}
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("test_func"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: unsortedParams,
+					},
+				},
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Find the function tool in the result (filterUnsupportedTools may reorder)
+	var funcTool *schemas.ResponsesTool
+	var nonFuncToolCount int
+	for i := range result.Tools {
+		if result.Tools[i].Type == schemas.ResponsesToolTypeFunction {
+			funcTool = &result.Tools[i]
+		} else {
+			nonFuncToolCount++
+		}
+	}
+
+	if funcTool == nil {
+		t.Fatal("expected function tool in result")
+	}
+
+	// Verify parameters are normalized: Properties keys should preserve original order
+	// (user-defined property names are kept in client order for LLM generation quality)
+	normalizedParams := funcTool.ResponsesToolFunction.Parameters
+	if normalizedParams == nil {
+		t.Fatal("expected normalized parameters to be non-nil")
+	}
+	keys := normalizedParams.Properties.Keys()
+	if len(keys) != 2 || keys[0] != "zebra" || keys[1] != "alpha" {
+		t.Errorf("expected Properties keys preserved as [zebra, alpha], got %v", keys)
+	}
+
+	// Verify non-function tools are present and unaffected
+	if nonFuncToolCount != 1 {
+		t.Errorf("expected 1 non-function tool, got %d", nonFuncToolCount)
+	}
+
+	// Verify original bifrostReq.Params.Tools was NOT mutated
+	origParams := bifrostReq.Params.Tools[0].ResponsesToolFunction.Parameters
+	origKeys := origParams.Properties.Keys()
+	if len(origKeys) != 2 || origKeys[0] != "zebra" || origKeys[1] != "alpha" {
+		t.Errorf("original parameters were mutated: expected [zebra, alpha], got %v", origKeys)
+	}
+
+	// Verify the ResponsesToolFunction pointer is a different object
+	if funcTool.ResponsesToolFunction == bifrostReq.Params.Tools[0].ResponsesToolFunction {
+		t.Error("expected ResponsesToolFunction pointer to be a copy, not the original")
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================

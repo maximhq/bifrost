@@ -8,10 +8,9 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-
-	"github.com/gorilla/websocket"
 )
 
 // RunWebSocketResponsesTest dials the provider's native WebSocket Responses endpoint,
@@ -52,7 +51,7 @@ func RunWebSocketResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			httpHeaders.Set(k, v)
 		}
 
-		dialer := websocket.Dialer{
+		dialer := ws.Dialer{
 			HandshakeTimeout: 15 * time.Second,
 		}
 
@@ -93,7 +92,7 @@ func RunWebSocketResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			t.Fatalf("failed to marshal response.create event: %v", marshalErr)
 		}
 
-		if writeErr := conn.WriteMessage(websocket.TextMessage, eventBytes); writeErr != nil {
+		if writeErr := conn.WriteMessage(ws.TextMessage, eventBytes); writeErr != nil {
 			t.Fatalf("failed to send response.create: %v", writeErr)
 		}
 		t.Logf("sent response.create event")

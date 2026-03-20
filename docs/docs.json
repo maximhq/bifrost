@@ -220,6 +220,7 @@
             "pages": [
               "plugins/getting-started",
               "plugins/building-dynamic-binary",
+              "plugins/sequencing",
               {
                 "group": "Writing Plugins",
                 "icon": "code",
@@ -268,6 +269,13 @@
               },
               "features/telemetry",
               "features/semantic-caching",
+              {
+                "group": "Prompt Repository",
+                "icon": "folder",
+                "pages": [
+                  "features/prompt-repository/playground"
+                ]
+              },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
@@ -429,6 +437,9 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.4.14",
+              "changelogs/v1.4.13",
+              "changelogs/v1.4.12",
               "changelogs/v1.4.11",
               "changelogs/v1.4.10",
               {
@@ -561,6 +572,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.3.10",
+              "changelogs/ent-v1.3.9",
               "changelogs/ent-v1.3.8"
             ]
           },
@@ -568,6 +581,7 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.2",
               "changelogs/cli-v0.10.1",
               "changelogs/cli-v0.10.0"
             ]

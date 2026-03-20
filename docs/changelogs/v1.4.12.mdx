@@ -1,0 +1,142 @@
+---
+title: "v1.4.12"
+description: "v1.4.12 changelog - 2026-03-15"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.12
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.12
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.12
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.12">
+## ✨ Features
+
+- **WebSocket based responses API** — Added WebSocket transport for responses API (OpenAI)
+- **Anthropic Passthrough** — Added native Anthropic passthrough endpoint
+- **Prompt Repository** — Added HTTP handlers for prompt management with RBAC (folders, prompts, versions, sessions)
+- **Streaming Request Decompression** — Threshold-gated streaming decompression with pooled readers, replacing BodyUncompressed()
+- **Model Parameters API** — Added model parameters table and API endpoint with in-memory caching
+- **Virtual Key Limit Resets** — Added virtual key limit reset functionality
+- **Session Stickiness** — Added session stickiness in key selection for consistent routing
+- **Pricing Engine Refactor** — Unified cost calculation with quality-based image and video pricing
+- **Image Configuration** — Added size/aspect ratio config for Gemini and size-to-resolution conversion for Replicate
+- **Large Payload Support** — Added large payload awareness across transport hooks, plugins, and response streaming
+- **Raw Request/Response Storage** — Allow storing raw request/response without returning them to clients (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- **ChatReasoning Enabled Field** — Added Enabled field to ChatReasoning struct (thanks [@mango766](https://github.com/mango766)!)
+
+## 🐞 Fixed
+
+- **Deterministic Tool Schema** — Fixed deterministic tool schema serialization for Anthropic prompt caching (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **CORS Wildcard** — Fixed CORS issue with allowing * origin
+- **TLS Termination** — Allow TLS termination inside Bifrost server through config
+- **Bedrock toolChoice** — Fixed toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints
+- **Count Tokens Passthrough** — Fixed request body passthrough for count tokens endpoint for Anthropic and Vertex
+- **Chat Finish Reason** — Map chat finish_reason to responses status and preserve terminal stream semantics
+- **Tool Call Indexes** — Fixed streaming tool call indices for parallel tool calls in chat completions stream
+- **Video Pricing** — Fixed video pricing calculation
+- **SQLite Migration** — Prevented CASCADE deletion during routing targets migration
+- **Log Serialization** — Reduced logstore serialization overhead and batch cost updates
+- **Log List Queries** — Avoid loading raw_request/raw_response in log list queries (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- **MCP Reconnection** — Improved MCP client reconnection with exponential backoff and connection timeout
+- **Responses Input Messages** — Set responses input messages in gen_ai.input.messages
+- **Helm Fixes** — Fixed Helm chart and test issues
+
+</Update>
+<Update label="Core" description="1.4.8">
+- feat: WebSocket and Realtime API support
+- feat: Anthropic passthrough support
+- feat: threshold-gated streaming request decompression with pooled readers
+- feat: refactored model catalog pricing engine with unified cost calculation
+- feat: quality-based image pricing and image size/aspect ratio for Gemini
+- feat: size-to-resolution conversion for Replicate image models
+- feat: session stickiness in key selection
+- feat: add Enabled field to ChatReasoning struct (thanks [@mango766](https://github.com/mango766)!)
+- feat: allow storing raw request/response without returning to clients (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: RBAC for prompt repository
+- fix: deterministic tool schema serialization for prompt caching (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: skip body building for large payload flow
+- fix: TLS termination inside Bifrost server through config
+- fix: map chat finish_reason to responses status and preserve terminal stream semantics
+- fix: set responses input messages in gen_ai.input.messages
+- fix: video pricing fixes
+- fix: remove resolution parameter from image generation
+- fix: MCP client reconnection with exponential backoff and connection timeout
+
+</Update>
+<Update label="Framework" description="1.2.27">
+- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
+- feat: add `routing_targets` table with 1:many relationship to `routing_rules`; migrates existing single-target rules to the new table with `weight=1`; drops legacy `provider` and `model` columns from `routing_rules`
+- feat: add per-target `key_id` pinning support in `routing_targets`
+- fix: avoid postgres cached-plan failures during provider hash backfill [@dannyball710](https://github.com/dannyball710)
+- feat: prompt repository with folder, prompt, version, and session schemas and backend
+- feat: model parameters table and API endpoint with in-memory caching
+- feat: large payload awareness for plugins and logstore
+- feat: large payload transport hooks and response streaming
+- feat: chat token detail OTEL span attributes
+- feat: hide deleted virtual keys from filter options
+- feat: virtual key search/filtering and pagination
+- feat: allow storing raw request/response without returning to clients (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- fix: MCP client reconnection with exponential backoff and connection timeout
+- fix: prevent SQLite CASCADE deletion during routing targets migration
+- fix: reduce logstore serialization overhead and batch cost updates
+- fix: video pricing fixes
+- fix: avoid loading raw_request/raw_response in log list queries (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- chore: upgraded core to v1.4.8
+
+</Update>
+<Update label="governance" description="1.4.28">
+- feat: pricing engine integration with unified cost calculation
+- feat: large payload awareness
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="jsonparser" description="1.4.27">
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="litellmcompat" description="0.0.17">
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="logging" description="1.4.28">
+- feat: passthrough support for log capture
+- feat: large payload awareness for logstore
+- feat: async log write improvements
+- fix: reduce logstore serialization overhead and batch cost updates
+- fix: avoid loading raw_request/raw_response in log list queries (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="maxim" description="1.5.26">
+- feat: WebSocket and Realtime API support
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="mocker" description="1.4.27">
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="otel" description="1.1.27">
+- fix: set responses input messages in gen_ai.input.messages
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="semanticcache" description="1.4.26">
+- feat: add Enabled field to ChatReasoning struct (thanks [@mango766](https://github.com/mango766)!)
+- feat: large payload awareness
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>
+<Update label="telemetry" description="1.4.28">
+- feat: pricing engine integration
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
+
+</Update>

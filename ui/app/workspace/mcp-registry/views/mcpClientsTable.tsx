@@ -15,23 +15,31 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutation } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import MCPClientSheet from "./mcpClientSheet";
 
 interface MCPClientsTableProps {
 	mcpClients: MCPClient[];
+	totalCount: number;
 	refetch?: () => void;
+	search: string;
+	debouncedSearch: string;
+	onSearchChange: (value: string) => void;
+	offset: number;
+	limit: number;
+	onOffsetChange: (offset: number) => void;
 }
 
-export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTableProps) {
+export default function MCPClientsTable({ mcpClients, totalCount, refetch, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: MCPClientsTableProps) {
 	const [formOpen, setFormOpen] = useState(false);
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
@@ -127,8 +135,10 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 		}
 	};
 
-	// Empty state when user has no MCP servers (same pattern as Virtual Keys, Plugins)
-	if (mcpClients.length === 0) {
+	const hasActiveFilters = debouncedSearch;
+
+	// True empty state: no servers at all (not just filtered to zero)
+	if (totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
 				{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
@@ -152,22 +162,45 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 				</CardTitle>
 				<CardDescription>Manage servers that can connect to the MCP Tools endpoint.</CardDescription>
 			</CardHeader>
-			<div className="rounded-sm border">
+
+			{/* Toolbar: Search */}
+			<div className="flex items-center gap-3">
+				<div className="relative max-w-sm flex-1">
+					<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+					<Input
+						aria-label="Search MCP servers by name"
+						placeholder="Search by name..."
+						value={search}
+						onChange={(e) => onSearchChange(e.target.value)}
+						className="pl-9"
+						data-testid="mcp-clients-search-input"
+					/>
+				</div>
+			</div>
+
+			<div className="rounded-sm border overflow-hidden">
 				<Table data-testid="mcp-clients-table">
 					<TableHeader>
-						<TableRow>
-							<TableHead>Name</TableHead>
-							<TableHead>Connection Type</TableHead>
-							<TableHead>Code Mode</TableHead>
-							<TableHead>Connection Info</TableHead>
-							<TableHead>Enabled Tools</TableHead>
-							<TableHead>Auto-execute Tools</TableHead>
-							<TableHead>State</TableHead>
+						<TableRow className="bg-muted/50">
+							<TableHead className="font-semibold">Name</TableHead>
+							<TableHead className="font-semibold">Connection Type</TableHead>
+							<TableHead className="font-semibold">Code Mode</TableHead>
+							<TableHead className="font-semibold">Connection Info</TableHead>
+							<TableHead className="font-semibold">Enabled Tools</TableHead>
+							<TableHead className="font-semibold">Auto-execute Tools</TableHead>
+							<TableHead className="font-semibold">State</TableHead>
 							<TableHead className="w-20 text-right"></TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
-						{mcpClients.map((c: MCPClient) => {
+						{mcpClients.length === 0 ? (
+							<TableRow>
+								<TableCell colSpan={8} className="h-24 text-center">
+									<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
+								</TableCell>
+							</TableRow>
+						) : (
+						mcpClients.map((c: MCPClient) => {
 							const enabledToolsCount =
 								c.state == "connected"
 									? c.config.tools_to_execute?.includes("*")
@@ -257,10 +290,43 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 									</TableCell>
 								</TableRow>
 							);
-						})}
+						})
+						)}
 					</TableBody>
 				</Table>
 			</div>
+
+			{/* Pagination */}
+			{totalCount > 0 && (
+				<div className="flex items-center justify-between px-2">
+					<p className="text-muted-foreground text-sm">
+						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+					</p>
+					<div className="flex gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={offset === 0}
+							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+							data-testid="mcp-clients-pagination-prev-btn"
+						>
+							<ChevronLeft className="mr-1 h-4 w-4" />
+							Previous
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={offset + limit >= totalCount}
+							onClick={() => onOffsetChange(offset + limit)}
+							data-testid="mcp-clients-pagination-next-btn"
+						>
+							Next
+							<ChevronRight className="ml-1 h-4 w-4" />
+						</Button>
+					</div>
+				</div>
+			)}
+
 			{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
 		</div>
 	);

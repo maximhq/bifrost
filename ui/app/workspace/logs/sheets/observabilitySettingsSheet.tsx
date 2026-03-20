@@ -11,7 +11,7 @@ interface ObservabilitySettingsSheetProps {
 export function ObservabilitySettingsSheet({ open, onOpenChange }: ObservabilitySettingsSheetProps) {
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent side="right" className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-8 pt-6 sm:max-w-3xl">
+			<SheetContent side="right" className="flex w-full flex-col overflow-x-hidden px-8 pt-6 sm:max-w-3xl">
 				<SheetHeader className="">
 					<SheetTitle className="text-lg font-semibold">Logging settings</SheetTitle>
 				</SheetHeader>

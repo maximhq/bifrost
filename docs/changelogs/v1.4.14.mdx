@@ -1,0 +1,85 @@
+---
+title: "v1.4.14"
+description: "v1.4.14 changelog - 2026-03-18"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.14
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.14
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.14
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.14">
+## 🐞 Fixed
+
+- **GIN Index Migration** — Rewrote metadata GIN index migration to run non-transactionally with CREATE INDEX CONCURRENTLY in a background goroutine, preventing pod startup deadlocks during rolling upgrades on large tables
+- **Advisory Lock Refactor** — Generalized advisory lock into reusable `acquireAdvisoryLock` with dedicated GIN index lock key to serialize index builds across cluster nodes
+- **Metadata Pointer Safety** — Changed `Log.Metadata` from `string` to `*string` to properly represent nullable metadata and prevent serialization errors from aborting log writes
+- **Distributed Lock Nil Safety** — Added nil-store guards to `DistributedLock` methods to prevent panics when config store is unavailable
+- **PostgreSQL 16 Requirement** — Added minimum PostgreSQL 16 version check at logstore startup, leveraging `IS NOT JSON OBJECT` for server-side metadata validation
+
+</Update>
+<Update label="Core" description="1.4.11">
+- fix: deterministic JSON serialization across all providers — replaced map[string]interface{} round-trips with json.RawMessage and sjson/gjson to preserve original key ordering for prompt caching
+- fix: ResponsesTool MarshalJSON rewritten to use sjson for incremental byte-level JSON construction, ensuring stable key order critical for OpenAI prompt caching
+- fix: Anthropic tool call arguments preserved as json.RawMessage instead of parsing into map, preventing key reordering on re-serialization
+- fix: Bedrock tool use input and extra params preserved as json.RawMessage for consistent prompt caching behavior
+- fix: Gemini FunctionCall.Args changed from map[string]interface{} to json.RawMessage, eliminating key order randomization
+- fix: Cohere response format serialization switched to sjson for deterministic output
+- fix: HuggingFace model field update uses sjson SetJSONField instead of unmarshal/marshal round-trip
+- fix: Replicate prediction request input merges extra params using sjson to preserve key ordering
+- feat: added comprehensive prompt caching tests for Anthropic, Azure, Bedrock, Gemini, and Vertex providers
+- feat: added serialization tests for ResponsesTool to verify deterministic JSON output
+
+</Update>
+<Update label="Framework" description="1.2.30">
+- fix: rewrote GIN index migration to use CREATE INDEX CONCURRENTLY in background goroutine, preventing deadlocks during rolling upgrades
+- fix: generalized advisory lock into acquireAdvisoryLock with dedicated ginIndexAdvisoryLockKey for serialized index builds
+- fix: changed Log.Metadata from string to *string with graceful serialization error handling
+- fix: added nil-store guards to DistributedLock methods (Lock, TryLock, Extend, IsHeld, cleanupExpiredLock)
+- feat: added PostgreSQL 16 minimum version requirement with server-side IS NOT JSON OBJECT validation
+
+</Update>
+<Update label="governance" description="1.4.30">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="jsonparser" description="1.4.29">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="litellmcompat" description="0.0.19">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="logging" description="1.4.30">
+- fix: adapted log size estimation for Metadata *string change
+
+</Update>
+<Update label="maxim" description="1.5.28">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="mocker" description="1.4.29">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="otel" description="1.1.29">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="semanticcache" description="1.4.28">
+- chore: upgraded framework to v1.2.30
+
+</Update>
+<Update label="telemetry" description="1.4.30">
+- chore: upgraded framework to v1.2.30
+
+</Update>

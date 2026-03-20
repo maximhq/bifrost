@@ -145,7 +145,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   }
   let clients: MCPClientItem[]
   try {
-    clients = JSON.parse(clientsRes.body) as MCPClientItem[]
+    const parsed = JSON.parse(clientsRes.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+    clients = Array.isArray(parsed) ? parsed : (parsed.clients ?? [])
   } catch {
     throw new Error('Invalid JSON from GET /api/mcp/clients')
   }
@@ -174,7 +175,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   if (listResAfter.statusCode !== 200) {
     throw new Error(`GET /api/mcp/clients failed after create: ${listResAfter.statusCode} ${listResAfter.body}`)
   }
-  const listAfter = JSON.parse(listResAfter.body) as MCPClientItem[]
+  const parsedAfter = JSON.parse(listResAfter.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+  const listAfter = Array.isArray(parsedAfter) ? parsedAfter : (parsedAfter.clients ?? [])
   const clientAfter = listAfter.find((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
   if (!clientAfter) {
     throw new Error(`MCP client "${TEST_MCP_CLIENT_NAME}" not found after create.`)
@@ -194,7 +196,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   if (listRes2.statusCode !== 200) {
     throw new Error(`GET /api/mcp/clients failed after reconnect: ${listRes2.statusCode} ${listRes2.body}`)
   }
-  const list2 = (JSON.parse(listRes2.body) as MCPClientItem[]).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
+  const parsed2 = JSON.parse(listRes2.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
+  const list2 = (Array.isArray(parsed2) ? parsed2 : (parsed2.clients ?? [])).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
   const client = list2[0]
   if (!client || client.state !== 'connected') {
     throw new Error(

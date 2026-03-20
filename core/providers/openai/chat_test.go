@@ -6,6 +6,172 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
+	// Create tool parameters with keys in non-alphabetical order:
+	// "required" before "properties" before "type" — Normalized() should reorder to
+	// type → description → properties → required, then alphabetical.
+	unsortedParams := &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("zebra", map[string]interface{}{"type": "string"}),
+			schemas.KV("alpha", map[string]interface{}{"type": "number"}),
+		),
+		Required: []string{"zebra"},
+	}
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: "function",
+					Function: &schemas.ChatToolFunction{
+						Name:       "test_func",
+						Parameters: unsortedParams,
+					},
+				},
+				{
+					Type:     "function",
+					Function: &schemas.ChatToolFunction{Name: "no_params_func"},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify parameters are normalized: Properties keys should preserve original order
+	// (user-defined property names are kept in client order for LLM generation quality)
+	normalizedParams := result.ChatParameters.Tools[0].Function.Parameters
+	if normalizedParams == nil {
+		t.Fatal("expected normalized parameters to be non-nil")
+	}
+	keys := normalizedParams.Properties.Keys()
+	if len(keys) != 2 || keys[0] != "zebra" || keys[1] != "alpha" {
+		t.Errorf("expected Properties keys preserved as [zebra, alpha], got %v", keys)
+	}
+
+	// Verify tool without parameters is unaffected
+	if result.ChatParameters.Tools[1].Function.Parameters != nil {
+		t.Error("expected nil parameters for tool without parameters")
+	}
+
+	// Verify original bifrostReq.Params.Tools was NOT mutated
+	origKeys := bifrostReq.Params.Tools[0].Function.Parameters.Properties.Keys()
+	if len(origKeys) != 2 || origKeys[0] != "zebra" || origKeys[1] != "alpha" {
+		t.Errorf("original parameters were mutated: expected [zebra, alpha], got %v", origKeys)
+	}
+
+	// Verify the Function pointer is a different object (deep copy)
+	if result.ChatParameters.Tools[0].Function == bifrostReq.Params.Tools[0].Function {
+		t.Error("expected Function pointer to be a copy, not the original")
+	}
+}
+
+func TestToOpenAIChatRequest_PreservesPropertyOrder(t *testing.T) {
+	params := &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("reasoning", map[string]interface{}{"type": "string", "description": "Step by step"}),
+			schemas.KV("answer", map[string]interface{}{"type": "string", "description": "Final answer"}),
+			schemas.KV("confidence", map[string]interface{}{"type": "number", "description": "Score"}),
+		),
+		Required: []string{"reasoning", "answer"},
+	}
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     "function",
+				Function: &schemas.ChatToolFunction{Name: "test_func", Parameters: params},
+			}},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+
+	// CoT: property order preserved
+	normalizedParams := result.ChatParameters.Tools[0].Function.Parameters
+	keys := normalizedParams.Properties.Keys()
+	if len(keys) != 3 || keys[0] != "reasoning" || keys[1] != "answer" || keys[2] != "confidence" {
+		t.Errorf("expected property order [reasoning, answer, confidence], got %v", keys)
+	}
+}
+
+func TestToOpenAIChatRequest_CachingDeterminism(t *testing.T) {
+	// Same properties, different structural key orders within property definitions
+	makeReq := func(props *schemas.OrderedMap) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type: "function",
+					Function: &schemas.ChatToolFunction{
+						Name:       "test",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: props},
+					},
+				}},
+			},
+		}
+	}
+
+	// Version A: type before description
+	propsA := schemas.NewOrderedMapFromPairs(
+		schemas.KV("reasoning", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "string"),
+			schemas.KV("description", "Step by step"),
+		)),
+		schemas.KV("answer", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "string"),
+			schemas.KV("description", "Final answer"),
+		)),
+	)
+
+	// Version B: description before type (different structural order)
+	propsB := schemas.NewOrderedMapFromPairs(
+		schemas.KV("reasoning", schemas.NewOrderedMapFromPairs(
+			schemas.KV("description", "Step by step"),
+			schemas.KV("type", "string"),
+		)),
+		schemas.KV("answer", schemas.NewOrderedMapFromPairs(
+			schemas.KV("description", "Final answer"),
+			schemas.KV("type", "string"),
+		)),
+	)
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	resultA := ToOpenAIChatRequest(ctx, makeReq(propsA))
+	resultB := ToOpenAIChatRequest(ctx, makeReq(propsB))
+
+	jsonA, err := schemas.Marshal(resultA.ChatParameters.Tools[0].Function.Parameters)
+	if err != nil {
+		t.Fatalf("failed to marshal params A: %v", err)
+	}
+	jsonB, err := schemas.Marshal(resultB.ChatParameters.Tools[0].Function.Parameters)
+	if err != nil {
+		t.Fatalf("failed to marshal params B: %v", err)
+	}
+
+	if string(jsonA) != string(jsonB) {
+		t.Errorf("caching broken: same schema produced different JSON\nA: %s\nB: %s", jsonA, jsonB)
+	}
+}
+
 func TestApplyXAICompatibility(t *testing.T) {
 	tests := []struct {
 		name     string

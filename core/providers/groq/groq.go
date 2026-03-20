@@ -26,12 +26,15 @@ type GroqProvider struct {
 func NewGroqProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*GroqProvider, error) {
 	config.CheckAndSetDefaults()
 
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     5000,
 		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  10 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 
 	// // Pre-warm response pools
@@ -169,9 +172,23 @@ func (provider *GroqProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the Groq provider.
+// Speech handles non-streaming speech synthesis requests.
+// It formats the request body, makes the API call, and returns the response.
+// Returns the response and any error that occurred.
 func (provider *GroqProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+	return openai.HandleOpenAISpeechRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Groq,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 // Rerank is not supported by the Groq provider.
@@ -184,9 +201,22 @@ func (provider *GroqProvider) SpeechStream(ctx *schemas.BifrostContext, postHook
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the Groq provider.
+// Transcription handles non-streaming transcription requests.
+// It creates a multipart form, adds fields, makes the API call, and returns the response.
+// Returns the response and any error that occurred.
 func (provider *GroqProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
+	return openai.HandleOpenAITranscriptionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.Groq,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 // TranscriptionStream is not supported by the Groq provider.

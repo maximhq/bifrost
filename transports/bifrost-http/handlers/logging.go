@@ -156,6 +156,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	parseMetadataFilters(ctx, filters)
 
 	// Extract pagination parameters
 	pagination.Limit = 50 // Default limit
@@ -351,6 +352,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	parseMetadataFilters(ctx, filters)
 
 	stats, err := h.logManager.GetStats(ctx, filters)
 	if err != nil {
@@ -479,6 +481,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
+	parseMetadataFilters(ctx, filters)
 
 	return filters
 }
@@ -604,6 +607,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		virtualKeys    []logging.KeyPair
 		routingRules   []logging.KeyPair
 		routingEngines []string
+		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
 
@@ -641,6 +645,16 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		result := h.logManager.GetAvailableRoutingEngines(gCtx)
 		mu.Lock()
 		routingEngines = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result, err := h.logManager.GetAvailableMetadataKeys(gCtx)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		metadataKeys = result
 		mu.Unlock()
 		return nil
 	})
@@ -730,7 +744,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRulesArray = append(routingRulesArray, rule)
 	}
 
-	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines})
+	if metadataKeys == nil {
+		metadataKeys = make(map[string][]string)
+	}
+	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "metadata_keys": metadataKeys})
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs
@@ -900,6 +917,26 @@ func parseCommaSeparated(s string) []string {
 	}
 
 	return result
+}
+
+// parseMetadataFilters extracts metadata_* query params and sets them on the filters.
+func parseMetadataFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	var metadataFilters map[string]string
+	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
+		keyStr := string(key)
+		if strings.HasPrefix(keyStr, "metadata_") {
+			metadataKey := strings.TrimPrefix(keyStr, "metadata_")
+			if metadataKey != "" {
+				if metadataFilters == nil {
+					metadataFilters = make(map[string]string)
+				}
+				metadataFilters[metadataKey] = string(value)
+			}
+		}
+	})
+	if len(metadataFilters) > 0 {
+		filters.MetadataFilters = metadataFilters
+	}
 }
 
 type recalculateCostRequest struct {

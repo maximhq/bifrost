@@ -204,7 +204,14 @@
                         "endpoint": "env.AZURE_ENDPOINT",
                         "api_version": "env.AZURE_API_VERSION",
                         "deployments": {
-                            "gpt-4o": "gpt-4o"  
+                            "gpt-4o": "gpt-4o",
+                            "gpt-4o-mini": "gpt-4o-mini",
+                            "gpt-4o-mini-tts": "gpt-4o-mini-tts",
+                            "o1": "o1",
+                            "gpt-4o-batch": "gpt-4o-batch",
+                            "whisper": "whisper",
+                            "text-embedding-3-small": "text-embedding-3-small",
+                            "gpt-image-1": "gpt-image-1"
                         }
                     },
                     "weight": 1

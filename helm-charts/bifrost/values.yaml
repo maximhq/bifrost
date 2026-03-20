@@ -549,6 +549,7 @@ bifrost:
       # tenantId: ""
       # clientId: ""
       # clientSecret: ""
+      # cloud: "commercial"  # or "gcc-high" or "dod"
       # audience: ""
       # appIdUri: ""
       # userIdField: "oid"

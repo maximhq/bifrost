@@ -239,7 +239,8 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 	req.SetRequestURI(provider.buildModelInferenceProviderURL(huggingfaceModelName))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -311,7 +312,8 @@ func (provider *HuggingFaceProvider) downloadAudioFromURL(ctx context.Context, a
 	req.SetRequestURI(audioURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, fmt.Errorf("failed to download audio: %v", bifrostErr)
 	}

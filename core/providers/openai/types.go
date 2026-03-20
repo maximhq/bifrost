@@ -329,6 +329,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 			// Copy only this message
 			messagesCopy[i] = msg
+			// Strip message-level CacheControl (used by Anthropic for function_call/function_call_output)
+			messagesCopy[i].CacheControl = nil
 
 			// Strip CacheControl, FileType, and filter unsupported citation types from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
@@ -481,6 +483,10 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks
 func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
+	// Check message-level CacheControl (used by Anthropic for function_call/function_call_output messages)
+	if msg.CacheControl != nil {
+		return true
+	}
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.CacheControl != nil {

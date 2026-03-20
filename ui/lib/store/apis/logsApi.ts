@@ -53,6 +53,11 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.metadata_filters) {
+		for (const [key, value] of Object.entries(filters.metadata_filters)) {
+			params[`metadata_${key}`] = value;
+		}
+	}
 
 	return params;
 }
@@ -113,6 +118,11 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
+				if (filters.metadata_filters) {
+					for (const [key, value] of Object.entries(filters.metadata_filters)) {
+						params[`metadata_${key}`] = value;
+					}
+				}
 
 				return {
 					url: "/logs",
@@ -165,6 +175,11 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
+				if (filters.metadata_filters) {
+					for (const [key, value] of Object.entries(filters.metadata_filters)) {
+						params[`metadata_${key}`] = value;
+					}
+				}
 
 				return {
 					url: "/logs/stats",
@@ -300,6 +315,7 @@ export const logsApi = baseApi.injectEndpoints({
 				virtual_keys: VirtualKey[];
 				routing_rules: RoutingRule[];
 				routing_engines: string[];
+				metadata_keys: Record<string, string[]>;
 			},
 			void
 		>({

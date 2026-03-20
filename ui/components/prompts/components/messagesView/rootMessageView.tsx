@@ -8,6 +8,11 @@ import ToolResultMessageView from "./toolCallResultView";
 import ToolCallMessageView from "./toolCallView";
 import ErrorMessageView from "./errorMessageView";
 
+/**
+ * Render and manage the chat messages list, mapping each message to its appropriate view, handling edits, removals, variable recomputation, and automatic scrolling during streaming.
+ *
+ * @returns A React element that renders the messages list and provides handlers for message changes, removals, tool submissions, and variable updates.
+ */
 export function MessagesView() {
 	const { messages, setMessages: onUpdateMessages, setVariables, isStreaming, supportsVision, handleSubmitToolResult } = usePromptContext();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -16,7 +21,9 @@ export function MessagesView() {
 
 	useEffect(() => {
 		const lastId = messages[messages.length - 1]?.id;
-		const shouldScroll = messages.length !== prevLengthRef.current || lastId !== prevLastIdRef.current;
+		const grew = messages.length > prevLengthRef.current;
+		const lastChanged = lastId !== prevLastIdRef.current;
+		const shouldScroll = grew || (lastChanged && messages.length >= prevLengthRef.current);
 		prevLengthRef.current = messages.length;
 		prevLastIdRef.current = lastId;
 		if (shouldScroll) {
@@ -56,7 +63,7 @@ export function MessagesView() {
 	const isLastMessageStreaming = isStreaming && lastMessage?.type === MessageType.CompletionResult;
 
 	return (
-		<div className="space-y-1 p-4">
+		<div className="space-y-1 px-1 py-4">
 			{messages.map((msg, index) => {
 				const isStreamingMsg = isLastMessageStreaming && index === messages.length - 1;
 				const canRemove = index > 0;

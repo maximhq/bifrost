@@ -74,6 +74,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				stream_idle_timeout_in_seconds:
+					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 			},
 		},
 	});
@@ -105,6 +107,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
 				insecure_skip_verify: data.network_config?.insecure_skip_verify ?? false,
 				ca_cert_pem: data.network_config?.ca_cert_pem?.trim() || undefined,
+				stream_idle_timeout_in_seconds:
+					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -133,6 +137,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				stream_idle_timeout_in_seconds:
+					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -194,6 +200,41 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											/>
 										</FormControl>
 										<FormDescription>{secondsToHumanReadable(field.value)}</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.stream_idle_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+										<FormControl>
+											<Input
+												placeholder="60"
+												data-testid="network-config-stream-idle-timeout-input"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											{field.value ? secondsToHumanReadable(field.value) : ""}
+											{" "}Max time to wait for next chunk before closing a stalled stream
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}

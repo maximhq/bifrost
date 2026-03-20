@@ -21,9 +21,10 @@ func TestElevenlabs(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	realtimeAgentID := strings.TrimSpace(os.Getenv("ELEVENLABS_AGENT_ID"))
-	hasRealtimeAgent := realtimeAgentID != ""
+	hasRealtimeAgent := false
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Elevenlabs,
@@ -58,5 +59,4 @@ func TestElevenlabs(t *testing.T) {
 	t.Run("ElevenlabsTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

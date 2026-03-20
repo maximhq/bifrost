@@ -179,9 +179,16 @@ if ! grep -q "\"$route\"" docs/docs.json; then
       process.exit(1);
     }
     
+    // Find the Open Source menu item
+    const openSourceItem = changelogsTab.menu?.find(item => item.item === 'Open Source');
+    if (!openSourceItem) {
+      console.error('Open Source menu item not found in Changelogs tab');
+      process.exit(1);
+    }
+    
     // Get all top-level entries and existing groups
-    const topLevelEntries = changelogsTab.pages.filter(p => typeof p === 'string');
-    const existingGroups = changelogsTab.pages.filter(p => typeof p === 'object');
+    const topLevelEntries = openSourceItem.pages.filter(p => typeof p === 'string');
+    const existingGroups = openSourceItem.pages.filter(p => typeof p === 'object');
     
     // Check if we need to group existing top-level entries
     if (topLevelEntries.length > 0) {
@@ -217,27 +224,27 @@ if ! grep -q "\"$route\"" docs/docs.json; then
         console.log(\`✅ Created \${topLevelMonth} group with \${topLevelEntries.length} entries (sorted)\`);
         
         // Clear top-level entries (they're now in the group)
-        changelogsTab.pages = existingGroups;
+        openSourceItem.pages = existingGroups;
       } else {
         console.log(\`📋 Same month (\${releaseMonthYear}), keeping existing top-level entries\`);
         // Keep existing structure (top-level entries + groups)
-        changelogsTab.pages = [...topLevelEntries, ...existingGroups];
+        openSourceItem.pages = [...topLevelEntries, ...existingGroups];
       }
     }
     
     const newRoute = '$route';
     
     // Add the new changelog at the top level
-    changelogsTab.pages.unshift(newRoute);
+    openSourceItem.pages.unshift(newRoute);
     console.log(\`✅ Added \${newRoute} to top level\`);
     
     // Sort the top-level pages array by semver
-    const topLevelPages = changelogsTab.pages.filter(p => typeof p === 'string');
-    const groupPages = changelogsTab.pages.filter(p => typeof p === 'object');
+    const topLevelPages = openSourceItem.pages.filter(p => typeof p === 'string');
+    const groupPages = openSourceItem.pages.filter(p => typeof p === 'object');
     
     if (topLevelPages.length > 0) {
       const sortedTopLevel = sortPagesBySemver(topLevelPages);
-      changelogsTab.pages = [...sortedTopLevel, ...groupPages];
+      openSourceItem.pages = [...sortedTopLevel, ...groupPages];
       console.log(\`✅ Sorted \${topLevelPages.length} top-level pages by semver\`);
     }
     

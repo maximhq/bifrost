@@ -1,2 +1,0 @@
-- fix: set responses input messages in gen_ai.input.messages
-- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0

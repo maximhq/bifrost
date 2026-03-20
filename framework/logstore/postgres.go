@@ -73,9 +73,20 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if maxOpenConns == 0 {
 		maxOpenConns = 50
 	}
-	sqlDB.SetMaxOpenConns(maxOpenConns)
-
+	sqlDB.SetMaxOpenConns(maxOpenConns)	
 	d := &RDBLogStore{db: db, logger: logger}
+
+	// Check version of postgres, if is lower than 16, throw fatal error
+	var pgVersionNum int
+	if err := db.Raw("SELECT current_setting('server_version_num')::int").Scan(&pgVersionNum).Error; err != nil {
+		sqlDB.Close()
+		return nil, err
+	}
+	if pgVersionNum < 160000 {
+		sqlDB.Close()
+		return nil, fmt.Errorf("postgres version is lower than 16, please upgrade to 16 or higher")
+	}
+	
 	// Run migrations
 	if err := triggerMigrations(ctx, db); err != nil {
 		if sqlDB, sqlErr := db.DB(); sqlErr == nil {
@@ -83,5 +94,18 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		}
 		return nil, err
 	}
+
+	// Ensure the metadata GIN index exists and is valid. This is done in a
+	// goroutine so that CREATE INDEX CONCURRENTLY (which can take minutes on
+	// large tables) does not block pod startup. The function is idempotent —
+	// it is a no-op when the index is already healthy.
+	go func() {
+		if err := ensureMetadataGINIndex(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+			return
+		}
+		logger.Info("logstore: metadata GIN index is ready")
+	}()
+
 	return d, nil
 }

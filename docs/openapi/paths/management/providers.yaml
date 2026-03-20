@@ -199,3 +199,55 @@ models:
               $ref: '../../schemas/management/providers.yaml#/ListModelsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-parameters:
+  get:
+    operationId: getModelParameters
+    summary: Get model parameters
+    description: Returns the available parameter definitions for models.
+    tags:
+      - Providers
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-base:
+  get:
+    operationId: listBaseModels
+    summary: List base models
+    description: Returns a list of base models from the model catalog.
+    tags:
+      - Providers
+    parameters:
+      - name: query
+        in: query
+        description: Filter models by name
+        schema:
+          type: string
+      - name: provider
+        in: query
+        description: Filter by provider
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum number of results to return
+        schema:
+          type: integer
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

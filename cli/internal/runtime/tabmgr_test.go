@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -112,6 +113,33 @@ func TestHandleCommandKeyKeepsHomeCommandModeWithoutTabs(t *testing.T) {
 	}
 }
 
+func TestHandleCommandKeyEscapeReopensChooserWhenNoTabs(t *testing.T) {
+	t.Parallel()
+
+	var called bool
+	var out bytes.Buffer
+	tm := &TabManager{
+		stdout:      &out,
+		rows:        24,
+		cols:        80,
+		commandMode: true,
+	}
+
+	err := tm.handleCommandKey(context.Background(), func(ctx context.Context, notify func(TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, seed *LaunchSpec) (*LaunchSpec, error) {
+		called = true
+		return nil, nil
+	}, nil, 0x1b)
+	if err != nil {
+		t.Fatalf("handleCommandKey() error = %v", err)
+	}
+	if !called {
+		t.Fatal("expected escape with no tabs to reopen chooser")
+	}
+	if tm.commandMode {
+		t.Fatal("expected command mode to exit when reopening chooser")
+	}
+}
+
 func TestEnterCommandModeDrawsHomeTabBarWithoutTabs(t *testing.T) {
 	t.Parallel()
 
@@ -127,8 +155,32 @@ func TestEnterCommandModeDrawsHomeTabBarWithoutTabs(t *testing.T) {
 	if !tm.commandMode {
 		t.Fatal("expected command mode to be enabled")
 	}
+	if got := out.String(); !strings.Contains(got, "\x1b[2J\x1b[H") {
+		t.Fatalf("expected home command mode to clear stale chooser content, got %q", got)
+	}
 	if got := out.String(); got == "" || !bytes.Contains(out.Bytes(), []byte("n:new")) {
 		t.Fatalf("expected home tab bar command hints to be rendered, got %q", got)
+	}
+}
+
+func TestDrawTabBarResetsOriginAndScrollRegion(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	tm := &TabManager{
+		stdout: &out,
+		rows:   24,
+		cols:   80,
+	}
+
+	tm.drawTabBar()
+
+	got := out.String()
+	if !strings.Contains(got, "\x1b[r") {
+		t.Fatalf("expected drawTabBar() to reset scroll region, got %q", got)
+	}
+	if !strings.Contains(got, "\x1b[?6l") {
+		t.Fatalf("expected drawTabBar() to reset origin mode, got %q", got)
 	}
 }
 
@@ -286,6 +338,15 @@ func TestSyncHostInputModesReturnsSequenceOnlyOnChange(t *testing.T) {
 	reset := tm.syncHostInputModes(0)
 	if !strings.Contains(reset, "\x1b[?1000l") {
 		t.Fatalf("expected reset sequence to disable mouse tracking, got %q", reset)
+	}
+}
+
+func TestNormalizeTerminalSizeClampsTinyResize(t *testing.T) {
+	t.Parallel()
+
+	cols, rows := normalizeTerminalSize(0, 1)
+	if cols != 20 || rows != 2 {
+		t.Fatalf("normalizeTerminalSize(0, 1) = (%d, %d), want (20, 2)", cols, rows)
 	}
 }
 

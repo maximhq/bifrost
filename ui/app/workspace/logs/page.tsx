@@ -13,6 +13,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
+	useGetAvailableFilterDataQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
@@ -92,6 +93,7 @@ export default function LogsPage() {
 			order: parseAsString.withDefault("desc"),
 			live_enabled: parseAsBoolean.withDefault(true),
 			missing_cost_only: parseAsBoolean.withDefault(false),
+			metadata_filters: parseAsString.withDefault(""),
 		},
 		{
 			history: "push",
@@ -163,6 +165,13 @@ export default function LogsPage() {
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
 			missing_cost_only: urlState.missing_cost_only,
+			metadata_filters: urlState.metadata_filters ? (() => {
+				try {
+					return JSON.parse(urlState.metadata_filters);
+				} catch {
+					return undefined;
+				}
+			})() : undefined,
 		}),
 		[urlState],
 	);
@@ -200,6 +209,7 @@ export default function LogsPage() {
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
 				missing_cost_only: newFilters.missing_cost_only ?? filters.missing_cost_only ?? false,
+				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});
 		},
@@ -654,6 +664,14 @@ export default function LogsPage() {
 		if (filters.max_tokens && (!log.token_usage || log.token_usage.total_tokens > filters.max_tokens)) {
 			return false;
 		}
+		if (filters.metadata_filters) {
+			for (const [key, value] of Object.entries(filters.metadata_filters)) {
+				const metadataValue = log.metadata?.[key];
+				if (metadataValue === undefined || String(metadataValue) !== value) {
+					return false;
+				}
+			}
+		}
 		if (filters.content_search) {
 			const search = filters.content_search.toLowerCase();
 			const content = [
@@ -701,7 +719,14 @@ export default function LogsPage() {
 		[stats, fetchingStats],
 	);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
+	// Get metadata keys from filterdata API so columns always show even with no data on current page
+	const { data: filterData } = useGetAvailableFilterDataQuery();
+	const metadataKeys = useMemo(() => {
+		if (!filterData?.metadata_keys) return [];
+		return Object.keys(filterData.metadata_keys).sort();
+	}, [filterData?.metadata_keys]);
+
+	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
 
 	return (
 		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
@@ -768,6 +793,7 @@ export default function LogsPage() {
 								onLiveToggle={handleLiveToggle}
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
+								metadataKeys={metadataKeys}
 							/>
 						</div>
 					</div>

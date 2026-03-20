@@ -251,6 +251,12 @@ export const networkConfigSchema = z
 		retry_backoff_max: z.number().min(1000),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.string().optional(),
+		stream_idle_timeout_in_seconds: z
+			.number()
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -290,6 +296,12 @@ export const networkFormConfigSchema = z
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.string().optional(),
+		stream_idle_timeout_in_seconds: z.coerce
+			.number("Stream idle timeout must be a number")
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",

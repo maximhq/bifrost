@@ -73,6 +73,34 @@ ChatCompletionRequest:
       type: array
       items:
         $ref: '#/ChatTool'
+    seed:
+      type: integer
+      description: Deterministic sampling seed
+    top_p:
+      type: number
+      minimum: 0
+      maximum: 1
+      description: Nucleus sampling parameter
+    top_logprobs:
+      type: integer
+      minimum: 0
+      maximum: 20
+      description: Number of most likely tokens to return at each position
+    stop:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+      description: Up to 4 sequences where the API will stop generating tokens
+    prediction:
+      $ref: '#/ChatPrediction'
+    prompt_cache_retention:
+      type: string
+      enum: [in-memory, 24h]
+      description: Prompt cache retention policy
+    web_search_options:
+      $ref: '#/ChatWebSearchOptions'
     truncation:
       type: string
     user:
@@ -592,3 +620,54 @@ VideoResult:
       type: integer
     duration:
       type: number
+
+ChatPrediction:
+  type: object
+  description: Predicted output content for the model to reference (OpenAI only). Can reduce latency.
+  properties:
+    type:
+      type: string
+      description: Always "content"
+    content:
+      description: Predicted content (string or array of content parts)
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: object
+            additionalProperties: true
+
+ChatWebSearchOptions:
+  type: object
+  description: Web search options for chat completions (OpenAI only)
+  properties:
+    search_context_size:
+      type: string
+      enum: [low, medium, high]
+      description: Amount of search context to include
+    user_location:
+      $ref: '#/ChatWebSearchOptionsUserLocation'
+
+ChatWebSearchOptionsUserLocation:
+  type: object
+  properties:
+    type:
+      type: string
+      description: Location type (e.g., "approximate")
+    approximate:
+      $ref: '#/ChatWebSearchOptionsUserLocationApproximate'
+
+ChatWebSearchOptionsUserLocationApproximate:
+  type: object
+  properties:
+    city:
+      type: string
+    country:
+      type: string
+      description: Two-letter ISO country code (e.g., "US")
+    region:
+      type: string
+      description: Region or state (e.g., "California")
+    timezone:
+      type: string
+      description: IANA timezone (e.g., "America/Los_Angeles")

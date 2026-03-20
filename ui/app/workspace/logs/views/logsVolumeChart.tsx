@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -338,9 +337,6 @@ export function LogsVolumeChart({
 					<CollapsibleTrigger className="flex items-center gap-2 hover:opacity-80">
 						<ChevronDown className={`text-muted-foreground h-4 w-4 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`} />
 						<span className="text-muted-foreground text-sm font-medium">Request Volume</span>
-						<Badge variant="secondary" className="text-xs">
-							BETA
-						</Badge>
 					</CollapsibleTrigger>
 					<div className="mr-2 flex items-center gap-4">
 						{isOpen && (

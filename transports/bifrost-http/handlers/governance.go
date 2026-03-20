@@ -321,41 +321,70 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
+			"total_count":  len(virtualKeys),
+			"limit":        len(virtualKeys),
+			"offset":       0,
 		})
 		return
 	}
-	// Parse pagination and filter query params
-	params := configstore.VirtualKeyQueryParams{
-		Search:     string(ctx.QueryArgs().Peek("search")),
-		CustomerID: string(ctx.QueryArgs().Peek("customer_id")),
-		TeamID:     string(ctx.QueryArgs().Peek("team_id")),
-	}
-	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
-		n, err := strconv.Atoi(limitStr)
+	// Check for pagination/filter parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+	customerID := string(ctx.QueryArgs().Peek("customer_id"))
+	teamID := string(ctx.QueryArgs().Peek("team_id"))
+
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" {
+		// Paginated/filtered path
+		params := configstore.VirtualKeyQueryParams{
+			Search:     search,
+			CustomerID: customerID,
+			TeamID:     teamID,
+		}
+		if limitStr != "" {
+			n, err := strconv.Atoi(limitStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid limit parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+				return
+			}
+			params.Limit = n
+		}
+		if offsetStr != "" {
+			n, err := strconv.Atoi(offsetStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid offset parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+				return
+			}
+			params.Offset = n
+		}
+
+		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
 		if err != nil {
-			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			logger.Error("failed to retrieve virtual keys: %v", err)
+			SendError(ctx, 500, "Failed to retrieve virtual keys")
 			return
 		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
-			return
-		}
-		params.Limit = n
-	}
-	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
-		n, err := strconv.Atoi(offsetStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid offset parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
-			return
-		}
-		params.Offset = n
+		SendJSON(ctx, map[string]interface{}{
+			"virtual_keys": virtualKeys,
+			"count":        len(virtualKeys),
+			"total_count":  totalCount,
+			"limit":        params.Limit,
+			"offset":       params.Offset,
+		})
+		return
 	}
 
-	virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
+	// Non-paginated path: return all virtual keys
+	virtualKeys, err := h.configStore.GetVirtualKeys(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve virtual keys: %v", err)
 		SendError(ctx, 500, "Failed to retrieve virtual keys")
@@ -364,9 +393,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
-		"total_count":  totalCount,
-		"limit":        params.Limit,
-		"offset":       params.Offset,
+		"total_count":  len(virtualKeys),
+		"limit":        len(virtualKeys),
+		"offset":       0,
 	})
 }
 
@@ -1168,18 +1197,55 @@ func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			SendJSON(ctx, map[string]interface{}{
-				"teams": teams,
-				"count": len(teams),
+				"teams":       teams,
+				"count":       len(teams),
+				"total_count": len(teams),
+				"limit":       len(teams),
+				"offset":      0,
 			})
 		} else {
 			SendJSON(ctx, map[string]interface{}{
-				"teams": data.Teams,
-				"count": len(data.Teams),
+				"teams":       data.Teams,
+				"count":       len(data.Teams),
+				"total_count": len(data.Teams),
+				"limit":       len(data.Teams),
+				"offset":      0,
 			})
 		}
 		return
 	}
-	// Preload relationships for complete information
+
+	// Check for pagination parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		limit, _ := strconv.Atoi(limitStr)
+		offset, _ := strconv.Atoi(offsetStr)
+		limit, offset = ClampPaginationParams(limit, offset)
+		teams, totalCount, err := h.configStore.GetTeamsPaginated(ctx, configstore.TeamsQueryParams{
+			Limit:      limit,
+			Offset:     offset,
+			Search:     search,
+			CustomerID: customerID,
+		})
+		if err != nil {
+			logger.Error("failed to retrieve teams: %v", err)
+			SendError(ctx, 500, fmt.Sprintf("Failed to retrieve teams: %v", err))
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"teams":       teams,
+			"count":       len(teams),
+			"total_count": totalCount,
+			"limit":       limit,
+			"offset":      offset,
+		})
+		return
+	}
+
+	// Non-paginated path: return all teams
 	teams, err := h.configStore.GetTeams(ctx, customerID)
 	if err != nil {
 		logger.Error("failed to retrieve teams: %v", err)
@@ -1187,8 +1253,11 @@ func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]interface{}{
-		"teams": teams,
-		"count": len(teams),
+		"teams":       teams,
+		"count":       len(teams),
+		"total_count": len(teams),
+		"limit":       len(teams),
+		"offset":      0,
 	})
 }
 
@@ -1539,11 +1608,42 @@ func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		SendJSON(ctx, map[string]interface{}{
-			"customers": data.Customers,
-			"count":     len(data.Customers),
+			"customers":   data.Customers,
+			"count":       len(data.Customers),
+			"total_count": len(data.Customers),
+			"limit":       len(data.Customers),
+			"offset":      0,
 		})
 		return
 	}
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		limit, _ := strconv.Atoi(limitStr)
+		offset, _ := strconv.Atoi(offsetStr)
+		limit, offset = ClampPaginationParams(limit, offset)
+		customers, totalCount, err := h.configStore.GetCustomersPaginated(ctx, configstore.CustomersQueryParams{
+			Limit:  limit,
+			Offset: offset,
+			Search: search,
+		})
+		if err != nil {
+			logger.Error("failed to retrieve customers: %v", err)
+			SendError(ctx, 500, "failed to retrieve customers")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"customers":   customers,
+			"count":       len(customers),
+			"total_count": totalCount,
+			"limit":       limit,
+			"offset":      offset,
+		})
+		return
+	}
+
 	customers, err := h.configStore.GetCustomers(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve customers: %v", err)
@@ -1551,8 +1651,11 @@ func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]interface{}{
-		"customers": customers,
-		"count":     len(customers),
+		"customers":   customers,
+		"count":       len(customers),
+		"total_count": len(customers),
+		"limit":       len(customers),
+		"offset":      0,
 	})
 }
 
@@ -1992,21 +2095,81 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
-		SendJSON(ctx, map[string]interface{}{
+		SendJSON(ctx, map[string]any{
 			"model_configs": data.ModelConfigs,
 			"count":         len(data.ModelConfigs),
+			"total_count":   len(data.ModelConfigs),
+			"limit":         len(data.ModelConfigs),
+			"offset":        0,
 		})
 		return
 	}
+
+	// Check for pagination parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		// Paginated path
+		params := configstore.ModelConfigsQueryParams{
+			Search: search,
+		}
+		if limitStr != "" {
+			n, err := strconv.Atoi(limitStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid limit parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+				return
+			}
+			params.Limit = n
+		}
+		if offsetStr != "" {
+			n, err := strconv.Atoi(offsetStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid offset parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+				return
+			}
+			params.Offset = n
+		}
+
+		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		modelConfigs, totalCount, err := h.configStore.GetModelConfigsPaginated(ctx, params)
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		SendJSON(ctx, map[string]any{
+			"model_configs": modelConfigs,
+			"count":         len(modelConfigs),
+			"total_count":   totalCount,
+			"limit":         params.Limit,
+			"offset":        params.Offset,
+		})
+		return
+	}
+
+	// Non-paginated path: return all model configs
 	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve model configs: %v", err)
 		SendError(ctx, 500, "Failed to retrieve model configs")
 		return
 	}
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"model_configs": modelConfigs,
 		"count":         len(modelConfigs),
+		"total_count":   len(modelConfigs),
+		"limit":         len(modelConfigs),
+		"offset":        0,
 	})
 }
 
@@ -2645,9 +2808,6 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 	scope := string(ctx.QueryArgs().Peek("scope"))
 	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 
-	var rules []configstoreTables.TableRoutingRule
-	var err error
-
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
@@ -2659,12 +2819,11 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 		inMemoryRules := gd.RoutingRules
 
 		// Filter rules by scope and scopeID
+		var rules []configstoreTables.TableRoutingRule
 		for _, rule := range inMemoryRules {
-			// If scope filter is specified, only include matching rules
 			if scope != "" && rule.Scope != scope {
 				continue
 			}
-			// If scopeID filter is specified, only include matching rules
 			if scopeID != "" {
 				ruleScope := ""
 				if rule.ScopeID != nil {
@@ -2676,28 +2835,103 @@ func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
 			}
 			rules = append(rules, *rule)
 		}
-	} else {
-		// Get from config store (database)
-		if scope != "" || scopeID != "" {
-			rules, err = h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
-		} else {
-			rules, err = h.configStore.GetRoutingRules(ctx)
-		}
+
+		SendJSON(ctx, map[string]interface{}{
+			"rules":       rules,
+			"count":       len(rules),
+			"total_count": len(rules),
+			"limit":       len(rules),
+			"offset":      0,
+		})
+		return
+	}
+
+	// If scope/scopeID filters are specified, use the existing non-paginated path
+	if scope != "" || scopeID != "" {
+		rules, err := h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
 		if err != nil {
 			SendError(ctx, 500, "Failed to get routing rules")
 			return
 		}
+		response := make([]configstoreTables.TableRoutingRule, 0, len(rules))
+		for _, rule := range rules {
+			response = append(response, rule)
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"rules":       response,
+			"count":       len(response),
+			"total_count": len(response),
+			"limit":       len(response),
+			"offset":      0,
+		})
+		return
 	}
 
-	// Convert to JSON-serializable format
-	response := make([]configstoreTables.TableRoutingRule, 0, len(rules))
-	for _, rule := range rules {
-		response = append(response, rule)
+	// Check for pagination parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		// Paginated path
+		params := configstore.RoutingRulesQueryParams{
+			Search: search,
+		}
+		if limitStr != "" {
+			n, err := strconv.Atoi(limitStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid limit parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+				return
+			}
+			params.Limit = n
+		}
+		if offsetStr != "" {
+			n, err := strconv.Atoi(offsetStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid offset parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+				return
+			}
+			params.Offset = n
+		}
+
+		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		rules, totalCount, err := h.configStore.GetRoutingRulesPaginated(ctx, params)
+		if err != nil {
+			logger.Error("failed to retrieve routing rules: %v", err)
+			SendError(ctx, 500, "Failed to retrieve routing rules")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"rules":       rules,
+			"count":       len(rules),
+			"total_count": totalCount,
+			"limit":       params.Limit,
+			"offset":      params.Offset,
+		})
+		return
 	}
 
+	// Non-paginated path: return all routing rules
+	rules, err := h.configStore.GetRoutingRules(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve routing rules: %v", err)
+		SendError(ctx, 500, "Failed to retrieve routing rules")
+		return
+	}
 	SendJSON(ctx, map[string]interface{}{
-		"rules": response,
-		"count": len(response),
+		"rules":       rules,
+		"count":       len(rules),
+		"total_count": len(rules),
+		"limit":       len(rules),
+		"offset":      0,
 	})
 }
 

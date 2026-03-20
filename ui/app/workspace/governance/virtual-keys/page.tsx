@@ -1,6 +1,8 @@
 "use client"
 
+import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
 import FullPageLoader from "@/components/fullPageLoader"
+import { useDebouncedValue } from "@/hooks/useDebounce"
 import {
 	getErrorMessage,
 	useGetCustomersQuery,
@@ -10,8 +12,6 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
-import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
-import { useDebouncedValue } from "@/hooks/useDebounce"
 
 const POLLING_INTERVAL = 5000
 const PAGE_SIZE = 25
@@ -53,7 +53,7 @@ export default function GovernanceVirtualKeysPage() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
-	} = useGetTeamsQuery({}, {
+	} = useGetTeamsQuery(undefined, {
 		skip: !hasTeamsAccess,
 		pollingInterval: POLLING_INTERVAL,
 	})
@@ -66,6 +66,14 @@ export default function GovernanceVirtualKeysPage() {
 		skip: !hasCustomersAccess,
 		pollingInterval: POLLING_INTERVAL,
 	})
+
+	const vkTotal = virtualKeysData?.total_count ?? 0
+
+	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
+	useEffect(() => {
+		if (!virtualKeysData || offset < vkTotal) return
+		setOffset(vkTotal === 0 ? 0 : Math.floor((vkTotal - 1) / PAGE_SIZE) * PAGE_SIZE)
+	}, [vkTotal, offset])
 
 	const isLoading = vkLoading || teamsLoading || customersLoading
 
@@ -98,6 +106,7 @@ export default function GovernanceVirtualKeysPage() {
 				teams={teamsData?.teams || []}
 				customers={customersData?.customers || []}
 				search={search}
+				debouncedSearch={debouncedSearch}
 				onSearchChange={setSearch}
 				customerFilter={customerFilter}
 				onCustomerFilterChange={setCustomerFilter}

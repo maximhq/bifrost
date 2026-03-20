@@ -24,9 +24,9 @@ DB_PATH ?= ../../tests/configs/default/logs.db
 
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 5432
-POSTGRES_USER ?= postgres
-POSTGRES_PASSWORD ?= 
-POSTGRES_DB ?= bifrost_logs
+POSTGRES_USER ?= bifrost
+POSTGRES_PASSWORD ?= bifrost_password
+POSTGRES_DB ?= bifrost
 
 # Populate SQLite database (default)
 populate-sqlite:

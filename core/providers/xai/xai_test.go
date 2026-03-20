@@ -21,6 +21,7 @@ func TestXAI(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.XAI,
@@ -57,5 +58,4 @@ func TestXAI(t *testing.T) {
 	t.Run("XAITests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

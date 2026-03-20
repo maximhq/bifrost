@@ -260,10 +260,12 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
 	return env, combineCleanup(cleanupFns), nil
 }
 
+// opencodeModelRef returns the Opencode model reference.
 func opencodeModelRef(model string) string {
 	return "bifrost/" + strings.TrimSpace(model)
 }
 
+// opencodeTUIPreLaunch loads the Opencode TUI config from the user's home directory.
 func opencodeTUIPreLaunch() ([]string, func(), error) {
 	path, err := opencodeTUIConfigPath()
 	if err != nil {
@@ -304,6 +306,7 @@ func opencodeTUIPreLaunch() ([]string, func(), error) {
 	return []string{"OPENCODE_TUI_CONFIG=" + f.Name()}, func() { os.Remove(f.Name()) }, nil
 }
 
+// opencodeTUIConfigPath returns the path to the Opencode TUI config.
 func opencodeTUIConfigPath() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
 		return filepath.Join(xdg, "opencode", "tui.json"), nil
@@ -316,6 +319,7 @@ func opencodeTUIConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "opencode", "tui.json"), nil
 }
 
+// loadOpencodeTUIConfig loads the Opencode TUI config from the given path.
 func loadOpencodeTUIConfig(path string) (map[string]any, bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -338,6 +342,7 @@ func loadOpencodeTUIConfig(path string) (map[string]any, bool, error) {
 	return cfg, ok && strings.TrimSpace(fmt.Sprint(theme)) != "", nil
 }
 
+// combineCleanup combines multiple cleanup functions into a single function.
 func combineCleanup(cleanups []func()) func() {
 	return func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -348,10 +353,12 @@ func combineCleanup(cleanups []func()) func() {
 	}
 }
 
+// normalizeJSONC removes trailing commas and comments from JSONC data.
 func normalizeJSONC(data []byte) []byte {
 	return stripTrailingCommas(stripJSONComments(data))
 }
 
+// stripJSONComments removes comments from JSONC data.
 func stripJSONComments(data []byte) []byte {
 	out := make([]byte, 0, len(data))
 	inString := false

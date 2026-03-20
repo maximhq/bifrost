@@ -2,11 +2,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Message, SerializedMessage } from "@/lib/message";
 import { PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isJson } from "@/lib/utils/validation";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 
+/**
+ * Renders an editable system message block that supports role switching, rich-text editing, JSON editing with buffered changes, Jinja variable highlighting, and optional removal.
+ *
+ * @param message - The message model to display and edit.
+ * @param disabled - When true, disables interactions and makes the view read-only.
+ * @param onChange - Called with the message's serialized representation when the message is modified (role or content).
+ * @param onRemove - Optional callback invoked when the message should be removed.
+ * @returns The rendered system message JSX element.
+ */
 export function SystemMessageView({
 	message,
 	disabled,
@@ -20,11 +31,40 @@ export function SystemMessageView({
 }) {
 	const [editMode, setEditMode] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const messageRef = useRef(message);
+	messageRef.current = message;
 	const pendingCursorRef = useRef<number | null>(null);
 	const content = message.content;
 	const isEmpty = !content;
 	const hasVariables = JINJA_VAR_REGEX.test(content);
 	JINJA_VAR_REGEX.lastIndex = 0;
+	const jsonBufferRef = useRef<string | null>(null);
+	const contentIsJson = useMemo(() => !isEmpty && isJson(content), [content, isEmpty]);
+	const formattedJson = useMemo(() => {
+		if (!contentIsJson) return "";
+		try {
+			return JSON.stringify(JSON.parse(content), null, 2);
+		} catch {
+			return content;
+		}
+	}, [content, contentIsJson]);
+
+	const applyPendingJsonBuffer = (msg: Message): Message => {
+		if (jsonBufferRef.current !== null) {
+			const clone = msg.clone();
+			clone.content = jsonBufferRef.current;
+			jsonBufferRef.current = null;
+			return clone;
+		}
+		return msg;
+	};
+
+	const flushJsonBuffer = () => {
+		const updated = applyPendingJsonBuffer(messageRef.current);
+		if (updated !== messageRef.current) {
+			onChange(updated.serialized);
+		}
+	};
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -37,7 +77,8 @@ export function SystemMessageView({
 	}, []);
 
 	const handleRoleChange = (role: string) => {
-		const clone = message.clone();
+		const latest = applyPendingJsonBuffer(messageRef.current);
+		const clone = latest.clone();
 		clone.role = role as any;
 		onChange(clone.serialized);
 	};
@@ -67,12 +108,12 @@ export function SystemMessageView({
 				<div className="ml-auto flex items-center gap-0.5 h-5">
 					{!disabled && (
 						<button type="button" aria-label="Edit message" data-testid="system-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="system-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
@@ -99,6 +140,22 @@ export function SystemMessageView({
 					/>
 				) : isEmpty ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter system message...</div>
+				) : contentIsJson ? (
+					<CodeEditor
+						wrap
+						code={formattedJson}
+						lang="json"
+						readonly={disabled}
+						autoResize
+						onChange={(value) => {
+							jsonBufferRef.current = value ?? "";
+						}}
+						options={{
+							showIndentLines: false,
+							disableHover: true,
+						}}
+						onBlur={flushJsonBuffer}
+					/>
 				) : hasVariables ? (
 					<RichTextarea
 						readOnly

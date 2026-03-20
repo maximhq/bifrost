@@ -82,10 +82,11 @@ export function RoutingRuleSheet({
 	editingRule,
 	onSuccess,
 }: RoutingRuleDialogProps) {
-	const { data: rules = [] } = useGetRoutingRulesQuery();
+	const { data: rulesData } = useGetRoutingRulesQuery();
+	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
 	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
-	const { data: teamsData = { teams: [] } } = useGetTeamsQuery({});
+	const { data: teamsData = { teams: [], count: 0, total_count: 0, limit: 0, offset: 0 } } = useGetTeamsQuery();
 	const { data: customersData = { customers: [] } } = useGetCustomersQuery();
 	const [createRoutingRule, { isLoading: isCreating }] = useCreateRoutingRuleMutation();
 	const [updateRoutingRule, { isLoading: isUpdating }] = useUpdateRoutingRuleMutation();
@@ -283,7 +284,7 @@ export function RoutingRuleSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}
