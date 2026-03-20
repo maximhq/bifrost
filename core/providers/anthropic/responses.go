@@ -2381,7 +2381,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 					continue // Skip converting MCP tools to anthropicTools since they're handled separately
 				}
-				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool)
+				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool, bifrostReq.Provider)
 				if anthropicTool != nil {
 					anthropicTools = append(anthropicTools, *anthropicTool)
 				}
@@ -4668,7 +4668,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 }
 
 // Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *AnthropicTool {
+func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
@@ -4694,7 +4694,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 	case schemas.ResponsesToolTypeWebSearch:
 		webSearchType := AnthropicToolTypeWebSearch20250305
-		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+		// Dynamic filtering (web_search_20260209) only available on Anthropic + Azure
+		features, ok := ProviderFeatures[provider]
+		if ok && features.WebSearchDynamic &&
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{
@@ -4723,7 +4726,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
 		webFetchType := AnthropicToolTypeWebFetch20250910
-		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+		// Dynamic filtering versions only available on Anthropic + Azure
+		features, ok := ProviderFeatures[provider]
+		if ok && features.WebSearchDynamic &&
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
 			webFetchType = AnthropicToolTypeWebFetch20260309
 		}
 		anthropicTool := &AnthropicTool{

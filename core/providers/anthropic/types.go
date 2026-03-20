@@ -32,6 +32,12 @@ const (
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
 
+	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
+	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
+	AnthropicComputerUseBetaHeader20251124 = "computer-use-2025-11-24"
+	// computer_20250124 (all other supported models) uses the older beta header.
+	AnthropicComputerUseBetaHeader20250124 = "computer-use-2025-01-24"
+
 	// Prefixes for Vertex-unsupported beta headers (version-bump proof).
 	// Use these with strings.HasPrefix when filtering headers for Vertex AI,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
@@ -40,6 +46,54 @@ const (
 	AnthropicPromptCachingScopeBetaHeaderPrefix = "prompt-caching-scope-"
 	AnthropicMCPClientBetaHeaderPrefix          = "mcp-client-"
 )
+
+// ProviderFeatureSupport defines which Anthropic features a given provider supports.
+// Source: https://docs.anthropic.com/en/build-with-claude/overview (March 2026)
+type ProviderFeatureSupport struct {
+	WebSearch          bool // web_search server tool
+	WebSearchDynamic   bool // web_search_20260209 (dynamic filtering, requires code_execution)
+	WebFetch           bool // web_fetch server tool
+	CodeExecution      bool // code_execution server tool
+	ComputerUse        bool // computer_use client tool
+	Bash               bool // bash client tool
+	Memory             bool // memory client tool
+	TextEditor         bool // text_editor client tool
+	ToolSearch         bool // tool_search server tool
+	MCP                bool // MCP connector
+	AdvancedToolUse    bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
+	StructuredOutputs  bool // strict tool validation and output_format
+	PromptCachingScope bool // prompt caching scope
+	Compaction         bool // server-side context compaction
+	ContextEditing     bool // context editing (clear_tool_uses, clear_thinking)
+	FilesAPI           bool // Files API
+	FileSearch         bool // file_search server tool (OpenAI-only)
+	ImageGeneration    bool // image_generation server tool (OpenAI-only)
+}
+
+// ProviderFeatures maps each provider to its supported Anthropic features.
+var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
+	schemas.Anthropic: {
+		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
+		Compaction: true, ContextEditing: true, FilesAPI: true,
+	},
+	schemas.Vertex: {
+		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		Compaction: true, ContextEditing: true,
+	},
+	schemas.Bedrock: {
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		StructuredOutputs: true, Compaction: true, ContextEditing: true,
+	},
+	schemas.Azure: {
+		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
+		Compaction: true, ContextEditing: true, FilesAPI: true,
+	},
+}
 
 // ==================== REQUEST TYPES ====================
 

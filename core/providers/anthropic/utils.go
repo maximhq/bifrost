@@ -13,6 +13,63 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ValidateToolsForProvider checks if all tools in the request are supported by the given provider.
+// Returns an error for the first unsupported tool found.
+func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		// Unknown provider — allow all tools (safe default for custom providers)
+		return nil
+	}
+
+	for _, tool := range tools {
+		switch tool.Type {
+		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
+			if !features.WebSearch {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeWebFetch:
+			if !features.WebFetch {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeCodeInterpreter:
+			if !features.CodeExecution {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeComputerUsePreview:
+			if !features.ComputerUse {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeMCP:
+			if !features.MCP {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeLocalShell:
+			if !features.Bash {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeMemory:
+			if !features.Memory {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeToolSearch:
+			if !features.ToolSearch {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeFileSearch:
+			if !features.FileSearch {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		case schemas.ResponsesToolTypeImageGeneration:
+			if !features.ImageGeneration {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
+		}
+	}
+	return nil
+}
+
 var (
 	// Maps provider-specific finish reasons to Bifrost format
 	anthropicFinishReasonToBifrost = map[AnthropicStopReason]string{
@@ -132,7 +189,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if reqBody == nil {
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
 		}
-		addMissingBetaHeadersToContext(ctx, reqBody)
+		AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Anthropic)
 		if isStreaming {
 			reqBody.Stream = schemas.Ptr(true)
 		}
@@ -171,15 +228,32 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 	return jsonBody, nil
 }
 
-// addMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context
-func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest) error {
+// AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
+// The provider parameter controls which headers are included — unsupported headers for the given provider are skipped.
+func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, provider schemas.ModelProvider) error {
+	features, hasProvider := ProviderFeatures[provider]
 	headers := []string{}
 	hasCachingScope := false
 	if req.Tools != nil {
 		for _, tool := range req.Tools {
+			// Check for version-specific beta headers based on tool type
+			if tool.Type != nil {
+				switch *tool.Type {
+				case AnthropicToolTypeComputer20251124:
+					if !hasProvider || features.ComputerUse {
+						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20251124)
+					}
+				case AnthropicToolTypeComputer20250124:
+					if !hasProvider || features.ComputerUse {
+						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
+					}
+				}
+			}
 			// Check for strict (structured-outputs)
 			if tool.Strict != nil && *tool.Strict {
-				headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+				if !hasProvider || features.StructuredOutputs {
+					headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+				}
 			}
 			// Check for advanced-tool-use features
 			if tool.DeferLoading != nil && *tool.DeferLoading {
@@ -193,8 +267,10 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			}
 			// Check for cache control with scope
 			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
-				headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
-				hasCachingScope = true
+				if !hasProvider || features.PromptCachingScope {
+					headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+					hasCachingScope = true
+				}
 			}
 		}
 	}
@@ -202,27 +278,37 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	if req.ContextManagement != nil {
 		for _, edit := range req.ContextManagement.Edits {
 			if edit.Type == ContextManagementEditTypeCompact {
-				headers = appendUniqueHeader(headers, AnthropicCompactionBetaHeader)
+				if !hasProvider || features.Compaction {
+					headers = appendUniqueHeader(headers, AnthropicCompactionBetaHeader)
+				}
 			}
 			if edit.Type == ContextManagementEditTypeClearToolUses || edit.Type == ContextManagementEditTypeClearThinking {
-				headers = appendUniqueHeader(headers, AnthropicContextManagementBetaHeader)
+				if !hasProvider || features.ContextEditing {
+					headers = appendUniqueHeader(headers, AnthropicContextManagementBetaHeader)
+				}
 			}
 		}
 	}
 	// Check for MCP servers
 	if len(req.MCPServers) > 0 {
-		headers = appendUniqueHeader(headers, AnthropicMCPClientBetaHeader)
+		if !hasProvider || features.MCP {
+			headers = appendUniqueHeader(headers, AnthropicMCPClientBetaHeader)
+		}
 	}
 	// Check for output format (structured outputs)
 	if req.OutputFormat != nil {
-		headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+		if !hasProvider || features.StructuredOutputs {
+			headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+		}
 	}
 	// Check for cache control with scope in system message (only if not already found)
 	if !hasCachingScope && req.System != nil && req.System.ContentBlocks != nil {
 		for _, block := range req.System.ContentBlocks {
 			if block.CacheControl != nil && block.CacheControl.Scope != nil {
-				headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
-				hasCachingScope = true
+				if !hasProvider || features.PromptCachingScope {
+					headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+					hasCachingScope = true
+				}
 				break
 			}
 		}
@@ -233,8 +319,10 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			if message.Content.ContentBlocks != nil {
 				for _, block := range message.Content.ContentBlocks {
 					if block.CacheControl != nil && block.CacheControl.Scope != nil {
-						headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
-						hasCachingScope = true
+						if !hasProvider || features.PromptCachingScope {
+							headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+							hasCachingScope = true
+						}
 						break
 					}
 				}
@@ -262,6 +350,148 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	}
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	return nil
+}
+
+// ToolVersionRemap defines a mapping from an unsupported tool version to a supported one.
+type ToolVersionRemap struct {
+	From string
+	To   string
+}
+
+// providerToolVersionRemaps defines version downgrades per provider.
+// When a raw request contains a tool type not supported by the target provider,
+// it gets remapped to the supported version.
+var providerToolVersionRemaps = map[schemas.ModelProvider][]ToolVersionRemap{
+	schemas.Vertex: {
+		// Vertex only supports basic web search, not dynamic filtering
+		{From: string(AnthropicToolTypeWebSearch20260209), To: string(AnthropicToolTypeWebSearch20250305)},
+		// Vertex does not support web fetch at all — no remap, these should error
+		// Vertex does not support code execution — no remap, these should error
+	},
+	// Bedrock does not support web search, web fetch, or code execution at all — no remaps
+	// Anthropic and Azure support all versions — no remaps needed
+}
+
+// unsupportedRawToolTypes lists tool type prefixes that should be rejected per provider
+// when found in raw request bodies (no remap possible, the feature itself is unsupported).
+var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
+	schemas.Vertex: {
+		"web_fetch_",     // No web fetch support on Vertex
+		"code_execution", // No code execution on Vertex
+	},
+	schemas.Bedrock: {
+		"web_search_",    // No web search on Bedrock
+		"web_fetch_",     // No web fetch on Bedrock
+		"code_execution", // No code execution on Bedrock
+	},
+}
+
+// RemapRawToolVersionsForProvider inspects tools in a raw JSON body and remaps
+// unsupported tool versions to supported ones for the target provider.
+// Returns an error if a tool type is fundamentally unsupported (no remap possible).
+func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider) ([]byte, error) {
+	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return jsonBody, nil
+	}
+
+	var err error
+	tools := toolsResult.Array()
+
+	// Check for unsupported types first
+	if prefixes, ok := unsupportedRawToolTypes[provider]; ok {
+		for _, tool := range tools {
+			toolType := tool.Get("type").String()
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(toolType, prefix) {
+					return nil, fmt.Errorf("tool type '%s' is not supported by provider '%s'", toolType, provider)
+				}
+			}
+		}
+	}
+
+	// Apply version remaps
+	remaps, ok := providerToolVersionRemaps[provider]
+	if !ok {
+		return jsonBody, nil
+	}
+
+	for i, tool := range tools {
+		toolType := tool.Get("type").String()
+		for _, remap := range remaps {
+			if toolType == remap.From {
+				path := fmt.Sprintf("tools.%d.type", i)
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, path, remap.To)
+				if err != nil {
+					return nil, fmt.Errorf("failed to remap tool type: %w", err)
+				}
+				break
+			}
+		}
+	}
+
+	return jsonBody, nil
+}
+
+// FilterBetaHeadersForProvider validates that all beta headers are supported by the given provider.
+// Returns an error if a known beta header is not supported by the provider.
+// Unknown headers (not matched by any known prefix) are forwarded as-is for forward compatibility.
+func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvider) ([]string, error) {
+	features, hasProvider := ProviderFeatures[provider]
+	if !hasProvider {
+		// Unknown provider — allow all headers (safe default for custom providers)
+		return headers, nil
+	}
+
+	filtered := make([]string, 0, len(headers))
+	for _, h := range headers {
+		switch {
+		case strings.HasPrefix(h, "computer-use-"):
+			if !features.ComputerUse {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicStructuredOutputsBetaHeaderPrefix):
+			if !features.StructuredOutputs {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicMCPClientBetaHeaderPrefix):
+			if !features.MCP {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicPromptCachingScopeBetaHeaderPrefix):
+			if !features.PromptCachingScope {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, "compact-"):
+			if !features.Compaction {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, "context-management-"):
+			if !features.ContextEditing {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, "files-api-"):
+			if !features.FilesAPI {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicAdvancedToolUseBetaHeaderPrefix):
+			if !features.AdvancedToolUse {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		default:
+			// Unknown headers are forwarded for forward compatibility
+			filtered = append(filtered, h)
+		}
+	}
+	return filtered, nil
 }
 
 // appendUniqueHeader adds a header to the slice if not already present

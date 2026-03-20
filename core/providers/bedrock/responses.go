@@ -1641,6 +1641,13 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
 
+	// Validate tools are supported by Bedrock
+	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
+		if toolErr := anthropic.ValidateToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock); toolErr != nil {
+			return nil, toolErr
+		}
+	}
+
 	bedrockReq := &BedrockConverseRequest{
 		ModelID: bifrostReq.Model,
 	}

@@ -436,7 +436,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			if convErr != nil {
 				return nil, convErr
 			}
-			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		},
 		provider.GetProviderKey())
@@ -520,7 +520,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 				return nil, convErr
 			}
 			anthropicReq.Stream = schemas.Ptr(true)
-			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		},
 		provider.GetProviderKey())
