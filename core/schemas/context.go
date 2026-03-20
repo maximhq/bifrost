@@ -64,9 +64,9 @@ type BifrostContext struct {
 	blockRestrictedWrites atomic.Bool
 
 	// Plugin scoping fields
-	pluginScope   *string         // Non-nil when this is a scoped plugin context
+	pluginScope   *string                        // Non-nil when this is a scoped plugin context
 	pluginLogs    atomic.Pointer[pluginLogStore] // Shared log store; lazily initialized on root, shared by scoped contexts
-	valueDelegate *BifrostContext // For scoped contexts: delegate Value/SetValue to this root context
+	valueDelegate *BifrostContext                // For scoped contexts: delegate Value/SetValue to this root context
 }
 
 // NewBifrostContext creates a new BifrostContext with the given parent context and deadline.
@@ -250,6 +250,10 @@ func (bc *BifrostContext) Value(key any) any {
 		return val
 	}
 	bc.valuesMu.RUnlock()
+
+	if bc.parent == nil {
+		return nil
+	}
 
 	return bc.parent.Value(key)
 }

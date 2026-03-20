@@ -1567,7 +1567,7 @@
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools to execute for this MCP config",
+          "description": "Include-only list of tools this Virtual Key is permitted to execute from this MCP client. ['*'] means all tools allowed, [] means no tools allowed (deny-by-default).",
           "items": {
             "type": "string"
           }
