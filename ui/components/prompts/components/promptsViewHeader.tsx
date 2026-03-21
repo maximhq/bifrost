@@ -110,6 +110,13 @@ export default function PromptsViewHeader() {
 
 	const handleCommitVersion = useCallback(async () => {
 		if (!selectedPrompt) return;
+		if (!hasChanges) {
+			const selectedSession = sessions.find((s) => s.id === selectedSessionId);
+			if (selectedSession) {
+				onSessionSaved(selectedSession);
+			}
+			return;
+		}
 		try {
 			// Always create a new session with current state before committing
 			const result = await createSession({
@@ -126,7 +133,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, onSessionSaved]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, onSessionSaved, hasChanges]);
 
 	const handleRenameSession = useCallback(
 		async (sessionId: number, name: string) => {
