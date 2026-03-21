@@ -87,6 +87,8 @@ func (r *RunwayVideoGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *RunwayVideoGenerationRequest) GetParameterMappings() map[string]string { return nil }
+
 type ContentModeration struct {
 	PublicFigureThreshold *string `json:"public_figure_threshold,omitempty"`
 }

@@ -5145,54 +5145,6 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
 }
 
-func shouldConvertTextToChat(ctx *schemas.BifrostContext, requestType schemas.RequestType, request *schemas.BifrostTextCompletionRequest) bool {
-	if ctx == nil || request == nil {
-		return false
-	}
-	if requestType != schemas.TextCompletionRequest && requestType != schemas.TextCompletionStreamRequest {
-		return false
-	}
-	shouldConvert, ok := ctx.Value(schemas.BifrostContextKeyShouldConvertTextToChat).(bool)
-	return ok && shouldConvert
-}
-
-func shouldConvertChatToResponses(ctx *schemas.BifrostContext, requestType schemas.RequestType, request *schemas.BifrostChatRequest) bool {
-	if ctx == nil || request == nil {
-		return false
-	}
-	if requestType != schemas.ChatCompletionRequest && requestType != schemas.ChatCompletionStreamRequest {
-		return false
-	}
-	shouldConvert, ok := ctx.Value(schemas.BifrostContextKeyShouldConvertChatToResponses).(bool)
-	return ok && shouldConvert
-}
-
-func wrapTextToChatStreamPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
-	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		if result != nil && result.ChatResponse != nil {
-			if convertedResponse := result.ChatResponse.ToBifrostTextCompletionResponse(); convertedResponse != nil {
-				result = &schemas.BifrostResponse{
-					TextCompletionResponse: convertedResponse,
-				}
-			}
-		}
-		return postHookRunner(ctx, result, bifrostErr)
-	}
-}
-
-func wrapChatToResponsesStreamPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
-	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		if result != nil && result.ResponsesStreamResponse != nil {
-			if convertedResponse := result.ResponsesStreamResponse.ToBifrostChatResponse(); convertedResponse != nil {
-				result = &schemas.BifrostResponse{
-					ChatResponse: convertedResponse,
-				}
-			}
-		}
-		return postHookRunner(ctx, result, bifrostErr)
-	}
-}
-
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -5205,7 +5157,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		}
 		response.ListModelsResponse = listModelsResponse
 	case schemas.TextCompletionRequest:
-		if shouldConvertTextToChat(req.Context, req.RequestType, req.BifrostRequest.TextCompletionRequest) {
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
 				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
@@ -5222,7 +5174,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		}
 		response.TextCompletionResponse = textCompletionResponse
 	case schemas.ChatCompletionRequest:
-		if shouldConvertChatToResponses(req.Context, req.RequestType, req.BifrostRequest.ChatRequest) {
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
 				responsesResponse, bifrostError := provider.Responses(req.Context, key, responsesRequest)
@@ -5481,18 +5433,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
-		if shouldConvertTextToChat(req.Context, req.RequestType, req.BifrostRequest.TextCompletionRequest) {
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
 			if chatRequest != nil {
-				return provider.ChatCompletionStream(req.Context, wrapTextToChatStreamPostHookRunner(postHookRunner), key, chatRequest)
+				return provider.ChatCompletionStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ChatCompletionRequest), key, chatRequest)
 			}
 		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
-		if shouldConvertChatToResponses(req.Context, req.RequestType, req.BifrostRequest.ChatRequest) {
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
-				return provider.ResponsesStream(req.Context, wrapChatToResponsesStreamPostHookRunner(postHookRunner), key, responsesRequest)
+				return provider.ResponsesStream(req.Context, wrapConvertedStreamPostHookRunner(postHookRunner, schemas.ResponsesRequest), key, responsesRequest)
 			}
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.ChatRequest)

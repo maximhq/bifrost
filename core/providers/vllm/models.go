@@ -15,3 +15,5 @@ type vLLMRerankRequest struct {
 func (r *vLLMRerankRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
+
+func (r *vLLMRerankRequest) GetParameterMappings() map[string]string { return nil }

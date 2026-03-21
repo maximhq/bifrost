@@ -14,13 +14,13 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.4.13
 	github.com/maximhq/bifrost/framework v1.2.32
-	github.com/maximhq/bifrost/plugins/governance v1.4.32
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.21
-	github.com/maximhq/bifrost/plugins/logging v1.4.32
-	github.com/maximhq/bifrost/plugins/maxim v1.5.30
-	github.com/maximhq/bifrost/plugins/otel v1.1.31
-	github.com/maximhq/bifrost/plugins/semanticcache v1.4.30
-	github.com/maximhq/bifrost/plugins/telemetry v1.4.32
+	github.com/maximhq/bifrost/plugins/compat v0.0.1
+	github.com/maximhq/bifrost/plugins/governance v1.4.31
+	github.com/maximhq/bifrost/plugins/logging v1.4.31
+	github.com/maximhq/bifrost/plugins/maxim v1.5.29
+	github.com/maximhq/bifrost/plugins/otel v1.1.30
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.29
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.31
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -166,3 +166,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/maximhq/bifrost/plugins/compat => ../plugins/compat
