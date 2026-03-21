@@ -29,6 +29,8 @@ func (r *NebiusImageGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *NebiusImageGenerationRequest) GetParameterMappings() map[string]string { return nil }
+
 type NebiusLora struct {
 	URL   string `json:"url"`
 	Scale int    `json:"scale"`

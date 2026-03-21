@@ -1,0 +1,2 @@
+- feat: Adds option for converting chat completions to responses for models that support it
+- feat: Adds option for dropping unsupported model parameters

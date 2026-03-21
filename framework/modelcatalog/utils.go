@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -268,4 +269,81 @@ func normalizeEndpointToOutputType(endpoint string) string {
 	default:
 		return ""
 	}
+}
+
+// normalizeEndpointToOutputType converts mode to a normalized output type.
+func normalizeModeToOutputType(mode string) string {
+	switch mode {
+	case "chat":
+		return "chat_completion"
+	case "completion":
+		return "text_completion"
+	case "responses":
+		return "responses"
+	default:
+		return ""
+	}
+}
+
+// modelParametersParseResult is the parsed result type used by buildSupportedOutputsIndex.
+type modelParametersParseResult struct {
+	Mode               *string  `json:"mode,omitempty"`
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	ModelParameters    []struct {
+		ID string `json:"id"`
+	} `json:"model_parameters,omitempty"`
+	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
+	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
+	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
+	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
+	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
+	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
+}
+
+// extractSupportedParams builds a list of supported OpenAI-compatible parameter
+// names from model_parameters[].id values and supports_* boolean flags.
+func extractSupportedParams(parsed *modelParametersParseResult) []string {
+	var supported []string
+	addParam := func(name string) {
+		if !slices.Contains(supported, name) {
+			supported = append(supported, name)
+		}
+	}
+
+	// From model_parameters[].id — map IDs to request param names
+	for _, mp := range parsed.ModelParameters {
+		switch mp.ID {
+		case "reasoning_effort", "reasoning_summary":
+			addParam("reasoning")
+		case "web_search":
+			addParam("web_search_options")
+		case "promptTools", "image_detail", "stream":
+			// skip — not top-level request parameters
+		default:
+			addParam(mp.ID)
+		}
+	}
+
+	// From supports_* boolean flags
+	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
+		addParam("tools")
+	}
+	if parsed.SupportsParallelFunctionCalling != nil && *parsed.SupportsParallelFunctionCalling {
+		addParam("parallel_tool_calls")
+	}
+	if parsed.SupportsToolChoice != nil && *parsed.SupportsToolChoice {
+		addParam("tool_choice")
+	}
+	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
+		addParam("reasoning")
+	}
+	if parsed.SupportsServiceTier != nil && *parsed.SupportsServiceTier {
+		addParam("service_tier")
+	}
+	if parsed.SupportsPromptCaching != nil && *parsed.SupportsPromptCaching {
+		addParam("prompt_cache_key")
+		addParam("prompt_cache_retention")
+	}
+
+	return supported
 }

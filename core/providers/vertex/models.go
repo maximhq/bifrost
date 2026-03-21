@@ -23,6 +23,8 @@ func (*VertexRankRequest) GetExtraParams() map[string]interface{} {
 	return nil
 }
 
+func (*VertexRankRequest) GetParameterMappings() map[string]string { return nil }
+
 const (
 	vertexDefaultRankingConfigID   = "default_ranking_config"
 	vertexMaxRerankRecordsPerQuery = 200

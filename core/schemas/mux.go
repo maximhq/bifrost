@@ -1995,34 +1995,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			response.Output = allOutput
 		}
 
-		// Append finalized function call items so the terminal response carries them in Output.
-		for toolCallID, args := range state.ToolArgumentBuffers {
-			if args == "" {
-				continue
-			}
-			statusFinal := terminalStatus
-			messageType := ResponsesMessageTypeFunctionCall
-			callName := state.ToolCallNames[toolCallID]
-			var callNamePtr *string
-			if callName != "" {
-				callNamePtr = &callName
-			}
-			argsValue := args
-			fcMsg := ResponsesMessage{
-				Type:   &messageType,
-				Status: &statusFinal,
-				ResponsesToolMessage: &ResponsesToolMessage{
-					CallID:    &toolCallID,
-					Name:      callNamePtr,
-					Arguments: &argsValue,
-				},
-			}
-			if itemID := state.ItemIDs[toolCallID]; itemID != "" {
-				fcMsg.ID = &itemID
-			}
-			response.Output = append(response.Output, fcMsg)
-		}
-
 		responses = append(responses, &BifrostResponsesStreamResponse{
 			Type:           terminalEventType,
 			SequenceNumber: state.SequenceNumber,
@@ -2047,7 +2019,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 }
 
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
-// Returns nil for events that have no meaningful chat completion equivalent (lifecycle events, etc.).
 func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
 	if rsr == nil {
 		return nil
@@ -2247,11 +2218,13 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
 			}
 			// Check for tool_calls finish reason
-			for _, output := range rsr.Response.Output {
-				if output.Type != nil && *output.Type == ResponsesMessageTypeFunctionCall {
-					finishReason = string(BifrostFinishReasonToolCalls)
-					resp.Choices[0].FinishReason = &finishReason
-					break
+			if rsr.Type == ResponsesStreamResponseTypeCompleted {
+				for _, output := range rsr.Response.Output {
+					if output.Type != nil && *output.Type == ResponsesMessageTypeFunctionCall {
+						finishReason = string(BifrostFinishReasonToolCalls)
+						resp.Choices[0].FinishReason = &finishReason
+						break
+					}
 				}
 			}
 		}
@@ -2339,8 +2312,21 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 	if choice.ChatNonStreamResponseChoice != nil {
 		msg := choice.ChatNonStreamResponseChoice.Message
 		var textContent *string
-		if msg != nil && msg.Content != nil && msg.Content.ContentStr != nil {
-			textContent = msg.Content.ContentStr
+		if msg != nil && msg.Content != nil {
+			if msg.Content.ContentStr != nil {
+				textContent = msg.Content.ContentStr
+			} else if len(msg.Content.ContentBlocks) > 0 {
+				var sb strings.Builder
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Text != nil {
+						sb.WriteString(*block.Text)
+					}
+				}
+				if sb.Len() > 0 {
+					s := sb.String()
+					textContent = &s
+				}
+			}
 		}
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,
@@ -2379,13 +2365,14 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 		SystemFingerprint: cr.SystemFingerprint,
 		Usage:             cr.Usage,
 		ExtraFields: BifrostResponseExtraFields{
-			RequestType:    TextCompletionRequest,
-			ChunkIndex:     cr.ExtraFields.ChunkIndex,
-			Provider:       cr.ExtraFields.Provider,
-			ModelRequested: cr.ExtraFields.ModelRequested,
-			Latency:        cr.ExtraFields.Latency,
-			RawResponse:    cr.ExtraFields.RawResponse,
-			CacheDebug:     cr.ExtraFields.CacheDebug,
+			RequestType:             TextCompletionRequest,
+			ChunkIndex:              cr.ExtraFields.ChunkIndex,
+			Provider:                cr.ExtraFields.Provider,
+			ModelRequested:          cr.ExtraFields.ModelRequested,
+			Latency:                 cr.ExtraFields.Latency,
+			RawResponse:             cr.ExtraFields.RawResponse,
+			CacheDebug:              cr.ExtraFields.CacheDebug,
+			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 		},
 	}
 }

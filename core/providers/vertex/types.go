@@ -82,6 +82,8 @@ func (r *VertexRequestBody) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *VertexRequestBody) GetParameterMappings() map[string]string { return nil }
+
 // MarshalJSON implements custom JSON marshalling for VertexRequestBody.
 // It marshals the RequestBody field directly without wrapping.
 func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
@@ -92,12 +94,18 @@ func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
 // for LLM prompt caching. This avoids the map[string]interface{} round-trip that
 // destroys key order.
 type VertexRawRequestBody struct {
-	RawBody     []byte                 `json:"-"`
-	ExtraParams map[string]interface{} `json:"-"`
+	RawBody       []byte                 `json:"-"`
+	ExtraParams   map[string]interface{} `json:"-"`
+	ParamMappings map[string]string      `json:"-"` // Propagated from inner provider request type
 }
 
 func (r *VertexRawRequestBody) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GetParameterMappings returns the parameter mappings from the inner provider type.
+func (r *VertexRawRequestBody) GetParameterMappings() map[string]string {
+	return r.ParamMappings
 }
 
 // MarshalJSON returns the pre-serialized JSON bytes directly, preserving key order.
@@ -133,6 +141,8 @@ type VertexEmbeddingRequest struct {
 func (r *VertexEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
+
+func (r *VertexEmbeddingRequest) GetParameterMappings() map[string]string { return nil }
 
 // VertexEmbeddingStatistics represents statistics computed from the input text
 type VertexEmbeddingStatistics struct {
@@ -192,23 +202,23 @@ type VertexModelLabels struct {
 // These types are for the publishers.models.list endpoint (Model Garden)
 
 type VertexPublisherModel struct {
-	Name           string                          `json:"name"`
-	VersionID      string                          `json:"versionId"`
-	OpenSourceCategory string                      `json:"openSourceCategory"`
-	LaunchStage    string                          `json:"launchStage"`
-	VersionState   string                          `json:"versionState"`
-	PublisherModelTemplate string                  `json:"publisherModelTemplate"`
-	SupportedActions *VertexPublisherModelActions  `json:"supportedActions"`
+	Name                   string                       `json:"name"`
+	VersionID              string                       `json:"versionId"`
+	OpenSourceCategory     string                       `json:"openSourceCategory"`
+	LaunchStage            string                       `json:"launchStage"`
+	VersionState           string                       `json:"versionState"`
+	PublisherModelTemplate string                       `json:"publisherModelTemplate"`
+	SupportedActions       *VertexPublisherModelActions `json:"supportedActions"`
 }
 
 type VertexPublisherModelActions struct {
-	OpenGenerationAIStudio      *VertexPublisherModelURI `json:"openGenerationAiStudio"`
-	OpenGenie                   *VertexPublisherModelURI `json:"openGenie"`
-	OpenPromptTuningPipeline    *VertexPublisherModelURI `json:"openPromptTuningPipeline"`
-	OpenNotebook                *VertexPublisherModelURI `json:"openNotebook"`
-	OpenFineTuningPipeline      *VertexPublisherModelURI `json:"openFineTuningPipeline"`
-	Deploy                      *VertexPublisherModelDeploy `json:"deploy"`
-	OpenEvaluationPipeline      *VertexPublisherModelURI `json:"openEvaluationPipeline"`
+	OpenGenerationAIStudio   *VertexPublisherModelURI    `json:"openGenerationAiStudio"`
+	OpenGenie                *VertexPublisherModelURI    `json:"openGenie"`
+	OpenPromptTuningPipeline *VertexPublisherModelURI    `json:"openPromptTuningPipeline"`
+	OpenNotebook             *VertexPublisherModelURI    `json:"openNotebook"`
+	OpenFineTuningPipeline   *VertexPublisherModelURI    `json:"openFineTuningPipeline"`
+	Deploy                   *VertexPublisherModelDeploy `json:"deploy"`
+	OpenEvaluationPipeline   *VertexPublisherModelURI    `json:"openEvaluationPipeline"`
 }
 
 type VertexPublisherModelURI struct {

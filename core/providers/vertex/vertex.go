@@ -391,6 +391,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			// Format messages for Vertex API, preserving key order for prompt caching
 			var rawBody []byte
 			var extraParams map[string]interface{}
+			var paramMappings map[string]string
 			var err error
 
 			if schemas.IsAnthropicModel(deployment) {
@@ -403,6 +404,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
+				paramMappings = reqBody.GetParameterMappings()
 				reqBody.Model = deployment
 				// Add provider-aware beta headers for Vertex
 				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
@@ -442,6 +444,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
+				paramMappings = reqBody.GetParameterMappings()
 				reqBody.Model = deployment
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
@@ -470,7 +473,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			if err != nil {
 				return nil, fmt.Errorf("failed to delete region field: %w", err)
 			}
-			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams, ParamMappings: paramMappings}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
@@ -771,6 +774,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
+				paramMappings := reqBody.GetParameterMappings()
 				reqBody.Model = deployment
 				reqBody.Stream = schemas.Ptr(true)
 				// Add provider-aware beta headers for Vertex
@@ -812,7 +816,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				if err != nil {
 					return nil, fmt.Errorf("failed to delete region field: %w", err)
 				}
-				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams, ParamMappings: paramMappings}, nil
 			},
 			provider.GetProviderKey())
 		if bifrostErr != nil {
@@ -1891,6 +1895,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
+			var paramMappings map[string]string
 			var err error
 
 			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
@@ -1925,7 +1930,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			if err != nil {
 				return nil, fmt.Errorf("failed to delete region field: %w", err)
 			}
-			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams, ParamMappings: paramMappings}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
@@ -2154,6 +2159,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			var rawBody []byte
 			var extraParams map[string]interface{}
+			var paramMappings map[string]string
 			var err error
 
 			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
@@ -2188,7 +2194,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			if err != nil {
 				return nil, fmt.Errorf("failed to delete region field: %w", err)
 			}
-			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams, ParamMappings: paramMappings}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
@@ -3143,7 +3149,6 @@ func (provider *VertexProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-
 	if key.VertexKeyConfig == nil {
 		return nil, providerUtils.NewBifrostOperationError("vertex key config is not set", nil, schemas.Vertex)
 	}

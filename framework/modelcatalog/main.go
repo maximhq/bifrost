@@ -3,7 +3,6 @@ package modelcatalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -51,9 +50,13 @@ type ModelCatalog struct {
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
 	baseModelIndex      map[string]string                  // model string → canonical base model name
 
-	// Pre-parsed supported outputs index (keyed by model name, populated from model parameters supported_endpoints)
-	// Values are normalized output types: "chat_completion", "responses", "text_completion"
-	supportedOutputs map[string][]string
+	// Pre-parsed supported response types index (keyed by model name)
+	// Values are normalized response types: "chat_completion", "responses", "text_completion"
+	supportedResponseTypes map[string][]string
+
+	// Pre-parsed supported parameters index (keyed by model name, populated from model parameters supported_parameters)
+	// Values are parameter names the model accepts (e.g., "temperature", "top_p", "tools")
+	supportedParams map[string][]string
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -208,7 +211,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
-		supportedOutputs:       make(map[string][]string),
+		supportedResponseTypes: make(map[string][]string),
+		supportedParams:        make(map[string][]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -891,65 +895,28 @@ func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.customPricing = buildCustomPricingData(updated)
 }
 
-// IsTextCompletionSupported checks if a model supports text completion for the given provider.
-// Returns true if the model has pricing data for text completion ("text_completion"),
-// false otherwise. This is used by the litellmcompat plugin to determine whether to
-// convert text completion requests to chat completion requests.
-func (mc *ModelCatalog) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
+// IsRequestTypeSupported checks if a model supports chat completion.
+// It checks the supportedResponseTypes index.
+func (mc *ModelCatalog) IsRequestTypeSupported(model string, provider schemas.ModelProvider, requestType schemas.RequestType) bool {
 	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	// Check for text completion mode in pricing data
-	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
-	_, ok := mc.pricingData[key]
-	return ok
-}
-
-// IsChatCompletionSupported checks if a model supports chat completion.
-// It checks the supportedOutputs index (derived from supported_endpoints in the datasheet).
-func (mc *ModelCatalog) IsChatCompletionSupported(model string, provider schemas.ModelProvider) bool {
-	mc.mu.RLock()
-	outputs, ok := mc.supportedOutputs[model]
+	outputs, ok := mc.supportedResponseTypes[model]
 	mc.mu.RUnlock()
-	return ok && slices.Contains(outputs, "chat_completion")
+	return ok && slices.Contains(outputs, string(requestType))
 }
 
-// IsResponsesSupported checks if a model supports the responses endpoint.
-// It checks the supportedOutputs index (derived from supported_endpoints in the datasheet).
-func (mc *ModelCatalog) IsResponsesSupported(model string, provider schemas.ModelProvider) bool {
+// GetSupportedParameters returns the list of supported parameter names for a model.
+// Returns nil if the model is not found in the catalog.
+func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
 	mc.mu.RLock()
-	outputs, ok := mc.supportedOutputs[model]
+	params, ok := mc.supportedParams[model]
 	mc.mu.RUnlock()
-	return ok && slices.Contains(outputs, "responses")
-}
-
-// buildSupportedOutputsIndex parses supported_endpoints from model parameters data
-// and rebuilds the supportedOutputs index with normalized output type names.
-func (mc *ModelCatalog) buildSupportedOutputsIndex(paramsData map[string]json.RawMessage) {
-	newIndex := make(map[string][]string, len(paramsData))
-
-	for model, data := range paramsData {
-		var params struct {
-			SupportedEndpoints []string `json:"supported_endpoints"`
-		}
-		if err := json.Unmarshal(data, &params); err != nil || len(params.SupportedEndpoints) == 0 {
-			continue
-		}
-		outputs := make([]string, 0, len(params.SupportedEndpoints))
-		for _, endpoint := range params.SupportedEndpoints {
-			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" {
-				if !slices.Contains(outputs, normalized) {
-					outputs = append(outputs, normalized)
-				}
-			}
-		}
-		if len(outputs) > 0 {
-			newIndex[model] = outputs
-		}
+	if !ok {
+		return nil
 	}
-
-	mc.mu.Lock()
-	mc.supportedOutputs = newIndex
-	mc.mu.Unlock()
+	// Return a copy to prevent external modification
+	result := make([]string, len(params))
+	copy(result, params)
+	return result
 }
 
 // populateModelPool populates the model pool with all available models per provider (thread-safe)
@@ -1029,11 +996,12 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:           make(map[schemas.ModelProvider][]string),
-		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
-		baseModelIndex:      baseModelIndex,
-		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		supportedOutputs:    make(map[string][]string),
-		done:                make(chan struct{}),
+		modelPool:              make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
+		baseModelIndex:         baseModelIndex,
+		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		supportedResponseTypes: make(map[string][]string),
+		supportedParams:        make(map[string][]string),
+		done:                   make(chan struct{}),
 	}
 }

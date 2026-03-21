@@ -30,6 +30,8 @@ func (r *ElevenlabsSpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *ElevenlabsSpeechRequest) GetParameterMappings() map[string]string { return nil }
+
 // ElevenlabsSpeechWithTimestampsResponse represents the response from the with-timestamps endpoint
 type ElevenlabsSpeechWithTimestampsResponse struct {
 	AudioBase64         string               `json:"audio_base64"`
@@ -84,6 +86,8 @@ type ElevenlabsTranscriptionRequest struct {
 func (req *ElevenlabsTranscriptionRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
+
+func (r *ElevenlabsTranscriptionRequest) GetParameterMappings() map[string]string { return nil }
 
 type ElevenlabsTimestampsGranularity string
 
