@@ -1055,10 +1055,29 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				}
 			}
 		}
+		// Drop unsupported parameters identified by the litellmcompat plugin
+		jsonBody = dropUnsupportedParams(ctx, jsonBody)
 		return jsonBody, nil
 	} else {
 		return rawBody, nil
 	}
+}
+
+// dropUnsupportedParams removes top-level JSON fields listed in the
+// BifrostContextKeyLiteLLMCompatDroppedParams context key. The drop list is
+// computed by the litellmcompat plugin by comparing the request's Params
+// against the model's supported parameters allowlist from the catalog.
+func dropUnsupportedParams(ctx context.Context, jsonBody []byte) []byte {
+	droppedParams, ok := ctx.Value(schemas.BifrostContextKeyLiteLLMCompatDroppedParams).([]string)
+	if !ok || len(droppedParams) == 0 {
+		return jsonBody
+	}
+	for _, param := range droppedParams {
+		if modified, err := sjson.DeleteBytes(jsonBody, param); err == nil {
+			jsonBody = modified
+		}
+	}
+	return jsonBody
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
