@@ -334,21 +334,11 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	}
 
 	headers := extractHeadersFromRequest(ctx)
-	if len(headers) > 0 {
-		// Check for User-Agent header (case-insensitive)
-		var userAgent []string
-		for key, value := range headers {
-			if strings.EqualFold(key, "user-agent") {
-				userAgent = value
-				break
-			}
-		}
-		if len(userAgent) > 0 {
-			// Check if it's claude code
-			if strings.Contains(userAgent[0], "claude-cli") {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli")
-			}
-		}
+
+	// Detect CLI user agent (claude-cli, gemini-cli, qwen-cli, cursor, codex, n8n)
+	// and propagate it to the BifrostContext for tool deduplication.
+	if cliAgent := DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
 	}
 
 	// Check if anthropic oauth headers are present
