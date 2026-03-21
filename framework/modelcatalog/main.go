@@ -52,6 +52,10 @@ type ModelCatalog struct {
 	// Values are normalized output types: "chat_completion", "responses", "text_completion"
 	supportedOutputs map[string][]string
 
+	// Pre-parsed supported parameters index (keyed by model name, populated from model parameters supported_parameters)
+	// Values are parameter names the model accepts (e.g., "temperature", "top_p", "tools")
+	supportedParams map[string][]string
+
 	// Background sync worker
 	syncTicker *time.Ticker
 	done       chan struct{}
@@ -204,6 +208,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
 		supportedOutputs:       make(map[string][]string),
+		supportedParams:        make(map[string][]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -813,33 +818,56 @@ func (mc *ModelCatalog) IsResponsesSupported(model string, provider schemas.Mode
 	return ok && slices.Contains(outputs, "responses")
 }
 
-// buildSupportedOutputsIndex parses supported_endpoints from model parameters data
-// and rebuilds the supportedOutputs index with normalized output type names.
+// GetSupportedParameters returns the list of supported parameter names for a model.
+// Returns nil if the model is not found in the catalog.
+func (mc *ModelCatalog) GetSupportedParameters(model string) []string {
+	mc.mu.RLock()
+	params, ok := mc.supportedParams[model]
+	mc.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	// Return a copy to prevent external modification
+	result := make([]string, len(params))
+	copy(result, params)
+	return result
+}
+
+// buildSupportedOutputsIndex parses supported_endpoints and supported_parameters
+// from model parameters data and rebuilds the in-memory indexes.
 func (mc *ModelCatalog) buildSupportedOutputsIndex(paramsData map[string]json.RawMessage) {
-	newIndex := make(map[string][]string, len(paramsData))
+	newOutputsIndex := make(map[string][]string, len(paramsData))
+	newParamsIndex := make(map[string][]string, len(paramsData))
 
 	for model, data := range paramsData {
 		var params struct {
-			SupportedEndpoints []string `json:"supported_endpoints"`
+			SupportedEndpoints  []string `json:"supported_endpoints"`
+			SupportedParameters []string `json:"supported_parameters"`
 		}
-		if err := json.Unmarshal(data, &params); err != nil || len(params.SupportedEndpoints) == 0 {
+		if err := json.Unmarshal(data, &params); err != nil {
 			continue
 		}
-		outputs := make([]string, 0, len(params.SupportedEndpoints))
-		for _, endpoint := range params.SupportedEndpoints {
-			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" {
-				if !slices.Contains(outputs, normalized) {
-					outputs = append(outputs, normalized)
+		if len(params.SupportedEndpoints) > 0 {
+			outputs := make([]string, 0, len(params.SupportedEndpoints))
+			for _, endpoint := range params.SupportedEndpoints {
+				if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" {
+					if !slices.Contains(outputs, normalized) {
+						outputs = append(outputs, normalized)
+					}
 				}
 			}
+			if len(outputs) > 0 {
+				newOutputsIndex[model] = outputs
+			}
 		}
-		if len(outputs) > 0 {
-			newIndex[model] = outputs
+		if len(params.SupportedParameters) > 0 {
+			newParamsIndex[model] = params.SupportedParameters
 		}
 	}
 
 	mc.mu.Lock()
-	mc.supportedOutputs = newIndex
+	mc.supportedOutputs = newOutputsIndex
+	mc.supportedParams = newParamsIndex
 	mc.mu.Unlock()
 }
 
@@ -925,6 +953,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
 		supportedOutputs:    make(map[string][]string),
+		supportedParams:     make(map[string][]string),
 		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		done:                make(chan struct{}),
 	}
