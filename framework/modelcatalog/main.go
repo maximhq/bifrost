@@ -3,6 +3,7 @@ package modelcatalog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,6 +47,10 @@ type ModelCatalog struct {
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
 	baseModelIndex      map[string]string                  // model string → canonical base model name
+
+	// Pre-parsed supported outputs index (keyed by model name, populated from model parameters supported_endpoints)
+	// Values are normalized output types: "chat_completion", "responses", "text_completion"
+	supportedOutputs map[string][]string
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -198,6 +203,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
+		supportedOutputs:       make(map[string][]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -789,6 +795,54 @@ func (mc *ModelCatalog) IsTextCompletionSupported(model string, provider schemas
 	return ok
 }
 
+// IsChatCompletionSupported checks if a model supports chat completion.
+// It checks the supportedOutputs index (derived from supported_endpoints in the datasheet).
+func (mc *ModelCatalog) IsChatCompletionSupported(model string, provider schemas.ModelProvider) bool {
+	mc.mu.RLock()
+	outputs, ok := mc.supportedOutputs[model]
+	mc.mu.RUnlock()
+	return ok && slices.Contains(outputs, "chat_completion")
+}
+
+// IsResponsesSupported checks if a model supports the responses endpoint.
+// It checks the supportedOutputs index (derived from supported_endpoints in the datasheet).
+func (mc *ModelCatalog) IsResponsesSupported(model string, provider schemas.ModelProvider) bool {
+	mc.mu.RLock()
+	outputs, ok := mc.supportedOutputs[model]
+	mc.mu.RUnlock()
+	return ok && slices.Contains(outputs, "responses")
+}
+
+// buildSupportedOutputsIndex parses supported_endpoints from model parameters data
+// and rebuilds the supportedOutputs index with normalized output type names.
+func (mc *ModelCatalog) buildSupportedOutputsIndex(paramsData map[string]json.RawMessage) {
+	newIndex := make(map[string][]string, len(paramsData))
+
+	for model, data := range paramsData {
+		var params struct {
+			SupportedEndpoints []string `json:"supported_endpoints"`
+		}
+		if err := json.Unmarshal(data, &params); err != nil || len(params.SupportedEndpoints) == 0 {
+			continue
+		}
+		outputs := make([]string, 0, len(params.SupportedEndpoints))
+		for _, endpoint := range params.SupportedEndpoints {
+			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" {
+				if !slices.Contains(outputs, normalized) {
+					outputs = append(outputs, normalized)
+				}
+			}
+		}
+		if len(outputs) > 0 {
+			newIndex[model] = outputs
+		}
+	}
+
+	mc.mu.Lock()
+	mc.supportedOutputs = newIndex
+	mc.mu.Unlock()
+}
+
 // populateModelPool populates the model pool with all available models per provider (thread-safe)
 func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 	// Acquire write lock for the entire rebuild operation
@@ -870,6 +924,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
+		supportedOutputs:    make(map[string][]string),
 		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		done:                make(chan struct{}),
 	}
