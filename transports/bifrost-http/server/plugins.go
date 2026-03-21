@@ -7,7 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/litellmcompat"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -101,12 +101,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		}
 		return otel.Init(ctx, otelConfig, logger, bifrostConfig.ModelCatalog, handlers.GetVersion())
 
-	case litellmcompat.PluginName:
-		litellmConfig, err := MarshalPluginConfig[litellmcompat.Config](pluginConfig)
+	case compat.PluginName:
+		compatConfig, err := MarshalPluginConfig[compat.Config](pluginConfig)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %w", err)
+			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
-		return litellmcompat.Init(*litellmConfig, logger, bifrostConfig.ModelCatalog)
+		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
@@ -202,14 +202,14 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 6. Litellmcompat (if configured in PluginConfigs)
-	litellmcompatConfig := s.getPluginConfig(litellmcompat.PluginName)
-	if litellmcompatConfig != nil && litellmcompatConfig.Enabled {
-		s.registerPluginWithStatus(ctx, litellmcompat.PluginName, nil, litellmcompatConfig.Config, false)
+	// 6. Compat (if configured in PluginConfigs)
+	compatConfig := s.getPluginConfig(compat.PluginName)
+	if compatConfig != nil && compatConfig.Enabled {
+		s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatConfig.Config, false)
 	} else {
-		s.markPluginDisabled(litellmcompat.PluginName)
+		s.markPluginDisabled(compat.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(litellmcompat.PluginName, builtinPlacement, schemas.Ptr(6))
+	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(6))
 
 	// 7. Maxim (if configured in PluginConfigs)
 	maximConfig := s.getPluginConfig(maxim.PluginName)

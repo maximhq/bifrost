@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
 )
 
@@ -329,7 +332,68 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 	}
 
 	// Update in-memory cache and rebuild supported outputs index
-	mc.buildSupportedOutputsIndex(paramsData)
+	newResponseTypes := make(map[string][]string, len(paramsData))
+	newParamsIndex := make(map[string][]string, len(paramsData))
+
+	for model, data := range paramsData {
+		var parsed modelParametersParseResult
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			mc.logger.Warn("model-parameters-sync: skipping malformed parameters for model %s: %v", model, err)
+			continue
+		}
+
+		// Build supported outputs from endpoints or pricing data
+		outputs := make([]string, 0, len(parsed.SupportedEndpoints))
+
+		for _, endpoint := range parsed.SupportedEndpoints {
+			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" {
+				if !slices.Contains(outputs, normalized) {
+					outputs = append(outputs, normalized)
+				}
+			}
+		}
+
+		// Check "mode" for output type
+		if parsed.Mode != nil {
+			if normalized := normalizeModeToOutputType(*parsed.Mode); normalized != "" {
+				if !slices.Contains(outputs, normalized) {
+					outputs = append(outputs, normalized)
+				}
+			}
+		}
+
+		// Checks the pricing data for text completion ("text_completion")
+		if !slices.Contains(outputs, "text_completion") {
+			provider := gjson.GetBytes(data, "provider")
+			if provider.Exists() {
+				key := makeKey(model, normalizeProvider(string(provider.String())), normalizeRequestType(schemas.TextCompletionRequest))
+
+				mc.mu.RLock()
+				pricingData := mc.pricingData
+				mc.mu.RUnlock()
+
+				_, ok := pricingData[key]
+				if ok {
+					outputs = append(outputs, "text_completion")
+				}
+			}
+		}
+
+		if len(outputs) > 0 {
+			newResponseTypes[model] = outputs
+		}
+
+		// Build supported params from model_parameters IDs and supports_* flags
+		supported := extractSupportedParams(&parsed)
+		if len(supported) > 0 {
+			newParamsIndex[model] = supported
+		}
+	}
+
+	mc.mu.Lock()
+	mc.supportedResponseTypes = newResponseTypes
+	mc.supportedParams = newParamsIndex
+	mc.mu.Unlock()
 
 	// Update last sync time if config store is available
 	if mc.configStore != nil {

@@ -50,6 +50,8 @@ func (r *PerplexityChatRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *PerplexityChatRequest) GetParameterMappings() map[string]string { return nil }
+
 type WebSearchOption struct {
 	SearchContextSize             *string                      `json:"search_context_size,omitempty"`              // "low" | "medium" | "high"
 	UserLocation                  *WebSearchOptionUserLocation `json:"user_location,omitempty"`                    // The approximate location of the user

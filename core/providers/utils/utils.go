@@ -590,6 +590,10 @@ func CheckAndGetRawRequestBody(ctx context.Context, request RequestBodyGetter) (
 
 type RequestBodyWithExtraParams interface {
 	GetExtraParams() map[string]interface{}
+	// GetParameterMappings returns a map from OpenAI-compatible parameter names
+	// to provider-specific JSON paths. Used by dropUnsupportedParams to delete
+	// the correct keys after provider conversion. Return nil for identity mapping.
+	GetParameterMappings() map[string]string
 }
 
 type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
@@ -1055,10 +1059,39 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				}
 			}
 		}
+		// Drop unsupported parameters identified by the compat plugin
+		jsonBody = dropUnsupportedParams(ctx, jsonBody, convertedBody)
 		return jsonBody, nil
 	} else {
 		return rawBody, nil
 	}
+}
+
+// dropUnsupportedParams removes JSON fields listed in the
+// BifrostContextKeyCompatPluginDroppedParams context key. The drop list uses
+// OpenAI-compatible names; GetParameterMappings() on the converted body
+// translates them to provider-specific JSON paths before deletion.
+func dropUnsupportedParams(ctx context.Context, jsonBody []byte, convertedBody RequestBodyWithExtraParams) []byte {
+	droppedParams, ok := ctx.Value(schemas.BifrostContextKeyCompatPluginDroppedParams).([]string)
+	if !ok || len(droppedParams) == 0 {
+		return jsonBody
+	}
+	mappings := convertedBody.GetParameterMappings()
+	for _, param := range droppedParams {
+		jsonKey := param
+		if mappings != nil {
+			if mapped, exists := mappings[param]; exists {
+				jsonKey = mapped
+			}
+		}
+		if jsonKey == "" {
+			continue
+		}
+		if modified, err := sjson.DeleteBytes(jsonBody, jsonKey); err == nil {
+			jsonBody = modified
+		}
+	}
+	return jsonBody
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
@@ -1665,7 +1698,7 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: firstChunk,
 	}
@@ -1686,7 +1719,7 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: chunk,
 	}
@@ -2058,19 +2091,18 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 ) {
 	// Send scanner error through channel
-	bifrostError :=
-		&schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("Error reading stream: %v", err),
-				Error:   err,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    requestType,
-				Provider:       providerName,
-				ModelRequested: model,
-			},
-		}
+	bifrostError := &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("Error reading stream: %v", err),
+			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:    requestType,
+			Provider:       providerName,
+			ModelRequested: model,
+		},
+	}
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
@@ -2239,7 +2271,7 @@ func GetBifrostResponseForStreamResponse(
 	transcriptionStreamResponse *schemas.BifrostTranscriptionStreamResponse,
 	imageGenerationStreamResponse *schemas.BifrostImageGenerationStreamResponse,
 ) *schemas.BifrostResponse {
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{}
 
 	switch {

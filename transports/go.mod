@@ -14,8 +14,8 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.4.12
 	github.com/maximhq/bifrost/framework v1.2.31
+	github.com/maximhq/bifrost/plugins/compat v0.0.20
 	github.com/maximhq/bifrost/plugins/governance v1.4.31
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.20
 	github.com/maximhq/bifrost/plugins/logging v1.4.31
 	github.com/maximhq/bifrost/plugins/maxim v1.5.29
 	github.com/maximhq/bifrost/plugins/otel v1.1.30
@@ -166,3 +166,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/postgres v1.6.0 // indirect
 )
+
+replace github.com/maximhq/bifrost/plugins/compat => ../plugins/compat

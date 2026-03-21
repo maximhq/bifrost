@@ -35,6 +35,8 @@ func (req *OpenAITextCompletionRequest) GetExtraParams() map[string]interface{} 
 	return req.ExtraParams
 }
 
+func (req *OpenAITextCompletionRequest) GetParameterMappings() map[string]string { return nil }
+
 // SetExtraParams implements the ExtraParamsSetter interface
 func (req *OpenAITextCompletionRequest) SetExtraParams(params map[string]interface{}) {
 	req.ExtraParams = params
@@ -62,6 +64,8 @@ func (r *OpenAIEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIEmbeddingRequest) GetParameterMappings() map[string]string { return nil }
+
 func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.EmbeddingParameters.ExtraParams = params
@@ -75,7 +79,7 @@ type OpenAIChatRequest struct {
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
 
-	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
+	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 
@@ -88,6 +92,8 @@ type OpenAIChatRequest struct {
 func (req *OpenAIChatRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
+
+func (req *OpenAIChatRequest) GetParameterMappings() map[string]string { return nil }
 
 // SetExtraParams implements the ExtraParamsSetter interface
 func (req *OpenAIChatRequest) SetExtraParams(params map[string]interface{}) {
@@ -565,6 +571,13 @@ func (resp *OpenAIResponsesRequest) GetExtraParams() map[string]interface{} {
 	return resp.ExtraParams
 }
 
+func (resp *OpenAIResponsesRequest) GetParameterMappings() map[string]string {
+	return map[string]string{
+		"max_completion_tokens": "max_output_tokens",
+		"verbosity":             "text.verbosity",
+	}
+}
+
 // SetExtraParams implements the ExtraParamsSetter interface
 func (resp *OpenAIResponsesRequest) SetExtraParams(params map[string]interface{}) {
 	resp.ExtraParams = params
@@ -678,6 +691,8 @@ func (r *OpenAISpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAISpeechRequest) GetParameterMappings() map[string]string { return nil }
+
 func (r *OpenAISpeechRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.SpeechParameters.ExtraParams = params
@@ -743,6 +758,8 @@ func (r *OpenAIImageGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageGenerationRequest) GetParameterMappings() map[string]string { return nil }
+
 func (r *OpenAIImageGenerationRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.ImageGenerationParameters.ExtraParams = params
@@ -791,6 +808,8 @@ func (r *OpenAIImageEditRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageEditRequest) GetParameterMappings() map[string]string { return nil }
+
 func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.ImageEditParameters.ExtraParams = params
@@ -810,6 +829,8 @@ type OpenAIImageVariationRequest struct {
 func (r *OpenAIImageVariationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
+
+func (r *OpenAIImageVariationRequest) GetParameterMappings() map[string]string { return nil }
 
 func (r *OpenAIImageVariationRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
@@ -860,6 +881,8 @@ func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{}
 	return req.ExtraParams
 }
 
+func (req *OpenAIVideoGenerationRequest) GetParameterMappings() map[string]string { return nil }
+
 // OpenAIVideoRemixRequest represents an OpenAI video remix request
 type OpenAIVideoRemixRequest struct {
 	Prompt string `json:"prompt"`
@@ -875,6 +898,8 @@ type OpenAIVideoRemixRequest struct {
 func (r *OpenAIVideoRemixRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
+
+func (r *OpenAIVideoRemixRequest) GetParameterMappings() map[string]string { return nil }
 
 // ErrVideoNotReady is an error that is returned when a video is not ready yet
 var ErrVideoNotReady = errors.New("video is not ready yet, use GET /v1/videos/{video_id} to check status")

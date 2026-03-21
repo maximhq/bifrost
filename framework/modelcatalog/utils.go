@@ -269,3 +269,17 @@ func normalizeEndpointToOutputType(endpoint string) string {
 		return ""
 	}
 }
+
+// normalizeEndpointToOutputType converts mode to a normalized output type.
+func normalizeModeToOutputType(mode string) string {
+	switch mode {
+	case "chat":
+		return "chat_completion"
+	case "completion":
+		return "text_completion"
+	case "responses":
+		return "responses"
+	default:
+		return ""
+	}
+}

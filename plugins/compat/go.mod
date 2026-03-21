@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost/plugins/litellmcompat
+module github.com/maximhq/bifrost/plugins/compat
 
 go 1.26.1
 
