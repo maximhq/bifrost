@@ -81,7 +81,6 @@ type BedrockRerankResponseDocument struct {
 	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
 }
 
-
 func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil

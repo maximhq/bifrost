@@ -153,7 +153,6 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 	}
 
 	return bedrockReq, nil
-
 }
 
 // ToStabilityAIImageGenerationResponse converts a BifrostImageGenerationResponse back to

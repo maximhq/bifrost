@@ -1680,7 +1680,7 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 			Latency:    time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: firstChunk,
 	}
@@ -1698,7 +1698,7 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 			Latency:    time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{
 		ResponsesStreamResponse: chunk,
 	}
@@ -2051,14 +2051,13 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 ) {
 	// Send scanner error through channel
-	bifrostError :=
-		&schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("Error reading stream: %v", err),
-				Error:   err,
-			},
-		}
+	bifrostError := &schemas.BifrostError{
+		IsBifrostError: true,
+		Error: &schemas.ErrorField{
+			Message: fmt.Sprintf("Error reading stream: %v", err),
+			Error:   err,
+		},
+	}
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
@@ -2220,7 +2219,7 @@ func GetBifrostResponseForStreamResponse(
 	transcriptionStreamResponse *schemas.BifrostTranscriptionStreamResponse,
 	imageGenerationStreamResponse *schemas.BifrostImageGenerationStreamResponse,
 ) *schemas.BifrostResponse {
-	//TODO add bifrost response pooling here
+	// TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{}
 
 	switch {

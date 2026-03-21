@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
 )
 
@@ -213,7 +216,7 @@ func (mc *ModelCatalog) loadModelParametersFromDatabase(ctx context.Context) (in
 	for _, row := range rows {
 		paramsData[row.Model] = json.RawMessage(row.Data)
 	}
-	applyModelParametersToProviderCache(paramsData)
+	mc.applyModelParameters(paramsData)
 	mc.logger.Debug("loaded %d model parameters records from database into cache", len(rows))
 	return len(rows), nil
 }
@@ -295,16 +298,71 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 
 // --- Model Parameters sync ---
 
-func applyModelParametersToProviderCache(paramsData map[string]json.RawMessage) {
+func (mc *ModelCatalog) applyModelParameters(paramsData map[string]json.RawMessage) {
 	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
+	newResponseTypes := make(map[string][]string, len(paramsData))
+	newParamsIndex := make(map[string][]string, len(paramsData))
+
 	for model, rawData := range paramsData {
+		var parsed modelParametersParseResult
+		if err := json.Unmarshal(rawData, &parsed); err != nil {
+			mc.logger.Warn("model-parameters-sync: skipping malformed parameters for model %s: %v", model, err)
+			continue
+		}
+
+		outputs := make([]string, 0, len(parsed.SupportedEndpoints))
+		for _, endpoint := range parsed.SupportedEndpoints {
+			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" && !slices.Contains(outputs, normalized) {
+				outputs = append(outputs, normalized)
+			}
+		}
+
+		if parsed.Mode != nil {
+			if normalized := normalizeModeToOutputType(*parsed.Mode); normalized != "" && !slices.Contains(outputs, normalized) {
+				outputs = append(outputs, normalized)
+			}
+		}
+
+		if !slices.Contains(outputs, "text_completion") {
+			provider := gjson.GetBytes(rawData, "provider")
+			if provider.Exists() {
+				key := makeKey(model, normalizeProvider(provider.String()), normalizeRequestType(schemas.TextCompletionRequest))
+
+				mc.mu.RLock()
+				_, ok := mc.pricingData[key]
+				mc.mu.RUnlock()
+				if ok {
+					outputs = append(outputs, "text_completion")
+				}
+			}
+		}
+
+		if len(outputs) > 0 {
+			newResponseTypes[model] = outputs
+		}
+
+		supported := extractSupportedParams(&parsed)
+		if len(supported) > 0 {
+			newParamsIndex[model] = supported
+		}
+
 		var p struct {
 			MaxOutputTokens *int `json:"max_output_tokens"`
 		}
-		if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
+		if p.MaxOutputTokens == nil {
+			if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
+				modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+			}
+		} else {
 			modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
 		}
 	}
+
+	mc.mu.Lock()
+	mc.supportedResponseTypes = newResponseTypes
+	mc.supportedParams = newParamsIndex
+	mc.mu.Unlock()
+
 	if len(modelParamsEntries) > 0 {
 		providerUtils.BulkSetModelParams(modelParamsEntries)
 	}
@@ -319,7 +377,7 @@ func (mc *ModelCatalog) loadModelParametersIntoMemoryFromURL(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("failed to load model parameters from URL: %w", err)
 	}
-	applyModelParametersToProviderCache(paramsData)
+	mc.applyModelParameters(paramsData)
 	return nil
 }
 
@@ -366,7 +424,7 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 		}
 	}
 
-	applyModelParametersToProviderCache(paramsData)
+	mc.applyModelParameters(paramsData)
 
 	mc.logger.Info("successfully synced %d model parameters records", len(paramsData))
 	return nil

@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/schemas"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const MinMaxCompletionTokens = 16
@@ -82,7 +82,7 @@ type OpenAIChatRequest struct {
 	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
 	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
 
-	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
+	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 

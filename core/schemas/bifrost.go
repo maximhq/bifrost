@@ -196,8 +196,7 @@ const (
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                 // map[string][]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
-	BifrostContextKeyShouldConvertTextToChat             BifrostContextKey = "bifrost-should-convert-text-to-chat"              // bool (set by plugins to trigger text->chat provider conversion in core)
-	BifrostContextKeyShouldConvertChatToResponses        BifrostContextKey = "bifrost-should-convert-chat-to-responses"         // bool (set by plugins to trigger chat->responses provider conversion in core)
+	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
@@ -1034,18 +1033,19 @@ type BifrostMCPResponse struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType             RequestType        `json:"request_type"`
-	Provider                ModelProvider      `json:"provider,omitempty"`
-	OriginalModelRequested  string             `json:"original_model_requested,omitempty"` // the model alias the caller sent in the request
-	ResolvedModelUsed       string             `json:"resolved_model_used,omitempty"`      // the actual provider API identifier used (equals OriginalModelRequested when no alias mapping exists)
-	Latency                 int64              `json:"latency"`                            // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex              int                `json:"chunk_index"`                        // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawRequest              interface{}        `json:"raw_request,omitempty"`
-	RawResponse             interface{}        `json:"raw_response,omitempty"`
-	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
-	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
-	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
-	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	RequestType               RequestType        `json:"request_type"`
+	Provider                  ModelProvider      `json:"provider,omitempty"`
+	OriginalModelRequested    string             `json:"original_model_requested,omitempty"` // the model alias the caller sent in the request
+	ResolvedModelUsed         string             `json:"resolved_model_used,omitempty"`      // the actual provider API identifier used (equals OriginalModelRequested when no alias mapping exists)
+	Latency                   int64              `json:"latency"`                            // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex                int                `json:"chunk_index"`                        // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest                interface{}        `json:"raw_request,omitempty"`
+	RawResponse               interface{}        `json:"raw_response,omitempty"`
+	CacheDebug                *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors               []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
+	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -1220,13 +1220,14 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider               ModelProvider              `json:"provider,omitempty"`
-	OriginalModelRequested string                     `json:"original_model_requested,omitempty"`
-	ResolvedModelUsed      string                     `json:"resolved_model_used,omitempty"`
-	RequestType            RequestType                `json:"request_type,omitempty"`
-	RawRequest             any                        `json:"raw_request,omitempty"`
-	RawResponse            any                        `json:"raw_response,omitempty"`
-	LiteLLMCompat          bool                       `json:"litellm_compat,omitempty"`
-	KeyStatuses            []KeyStatus                `json:"key_statuses,omitempty"`
-	MCPAuthRequired        *MCPUserOAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user OAuth MCP tool requires authentication
+	Provider                  ModelProvider              `json:"provider,omitempty"`
+	OriginalModelRequested    string                     `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed         string                     `json:"resolved_model_used,omitempty"`
+	RequestType               RequestType                `json:"request_type,omitempty"`
+	RawRequest                interface{}                `json:"raw_request,omitempty"`
+	RawResponse               interface{}                `json:"raw_response,omitempty"`
+	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
+	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
+	MCPAuthRequired           *MCPUserOAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user OAuth MCP tool requires authentication
 }
