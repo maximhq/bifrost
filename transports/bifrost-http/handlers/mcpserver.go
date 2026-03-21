@@ -94,7 +94,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 	// Check if response is nil (notification - no response needed)
 	if response == nil {
-		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetStatusCode(fasthttp.StatusAccepted)
 		return
 	}
 
