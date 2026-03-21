@@ -255,6 +255,7 @@ const (
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                  // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
+	BifrostContextKeyLiteLLMCompatDroppedParams          BifrostContextKey = "litellmcompat-dropped-params"               // []string (set by litellmcompat plugin - parameter names to drop from the provider request body)
 )
 
 const (

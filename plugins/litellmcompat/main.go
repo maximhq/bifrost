@@ -86,6 +86,20 @@ func (p *LiteLLMCompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schem
 	// Apply request transforms in sequence
 	req = transformTextToChatRequest(ctx, req, p.modelCatalog, p.logger)
 	req = transformChatToResponsesRequest(ctx, req, p.modelCatalog, p.logger)
+
+	// Compute unsupported parameters to drop based on model catalog allowlist
+	if ctx != nil && p.modelCatalog != nil {
+		model := getModelFromRequest(req)
+		if model != "" {
+			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {
+				droppedParams := computeUnsupportedParams(req, supportedParams)
+				if len(droppedParams) > 0 {
+					ctx.SetValue(schemas.BifrostContextKeyLiteLLMCompatDroppedParams, droppedParams)
+				}
+			}
+		}
+	}
+
 	return req, nil, nil
 }
 
@@ -101,6 +115,24 @@ func (p *LiteLLMCompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *s
 		bifrostErr = transformChatToResponsesError(ctx, bifrostErr)
 	}
 	return result, bifrostErr, nil
+}
+
+// getModelFromRequest extracts the model name from a BifrostRequest,
+// checking each request type in order.
+func getModelFromRequest(req *schemas.BifrostRequest) string {
+	if req == nil {
+		return ""
+	}
+	if req.ChatRequest != nil {
+		return req.ChatRequest.Model
+	}
+	if req.ResponsesRequest != nil {
+		return req.ResponsesRequest.Model
+	}
+	if req.TextCompletionRequest != nil {
+		return req.TextCompletionRequest.Model
+	}
+	return ""
 }
 
 // Cleanup performs plugin cleanup
