@@ -746,7 +746,16 @@ false
 {{- $_ := set $governanceConfig "is_vk_mandatory" .Values.bifrost.plugins.governance.config.is_vk_mandatory }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.config.required_headers }}
-{{- $_ := set $governanceConfig "required_headers" .Values.bifrost.plugins.governance.config.required_headers }}
+{{- $rh := .Values.bifrost.plugins.governance.config.required_headers }}
+{{- if kindIs "slice" $rh }}
+{{- $rhMap := dict }}
+{{- range $rh }}
+{{- $_ := set $rhMap . "*" }}
+{{- end }}
+{{- $_ := set $governanceConfig "required_headers" $rhMap }}
+{{- else }}
+{{- $_ := set $governanceConfig "required_headers" $rh }}
+{{- end }}
 {{- end }}
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
 {{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}

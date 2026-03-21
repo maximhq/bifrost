@@ -346,7 +346,7 @@ bifrost:
       enabled: false
       config:
         is_vk_mandatory: false
-        required_headers: []
+        required_headers: {}
         is_enterprise: false
 
     maxim:

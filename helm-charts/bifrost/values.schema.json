@@ -544,9 +544,17 @@
                       "type": "boolean"
                     },
                     "required_headers": {
-                      "type": "array",
-                      "items": { "type": "string" },
-                      "description": "Headers that must be present in requests"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": { "type": "string" }
+                        },
+                        {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      ],
+                      "description": "Headers that must be present in requests. Object format: keys are header names, values are patterns (* for any value, env.VAR for env var, or regex). Legacy array format is also accepted and converted to object with * wildcards."
                     },
                     "is_enterprise": {
                       "type": "boolean",

@@ -487,7 +487,7 @@ A common pattern is to require a header **and** log it:
 ```json
 {
   "client": {
-    "required_headers": ["X-Tenant-ID"],
+    "required_headers": { "X-Tenant-ID": "*" },
     "logging_headers": ["X-Tenant-ID"]
   }
 }
