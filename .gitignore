@@ -117,4 +117,4 @@ terraform.tfstate.backup
 !*.tfvars.example
 
 # Bifrost benchmarking
-bifrost-benchmarking
+bifrost-benchmarking.agents/

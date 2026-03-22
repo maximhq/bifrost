@@ -191,11 +191,19 @@ func formatResultForLog(result interface{}) string {
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
-	if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
+	if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
+		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
+		hints = append(hints, "Starlark does NOT support try/except/finally/raise — there is no exception handling.")
+		hints = append(hints, "Instead, check return values for errors:")
+		hints = append(hints, "  result = server.tool(param=\"value\")")
+		hints = append(hints, "  if result == None or (type(result) == \"dict\" and \"error\" in result):")
+		hints = append(hints, "    print(\"Error:\", result)")
+	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
 		re := regexp.MustCompile(`(\w+).*(?:undefined|not defined)`)
 		if match := re.FindStringSubmatch(errorMessage); len(match) > 1 {
 			undefinedVar := match[1]
 			hints = append(hints, fmt.Sprintf("Variable '%s' is not defined.", undefinedVar))
+			hints = append(hints, "Note: Each executeToolCode call runs in a fresh scope — no variables persist between calls.")
 			if len(serverKeys) > 0 {
 				hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
 				hints = append(hints, "Access tools using: server_name.tool_name(param=\"value\")")
