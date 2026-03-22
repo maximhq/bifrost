@@ -1218,7 +1218,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		// Read SSE events manually to handle binary data with embedded newlines
 		// SSE format: "data: <content>\n\n" - events are separated by double newlines
 		// We can't use bufio.Scanner because MP3 data contains 0x0a bytes which get interpreted as newlines
-		readBuffer := make([]byte, 64*1024) // 64KB read chunks
+		readBuffer := make([]byte, provider.networkConfig.StreamReadBufferSize())
 		var accumulated []byte
 		doneReceived := false
 

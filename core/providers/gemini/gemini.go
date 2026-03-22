@@ -516,7 +516,7 @@ func HandleGeminiChatCompletionStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, provider.networkConfig.StreamReadBufferSize())
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
@@ -1053,7 +1053,7 @@ func HandleGeminiResponsesStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, 64*1024)
+			lineReader = bufio.NewReaderSize(decompressedReader, provider.networkConfig.StreamReadBufferSize())
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
