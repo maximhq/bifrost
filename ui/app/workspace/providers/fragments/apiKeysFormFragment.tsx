@@ -167,9 +167,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
-			{!isBedrock &&
-				!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && (
+			{/* Hide API Key field for Azure when using Entra ID/Default Credential */}
+			{!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && (
 					<FormField
 						control={control}
 						name={`key.value`}
@@ -623,8 +622,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							onValueChange={(v) => {
 								setBedrockAuthType(v as "iam_role" | "explicit");
 								if (v === "iam_role") {
-									// Clear generic API key and explicit credentials when switching to IAM Role
-									form.setValue("key.value", undefined, { shouldDirty: true });
+									// Clear explicit credentials when switching to IAM Role
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.secret_key", undefined, { shouldDirty: true });
 									form.setValue("key.bedrock_key_config.session_token", undefined, { shouldDirty: true });

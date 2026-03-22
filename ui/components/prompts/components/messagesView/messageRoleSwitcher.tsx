@@ -9,6 +9,15 @@ const AVAILABLE_ROLES = [
 	{ value: "tool", label: "Tool" },
 ] as const;
 
+/**
+ * Render a dropdown that lets the user switch the current message role.
+ *
+ * @param role - The currently selected role value shown in the trigger
+ * @param disabled - If true, disables interaction with the trigger
+ * @param onRoleChange - Callback invoked with the newly selected role value
+ * @param restrictedRoles - Optional list of role values that should be excluded from the menu
+ * @returns A JSX element rendering the role selection dropdown
+ */
 export default function MessageRoleSwitcher({
 	role,
 	disabled,

@@ -1,21 +1,21 @@
 "use client";
 
-import type { ProviderCostHistogramResponse } from "@/lib/types/logs";
+import type { CostHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatCost, formatFullTimestamp, formatTimestamp, getModelColor } from "../utils/chartUtils";
+import { formatCost, formatFullTimestamp, formatTimestamp, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
-interface ProviderCostChartProps {
-	data: ProviderCostHistogramResponse | null;
+interface CostChartProps {
+	data: CostHistogramResponse | null;
 	chartType: ChartType;
 	startTime: number;
 	endTime: number;
-	selectedProvider: string;
+	selectedModel: string;
 }
 
-function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
+function CustomTooltip({ active, payload, selectedModel, models }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -25,16 +25,16 @@ function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
 		<div className="rounded-sm border border-zinc-200 bg-white px-3 py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
 			<div className="mb-1 text-xs text-zinc-500">{formatFullTimestamp(data.timestamp)}</div>
 			<div className="space-y-1 text-sm">
-				{selectedProvider === "all" ? (
+				{selectedModel === "all" ? (
 					<>
-						{providers.map((provider: string, idx: number) => {
-							const cost = data.by_provider?.[provider] || 0;
+						{models.map((model: string, idx: number) => {
+							const cost = data.by_model?.[model] || 0;
 							if (cost === 0) return null;
 							return (
-								<div key={provider} className="flex items-center justify-between gap-4">
+								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
 										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{provider}</span>
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{model}</span>
 									</span>
 									<span className="font-medium">{formatCost(cost)}</span>
 								</div>
@@ -49,9 +49,9 @@ function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
 					<div className="flex items-center justify-between gap-4">
 						<span className="flex items-center gap-1.5">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-							<span className="text-zinc-600 dark:text-zinc-400">{selectedProvider}</span>
+							<span className="text-zinc-600 dark:text-zinc-400">{selectedModel}</span>
 						</span>
-						<span className="font-medium">{formatCost(data.by_provider?.[selectedProvider] || 0)}</span>
+						<span className="font-medium">{formatCost(data.by_model?.[selectedModel] || 0)}</span>
 					</div>
 				)}
 			</div>
@@ -59,13 +59,13 @@ function CustomTooltip({ active, payload, selectedProvider, providers }: any) {
 	);
 }
 
-export function ProviderCostChart({ data, chartType, startTime, endTime, selectedProvider }: ProviderCostChartProps) {
-	const { chartData, displayProviders } = useMemo(() => {
+export function CostChart({ data, chartType, startTime, endTime, selectedModel }: CostChartProps) {
+	const { chartData, displayModels } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
-			return { chartData: [], displayProviders: [] };
+			return { chartData: [], displayModels: [] };
 		}
 
-		const providers = selectedProvider === "all" ? data.providers : [selectedProvider];
+		const models = selectedModel === "all" ? data.models : [selectedModel];
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -73,14 +73,15 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 				index,
 				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 			};
-			providers.forEach((provider, idx) => {
-				item[`provider_${idx}`] = bucket.by_provider?.[provider] || 0;
+			// Flatten by_model for easier chart access
+			models.forEach((model, idx) => {
+				item[`model_${idx}`] = bucket.by_model?.[model] || 0;
 			});
 			return item;
 		});
 
-		return { chartData: processed, displayProviders: providers };
-	}, [data, selectedProvider]);
+		return { chartData: processed, displayModels: models };
+	}, [data, selectedModel]);
 
 	if (!data?.buckets || chartData.length === 0) {
 		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
@@ -88,11 +89,11 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
-		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedProvider}`}>
+		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${selectedModel}`}>
 			<ResponsiveContainer width="100%" height="100%">
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
@@ -117,18 +118,17 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 							allowDataOverflow={false}
 						/>
 						<Tooltip
-							content={<CustomTooltip selectedProvider={selectedProvider} providers={data.providers} />}
+							content={<CustomTooltip selectedModel={selectedModel} models={data.models} />}
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
-						{displayProviders.map((provider, idx) => (
-							<Bar
-								key={provider}
-								dataKey={`provider_${idx}`}
+						{displayModels.map((model, idx) => (
+							<Bar isAnimationActive={false}								key={model}
+								dataKey={`model_${idx}`}
 								stackId="cost"
 								fill={getModelColor(idx)}
 								fillOpacity={0.9}
 								barSize={30}
-								radius={idx === displayProviders.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
+								radius={idx === displayModels.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]}
 							/>
 						))}
 					</BarChart>
@@ -154,12 +154,11 @@ export function ProviderCostChart({ data, chartType, startTime, endTime, selecte
 							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedProvider={selectedProvider} providers={data.providers} />} />
-						{displayProviders.map((provider, idx) => (
-							<Area
-								key={provider}
+						<Tooltip content={<CustomTooltip selectedModel={selectedModel} models={data.models} />} />
+						{displayModels.map((model, idx) => (
+							<Area isAnimationActive={false}								key={model}
 								type="monotone"
-								dataKey={`provider_${idx}`}
+								dataKey={`model_${idx}`}
 								stackId="1"
 								stroke={getModelColor(idx)}
 								fill={getModelColor(idx)}

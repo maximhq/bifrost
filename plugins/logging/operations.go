@@ -111,6 +111,7 @@ func applySerializedLogUpdates(
 		updates["prompt_tokens"] = data.TokenUsage.PromptTokens
 		updates["completion_tokens"] = data.TokenUsage.CompletionTokens
 		updates["total_tokens"] = data.TokenUsage.TotalTokens
+		updates["cached_read_tokens"] = entry.CachedReadTokens
 	}
 
 	if cacheDebug != nil {
@@ -136,6 +137,7 @@ func applySerializedStreamingLogUpdates(
 		updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
 		updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
 		updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
+		updates["cached_read_tokens"] = entry.CachedReadTokens
 	}
 
 	if !contentLoggingEnabled {
@@ -781,6 +783,10 @@ func (p *LoggerPlugin) GetProviderTokenHistogram(ctx context.Context, filters lo
 // GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 func (p *LoggerPlugin) GetProviderLatencyHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
 	return p.store.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (p *LoggerPlugin) GetModelRankings(ctx context.Context, filters logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	return p.store.GetModelRankings(ctx, filters)
 }
 
 // GetAvailableModels returns all unique models from logs.

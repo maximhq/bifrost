@@ -3,7 +3,7 @@
 import type { ProviderTokenHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens, getModelColor } from "../utils/chartUtils";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens, getModelColor } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -117,7 +117,7 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
@@ -148,14 +148,31 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar dataKey="prompt_tokens" stackId="tokens" fill={CHART_COLORS.promptTokens} fillOpacity={0.9} barSize={30} radius={[0, 0, 0, 0]} />
-								<Bar dataKey="completion_tokens" stackId="tokens" fill={CHART_COLORS.completionTokens} fillOpacity={0.9} barSize={30} radius={[2, 2, 0, 0]} />
+								<Bar
+									isAnimationActive={false}
+									dataKey="prompt_tokens"
+									stackId="tokens"
+									fill={CHART_COLORS.promptTokens}
+									fillOpacity={0.9}
+									barSize={30}
+									radius={[0, 0, 0, 0]}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="completion_tokens"
+									stackId="tokens"
+									fill={CHART_COLORS.completionTokens}
+									fillOpacity={0.9}
+									barSize={30}
+									radius={[2, 2, 0, 0]}
+								/>
 							</>
 						) : (
 							<>
 								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 								{displayProviders.map((provider, idx) => (
 									<Bar
+										isAnimationActive={false}
 										key={provider}
 										dataKey={`provider_${idx}`}
 										stackId="tokens"
@@ -193,14 +210,31 @@ export function ProviderTokenChart({ data, chartType, startTime, endTime, select
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} />
-								<Area type="monotone" dataKey="completion_tokens" stackId="1" stroke={CHART_COLORS.completionTokens} fill={CHART_COLORS.completionTokens} fillOpacity={0.7} />
-								<Area type="monotone" dataKey="prompt_tokens" stackId="1" stroke={CHART_COLORS.promptTokens} fill={CHART_COLORS.promptTokens} fillOpacity={0.7} />
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="completion_tokens"
+									stackId="1"
+									stroke={CHART_COLORS.completionTokens}
+									fill={CHART_COLORS.completionTokens}
+									fillOpacity={0.7}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="prompt_tokens"
+									stackId="1"
+									stroke={CHART_COLORS.promptTokens}
+									fill={CHART_COLORS.promptTokens}
+									fillOpacity={0.7}
+								/>
 							</>
 						) : (
 							<>
 								<Tooltip content={<AllProvidersTooltip providers={data.providers} />} />
 								{displayProviders.map((provider, idx) => (
 									<Area
+										isAnimationActive={false}
 										key={provider}
 										type="monotone"
 										dataKey={`provider_${idx}`}

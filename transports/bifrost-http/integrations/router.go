@@ -2775,6 +2775,9 @@ func (g *GenericRouter) handlePassthroughStream(
 		return
 	}
 
+	// Skip post-hook body materialization — ctx.Response.Body() would buffer the entire stream.
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
 	ctx.SetStatusCode(passthroughResp.StatusCode)
 	ctx.SetConnectionClose()
 	for k, v := range passthroughResp.Headers {

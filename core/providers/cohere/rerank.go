@@ -3,6 +3,7 @@ package cohere
 import (
 	"sort"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"gopkg.in/yaml.v3"
@@ -92,25 +93,43 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 		}
 
 		// Convert document if present
-		if result.Document != nil {
-			doc := &schemas.RerankDocument{}
-			if text, ok := result.Document["text"].(string); ok {
-				doc.Text = text
-			}
-			if id, ok := result.Document["id"].(string); ok {
-				doc.ID = &id
-			}
-			// Collect remaining fields as meta
-			meta := make(map[string]interface{})
-			for k, v := range result.Document {
-				if k != "text" && k != "id" {
-					meta[k] = v
+		if len(result.Document) > 0 {
+			var docMap map[string]interface{}
+			if err := sonic.Unmarshal(result.Document, &docMap); err == nil {
+				doc := &schemas.RerankDocument{}
+				populated := false
+				if text, ok := docMap["text"].(string); ok {
+					doc.Text = text
+					populated = true
+				}
+				if id, ok := docMap["id"].(string); ok {
+					doc.ID = &id
+					populated = true
+				}
+				// Collect metadata: unwrap "metadata"/"meta" keys to avoid nesting
+				meta := make(map[string]interface{})
+				if rawMeta, ok := docMap["metadata"].(map[string]interface{}); ok {
+					for k, v := range rawMeta {
+						meta[k] = v
+					}
+				} else if rawMeta, ok := docMap["meta"].(map[string]interface{}); ok {
+					for k, v := range rawMeta {
+						meta[k] = v
+					}
+				}
+				for k, v := range docMap {
+					if k != "text" && k != "id" && k != "metadata" && k != "meta" {
+						meta[k] = v
+					}
+				}
+				if len(meta) > 0 {
+					doc.Meta = meta
+					populated = true
+				}
+				if populated {
+					rerankResult.Document = doc
 				}
 			}
-			if len(meta) > 0 {
-				doc.Meta = meta
-			}
-			rerankResult.Document = doc
 		}
 
 		bifrostResponse.Results = append(bifrostResponse.Results, rerankResult)

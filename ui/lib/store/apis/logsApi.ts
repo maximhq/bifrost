@@ -7,6 +7,7 @@ import {
 	LogsHistogramResponse,
 	LogStats,
 	ModelHistogramResponse,
+	ModelRankingsResponse,
 	Pagination,
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
@@ -301,6 +302,20 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get model rankings with trends
+		getModelRankings: builder.query<
+			ModelRankingsResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/rankings",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -373,6 +388,7 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetModelRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,

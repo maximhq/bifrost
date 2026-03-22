@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
@@ -194,6 +196,15 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.HasEmittedInProgress = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
+}
+
+// isCompactionItem checks if a ResponsesMessage represents a compaction item
+// (a message with a compaction content block as its first content block)
+func isCompactionItem(item *schemas.ResponsesMessage) bool {
+	return item != nil && item.Type != nil &&
+		*item.Type == schemas.ResponsesMessageTypeMessage &&
+		item.Content != nil && len(item.Content.ContentBlocks) > 0 &&
+		item.Content.ContentBlocks[0].Type == schemas.ResponsesOutputMessageContentTypeCompaction
 }
 
 // getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
@@ -909,7 +920,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					var action *schemas.ResponsesComputerToolCallAction
 
 					if state.AccumulatedJSON != "" {
-						if err := json.Unmarshal([]byte(state.AccumulatedJSON), &inputMap); err == nil {
+						if err := sonic.Unmarshal([]byte(state.AccumulatedJSON), &inputMap); err == nil {
 							action = convertAnthropicToResponsesComputerAction(inputMap)
 						}
 					}
@@ -968,12 +979,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				var query string
 				var queries []string
 				if state.AccumulatedJSON != "" {
-					var inputMap map[string]interface{}
-					if err := json.Unmarshal([]byte(state.AccumulatedJSON), &inputMap); err == nil {
-						if q, ok := inputMap["query"].(string); ok {
-							query = q
-							queries = []string{q}
-						}
+					if q := providerUtils.GetJSONField([]byte(state.AccumulatedJSON), "query"); q.Exists() && q.Type == gjson.String {
+						query = q.Str
+						queries = []string{q.Str}
 					}
 				}
 
@@ -1428,7 +1436,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			}
 
 			// Always start with empty input for streaming compatibility
-			contentBlock.Input = map[string]interface{}{}
+			contentBlock.Input = json.RawMessage("{}")
 
 			streamResp.ContentBlock = contentBlock
 		} else if bifrostResp.Item != nil &&
@@ -1452,7 +1460,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			}
 
 			// Start with empty input for streaming compatibility
-			contentBlock.Input = map[string]interface{}{}
+			contentBlock.Input = json.RawMessage("{}")
 
 			streamResp.ContentBlock = contentBlock
 		} else {
@@ -1468,7 +1476,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// Build content_block based on item type
 			if bifrostResp.Item != nil {
 				contentBlock := &AnthropicContentBlock{}
-				if bifrostResp.Item.Type != nil {
+
+				// Check if this is a compaction item (message with compaction content block)
+				if isCompactionItem(bifrostResp.Item) {
+					contentBlock.Type = AnthropicContentBlockTypeCompaction
+					contentBlock.Content = &AnthropicContent{ContentStr: schemas.Ptr("")}
+					if bifrostResp.Item.Content.ContentBlocks[0].CacheControl != nil {
+						contentBlock.CacheControl = bifrostResp.Item.Content.ContentBlocks[0].CacheControl
+					}
+				} else if bifrostResp.Item.Type != nil {
 					switch *bifrostResp.Item.Type {
 					case schemas.ResponsesMessageTypeMessage:
 						contentBlock.Type = AnthropicContentBlockTypeText
@@ -1529,7 +1545,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 									contentBlock.ID = bifrostResp.Item.ResponsesToolMessage.CallID
 									contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
 									// Always start with empty input for streaming compatibility
-									contentBlock.Input = map[string]interface{}{}
+									contentBlock.Input = json.RawMessage("{}")
 
 									// Track WebSearch tools so we can skip their argument deltas
 									if bifrostResp.Item.ResponsesToolMessage.Name != nil &&
@@ -1549,7 +1565,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 								contentBlock.ServerName = &bifrostResp.Item.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
 							}
 							// Always start with empty input for streaming compatibility
-							contentBlock.Input = map[string]interface{}{}
+							contentBlock.Input = json.RawMessage("{}")
 						}
 					}
 				}
@@ -1562,6 +1578,27 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Generate synthetic input_json_delta events for tool calls with arguments
 		var events []*AnthropicStreamEvent
 		events = append(events, streamResp)
+
+		// Generate compaction_delta event for compaction items
+		if isCompactionItem(bifrostResp.Item) {
+			block := bifrostResp.Item.Content.ContentBlocks[0]
+			if block.ResponsesOutputMessageContentCompaction != nil {
+				var indexToUse *int
+				if bifrostResp.OutputIndex != nil {
+					indexToUse = bifrostResp.OutputIndex
+				} else if bifrostResp.ContentIndex != nil {
+					indexToUse = bifrostResp.ContentIndex
+				}
+				events = append(events, &AnthropicStreamEvent{
+					Type:  AnthropicStreamEventTypeContentBlockDelta,
+					Index: indexToUse,
+					Delta: &AnthropicStreamDelta{
+						Type:    AnthropicStreamDeltaTypeCompaction,
+						Content: &block.ResponsesOutputMessageContentCompaction.Summary,
+					},
+				})
+			}
+		}
 
 		// Check if this is a tool call with arguments that need to be streamed
 		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil {
@@ -1582,7 +1619,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			case schemas.ResponsesMessageTypeComputerCall:
 				if bifrostResp.Item.ResponsesToolMessage.Action != nil && bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
 					actionInput := convertResponsesToAnthropicComputerAction(bifrostResp.Item.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
-					if jsonBytes, err := json.Marshal(actionInput); err == nil {
+					if jsonBytes, err := providerUtils.MarshalSorted(actionInput); err == nil {
 						argumentsJSON = string(jsonBytes)
 						shouldGenerateDeltas = true
 					}
@@ -1772,7 +1809,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				)
 
 				// Marshal the action to JSON string
-				if jsonBytes, err := json.Marshal(actionInput); err == nil {
+				if jsonBytes, err := providerUtils.MarshalSorted(actionInput); err == nil {
 					jsonStr := string(jsonBytes)
 					streamResp.Delta = &AnthropicStreamDelta{
 						Type:        AnthropicStreamDeltaTypeInputJSON,
@@ -1798,7 +1835,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				inputMap := map[string]interface{}{
 					"query": *bifrostResp.Item.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query,
 				}
-				if jsonBytes, err := json.Marshal(inputMap); err == nil {
+				if jsonBytes, err := providerUtils.MarshalSorted(inputMap); err == nil {
 					queryJSON = string(jsonBytes)
 				}
 			}
@@ -2330,9 +2367,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					anthropicReq.CacheControl = &v
 					parsed = true
 				default:
-					if data, err := json.Marshal(v); err == nil {
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
 						var cc schemas.CacheControl
-						if json.Unmarshal(data, &cc) == nil {
+						if sonic.Unmarshal(data, &cc) == nil {
 							anthropicReq.CacheControl = &cc
 							parsed = true
 						}
@@ -2359,9 +2396,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
 					delete(anthropicReq.ExtraParams, "context_management")
 					anthropicReq.ContextManagement = cm
-				} else if data, err := json.Marshal(cmVal); err == nil {
+				} else if data, err := providerUtils.MarshalSorted(cmVal); err == nil {
 					var cm ContextManagement
-					if json.Unmarshal(data, &cm) == nil {
+					if sonic.Unmarshal(data, &cm) == nil {
 						delete(anthropicReq.ExtraParams, "context_management")
 						anthropicReq.ContextManagement = &cm
 					}
@@ -2382,7 +2419,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 					continue // Skip converting MCP tools to anthropicTools since they're handled separately
 				}
-				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool)
+				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool, bifrostReq.Provider)
 				if anthropicTool != nil {
 					anthropicTools = append(anthropicTools, *anthropicTool)
 				}
@@ -2566,6 +2603,11 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 
 	bifrostResp.Model = response.Model
 
+	// Preserve stop reason from Anthropic response
+	if response.StopReason != "" {
+		bifrostResp.StopReason = schemas.Ptr(string(response.StopReason))
+	}
+
 	return bifrostResp
 }
 
@@ -2605,14 +2647,16 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		anthropicResp.Content = []AnthropicContentBlock{}
 	}
 
-	// Set default stop reason - could be enhanced based on additional context
-	anthropicResp.StopReason = AnthropicStopReasonEndTurn
-
-	// Check if there are tool calls to set appropriate stop reason
-	for _, block := range contentBlocks {
-		if block.Type == AnthropicContentBlockTypeToolUse {
-			anthropicResp.StopReason = AnthropicStopReasonToolUse
-			break
+	// Map stop reason from Bifrost response if available, otherwise infer from content
+	if bifrostResp.StopReason != nil {
+		anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason)
+	} else {
+		anthropicResp.StopReason = AnthropicStopReasonEndTurn
+		for _, block := range contentBlocks {
+			if block.Type == AnthropicContentBlockTypeToolUse {
+				anthropicResp.StopReason = AnthropicStopReasonToolUse
+				break
+			}
 		}
 	}
 
@@ -3077,8 +3121,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}
 			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Action != nil &&
 				msg.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction != nil {
-				serverToolUseBlock.Input = map[string]interface{}{
+				inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{
 					"url": msg.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction.URL,
+				})
+				if err == nil {
+					serverToolUseBlock.Input = json.RawMessage(inputBytes)
 				}
 			}
 			pendingToolCalls = append(pendingToolCalls, serverToolUseBlock)
@@ -3462,7 +3509,8 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameComputer) {
 				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
 				bifrostMsg.ResponsesToolMessage.Name = nil
-				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
+				var inputMap map[string]interface{}
+				if err := sonic.Unmarshal(toolBlock.Input, &inputMap); err == nil {
 					bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
 						ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
 					}
@@ -3470,31 +3518,30 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
 				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 				bifrostMsg.ResponsesToolMessage.Name = nil
-				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
-					if query, ok := inputMap["query"].(string); ok {
-						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
-								Type:    "search",
-								Query:   schemas.Ptr(query),
-								Queries: []string{query},
-							},
-						}
+				if q := providerUtils.GetJSONField(toolBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
+					query := q.Str
+					bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+							Type:    "search",
+							Query:   schemas.Ptr(query),
+							Queries: []string{query},
+						},
 					}
 				}
 			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
 				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
 				bifrostMsg.ResponsesToolMessage.Name = nil
-				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
-					if url, ok := inputMap["url"].(string); ok {
-						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-							ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
-								URL: url,
-							},
-						}
+				if u := providerUtils.GetJSONField(toolBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
+					bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+							URL: u.Str,
+						},
 					}
 				}
 			} else {
-				bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(schemas.JsonifyInput(toolBlock.Input))
+				if len(toolBlock.Input) > 0 {
+					bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(toolBlock.Input))
+				}
 			}
 
 			bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -3651,7 +3698,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				// This is a structured output tool - convert to text message
 				var jsonStr string
 				if block.Input != nil {
-					jsonStr = schemas.JsonifyInput(block.Input)
+					jsonStr = string(block.Input)
 				} else {
 					jsonStr = "{}"
 				}
@@ -3697,13 +3744,14 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					if block.Name != nil && *block.Name == string(AnthropicToolNameComputer) {
 						bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeComputerCall)
 						bifrostMsg.ResponsesToolMessage.Name = nil
-						if inputMap, ok := block.Input.(map[string]interface{}); ok {
+						var inputMap map[string]interface{}
+						if err := sonic.Unmarshal(block.Input, &inputMap); err == nil {
 							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
 								ResponsesComputerToolCallAction: convertAnthropicToResponsesComputerAction(inputMap),
 							}
 						}
-					} else {
-						bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(schemas.JsonifyInput(block.Input))
+					} else if len(block.Input) > 0 {
+						bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(block.Input))
 					}
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
 				}
@@ -3772,15 +3820,14 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 
 				// Extract query from input
 				if block.Input != nil {
-					if inputMap, ok := block.Input.(map[string]interface{}); ok {
-						if query, ok := inputMap["query"].(string); ok {
-							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-								ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
-									Type:    "search",
-									Query:   schemas.Ptr(query),
-									Queries: []string{query}, // Anthropic uses single query
-								},
-							}
+					if q := providerUtils.GetJSONField(block.Input, "query"); q.Exists() && q.Type == gjson.String {
+						query := q.Str
+						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+								Type:    "search",
+								Query:   schemas.Ptr(query),
+								Queries: []string{query}, // Anthropic uses single query
+							},
 						}
 					}
 				}
@@ -3797,13 +3844,11 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				}
 
 				if block.Input != nil {
-					if inputMap, ok := block.Input.(map[string]interface{}); ok {
-						if url, ok := inputMap["url"].(string); ok {
-							bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
-								ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
-									URL: url,
-								},
-							}
+					if u := providerUtils.GetJSONField(block.Input, "url"); u.Exists() && u.Type == gjson.String {
+						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+								URL: u.Str,
+							},
 						}
 					}
 				}
@@ -3843,9 +3888,11 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
 					ID:   block.ID,
 					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						Name:      block.Name,
-						Arguments: schemas.Ptr(schemas.JsonifyInput(block.Input)),
+						Name: block.Name,
 					},
+				}
+				if len(block.Input) > 0 {
+					bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(block.Input))
 				}
 				if block.ServerName != nil {
 					bifrostMsg.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
@@ -4211,7 +4258,10 @@ func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage)
 		}
 
 		if msg.ResponsesToolMessage.Action != nil && msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-			toolUseBlock.Input = convertResponsesToAnthropicComputerAction(msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
+			inputMap := convertResponsesToAnthropicComputerAction(msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
+			if inputBytes, err := providerUtils.MarshalSorted(inputMap); err == nil {
+				toolUseBlock.Input = json.RawMessage(inputBytes)
+			}
 		}
 
 		return &toolUseBlock
@@ -4313,10 +4363,12 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 
 	// Extract the query from the action
 	if action.Query != nil {
-		input := map[string]interface{}{
+		inputBytes, err := providerUtils.MarshalSorted(map[string]interface{}{
 			"query": *action.Query,
+		})
+		if err == nil {
+			serverToolUseBlock.Input = json.RawMessage(inputBytes)
 		}
-		serverToolUseBlock.Input = input
 	}
 
 	blocks = append(blocks, serverToolUseBlock)
@@ -4661,7 +4713,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 }
 
 // Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *AnthropicTool {
+func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
@@ -4687,7 +4739,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 	case schemas.ResponsesToolTypeWebSearch:
 		webSearchType := AnthropicToolTypeWebSearch20250305
-		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+		// Dynamic filtering (web_search_20260209) only available on Anthropic + Azure
+		features, ok := ProviderFeatures[provider]
+		if ok && features.WebSearchDynamic &&
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{
@@ -4716,7 +4771,10 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
 		webFetchType := AnthropicToolTypeWebFetch20250910
-		if strings.Contains(model, "4.6") || strings.Contains(model, "4-6") {
+		// Dynamic filtering versions only available on Anthropic + Azure
+		features, ok := ProviderFeatures[provider]
+		if ok && features.WebSearchDynamic &&
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
 			webFetchType = AnthropicToolTypeWebFetch20260309
 		}
 		anthropicTool := &AnthropicTool{

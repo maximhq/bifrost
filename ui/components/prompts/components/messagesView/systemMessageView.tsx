@@ -9,6 +9,15 @@ import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 
+/**
+ * Renders an editable system message block that supports role switching, rich-text editing, JSON editing with buffered changes, Jinja variable highlighting, and optional removal.
+ *
+ * @param message - The message model to display and edit.
+ * @param disabled - When true, disables interactions and makes the view read-only.
+ * @param onChange - Called with the message's serialized representation when the message is modified (role or content).
+ * @param onRemove - Optional callback invoked when the message should be removed.
+ * @returns The rendered system message JSX element.
+ */
 export function SystemMessageView({
 	message,
 	disabled,

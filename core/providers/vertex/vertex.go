@@ -404,6 +404,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				}
 				extraParams = reqBody.GetExtraParams()
 				reqBody.Model = deployment
+				// Add provider-aware beta headers for Vertex
+				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
 				// Marshal to JSON bytes, preserving struct field order
 				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
@@ -414,6 +416,19 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+					}
+				}
+				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
+				if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+					betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
+					if betaErr != nil {
+						return nil, fmt.Errorf("unsupported beta header: %w", betaErr)
+					}
+					if len(betaHeaders) > 0 {
+						rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
+						if err != nil {
+							return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
+						}
 					}
 				}
 				// Remove model field (it's in URL for Vertex)
@@ -470,6 +485,15 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
+	}
+
+	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
+	if schemas.IsAnthropicModel(deployment) && jsonBody != nil {
+		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
+		if remapErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil, providerName)
+		}
+		jsonBody = remappedBody
 	}
 
 	// Auth query is used for fine-tuned models to pass the API key in the query string
@@ -749,6 +773,8 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				extraParams = reqBody.GetExtraParams()
 				reqBody.Model = deployment
 				reqBody.Stream = schemas.Ptr(true)
+				// Add provider-aware beta headers for Vertex
+				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
 
 				// Marshal to JSON bytes, preserving struct field order for prompt caching
 				rawBody, err := providerUtils.MarshalSorted(reqBody)
@@ -761,6 +787,19 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
 					if err != nil {
 						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+					}
+				}
+				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
+				if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+					betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
+					if betaErr != nil {
+						return nil, fmt.Errorf("unsupported beta header: %w", betaErr)
+					}
+					if len(betaHeaders) > 0 {
+						rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
+						if err != nil {
+							return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
+						}
 					}
 				}
 
@@ -778,6 +817,15 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			provider.GetProviderKey())
 		if bifrostErr != nil {
 			return nil, bifrostErr
+		}
+
+		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
+		if jsonData != nil {
+			var remapErr error
+			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex)
+			if remapErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil, providerName)
+			}
 		}
 
 		var completeURL string

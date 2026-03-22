@@ -1,6 +1,7 @@
 package cohere
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -24,9 +25,9 @@ func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
 
 // CohereRerankResult represents a single result from Cohere rerank.
 type CohereRerankResult struct {
-	Index          int                    `json:"index"`
-	RelevanceScore float64                `json:"relevance_score"`
-	Document       map[string]interface{} `json:"document,omitempty"`
+	Index          int             `json:"index"`
+	RelevanceScore float64         `json:"relevance_score"`
+	Document       json.RawMessage `json:"document,omitempty"`
 }
 
 // CohereRerankResponse represents a Cohere rerank API response.

@@ -3,7 +3,7 @@
 import type { TokenHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../utils/chartUtils";
+import { CHART_COLORS, formatFullTimestamp, formatTimestamp, formatTokens } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -38,6 +38,15 @@ function CustomTooltip({ active, payload }: any) {
 					</span>
 					<span className="font-medium">{data.completion_tokens.toLocaleString()}</span>
 				</div>
+				{data.cached_read_tokens > 0 && (
+					<div className="flex items-center justify-between gap-4">
+						<span className="flex items-center gap-1.5">
+							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cachedReadTokens }} />
+							<span className="text-zinc-600 dark:text-zinc-400">Cached</span>
+						</span>
+						<span className="font-medium">{data.cached_read_tokens.toLocaleString()}</span>
+					</div>
+				)}
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
 					<span className="text-zinc-600 dark:text-zinc-400">Total</span>
 					<span className="font-medium">{data.total_tokens.toLocaleString()}</span>
@@ -55,6 +64,7 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 
 		return data.buckets.map((bucket, index) => ({
 			...bucket,
+			uncached_prompt_tokens: Math.max(bucket.prompt_tokens - bucket.cached_read_tokens, 0),
 			index,
 			formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 		}));
@@ -66,7 +76,7 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
@@ -95,18 +105,23 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar
-							dataKey="prompt_tokens"
+						<Bar isAnimationActive={false}							dataKey="uncached_prompt_tokens"
 							stackId="tokens"
 							fill={CHART_COLORS.promptTokens}
 							fillOpacity={0.9}
 							radius={[0, 0, 0, 0]}
 							barSize={30}
 						/>
-						<Bar
-							dataKey="completion_tokens"
+						<Bar isAnimationActive={false}							dataKey="completion_tokens"
 							stackId="tokens"
 							fill={CHART_COLORS.completionTokens}
+							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar isAnimationActive={false}							dataKey="cached_read_tokens"
+							stackId="tokens"
+							fill={CHART_COLORS.cachedReadTokens}
 							fillOpacity={0.9}
 							radius={[2, 2, 0, 0]}
 							barSize={30}
@@ -135,20 +150,25 @@ export function TokenUsageChart({ data, chartType, startTime, endTime }: TokenUs
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} />
-						<Area
-							type="monotone"
-							dataKey="prompt_tokens"
+						<Area isAnimationActive={false}							type="monotone"
+							dataKey="uncached_prompt_tokens"
 							stackId="1"
 							stroke={CHART_COLORS.promptTokens}
 							fill={CHART_COLORS.promptTokens}
 							fillOpacity={0.7}
 						/>
-						<Area
-							type="monotone"
+						<Area isAnimationActive={false}							type="monotone"
 							dataKey="completion_tokens"
 							stackId="1"
 							stroke={CHART_COLORS.completionTokens}
 							fill={CHART_COLORS.completionTokens}
+							fillOpacity={0.7}
+						/>
+						<Area isAnimationActive={false}							type="monotone"
+							dataKey="cached_read_tokens"
+							stackId="1"
+							stroke={CHART_COLORS.cachedReadTokens}
+							fill={CHART_COLORS.cachedReadTokens}
 							fillOpacity={0.7}
 						/>
 					</AreaChart>

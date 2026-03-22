@@ -66,6 +66,12 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
 
+		// Remap unsupported tool versions for Vertex (e.g., web_search_20260209 → web_search_20250305)
+		jsonBody, err = anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(err.Error(), nil, providerName)
+		}
+
 		// Add anthropic_version if not present
 		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
@@ -74,6 +80,13 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			}
 		}
 	} else {
+		// Validate tools are supported by Vertex
+		if request.Params != nil && request.Params.Tools != nil {
+			if toolErr := anthropic.ValidateToolsForProvider(request.Params.Tools, schemas.Vertex); toolErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(toolErr.Error(), nil, providerName)
+			}
+		}
+
 		// Convert request to Anthropic format
 		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
@@ -90,6 +103,9 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 
 		reqBody.SetStripCacheControlScope(true)
 
+		// Add provider-aware beta headers
+		anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
+
 		// Marshal struct to JSON bytes
 		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
@@ -101,6 +117,20 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+		}
+
+		// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
+		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
+			if betaErr != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, betaErr, providerName)
+			}
+			if len(betaHeaders) > 0 {
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
 			}
 		}
 

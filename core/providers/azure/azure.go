@@ -554,6 +554,8 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 				}
 				if reqBody != nil {
 					reqBody.Model = deployment
+					// Add provider-aware beta headers for Azure
+					anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
 				}
 				return reqBody, nil
 			} else {
@@ -681,6 +683,8 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 				if reqBody != nil {
 					reqBody.Model = deployment
 					reqBody.Stream = schemas.Ptr(true)
+					// Add provider-aware beta headers for Azure
+					anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
 				}
 				return reqBody, nil
 			},

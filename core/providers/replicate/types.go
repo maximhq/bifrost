@@ -1,6 +1,7 @@
 package replicate
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -86,7 +87,7 @@ func (r *ReplicatePredictionRequestInput) MarshalJSON() ([]byte, error) {
 	type Alias ReplicatePredictionRequestInput
 
 	// Marshal the struct normally (ExtraParams will be omitted due to json:"-" tag)
-	aliasData, err := sonic.Marshal((*Alias)(r))
+	aliasData, err := providerUtils.MarshalSorted((*Alias)(r))
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +195,7 @@ type ReplicatePredictionResponse struct {
 	ID               string                    `json:"id"`
 	Model            string                    `json:"model"`                       // Model identifier (owner/name or owner/name:version)
 	Version          string                    `json:"version"`                     // Model version ID
-	Input            map[string]interface{}    `json:"input"`                       // Input parameters used
+	Input            json.RawMessage           `json:"input"`                       // Input parameters used (json.RawMessage preserves key ordering)
 	Output           *ReplicateOutput          `json:"output,omitempty"`            // Output data (can be various types)
 	Logs             *string                   `json:"logs,omitempty"`              // Execution logs
 	Error            *string                   `json:"error,omitempty"`             // Error message if failed
@@ -239,16 +240,16 @@ func (mc ReplicateOutput) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.OutputStr != nil {
-		return sonic.Marshal(*mc.OutputStr)
+		return providerUtils.MarshalSorted(*mc.OutputStr)
 	}
 	if mc.OutputArray != nil {
-		return sonic.Marshal(mc.OutputArray)
+		return providerUtils.MarshalSorted(mc.OutputArray)
 	}
 	if mc.OutputObject != nil {
-		return sonic.Marshal(mc.OutputObject)
+		return providerUtils.MarshalSorted(mc.OutputObject)
 	}
 	// If all are nil, return null
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ReplicateOutput.
@@ -322,7 +323,7 @@ type ReplicateModelResponse struct {
 	LicenseURL      *string                 `json:"license_url,omitempty"`      // License URL
 	RunCount        *int                    `json:"run_count,omitempty"`        // Number of times run
 	CoverImageURL   *string                 `json:"cover_image_url,omitempty"`  // Cover image URL
-	DefaultExample  *map[string]interface{} `json:"default_example,omitempty"`  // Default example prediction
+	DefaultExample  *json.RawMessage        `json:"default_example,omitempty"`  // Default example prediction (json.RawMessage preserves key ordering)
 	LatestVersion   *ReplicateModelVersion  `json:"latest_version,omitempty"`   // Latest version details
 	FeaturedVersion *ReplicateModelVersion  `json:"featured_version,omitempty"` // Featured version details
 }
@@ -332,7 +333,7 @@ type ReplicateModelVersion struct {
 	ID            string                 `json:"id"`                        // Version ID
 	CreatedAt     string                 `json:"created_at"`                // ISO 8601 timestamp
 	CogVersion    *string                `json:"cog_version,omitempty"`     // Cog version used
-	OpenAPISchema map[string]interface{} `json:"openapi_schema,omitempty"`  // OpenAPI schema for the model
+	OpenAPISchema json.RawMessage        `json:"openapi_schema,omitempty"`  // OpenAPI schema for the model (json.RawMessage preserves key ordering)
 	DockerImageID *string                `json:"docker_image_id,omitempty"` // Docker image ID
 }
 
@@ -409,7 +410,7 @@ type ReplicateWebhookPayload struct {
 	ID          string                    `json:"id"`
 	Model       string                    `json:"model"`
 	Version     string                    `json:"version"`
-	Input       map[string]interface{}    `json:"input"`
+	Input       json.RawMessage           `json:"input"`
 	Output      interface{}               `json:"output,omitempty"`
 	Logs        *string                   `json:"logs,omitempty"`
 	Error       *string                   `json:"error,omitempty"`
@@ -482,7 +483,7 @@ type ReplicateFileResponse struct {
 	ContentType string                 `json:"content_type"`         // MIME type
 	CreatedAt   string                 `json:"created_at"`           // ISO 8601 timestamp
 	ExpiresAt   string                 `json:"expires_at,omitempty"` // ISO 8601 timestamp
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`   // User-provided metadata
+	Metadata    json.RawMessage        `json:"metadata,omitempty"`   // User-provided metadata (json.RawMessage preserves key ordering)
 	Name        string                 `json:"name,omitempty"`       // File name
 	Size        int64                  `json:"size"`                 // File size in bytes
 	URLs        *ReplicateFileURLs     `json:"urls,omitempty"`       // Associated URLs

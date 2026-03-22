@@ -6,6 +6,20 @@ import { PencilIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
+/**
+ * Renders an editable view for a tool result message that supports role switching, inline text editing, JSON-aware editing, and removal.
+ *
+ * The component presents the message role selector, optional tool call id, edit/delete actions, and a content area that:
+ * - shows a textarea for freeform editing when in edit mode,
+ * - shows a JSON-aware code editor (with edits buffered and flushed on blur) when the content is valid JSON,
+ * - shows a read-only monospaced display when content is plain text,
+ * - shows a placeholder when content is empty.
+ *
+ * @param message - The Message instance to display and edit; updates emitted via `onChange` are serialized from clones of this message.
+ * @param disabled - When true, disables interactive controls and makes editors read-only.
+ * @param onChange - Called with the message's serialized form whenever the message is modified (role, content edits, or flushed JSON buffer).
+ * @param onRemove - Optional callback invoked when the user requests deletion of the message.
+ */
 export default function ToolResultMessageView({
 	message,
 	disabled,

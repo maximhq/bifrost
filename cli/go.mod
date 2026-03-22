@@ -10,7 +10,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/maximhq/vt10x v0.0.0-20260312213827-20648b37d999
 	github.com/zalando/go-keyring v0.2.6
-	golang.org/x/term v0.40.0
+	golang.org/x/term v0.41.0
 )
 
 require (
@@ -47,6 +47,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 )
