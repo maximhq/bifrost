@@ -21,6 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -879,6 +880,22 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		}
 		return
 	}
+	// Validate MCP client names from config file before processing
+	if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
+		valid := make([]*schemas.MCPClientConfig, 0, len(configData.MCP.ClientConfigs))
+		for _, c := range configData.MCP.ClientConfigs {
+			if c == nil {
+				continue
+			}
+			if err := mcp.ValidateMCPClientName(c.Name); err != nil {
+				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
+				continue
+			}
+			valid = append(valid, c)
+		}
+		configData.MCP.ClientConfigs = valid
+	}
+
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
 		tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
