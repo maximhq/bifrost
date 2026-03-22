@@ -3,7 +3,6 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"slices"
@@ -126,11 +125,14 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher())
 
-	// Use streaming response writer
-	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	go func() {
 		defer func() {
 			cancel()
-			_ = w.Flush()
+			reader.Done()
 		}()
 
 		// Send initial connection message
@@ -139,13 +141,16 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 			"method":  "connection/opened",
 		}
 		if initJSON, err := sonic.Marshal(initMessage); err == nil {
-			fmt.Fprintf(w, "data: %s\n\n", initJSON)
-			w.Flush()
+			buf := make([]byte, 0, len(initJSON)+8)
+			buf = append(buf, "data: "...)
+			buf = append(buf, initJSON...)
+			buf = append(buf, '\n', '\n')
+			reader.Send(buf)
 		}
 
 		// Wait for context cancellation (client disconnect or server-side cancel)
 		<-(*bifrostCtx).Done()
-	})
+	}()
 }
 
 // Sync methods for MCP servers
