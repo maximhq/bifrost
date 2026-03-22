@@ -156,6 +156,29 @@ export const replicateKeyConfigSchema = z.object({
 	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 });
 
+export const openrouterKeyConfigSchema = z
+	.object({
+		provider: z.union([z.record(z.string(), z.unknown()), z.string()]).optional(),
+	})
+	.refine(
+		(data) => {
+			if (!data.provider) return true;
+			if (typeof data.provider === "object") return !Array.isArray(data.provider);
+			const trimmed = data.provider.trim();
+			if (trimmed === "") return true;
+			try {
+				const parsed = JSON.parse(trimmed);
+				return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+			} catch {
+				return false;
+			}
+		},
+		{
+			message: "Provider must be a valid JSON object",
+			path: ["provider"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z.object({
 	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
@@ -194,6 +217,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		openrouter_key_config: openrouterKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),

@@ -59,6 +59,9 @@ type TableKey struct {
 	// Replicate config fields (embedded)
 	ReplicateDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
+	// OpenRouter config fields (embedded)
+	OpenRouterProviderJSON *string `gorm:"type:text" json:"-"`
+
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
@@ -72,12 +75,13 @@ type TableKey struct {
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	Models             []string                    `gorm:"-" json:"models"`
-	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
-	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
-	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
-	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
-	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
+	Models              []string                     `gorm:"-" json:"models"`
+	AzureKeyConfig      *schemas.AzureKeyConfig      `gorm:"-" json:"azure_key_config,omitempty"`
+	VertexKeyConfig     *schemas.VertexKeyConfig     `gorm:"-" json:"vertex_key_config,omitempty"`
+	BedrockKeyConfig    *schemas.BedrockKeyConfig    `gorm:"-" json:"bedrock_key_config,omitempty"`
+	OpenRouterKeyConfig *schemas.OpenRouterKeyConfig `gorm:"-" json:"openrouter_key_config,omitempty"`
+	ReplicateKeyConfig  *schemas.ReplicateKeyConfig  `gorm:"-" json:"replicate_key_config,omitempty"`
+	VLLMKeyConfig       *schemas.VLLMKeyConfig       `gorm:"-" json:"vllm_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -311,6 +315,20 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 	} else {
 		k.ReplicateDeploymentsJSON = nil
+	}
+
+	if k.OpenRouterKeyConfig != nil {
+		if err := k.OpenRouterKeyConfig.Validate(); err != nil {
+			return err
+		}
+	}
+
+	if k.OpenRouterKeyConfig != nil && !k.OpenRouterKeyConfig.IsEmpty() {
+		providerJSON := string(k.OpenRouterKeyConfig.Provider)
+		k.OpenRouterProviderJSON = &providerJSON
+	} else {
+		k.OpenRouterKeyConfig = nil
+		k.OpenRouterProviderJSON = nil
 	}
 
 	if k.VLLMKeyConfig != nil {
@@ -606,6 +624,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		replicateConfig.Deployments = deployments
 		k.ReplicateKeyConfig = replicateConfig
+	}
+	// Reconstruct OpenRouter config if fields are present
+	if k.OpenRouterProviderJSON != nil && *k.OpenRouterProviderJSON != "" {
+		k.OpenRouterKeyConfig = &schemas.OpenRouterKeyConfig{
+			Provider: json.RawMessage(*k.OpenRouterProviderJSON),
+		}
+	} else {
+		k.OpenRouterKeyConfig = nil
 	}
 	// Reconstruct VLLM config if fields are present
 	if k.VLLMUrl != nil || (k.VLLMModelName != nil && *k.VLLMModelName != "") {

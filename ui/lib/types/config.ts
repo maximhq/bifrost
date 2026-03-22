@@ -100,6 +100,14 @@ export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
 	deployments: {},
 } as const satisfies Required<ReplicateKeyConfig>;
 
+export interface OpenRouterKeyConfig {
+	provider?: Record<string, unknown> | string;
+}
+
+export const DefaultOpenRouterKeyConfig: OpenRouterKeyConfig = {
+	provider: {},
+} as const satisfies Required<OpenRouterKeyConfig>;
+
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
 	url: EnvVar;
@@ -124,6 +132,7 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	openrouter_key_config?: OpenRouterKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json

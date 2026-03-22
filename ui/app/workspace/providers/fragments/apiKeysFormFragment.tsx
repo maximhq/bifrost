@@ -54,6 +54,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
+	const isOpenRouter = providerName === "openrouter";
 	const isVLLM = providerName === "vllm";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
@@ -546,6 +547,59 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											field.onBlur();
 										}}
 										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isOpenRouter && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name={`key.openrouter_key_config.provider`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Provider (Optional)</FormLabel>
+								<FormDescription>
+									Default OpenRouter provider routing preferences. Request-level provider values override this default.
+								</FormDescription>
+								<FormControl>
+									<Textarea
+										data-testid="key-input-openrouter-provider"
+										placeholder='{"order": ["openai", "anthropic"], "allow_fallbacks": false}'
+										value={
+											typeof field.value === "string"
+												? field.value
+												: field.value && Object.keys(field.value).length > 0
+													? JSON.stringify(field.value, null, 2)
+													: ""
+										}
+										onChange={(e) => {
+											form.clearErrors("key.openrouter_key_config.provider");
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											const value = e.target.value.trim();
+											if (!value) {
+												field.onChange(undefined);
+											} else {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={5}
 										className="max-w-full font-mono text-sm wrap-anywhere"
 									/>
 								</FormControl>

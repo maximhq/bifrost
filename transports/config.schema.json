@@ -1668,6 +1668,19 @@
                   "model_name"
                 ],
                 "additionalProperties": false
+              },
+              "openrouter_key_config": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "object",
+                    "description": "Default OpenRouter provider routing preferences merged into the request body"
+                  }
+                },
+                "required": [
+                  "provider"
+                ],
+                "additionalProperties": false
               }
             },
             "oneOf": [
@@ -1677,7 +1690,8 @@
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["openrouter_key_config"] }
                   ]
                 }
               },
@@ -1687,7 +1701,8 @@
                   "anyOf": [
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["openrouter_key_config"] }
                   ]
                 }
               },
@@ -1697,7 +1712,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["openrouter_key_config"] }
                   ]
                 }
               },
@@ -1707,7 +1723,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["openrouter_key_config"] }
                   ]
                 }
               },
@@ -1717,7 +1734,19 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["openrouter_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["openrouter_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               }

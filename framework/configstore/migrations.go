@@ -290,6 +290,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVLLMKeyConfigColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOpenRouterKeyConfigColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationWidenEncryptedVarcharColumns(ctx, db); err != nil {
 		return err
 	}
@@ -4117,6 +4120,37 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOpenRouterKeyConfigColumns adds openrouter_provider_json column to the key table.
+func migrationAddOpenRouterKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_openrouter_key_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "OpenRouterProviderJSON") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "OpenRouterProviderJSON"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "OpenRouterProviderJSON") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "OpenRouterProviderJSON"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running openrouter key config columns migration: %s", err.Error())
 	}
 	return nil
 }

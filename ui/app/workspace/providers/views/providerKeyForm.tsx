@@ -65,8 +65,20 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty]);
 
 	const onSubmit = (value: any) => {
+		const keyToSave = structuredClone(value.key);
+		const providerConfig = keyToSave.openrouter_key_config?.provider;
+		if (typeof providerConfig === "string") {
+			const trimmedProviderConfig = providerConfig.trim();
+			if (trimmedProviderConfig) {
+				keyToSave.openrouter_key_config.provider = JSON.parse(trimmedProviderConfig);
+			} else {
+				delete keyToSave.openrouter_key_config;
+			}
+		} else if (providerConfig && Object.keys(providerConfig).length === 0) {
+			delete keyToSave.openrouter_key_config;
+		}
 		const keys = provider.keys ?? [];
-		const updatedKeys = [...keys.slice(0, keyIndex), value.key, ...keys.slice(keyIndex + 1)];
+		const updatedKeys = [...keys.slice(0, keyIndex), keyToSave, ...keys.slice(keyIndex + 1)];
 		updateProvider({
 			...provider,
 			keys: updatedKeys,
