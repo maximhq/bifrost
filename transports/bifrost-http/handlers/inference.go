@@ -1531,7 +1531,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
 	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func(string, []schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := h.config.GetStreamChunkInterceptor()
@@ -1549,11 +1549,16 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	go func() {
 		defer func() {
 			schemas.ReleaseHTTPRequest(httpReq)
+			if interceptor != nil {
+				interceptor.Release()
+			}
 			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			// Pass LLM plugin logs so they can be merged with transport logs in the completer
 			if traceCompleter != nil {
-				traceCompleter()
+				requestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+				traceCompleter(requestID, bifrostCtx.DrainPluginLogs())
 			}
 		}()
 

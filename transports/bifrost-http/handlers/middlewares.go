@@ -283,6 +283,32 @@ func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error
 	}
 }
 
+// mergePluginLogs merges two chronologically-ordered plugin log slices into a single
+// sorted slice using O(n) merge. Both inputs must already be in timestamp order
+// (as guaranteed by DrainPluginLogs which appends sequentially).
+func mergePluginLogs(a, b []schemas.PluginLogEntry) []schemas.PluginLogEntry {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	merged := make([]schemas.PluginLogEntry, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i].Timestamp <= b[j].Timestamp {
+			merged = append(merged, a[i])
+			i++
+		} else {
+			merged = append(merged, b[j])
+			j++
+		}
+	}
+	merged = append(merged, a[i:]...)
+	merged = append(merged, b[j:]...)
+	return merged
+}
+
 // TransportInterceptorMiddleware runs all plugin HTTP transport interceptors.
 // It converts the fasthttp request to a serializable HTTPRequest, runs all plugin interceptors,
 // and applies any modifications back to the fasthttp context.
@@ -296,13 +322,22 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Store transport plugin logs on fasthttp context at function exit.
+			// Covers both pre-hook and post-hook logs in a single drain call.
+			defer func() {
+				if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
+					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
+				}
+			}()
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
 			fasthttpToHTTPRequest(ctx, req)
 			// Run plugin interceptors
 			for _, plugin := range plugins {
-				resp, err := plugin.HTTPTransportPreHook(bifrostCtx, req)
+				pluginCtx := bifrostCtx.WithPluginScope(plugin.GetName())
+				resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+				pluginCtx.ReleasePluginScope()
 				if err != nil {
 					// Short-circuit with error
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -337,7 +372,9 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// Run http post-hooks in reverse order
 			for i := len(plugins) - 1; i >= 0; i-- {
 				plugin := plugins[i]
-				err := plugin.HTTPTransportPostHook(bifrostCtx, req, httpResp)
+				pluginCtx := bifrostCtx.WithPluginScope(plugin.GetName())
+				err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+				pluginCtx.ReleasePluginScope()
 				if err != nil {
 					logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", plugin.GetName(), err.Error())
 					// Short-circuit with response
@@ -781,10 +818,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
 			}
-
-			// Store a trace completion callback for streaming handlers to use
-			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func() {
-				m.completeAndFlushTrace(traceID)
+			// Store a trace completion callback for streaming handlers to use.
+			// Capture transport pre-hook logs in the closure since the fasthttp ctx
+			// will be recycled before streaming completes.
+			transportLogs, _ := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry)
+			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func(requestID string, llmLogs []schemas.PluginLogEntry) {
+				m.completeAndFlushTrace(traceID, requestID, llmLogs, transportLogs)
 			})
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := m.tracer.Load().StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
@@ -812,8 +851,16 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
 					return
 				}
-				// After response written - async flush
-				m.completeAndFlushTrace(traceID)
+				// After response written - collect plugin logs (cheap: just pointer/nil reads) and async flush
+				// The expensive merge happens inside the goroutine, off the request hot path.
+				var llmLogs []schemas.PluginLogEntry
+				var requestID string
+				if bifrostCtx, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && bifrostCtx != nil {
+					llmLogs = bifrostCtx.DrainPluginLogs()
+					requestID, _ = bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
+				}
+				transportLogs, _ := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry)
+				m.completeAndFlushTrace(traceID, requestID, llmLogs, transportLogs)
 			}()
 
 			next(ctx)
@@ -823,7 +870,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 
 // completeAndFlushTrace completes the trace and forwards it to observability plugins.
 // This is called either by the middleware defer (for non-streaming) or by streaming handlers.
-func (m *TracingMiddleware) completeAndFlushTrace(traceID string) {
+// requestID is the Bifrost request ID for correlating with log entries.
+// llmLogs and transportLogs are plugin logs from LLM/MCP hooks and HTTP transport hooks respectively.
+// The merge happens inside the goroutine to keep it off the request hot path.
+func (m *TracingMiddleware) completeAndFlushTrace(traceID string, requestID string, llmLogs, transportLogs []schemas.PluginLogEntry) {
 	go func() {
 		// Clean up the stream accumulator for this trace
 
@@ -831,6 +881,11 @@ func (m *TracingMiddleware) completeAndFlushTrace(traceID string) {
 		completedTrace := m.tracer.Load().EndTrace(traceID)
 		if completedTrace == nil {
 			return
+		}
+		// Set request ID and merge plugin logs on the trace for observability plugins (off the hot path)
+		completedTrace.RequestID = requestID
+		if len(llmLogs) > 0 || len(transportLogs) > 0 {
+			completedTrace.PluginLogs = mergePluginLogs(llmLogs, transportLogs)
 		}
 		// Forward to all observability plugins
 		for _, plugin := range *m.obsPlugins.Load() {

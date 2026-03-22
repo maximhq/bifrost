@@ -178,6 +178,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
+	pluginLogs string,
 	data *UpdateLogData,
 ) error {
 	updates := make(map[string]interface{})
@@ -204,6 +205,9 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
+	}
+	if pluginLogs != "" {
+		updates["plugin_logs"] = pluginLogs
 	}
 	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 	tempEntry := &logstore.Log{}
@@ -347,6 +351,7 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
+	pluginLogs string,
 	streamResponse *streaming.ProcessedStreamResponse,
 	isFinalChunk bool,
 	isLargePayloadRequest bool,
@@ -373,6 +378,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
+	}
+	if pluginLogs != "" {
+		updates["plugin_logs"] = pluginLogs
 	}
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {

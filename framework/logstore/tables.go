@@ -128,6 +128,7 @@ type Log struct {
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
 	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
 	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
+	PluginLogs             string    `gorm:"type:text" json:"plugin_logs,omitempty"`              // JSON serialized map[string][]PluginLogEntry
 	Metadata               *string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
 	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`

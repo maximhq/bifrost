@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -71,9 +72,15 @@ func hexToBytes(hexStr string, length int) []byte {
 
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan
 func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
+	// Build plugin log index once (group by plugin name) for O(1) lookup per span
+	var pluginLogIndex map[string][]schemas.PluginLogEntry
+	if p.forwardPluginLogs {
+		pluginLogIndex = schemas.GroupPluginLogsByName(trace.PluginLogs)
+	}
+
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
-		otelSpans = append(otelSpans, p.convertSpanToOTELSpan(trace.TraceID, span))
+		otelSpans = append(otelSpans, p.convertSpanToOTELSpan(trace.TraceID, span, pluginLogIndex))
 	}
 
 	return &ResourceSpan{
@@ -88,7 +95,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
+func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span, pluginLogIndex map[string][]schemas.PluginLogEntry) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -101,12 +108,50 @@ func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *
 		Events:            convertSpanEvents(span.Events),
 	}
 
+	// Attach plugin logs as span events only to posthook spans to avoid duplication
+	if len(pluginLogIndex) > 0 && span.Kind == schemas.SpanKindPlugin {
+		if pluginName, hookType := extractPluginNameAndHookFromSpan(span.Name); pluginName != "" && hookType == "posthook" {
+			if logs, ok := pluginLogIndex[pluginName]; ok && len(logs) > 0 {
+				otelSpan.Events = append(otelSpan.Events, convertPluginLogsToEvents(logs)...)
+			}
+		}
+	}
+
 	// Set parent span ID if present
 	if span.ParentID != "" {
 		otelSpan.ParentSpanId = hexToBytes(span.ParentID, 8)
 	}
 
 	return otelSpan
+}
+
+// convertPluginLogsToEvents converts plugin log entries to OTEL span events
+func convertPluginLogsToEvents(logs []schemas.PluginLogEntry) []*Event {
+	events := make([]*Event, len(logs))
+	for i, entry := range logs {
+		events[i] = &Event{
+			TimeUnixNano: uint64(time.UnixMilli(entry.Timestamp).UnixNano()),
+			Name:         "plugin.log",
+			Attributes: []*KeyValue{
+				kvStr("level", string(entry.Level)),
+				kvStr("message", entry.Message),
+			},
+		}
+	}
+	return events
+}
+
+// extractPluginNameAndHookFromSpan extracts the plugin name and hook type from a span name like "plugin.{name}.prehook"
+func extractPluginNameAndHookFromSpan(spanName string) (string, string) {
+	// Span names follow the pattern: plugin.{name}.{hook_type}
+	parts := strings.SplitN(spanName, ".", 3)
+	if len(parts) >= 3 && parts[0] == "plugin" {
+		return parts[1], parts[2]
+	}
+	if len(parts) >= 2 && parts[0] == "plugin" {
+		return parts[1], ""
+	}
+	return "", ""
 }
 
 // getResourceAttributes returns the resource attributes for the OTEL span

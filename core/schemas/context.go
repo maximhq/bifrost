@@ -40,6 +40,22 @@ type BifrostContext struct {
 	userValues            map[any]any
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
+	pluginScope           *string          // non-nil when this is a plugin-scoped context (pointer avoids string comparison)
+	valueDelegate         *BifrostContext  // non-nil for scoped contexts; write operations delegate here
+	pluginLogs            *pluginLogStore  // shared log store (pointer, shared across scoped contexts)
+}
+
+// pluginLogStore is a thread-safe store for plugin log entries.
+// It is shared between a root BifrostContext and its plugin-scoped derivatives.
+// Uses a flat slice instead of map to avoid heap map allocations on every Log() call.
+type pluginLogStore struct {
+	mu   sync.Mutex
+	logs []PluginLogEntry
+}
+
+// pluginScopePool pools scoped BifrostContext objects to avoid per-hook heap allocations.
+var pluginScopePool = sync.Pool{
+	New: func() any { return &BifrostContext{} },
 }
 
 // NewBifrostContext creates a new BifrostContext with the given parent context and deadline.
@@ -111,6 +127,10 @@ func (bc *BifrostContext) UnblockRestrictedWrites() {
 
 // Cancel cancels the context, closing the Done channel and setting the error to context.Canceled.
 func (bc *BifrostContext) Cancel() {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.Cancel()
+		return
+	}
 	bc.cancel(context.Canceled)
 }
 
@@ -197,6 +217,9 @@ func (bc *BifrostContext) Done() <-chan struct{} {
 // Err returns the error explaining why the context was cancelled.
 // Returns nil if the context has not been cancelled.
 func (bc *BifrostContext) Err() error {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.Err()
+	}
 	bc.errMu.RLock()
 	defer bc.errMu.RUnlock()
 	return bc.err
@@ -212,12 +235,19 @@ func (bc *BifrostContext) Value(key any) any {
 	}
 	bc.valuesMu.RUnlock()
 
+	if bc.parent == nil {
+		return nil
+	}
 	return bc.parent.Value(key)
 }
 
 // SetValue sets a value in the internal userValues map.
 // This is thread-safe and can be called concurrently.
 func (bc *BifrostContext) SetValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetValue(key, value)
+		return
+	}
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
 		// we silently drop writes for these reserved keys
@@ -233,6 +263,10 @@ func (bc *BifrostContext) SetValue(key, value any) {
 
 // ClearValue clears a value from the internal userValues map.
 func (bc *BifrostContext) ClearValue(key any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.ClearValue(key)
+		return
+	}
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
 		// we silently drop writes for these reserved keys
@@ -247,6 +281,9 @@ func (bc *BifrostContext) ClearValue(key any) {
 
 // GetAndSetValue gets a value from the internal userValues map and sets it
 func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetAndSetValue(key, value)
+	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
@@ -266,6 +303,9 @@ func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 // If the parent is also a PluginContext, the values are merged with parent values
 // (this context's values take precedence over parent values).
 func (bc *BifrostContext) GetUserValues() map[any]any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetUserValues()
+	}
 	result := make(map[any]any)
 
 	// First, get parent's user values if parent is a PluginContext
@@ -287,6 +327,9 @@ func (bc *BifrostContext) GetUserValues() map[any]any {
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.
 func (bc *BifrostContext) GetParentCtxWithUserValues() context.Context {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetParentCtxWithUserValues()
+	}
 	parentCtx := bc.parent
 	bc.valuesMu.RLock()
 	for k, v := range bc.userValues {
@@ -323,6 +366,107 @@ func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 		}
 	}
 	return nil
+}
+
+// WithPluginScope returns a lightweight derived context where Log() always attributes
+// entries to the given plugin name. The scoped context shares the root context's
+// user values, cancellation, and plugin log store. It is safe to pass to goroutines.
+// Scoped contexts are obtained from a pool. Call ReleasePluginScope when done to return
+// the context to the pool. If not released, the GC will collect it normally.
+// The reason we have chosen this flow is - pluginName matters when we are collecting logs
+// because we want to be able to filter logs by plugin name in the UI.
+// And plugins can call Log() methods in async manner till the context is alive
+// This method is thread-safe - and would allow plugins to log till context is alive
+func (bc *BifrostContext) WithPluginScope(pluginName string) *BifrostContext {
+	root := bc
+	if bc.valueDelegate != nil {
+		root = bc.valueDelegate
+	}
+	// Lazily initialize the log store on the root context
+	if root.pluginLogs == nil {
+		root.pluginLogs = &pluginLogStore{}
+	}
+	scoped := pluginScopePool.Get().(*BifrostContext)
+	scoped.parent = root
+	scoped.done = root.done
+	scoped.pluginScope = &pluginName
+	scoped.valueDelegate = root
+	scoped.pluginLogs = root.pluginLogs
+	return scoped
+}
+
+// ReleasePluginScope returns a scoped context to the pool.
+// After release, any calls to Log() on this context are safe no-ops.
+// Must only be called on contexts created via WithPluginScope.
+func (bc *BifrostContext) ReleasePluginScope() {
+	if bc.valueDelegate == nil {
+		return // not a scoped context
+	}
+	bc.parent = nil
+	bc.done = nil
+	bc.pluginScope = nil
+	bc.valueDelegate = nil
+	bc.pluginLogs = nil
+	pluginScopePool.Put(bc)
+}
+
+// Log appends a plugin log entry to the shared log store.
+// If this context was not created via WithPluginScope, the log is silently dropped.
+// This method is safe for concurrent use.
+func (bc *BifrostContext) Log(level LogLevel, msg string) {
+	if bc.pluginScope == nil || bc.pluginLogs == nil {
+		return
+	}
+	bc.pluginLogs.mu.Lock()
+	bc.pluginLogs.logs = append(bc.pluginLogs.logs, PluginLogEntry{
+		PluginName: *bc.pluginScope,
+		Level:      level,
+		Message:    msg,
+		Timestamp:  time.Now().UnixMilli(),
+	})
+	bc.pluginLogs.mu.Unlock()
+}
+
+// GetPluginLogs retrieves all plugin logs from the context.
+// Returns a deep copy of the plugin logs as a flat slice. Returns nil if no plugin has logged anything.
+// This method is safe for concurrent use.
+func (bc *BifrostContext) GetPluginLogs() []PluginLogEntry {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetPluginLogs()
+	}
+	store := bc.pluginLogs
+	if store == nil {
+		return nil
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.logs) == 0 {
+		return nil
+	}
+	result := make([]PluginLogEntry, len(store.logs))
+	copy(result, store.logs)
+	return result
+}
+
+// DrainPluginLogs retrieves all plugin logs and transfers ownership to the caller.
+// Unlike GetPluginLogs which returns a deep copy, this method returns the internal slice
+// directly and nils out the store — zero allocation. Entries are already in chronological
+// order from sequential appends. Safe to call when all hooks are done and no more Log()
+// calls will be made (e.g., at trace completion time).
+// Returns nil if no plugin has logged anything.
+func (bc *BifrostContext) DrainPluginLogs() []PluginLogEntry {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.DrainPluginLogs()
+	}
+	store := bc.pluginLogs
+	if store == nil {
+		return nil
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	logs := store.logs
+	store.logs = nil
+	return logs
 }
 
 // AppendToContextList appends a value to the context list value.

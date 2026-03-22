@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -534,4 +535,19 @@ func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
 		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
 	}
 	return sb.String()
+}
+
+// formatPluginLogs groups a flat slice of plugin log entries by plugin name
+// and serializes to JSON for DB storage. The JSON format is {"plugin_name": [{...}]}
+// which is what the API and UI expect.
+func formatPluginLogs(logs []schemas.PluginLogEntry) string {
+	grouped := schemas.GroupPluginLogsByName(logs)
+	if grouped == nil {
+		return ""
+	}
+	data, err := sonic.Marshal(grouped)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

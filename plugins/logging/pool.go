@@ -16,7 +16,8 @@ func (p *LoggerPlugin) putLogMessage(msg *LogMessage) {
 	msg.RequestID = ""
 	msg.Timestamp = time.Time{}
 	msg.InitialData = nil
-
+	msg.PluginLogs =""
+	msg.RoutingEngineLogs =""
 	// Don't reset UpdateData and StreamResponse here since they're returned
 	// to their own pools in the defer function - just clear the pointers
 	msg.UpdateData = nil

@@ -152,6 +152,9 @@ type PluginPipeline struct {
 	postHookTimings     map[string]*pluginTimingAccumulator // keyed by plugin name
 	postHookPluginOrder []string                            // order in which post-hooks ran (for nested span creation)
 	chunkCount          int
+
+	// Cached scoped contexts for streaming post-hooks (reused across chunks, released on reset)
+	streamScopedCtxs map[string]*schemas.BifrostContext
 }
 
 // pluginTimingAccumulator accumulates timing information for a plugin across streaming chunks
@@ -5556,6 +5559,7 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	defer ctx.UnblockRestrictedWrites()
 	for i, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
+		pluginCtx := ctx.WithPluginScope(pluginName)
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreLLMHook
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
@@ -5566,7 +5570,8 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 			}
 		}
 
-		req, shortCircuit, err = plugin.PreLLMHook(ctx, req)
+		req, shortCircuit, err = plugin.PreLLMHook(pluginCtx, req)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5610,15 +5615,24 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 	isStreaming := ctx.Value(schemas.BifrostContextKeyStreamStartTime) != nil
 	ctx.BlockRestrictedWrites()
 	defer ctx.UnblockRestrictedWrites()
+	// For streaming: lazily create scoped contexts once, reuse across all chunks
+	if isStreaming && p.streamScopedCtxs == nil {
+		p.streamScopedCtxs = make(map[string]*schemas.BifrostContext, len(p.llmPlugins))
+		for _, plugin := range p.llmPlugins {
+			name := plugin.GetName()
+			p.streamScopedCtxs[name] = ctx.WithPluginScope(name)
+		}
+	}
 	var err error
 	for i := runFrom - 1; i >= 0; i-- {
 		plugin := p.llmPlugins[i]
 		pluginName := plugin.GetName()
 		p.logger.Debug("running post-hook for plugin %s", pluginName)
 		if isStreaming {
-			// For streaming: accumulate timing, don't create individual spans per chunk
+			// For streaming: reuse cached scoped context, accumulate timing
+			pluginCtx := p.streamScopedCtxs[pluginName]
 			start := time.Now()
-			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
+			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
@@ -5627,7 +5641,8 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
 			}
 		} else {
-			// For non-streaming: create span per plugin (existing behavior)
+			// For non-streaming: create scoped context per plugin, create span per plugin
+			pluginCtx := ctx.WithPluginScope(pluginName)
 			spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
 			// Update pluginCtx with span context for nested operations
 			if spanCtx != nil {
@@ -5635,7 +5650,8 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 					ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 				}
 			}
-			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
+			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			pluginCtx.ReleasePluginScope()
 			// End span with appropriate status
 			if err != nil {
 				p.tracer.SetAttribute(handle, "error", err.Error())
@@ -5679,6 +5695,7 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 	defer ctx.UnblockRestrictedWrites()
 	for i, plugin := range p.mcpPlugins {
 		pluginName := plugin.GetName()
+		pluginCtx := ctx.WithPluginScope(pluginName)
 		p.logger.Debug("running MCP pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreMCPHook
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
@@ -5689,7 +5706,8 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 			}
 		}
 
-		req, shortCircuit, err = plugin.PreMCPHook(ctx, req)
+		req, shortCircuit, err = plugin.PreMCPHook(pluginCtx, req)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5734,6 +5752,7 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 	for i := runFrom - 1; i >= 0; i-- {
 		plugin := p.mcpPlugins[i]
 		pluginName := plugin.GetName()
+		pluginCtx := ctx.WithPluginScope(pluginName)
 		p.logger.Debug("running MCP post-hook for plugin %s", pluginName)
 		// Create span per plugin
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
@@ -5744,7 +5763,8 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 			}
 		}
 
-		mcpResp, bifrostErr, err = plugin.PostMCPHook(ctx, mcpResp, bifrostErr)
+		mcpResp, bifrostErr, err = plugin.PostMCPHook(pluginCtx, mcpResp, bifrostErr)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5781,6 +5801,14 @@ func (p *PluginPipeline) resetPluginPipeline() {
 		clear(p.postHookTimings)
 	}
 	p.postHookPluginOrder = p.postHookPluginOrder[:0]
+	// Release cached streaming scoped contexts back to the pool
+	for name, scoped := range p.streamScopedCtxs {
+		if scoped != nil {
+			scoped.ReleasePluginScope()
+		}
+		delete(p.streamScopedCtxs, name)
+	}
+	p.streamScopedCtxs = nil
 }
 
 // accumulatePluginTiming accumulates timing for a plugin during streaming

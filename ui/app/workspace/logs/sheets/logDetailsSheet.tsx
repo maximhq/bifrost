@@ -40,6 +40,7 @@ import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { PluginLogsView } from "../views/pluginLogsView";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
 const formatJsonSafe = (str: string | undefined): string => {
@@ -563,6 +564,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</div>
 					</CollapsibleBox>
 				)}
+				{displayLog.plugin_logs && <PluginLogsView pluginLogs={displayLog.plugin_logs} />}
 				{toolsParameter && (
 					<CollapsibleBox title={`Tools (${displayLog.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
 						<CodeEditor

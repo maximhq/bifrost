@@ -76,7 +76,7 @@ func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 		}},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -167,7 +167,7 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 		},
 	}
 
-	if err := plugin.updateStreamingLogEntry(context.Background(), requestID, "", "", "", "", "", "", 0, nil, "", streamResponse, true, false, false); err != nil {
+	if err := plugin.updateStreamingLogEntry(context.Background(), requestID, "", "", "", "", "", "", 0, nil, "", "", streamResponse, true, false, false); err != nil {
 		t.Fatalf("updateStreamingLogEntry() error = %v", err)
 	}
 
@@ -241,5 +241,35 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 	}
 	if strings.Contains(logEntry.ContentSummary, responsesText) {
 		t.Fatalf("expected content summary to avoid overwriting with streamed responses output-only data, got %q", logEntry.ContentSummary)
+	}
+}
+
+func TestFormatPluginLogs_Empty(t *testing.T) {
+	if result := formatPluginLogs(nil); result != "" {
+		t.Errorf("Expected empty string for nil logs, got %q", result)
+	}
+	if result := formatPluginLogs([]schemas.PluginLogEntry{}); result != "" {
+		t.Errorf("Expected empty string for empty slice, got %q", result)
+	}
+}
+
+func TestFormatPluginLogs_WithEntries(t *testing.T) {
+	logs := []schemas.PluginLogEntry{
+		{PluginName: "my-plugin", Level: schemas.LogLevelInfo, Message: "hello", Timestamp: 1000},
+		{PluginName: "my-plugin", Level: schemas.LogLevelError, Message: "oops", Timestamp: 2000},
+	}
+	result := formatPluginLogs(logs)
+	if result == "" {
+		t.Fatal("Expected non-empty result")
+	}
+	// Verify it's valid JSON by round-tripping
+	if !strings.Contains(result, "my-plugin") {
+		t.Errorf("Expected result to contain plugin name, got %q", result)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("Expected result to contain message, got %q", result)
+	}
+	if !strings.Contains(result, "error") {
+		t.Errorf("Expected result to contain level, got %q", result)
 	}
 }

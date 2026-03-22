@@ -154,7 +154,7 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 // PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	fmt.Println("PreLLMHook called")
+	ctx.Log(schemas.LogLevelInfo, "pre-hook: processing request")
 	// Modify the request or return a short-circuit to skip provider call
 	return req, nil, nil
 }
@@ -162,7 +162,11 @@ func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*sche
 // PostLLMHook is called after receiving a response from the provider
 // This is where you can modify responses or handle errors
 func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	fmt.Println("PostLLMHook called")
+	if bifrostErr != nil {
+		ctx.Log(schemas.LogLevelError, fmt.Sprintf("post-hook: request failed: %s", bifrostErr.Error.Message))
+	} else {
+		ctx.Log(schemas.LogLevelInfo, "post-hook: request completed successfully")
+	}
 	// Modify the response or error before returning to caller
 	return resp, bifrostErr, nil
 }
@@ -396,6 +400,38 @@ func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bif
 }
 ```
 
+#### `ctx.Log(level, msg)` — Plugin Logging
+
+All hooks receive a `*schemas.BifrostContext` that exposes a `Log` method. Use it to emit structured logs that are stored with the request and visible in the Bifrost dashboard under **Plugin Logs**.
+
+```go
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("processing request for model %s", req.Model))
+
+	if shouldBlock(req) {
+		ctx.Log(schemas.LogLevelWarn, "request blocked by policy")
+		return req, &schemas.LLMPluginShortCircuit{...}, nil
+	}
+
+	return req, nil, nil
+}
+```
+
+Available log levels:
+
+| Level | Constant | Use for |
+|-------|----------|---------|
+| `debug` | `schemas.LogLevelDebug` | Verbose diagnostic info |
+| `info` | `schemas.LogLevelInfo` | Normal operations |
+| `warn` | `schemas.LogLevelWarn` | Unexpected but recoverable situations |
+| `error` | `schemas.LogLevelError` | Failures and errors |
+
+Logs are automatically keyed by plugin name — you don't need to identify your plugin. They appear in the dashboard log details sheet grouped by plugin, with timestamps and level indicators.
+
+<Note>
+Plugin logs are only captured during hook execution. Calls to `ctx.Log()` outside of a hook (e.g., in a background goroutine) will be silently dropped.
+</Note>
+
 #### `Cleanup() error`
 
 Called on Bifrost shutdown. Use this to:
@@ -562,6 +598,54 @@ PostHook called
 </Tabs>
 
 ## Advanced Plugin Patterns
+
+### Plugin Logging
+
+Use `ctx.Log()` to emit structured logs from any hook. Logs are stored as JSON alongside the request and rendered in the Bifrost dashboard's **Plugin Logs** section.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func GetName() string {
+	return "my-auditing-plugin"
+}
+
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("incoming request: model=%s", req.Model))
+
+	// Log decisions your plugin makes
+	if req.ChatRequest != nil && len(req.ChatRequest.Messages) > 100 {
+		ctx.Log(schemas.LogLevelWarn, "large conversation detected, truncating to last 100 messages")
+		req.ChatRequest.Messages = req.ChatRequest.Messages[len(req.ChatRequest.Messages)-100:]
+	}
+
+	return req, nil, nil
+}
+
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		ctx.Log(schemas.LogLevelError, fmt.Sprintf("provider error: %s", bifrostErr.Error.Message))
+	} else {
+		ctx.Log(schemas.LogLevelInfo, "request completed successfully")
+	}
+	return resp, bifrostErr, nil
+}
+```
+
+In the dashboard, these logs appear grouped under your plugin name with timestamps and color-coded log levels:
+
+```
+my-auditing-plugin
+  2024-03-22 14:30:01 PM  INFO   incoming request: model=gpt-4o
+  2024-03-22 14:30:01 PM  WARN   large conversation detected, truncating to last 100 messages
+  2024-03-22 14:30:02 PM  INFO   request completed successfully
+```
 
 ### Stateful Plugins
 

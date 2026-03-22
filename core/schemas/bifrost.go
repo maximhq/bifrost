@@ -199,7 +199,8 @@ const (
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
-	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
+	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func(string, []PluginLogEntry) (callback to complete trace with requestID and plugin logs after streaming - set by tracing middleware)
+	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport hook plugin logs - set by transport interceptor middleware)
 	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
@@ -265,6 +266,27 @@ type RoutingEngineLogEntry struct {
 	Engine    string // e.g., "governance", "routing-rule", "openrouter"
 	Message   string // Human-readable decision/action message
 	Timestamp int64  // Unix milliseconds
+}
+
+// PluginLogEntry represents a single log entry emitted by a plugin via ctx.Log()
+type PluginLogEntry struct {
+	PluginName string   `json:"plugin_name"`
+	Level      LogLevel `json:"level"`
+	Message    string   `json:"message"`
+	Timestamp  int64    `json:"timestamp"` // Unix milliseconds
+}
+
+// GroupPluginLogsByName groups a flat slice of plugin log entries by plugin name.
+// Returns nil if the input is empty.
+func GroupPluginLogsByName(logs []PluginLogEntry) map[string][]PluginLogEntry {
+	if len(logs) == 0 {
+		return nil
+	}
+	grouped := make(map[string][]PluginLogEntry, 4)
+	for _, entry := range logs {
+		grouped[entry.PluginName] = append(grouped[entry.PluginName], entry)
+	}
+	return grouped
 }
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,

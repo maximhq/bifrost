@@ -14,8 +14,10 @@ type Trace struct {
 	Spans      []*Span        // All spans in this trace
 	StartTime  time.Time      // When the trace started
 	EndTime    time.Time      // When the trace completed
-	Attributes map[string]any // Additional attributes for the trace
-	mu         sync.Mutex     // Mutex for thread-safe span operations
+	Attributes map[string]any    // Additional attributes for the trace
+	RequestID  string            // Bifrost request ID for correlating with log entries
+	PluginLogs []PluginLogEntry  // Plugin logs from all hook types (HTTP, LLM, MCP), sorted by timestamp
+	mu         sync.Mutex        // Mutex for thread-safe span operations
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -46,6 +48,8 @@ func (t *Trace) Reset() {
 	t.StartTime = time.Time{}
 	t.EndTime = time.Time{}
 	t.Attributes = nil
+	t.RequestID = ""
+	t.PluginLogs = nil
 }
 
 // Span represents a single operation within a trace

@@ -56,6 +56,9 @@ type Config struct {
 	MetricsEnabled      bool   `json:"metrics_enabled"`
 	MetricsEndpoint     string `json:"metrics_endpoint"`
 	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
+
+	// Forward plugin logs as span events on plugin spans
+	ForwardPluginLogs bool `json:"forward_plugin_logs"`
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -81,6 +84,8 @@ type OtelPlugin struct {
 
 	// Metrics push support
 	metricsExporter *MetricsExporter
+
+	forwardPluginLogs bool
 }
 
 // Init function for the OTEL plugin
@@ -129,6 +134,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
+		forwardPluginLogs:         config.ForwardPluginLogs,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
@@ -243,8 +249,8 @@ func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostR
 	return req, nil, nil
 }
 
-// PostLLMHook is a no-op - tracing is handled via the Inject method.
-// The OTEL plugin receives completed traces from TracingMiddleware.
+// PostLLMHook is a no-op — plugin logs are now attached to the Trace by the middleware
+// and read directly in Inject. No need to capture them here.
 func (p *OtelPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -261,6 +267,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	// Emit trace to collector if client is initialized
 	if p.client != nil {
 		// Convert schemas.Trace to OTEL ResourceSpan
+		// Plugin logs are now on the trace itself (set by middleware)
 		resourceSpan := p.convertTraceToResourceSpan(trace)
 
 		// Emit to collector

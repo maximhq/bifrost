@@ -52,6 +52,9 @@ type StreamChunkInterceptor interface {
 	// InterceptChunk processes a chunk before it's written to the client.
 	// Returns the (potentially modified) chunk, or nil to skip the chunk entirely.
 	InterceptChunk(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+	// Release returns cached plugin-scoped contexts to the pool.
+	// Must be called when streaming is complete.
+	Release()
 }
 
 // HandlerStore provides access to runtime configuration values for handlers.
@@ -2324,16 +2327,26 @@ func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
 	return nil
 }
 
-// pluginChunkInterceptor implements StreamChunkInterceptor by calling plugin hooks
+// pluginChunkInterceptor implements StreamChunkInterceptor by calling plugin hooks.
+// It caches scoped contexts across chunks and releases them on Release().
 type pluginChunkInterceptor struct {
-	plugins []schemas.HTTPTransportPlugin
+	plugins    []schemas.HTTPTransportPlugin
+	scopedCtxs []*schemas.BifrostContext // lazily created, reused across chunks
 }
 
 // InterceptChunk processes a chunk through all plugin HTTPTransportStreamChunkHook methods.
 // Plugins are called in reverse order (same as PostHook) so modifications chain correctly.
+// Scoped contexts are created once on the first call and reused for subsequent chunks.
 func (i *pluginChunkInterceptor) InterceptChunk(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	// Lazily create scoped contexts on first chunk
+	if i.scopedCtxs == nil {
+		i.scopedCtxs = make([]*schemas.BifrostContext, len(i.plugins))
+		for j, plugin := range i.plugins {
+			i.scopedCtxs[j] = ctx.WithPluginScope(plugin.GetName())
+		}
+	}
 	for j := len(i.plugins) - 1; j >= 0; j-- {
-		modified, err := i.plugins[j].HTTPTransportStreamChunkHook(ctx, req, stream)
+		modified, err := i.plugins[j].HTTPTransportStreamChunkHook(i.scopedCtxs[j], req, stream)
 		if err != nil {
 			return modified, fmt.Errorf("failed to intercept chunk with plugin %s: %w", i.plugins[j].GetName(), err)
 		}
@@ -2343,6 +2356,17 @@ func (i *pluginChunkInterceptor) InterceptChunk(ctx *schemas.BifrostContext, req
 		stream = modified
 	}
 	return stream, nil
+}
+
+// Release returns all cached scoped contexts to the pool.
+func (i *pluginChunkInterceptor) Release() {
+	for j, scoped := range i.scopedCtxs {
+		if scoped != nil {
+			scoped.ReleasePluginScope()
+			i.scopedCtxs[j] = nil
+		}
+	}
+	i.scopedCtxs = nil
 }
 
 // GetStreamChunkInterceptor returns the chunk interceptor for streaming responses.

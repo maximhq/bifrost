@@ -20,6 +20,7 @@ func GetName() string {
 
 func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	fmt.Println("HTTPTransportPreHook called")
+	ctx.Log(schemas.LogLevelDebug, "transport pre-hook fired")
 	// Modify request in-place
 	req.Headers["x-hello-world-plugin"] = "transport-pre-hook-value"
 	// Store value in context for PreLLMHook/PostLLMHook
@@ -44,11 +45,13 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 	if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Choices != nil && len(chunk.BifrostChatResponse.Choices) > 0 && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice != nil && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta != nil && chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content != nil {
 		*chunk.BifrostChatResponse.Choices[0].ChatStreamResponseChoice.Delta.Content += " - modified by hello-world-plugin"
 	}
+	ctx.Log(schemas.LogLevelInfo, "HTTPTransportStreamChunkHook called")
 	// Return the modified chunk
 	return chunk, nil
 }
 
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("pre-hook: processing request"))
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
 	fmt.Println("value1:", value1)
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-pre-hook"), "pre-hook-value")
@@ -58,6 +61,15 @@ func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*sche
 
 func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	fmt.Println("PostLLMHook called")
+	if bifrostErr != nil {
+		message := "post-hook: request failed"
+		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+			message = fmt.Sprintf("%s: %s", message, bifrostErr.Error.Message)
+		}
+		ctx.Log(schemas.LogLevelError, message)
+	} else {
+		ctx.Log(schemas.LogLevelInfo, "post-hook: request completed successfully")
+	}
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
 	fmt.Println("value1:", value1)
 	value2 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-pre-hook"))

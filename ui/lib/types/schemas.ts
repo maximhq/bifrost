@@ -702,6 +702,8 @@ export const otelConfigSchema = z
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: z.string().optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
+		// Plugin log forwarding
+		forward_plugin_logs: z.boolean().default(false),
 	})
 	.superRefine((data, ctx) => {
 		const protocol = data.protocol;

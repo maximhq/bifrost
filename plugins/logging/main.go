@@ -172,6 +172,7 @@ type LogMessage struct {
 	UpdateData         *UpdateLogData                     // For update operations
 	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
 	RoutingEngineLogs  string                             // Formatted routing engine decision logs
+	PluginLogs         string                             // JSON serialized plugin logs
 }
 
 // InitialLogData contains data for initial log entry creation
@@ -204,7 +205,7 @@ type Config struct {
 	LoggingHeaders        *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 }
 
-// LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
+// LoggerPlugin implements the schemas.LLMPlugin, schemas.MCPPlugin, and schemas.ObservabilityPlugin interfaces
 type LoggerPlugin struct {
 	ctx                   context.Context
 	store                 logstore.LogStore
@@ -226,7 +227,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
+	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -623,7 +624,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 		return result, bifrostErr, nil
 	}
-	// Extract routing engine logs from context before entering goroutine
+	// Extract routing engine logs from context before entering goroutine.
+	// Plugin logs are NOT captured here — they are deferred to Inject where
+	// complete logs from all hook types (HTTP, LLM, MCP) are available on the Trace.
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
 	// Retrieve pending input data from PreLLMHook
@@ -824,6 +827,21 @@ func (p *LoggerPlugin) Cleanup() error {
 		// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
 		// GORM handles connection cleanup automatically
 	})
+	return nil
+}
+
+// Inject receives a completed trace and updates the log entry with plugin logs from all hook types.
+// Implements schemas.ObservabilityPlugin interface.
+func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil || len(trace.PluginLogs) == 0 || trace.RequestID == "" {
+		return nil
+	}
+	pluginLogsStr := formatPluginLogs(trace.PluginLogs)
+	if pluginLogsStr != "" {
+		if err := p.store.Update(p.ctx, trace.RequestID, map[string]interface{}{"plugin_logs": pluginLogsStr}); err != nil {
+			p.logger.Warn("failed to update plugin logs for request %s: %v", trace.RequestID, err)
+		}
+	}
 	return nil
 }
 

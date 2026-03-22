@@ -207,3 +207,119 @@ func TestNewBifrostContext_NilParent(t *testing.T) {
 		t.Errorf("Cancelled context should have Canceled error, got %v", ctx.Err())
 	}
 }
+
+func TestBifrostContext_LogWithNoPluginName(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	ctx.Log(LogLevelInfo, "should be dropped")
+
+	if logs := ctx.GetPluginLogs(); logs != nil {
+		t.Errorf("Expected nil plugin logs when no plugin name set, got %v", logs)
+	}
+}
+
+func TestBifrostContext_LogSinglePlugin(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	pluginCtx := ctx.WithPluginScope("my-plugin")
+	pluginCtx.Log(LogLevelInfo, "msg1")
+	pluginCtx.Log(LogLevelWarn, "msg2")
+
+	logs := ctx.GetPluginLogs()
+	if logs == nil {
+		t.Fatal("Expected non-nil plugin logs")
+	}
+	if len(logs) != 2 {
+		t.Fatalf("Expected 2 entries, got %d", len(logs))
+	}
+	if logs[0].PluginName != "my-plugin" || logs[0].Level != LogLevelInfo || logs[0].Message != "msg1" {
+		t.Errorf("Entry 0: expected my-plugin/info/msg1, got %s/%s/%s", logs[0].PluginName, logs[0].Level, logs[0].Message)
+	}
+	if logs[1].PluginName != "my-plugin" || logs[1].Level != LogLevelWarn || logs[1].Message != "msg2" {
+		t.Errorf("Entry 1: expected my-plugin/warn/msg2, got %s/%s/%s", logs[1].PluginName, logs[1].Level, logs[1].Message)
+	}
+	if logs[0].Timestamp == 0 || logs[1].Timestamp == 0 {
+		t.Error("Expected non-zero timestamps")
+	}
+}
+
+func TestBifrostContext_LogMultiplePlugins(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	pluginA := ctx.WithPluginScope("plugin-a")
+	pluginA.Log(LogLevelInfo, "from a")
+
+	pluginB := ctx.WithPluginScope("plugin-b")
+	pluginB.Log(LogLevelError, "from b")
+
+	logs := ctx.GetPluginLogs()
+	if len(logs) != 2 {
+		t.Fatalf("Expected 2 entries, got %d", len(logs))
+	}
+	if logs[0].PluginName != "plugin-a" || logs[0].Message != "from a" {
+		t.Error("Expected entry for plugin-a with message 'from a'")
+	}
+	if logs[1].PluginName != "plugin-b" || logs[1].Message != "from b" {
+		t.Error("Expected entry for plugin-b with message 'from b'")
+	}
+}
+
+func TestBifrostContext_LogLazyAllocation(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	// No allocation until first log
+	if logs := ctx.GetPluginLogs(); logs != nil {
+		t.Errorf("Expected nil plugin logs before any Log() call, got %v", logs)
+	}
+
+	pluginCtx := ctx.WithPluginScope("test")
+	pluginCtx.Log(LogLevelDebug, "first log")
+
+	if logs := ctx.GetPluginLogs(); logs == nil {
+		t.Error("Expected non-nil plugin logs after Log() call")
+	}
+}
+
+func TestBifrostContext_ScopedContextIsolation(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	// Scoped context logs under its plugin name
+	pluginCtx := ctx.WithPluginScope("my-plugin")
+	pluginCtx.Log(LogLevelInfo, "scoped log")
+
+	// Logging directly on root context (no scope) is dropped
+	ctx.Log(LogLevelInfo, "root log should be dropped")
+
+	logs := ctx.GetPluginLogs()
+	if len(logs) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(logs))
+	}
+	if logs[0].PluginName != "my-plugin" || logs[0].Message != "scoped log" {
+		t.Errorf("Expected my-plugin/'scoped log', got %s/%s", logs[0].PluginName, logs[0].Message)
+	}
+}
+
+func TestBifrostContext_ScopedContextValueDelegation(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	ctx.SetValue("root-key", "root-value")
+
+	pluginCtx := ctx.WithPluginScope("test-plugin")
+
+	// Scoped context can read root values
+	if val := pluginCtx.Value("root-key"); val != "root-value" {
+		t.Errorf("Expected scoped context to read root value, got %v", val)
+	}
+
+	// Scoped context writes delegate to root
+	pluginCtx.SetValue("plugin-key", "plugin-value")
+	if val := ctx.Value("plugin-key"); val != "plugin-value" {
+		t.Errorf("Expected root to see value written by scoped context, got %v", val)
+	}
+}

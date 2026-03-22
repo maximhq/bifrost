@@ -30,6 +30,8 @@ interface OtelFormFragmentProps {
 		metrics_enabled?: boolean;
 		metrics_endpoint?: string;
 		metrics_push_interval?: number;
+		// Plugin log forwarding
+		forward_plugin_logs?: boolean;
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
 	onDelete?: () => void;
@@ -57,6 +59,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
 				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
+				forward_plugin_logs: initialConfig?.forward_plugin_logs ?? false,
 			},
 		},
 	});
@@ -101,6 +104,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
 				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
+				forward_plugin_logs: initialConfig?.forward_plugin_logs ?? false,
 			},
 		});
 	}, [form, initialConfig]);
@@ -363,6 +367,34 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 					)}
 				</div>
 
+				{/* Plugin Log Forwarding */}
+				<div className="space-y-4 border-t pt-4">
+					<FormField
+						control={form.control}
+						name="otel_config.forward_plugin_logs"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center gap-2">
+								<div className="flex w-full flex-row items-center gap-2">
+									<div className="flex flex-col gap-1">
+										<h3 className="text-sm font-medium">Forward Plugin Logs</h3>
+										<p className="text-muted-foreground text-xs">
+											Include plugin log entries as span events on plugin spans in exported traces
+										</p>
+									</div>
+									<div className="ml-auto">
+										<Switch
+											data-testid="otel-plugin-logs-toggle"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasOtelAccess}
+										/>
+									</div>
+								</div>
+							</FormItem>
+						)}
+					/>
+				</div>
+
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center">
 					<FormField
@@ -413,6 +445,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 										metrics_enabled: initialConfig?.metrics_enabled ?? false,
 										metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 										metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
+										forward_plugin_logs: initialConfig?.forward_plugin_logs ?? false,
 									},
 								});
 							}}
