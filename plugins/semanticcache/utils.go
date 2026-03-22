@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// directCacheNamespace is a fixed UUID v5 namespace used for deterministic direct cache ID generation.
+// Using a fixed namespace ensures IDs are reproducible across restarts and store types.
+var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890")
 
 // normalizeText applies consistent normalization to text inputs for better cache hit rates.
 // It converts text to lowercase and trims whitespace to reduce cache misses due to minor variations.
@@ -364,6 +369,36 @@ func getMetadataHash(metadata map[string]interface{}) (string, error) {
 	return fmt.Sprintf("%x", xxhash.Sum64(metadataJSON)), nil
 }
 
+func (plugin *Plugin) generateDirectCacheID(provider schemas.ModelProvider, model string, cacheKey string, requestHash string, paramsHash string) string {
+	idInput := struct {
+		CacheKey    string `json:"cache_key"`
+		RequestHash string `json:"request_hash"`
+		ParamsHash  string `json:"params_hash"`
+		Provider    string `json:"provider,omitempty"`
+		Model       string `json:"model,omitempty"`
+	}{
+		CacheKey:    cacheKey,
+		RequestHash: requestHash,
+		ParamsHash:  paramsHash,
+	}
+
+	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
+		idInput.Provider = string(provider)
+	}
+	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
+		idInput.Model = model
+	}
+
+	idJSON, err := schemas.MarshalDeeplySorted(idInput)
+	if err != nil {
+		// Fallback: derive deterministic UUID from concatenated inputs
+		fallbackData := []byte(cacheKey + requestHash + paramsHash + string(provider) + model)
+		return uuid.NewSHA1(directCacheNamespace, fallbackData).String()
+	}
+
+	return uuid.NewSHA1(directCacheNamespace, idJSON).String()
+}
+
 // buildUnifiedMetadata constructs the unified metadata structure for VectorEntry
 func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model string, paramsHash string, requestHash string, cacheKey string, ttl time.Duration) map[string]interface{} {
 	unifiedMetadata := make(map[string]interface{})
@@ -410,9 +445,9 @@ func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, 
 }
 
 // addStreamingResponse handles streaming response storage by accumulating chunks
-func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) error {
+func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string, storageID string, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) error {
 	// Create accumulator if it doesn't exist
-	accumulator := plugin.getOrCreateStreamAccumulator(responseID, embedding, metadata, ttl)
+	accumulator := plugin.getOrCreateStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
 
 	// Create chunk from current response
 	chunk := &StreamChunk{
@@ -432,7 +467,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	}
 
 	// Add chunk to accumulator synchronously to maintain order
-	if err := plugin.addStreamChunk(responseID, chunk, isFinalChunk); err != nil {
+	if err := plugin.addStreamChunk(requestID, chunk, isFinalChunk); err != nil {
 		return fmt.Errorf("failed to add stream chunk: %w", err)
 	}
 
@@ -455,8 +490,8 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	// If this is the final chunk and hasn't been processed yet, process accumulated chunks
 	// Note: processAccumulatedStream will check for errors and skip caching if any errors occurred
 	if isFinalChunk && !alreadyComplete {
-		if processErr := plugin.processAccumulatedStream(ctx, responseID); processErr != nil {
-			plugin.logger.Warn("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, responseID, processErr)
+		if processErr := plugin.processAccumulatedStream(ctx, requestID); processErr != nil {
+			plugin.logger.Warn("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, requestID, processErr)
 		}
 	}
 
