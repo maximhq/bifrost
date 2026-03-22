@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -3178,8 +3179,17 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 
 	case schemas.ResponsesInputMessageContentBlockTypeAudio:
 		if block.Audio != nil {
+			audioData := block.Audio.Data
+			if audioData == "" && block.Audio.URL != "" {
+				var err error
+				audioData, err = providerUtils.DownloadURLToBase64(context.Background(), block.Audio.URL)
+				if err != nil {
+					return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+				}
+			}
+
 			// Decode base64 audio data (handles both standard and URL-safe base64)
-			decodedData, err := decodeBase64StringToBytes(block.Audio.Data)
+			decodedData, err := decodeBase64StringToBytes(audioData)
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode base64 audio data: %w", err)
 			}
