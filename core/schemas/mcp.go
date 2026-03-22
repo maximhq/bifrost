@@ -5,7 +5,9 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -57,6 +59,83 @@ const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
 )
+
+// parseMCPDurationJSON parses a JSON duration value that is either a Go duration
+// string (e.g. "10m", "1h30m") or, as a fallback, an integer number of nanoseconds.
+func parseMCPDurationJSON(raw json.RawMessage) (time.Duration, error) {
+	var s string
+	if sonic.Unmarshal(raw, &s) == nil {
+		return time.ParseDuration(s)
+	}
+	var n int64
+	if err := sonic.Unmarshal(raw, &n); err != nil {
+		return 0, fmt.Errorf("expected Go duration string (e.g. \"10m\") or integer nanoseconds, got %s", string(raw))
+	}
+	return time.Duration(n), nil
+}
+
+// UnmarshalJSON implements custom JSON decoding for MCPConfig, handling
+// tool_sync_interval as a Go duration string (e.g. "10m", "1h").
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type Alias MCPConfig
+	aux := &struct {
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
+		*Alias
+	}{Alias: (*Alias)(c)}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.ToolSyncInterval) > 0 {
+		d, err := parseMCPDurationJSON(aux.ToolSyncInterval)
+		if err != nil {
+			return fmt.Errorf("invalid tool_sync_interval: %w", err)
+		}
+		c.ToolSyncInterval = d
+	}
+	return nil
+}
+
+// UnmarshalJSON implements custom JSON decoding for MCPClientConfig, handling
+// tool_sync_interval as a Go duration string (e.g. "10m", "1h").
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type Alias MCPClientConfig
+	aux := &struct {
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
+		*Alias
+	}{Alias: (*Alias)(c)}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.ToolSyncInterval) > 0 {
+		d, err := parseMCPDurationJSON(aux.ToolSyncInterval)
+		if err != nil {
+			return fmt.Errorf("invalid tool_sync_interval: %w", err)
+		}
+		c.ToolSyncInterval = d
+	}
+	return nil
+}
+
+// UnmarshalJSON implements custom JSON decoding for MCPToolManagerConfig, handling
+// tool_execution_timeout as an integer number of seconds (as documented in the schema).
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	type Alias MCPToolManagerConfig
+	aux := &struct {
+		ToolExecutionTimeout json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		*Alias
+	}{Alias: (*Alias)(c)}
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.ToolExecutionTimeout) > 0 {
+		var seconds int64
+		if err := sonic.Unmarshal(aux.ToolExecutionTimeout, &seconds); err != nil {
+			return fmt.Errorf("invalid tool_execution_timeout: expected integer (seconds): %w", err)
+		}
+		c.ToolExecutionTimeout = time.Duration(seconds) * time.Second
+	}
+	return nil
+}
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
 type CodeModeBindingLevel string

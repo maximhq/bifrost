@@ -75,7 +75,7 @@
         },
         "enforce_governance_header": {
           "type": "boolean",
-          "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
+          "description": "Deprecated: use enforce_auth_on_inference instead. Enforce governance header. This will require every incoming request to include x-bf-vk header."
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
@@ -1551,7 +1551,7 @@
     },
     "virtual_key_mcp_config": {
       "type": "object",
-      "description": "MCP configuration for a virtual key",
+      "description": "MCP configuration for a virtual key. Exactly one of mcp_client_id or mcp_client_name must be provided.",
       "properties": {
         "id": {
           "type": "integer",
@@ -1563,7 +1563,11 @@
         },
         "mcp_client_id": {
           "type": "integer",
-          "description": "Associated MCP client ID"
+          "description": "Associated MCP client ID (use this or mcp_client_name)"
+        },
+        "mcp_client_name": {
+          "type": "string",
+          "description": "MCP client name (config file alternative to mcp_client_id; resolved to mcp_client_id at load time)"
         },
         "tools_to_execute": {
           "type": "array",
@@ -1573,9 +1577,6 @@
           }
         }
       },
-      "required": [
-        "mcp_client_id"
-      ],
       "additionalProperties": false
     },
     "auth_config": {
