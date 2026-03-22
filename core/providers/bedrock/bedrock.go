@@ -1818,7 +1818,7 @@ func (provider *BedrockProvider) TranscriptionStream(ctx *schemas.BifrostContext
 }
 
 // ImageGeneration generates images using Amazon Bedrock.
-// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
+// Supports Titan Image Generator v1, Nova Canvas v1, Titan Image Generator v2, and Stability AI models.
 // Returns a BifrostImageGenerationResponse containing the generated images and any error that occurred.
 func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
@@ -1838,17 +1838,23 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	var path string
 	var deployment string
 
+	path, deployment = provider.getModelPath("invoke", request.Model, key)
+
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if isStabilityAIModel(deployment) {
+				fmt.Println("is Stability AI model: ", deployment)
+				return ToStabilityAIImageGenerationRequest(request)
+			}
+			fmt.Println("is not Stability AI model: ", deployment)
 			return ToBedrockImageGenerationRequest(request)
 		},
 		provider.GetProviderKey())
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
-	path, deployment = provider.getModelPath("invoke", request.Model, key)
 	rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
