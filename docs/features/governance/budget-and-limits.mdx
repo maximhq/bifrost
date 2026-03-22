@@ -190,6 +190,10 @@ The info sheet for the virtual key provides real-time monitoring of:
 - Provider availability status
 - Usage trends and forecasting
 
+### Managing Model Limits
+
+Use the **Model Limits** page to manage model-level budgets and rate limits outside individual virtual keys. The OSS table supports server-side search by model name and paginated browsing.
+
 </Tab>
 <Tab title="API">
 
@@ -317,6 +321,28 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `budget.reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
 | `rate_limit.token_max_limit` | integer | Maximum tokens per period |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
+
+### List Model Limits
+
+```bash
+curl "https://your-bifrost-instance.com/api/governance/model-configs?search=gpt-4&limit=25&offset=0"
+```
+
+```json
+{
+  "model_configs": [
+    {
+      "id": "mc_123",
+      "model_name": "gpt-4o",
+      "provider": "openai"
+    }
+  ],
+  "count": 1,
+  "total_count": 6,
+  "limit": 25,
+  "offset": 0
+}
+```
 
 </Tab>
 <Tab title="config.json">
