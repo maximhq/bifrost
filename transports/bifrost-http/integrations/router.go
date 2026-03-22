@@ -1064,6 +1064,19 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
 		providerResponseHeaders = transcriptionResponse.ExtraFields.ProviderResponseHeaders
+
+		// If converter returns raw bytes, write directly with provider headers.
+		// Used for plain-text transcription formats (text, srt, vtt).
+		if err == nil {
+			if rawBytes, ok := response.([]byte); ok {
+				for key, value := range providerResponseHeaders {
+					ctx.Response.Header.Set(key, value)
+				}
+				ctx.SetStatusCode(fasthttp.StatusOK)
+				ctx.SetBody(rawBytes)
+				return
+			}
+		}
 	case bifrostReq.ImageGenerationRequest != nil:
 		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
 		if bifrostErr != nil {
@@ -1709,7 +1722,6 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 
 // handleFileRequest handles file API requests (upload, list, retrieve, delete, content)
 func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, fileReq *FileRequest, bifrostCtx *schemas.BifrostContext) {
-
 	var response interface{}
 	var err error
 
