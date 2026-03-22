@@ -71,8 +71,6 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	var matchedTool *schemas.ChatTool
 
 	serverNameLower := strings.ToLower(serverName)
-	toolNameLower := strings.ToLower(toolName)
-
 	for clientName, tools := range availableToolsPerClient {
 		client := s.clientManager.GetClientByName(clientName)
 		if client == nil {
@@ -90,10 +88,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			// Find the specific tool
 			for i, tool := range tools {
 				if tool.Function != nil {
-					// Strip client prefix and replace - with _ for comparison
-					unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
-					unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-					if strings.ToLower(unprefixedToolName) == toolNameLower {
+					if matchesToolReference(toolName, clientName, tool.Function.Name) {
 						matchedTool = &tools[i]
 						break
 					}
@@ -125,9 +120,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 		var availableTools []string
 		for _, tool := range tools {
 			if tool.Function != nil {
-				unprefixedToolName := stripClientPrefix(tool.Function.Name, matchedClientName)
-				unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-				availableTools = append(availableTools, unprefixedToolName)
+				availableTools = append(availableTools, getCanonicalToolName(matchedClientName, tool.Function.Name))
 			}
 		}
 		errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools are:\n", toolName, matchedClientName)
@@ -150,7 +143,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	// Write comprehensive header
 	sb.WriteString("# ============================================================================\n")
 	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
-		sb.WriteString(fmt.Sprintf("# Documentation for %s.%s tool\n", clientName, tools[0].Function.Name))
+		sb.WriteString(fmt.Sprintf("# Documentation for %s.%s tool\n", clientName, getCanonicalToolName(clientName, tools[0].Function.Name)))
 	} else {
 		sb.WriteString(fmt.Sprintf("# Documentation for %s MCP server\n", clientName))
 	}
@@ -187,9 +180,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		}
 
 		originalToolName := tool.Function.Name
-		unprefixedToolName := stripClientPrefix(originalToolName, clientName)
-		unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-		toolName := parseToolName(unprefixedToolName)
+		toolName := getCanonicalToolName(clientName, originalToolName)
 		description := ""
 		if tool.Function.Description != nil {
 			description = *tool.Function.Description

@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
+	"go.starlark.net/syntax"
 )
 
 // ExecutionResult represents the result of code execution
@@ -52,8 +53,11 @@ type ExecutionEnvironment struct {
 func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 	executeToolCodeProps := schemas.NewOrderedMapFromPairs(
 		schemas.KV("code", map[string]interface{}{
-			"type":        "string",
-			"description": "Python code to execute. The code runs in a Starlark interpreter (Python subset). Tool calls are synchronous - no async/await needed. For loops/conditionals, wrap in a function. Use print() for logging. ALWAYS retry if code fails. Example: def main():\n  items = server.list_items()\n  for item in items:\n    print(item)\nresult = main()",
+			"type": "string",
+			"description": "Python (Starlark) code to execute. Tool calls are synchronous: result = server.tool(param=\"value\"). " +
+				"Use print() for logging. Assign to 'result' variable to return a value. " +
+				"Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations. " +
+				"Example: items = server.list_items()\nfor item in items:\n    print(item[\"name\"])\nresult = items",
 		}),
 	)
 	return schemas.ChatTool{
@@ -61,36 +65,36 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 		Function: &schemas.ChatToolFunction{
 			Name: codemcp.ToolTypeExecuteToolCode,
 			Description: schemas.Ptr(
-				"Executes Python code inside a sandboxed Starlark interpreter with access to all connected MCP servers' tools. " +
-					"All connected servers are exposed as global objects named after their configuration keys, and each server " +
-					"provides functions for every tool available on that server. The canonical usage pattern is: " +
-					"result = <serverName>.<toolName>(param=\"value\"). Both <serverName> and <toolName> should be discovered " +
-					"using listToolFiles and readToolFile. " +
+				"Executes Python code in a sandboxed Starlark interpreter with MCP server tool access. " +
+					"Servers are exposed as global objects: result = serverName.toolName(param=\"value\"). " +
+					"This is the final step of the four-tool code mode workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
+					"If you have not already read a tool's .pyi stub in this conversation, do that before writing code. " +
+					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
 
-					"IMPORTANT WORKFLOW: Always follow this order — first use listToolFiles to see available servers and tools, " +
-					"then use readToolFile to understand the tool definitions and their parameters, and finally use executeToolCode " +
-					"to execute your code. " +
+					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
+					"1. NO try/except/finally/raise — error handling is not supported, and tool failures cannot be caught inside Starlark. " +
+					"2. NO classes — use dicts and functions. " +
+					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
+					"4. NO is operator — use == for comparison. " +
+					"5. NO f-strings — use % formatting: \"Hello %s, count=%d\" % (name, n). " +
+					"6. Each executeToolCode call runs in a FRESH ISOLATED SCOPE — no variables, functions, or state persist between calls. Re-fetch data or store it via MCP tools (e.g., SQLite, FileSystem) if needed across calls. " +
 
 					"SYNTAX NOTES: " +
-					"• Tool calls are synchronous - NO async/await needed, just call directly: result = server.tool(arg=\"value\") " +
+					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
 					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
 					"• Access dict values with brackets: result[\"key\"] NOT result.key " +
-					"• Use print() for logging (not console.log) " +
-					"• List comprehensions work: [x for x in items if x[\"active\"]] " +
-					"• To return a value, assign to 'result' variable: result = computed_value " +
-					"• CRITICAL: for/if/while at top level MUST be inside a function - def main(): ... then result = main() " +
+					"• Use print() for logging/debugging " +
+					"• List comprehensions: [x for x in items if x[\"active\"]] " +
+					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
+					"• Triple-quoted strings for multiline: \"\"\"multi\\nline\"\"\" " +
+					"• chr(10) for newline character, chr(9) for tab " +
+					"• To return a value, assign to 'result': result = computed_value " +
+					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
 
-					"RETRY POLICY: ALWAYS retry if a code block fails. Analyze the error, adjust your code, and retry. " +
+					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
+					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr. " +
 
-					"The environment is intentionally minimal: " +
-					"• No imports needed or supported " +
-					"• No network APIs (use MCP tools for external interactions) " +
-					"• No file system access (use MCP tools) " +
-					"• No classes (use dicts and functions) " +
-					"• Deterministic execution (no random, no time) " +
-
-					"Long-running operations are interrupted via execution timeout. " +
-					"This tool is designed specifically for orchestrating MCP tool calls and lightweight computation.",
+					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
 			),
 
 			Parameters: &schemas.ToolFunctionParameters{
@@ -202,11 +206,8 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 
 	s.logger.Debug("%s Starting Starlark code execution", codemcp.CodeModeLogPrefix)
 
-	// Step 1: Convert literal \n escape sequences to actual newlines
-	codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
-
-	// Step 2: Handle empty code
-	trimmedCode := strings.TrimSpace(codeWithNewlines)
+	// Step 1: Handle empty code
+	trimmedCode := strings.TrimSpace(code)
 	if trimmedCode == "" {
 		return ExecutionResult{
 			Result: nil,
@@ -218,7 +219,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		}
 	}
 
-	// Step 3: Build tool bindings for all connected servers
+	// Step 2: Build tool bindings for all connected servers
 	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
 	serverKeys := make([]string, 0, len(availableToolsPerClient))
 	predeclared := starlark.StringDict{}
@@ -254,9 +255,8 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 			}
 
 			originalToolName := tool.Function.Name
-			unprefixedToolName := stripClientPrefix(originalToolName, clientName)
-			unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
-			parsedToolName := parseToolName(unprefixedToolName)
+			parsedToolName := getCanonicalToolName(clientName, originalToolName)
+			compatibilityAlias := getCompatibilityToolAlias(clientName, originalToolName)
 
 			s.logger.Debug("%s [%s] Binding tool: %s -> %s", codemcp.CodeModeLogPrefix, clientName, originalToolName, parsedToolName)
 
@@ -298,6 +298,13 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 			})
 
 			structMembers[parsedToolName] = toolFunc
+
+			if compatibilityAlias != parsedToolName && isValidStarlarkIdentifier(compatibilityAlias) {
+				if _, exists := structMembers[compatibilityAlias]; !exists {
+					structMembers[compatibilityAlias] = toolFunc
+					s.logger.Debug("%s [%s] Added compatibility alias: %s -> %s", codemcp.CodeModeLogPrefix, clientName, compatibilityAlias, parsedToolName)
+				}
+			}
 		}
 
 		// Create a struct for this server
@@ -312,7 +319,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		s.logger.Debug("%s No servers available for code mode execution", codemcp.CodeModeLogPrefix)
 	}
 
-	// Step 4: Create Starlark thread with print function and timeout
+	// Step 3: Create Starlark thread with print function and timeout
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 	timeoutCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
@@ -327,8 +334,17 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	// Set up cancellation check
 	thread.SetLocal("context", timeoutCtx)
 
+	// Step 4: Configure Starlark dialect options for a Python-like experience
+	starlarkOpts := &syntax.FileOptions{
+		TopLevelControl: true, // allow if/for/while at top level (not just inside functions)
+		While:           true, // enable while loops
+		Set:             true, // enable set() builtin
+		GlobalReassign:  true, // allow reassignment to top-level names
+		Recursion:       true, // allow recursive functions
+	}
+
 	// Step 5: Execute the code
-	globals, err := starlark.ExecFile(thread, "code.star", trimmedCode, predeclared)
+	globals, err := starlark.ExecFileOptions(starlarkOpts, thread, "code.star", trimmedCode, predeclared)
 
 	if err != nil {
 		errorMessage := err.Error()

@@ -208,14 +208,8 @@ func (a *AgentModeExecutor) executeAgent(
 						continue
 					}
 
-					// Step 1: Convert literal \n escape sequences to actual newlines for parsing
-					codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
-					if len(codeWithNewlines) != len(code) {
-						a.logger.Debug("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix)
-					}
-
-					// Step 2: Extract tool calls from code during AST formation
-					extractedToolCalls, err := extractToolCallsFromCode(codeWithNewlines)
+					// Step 1: Extract tool calls from the original source code during validation
+					extractedToolCalls, err := extractToolCallsFromCode(code)
 					if err != nil {
 						a.logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)

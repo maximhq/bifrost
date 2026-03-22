@@ -191,11 +191,25 @@ func formatResultForLog(result interface{}) string {
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
-	if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
-		re := regexp.MustCompile(`(\w+).*(?:undefined|not defined)`)
-		if match := re.FindStringSubmatch(errorMessage); len(match) > 1 {
-			undefinedVar := match[1]
+	if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
+		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
+		hints = append(hints, "Starlark does NOT support try/except/finally/raise — there is no exception handling.")
+		hints = append(hints, "Instead, check return values for errors:")
+		hints = append(hints, "  result = server.tool(param=\"value\")")
+		hints = append(hints, "  if result == None or (type(result) == \"dict\" and \"error\" in result):")
+		hints = append(hints, "    print(\"Error:\", result)")
+	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
+		var undefinedVar string
+		if match := regexp.MustCompile(`name ['"]([^'"]+)['"] is not defined`).FindStringSubmatch(errorMessage); len(match) > 1 {
+			undefinedVar = match[1]
+		} else if match := regexp.MustCompile(`undefined:\s*([A-Za-z_][A-Za-z0-9_]*)`).FindStringSubmatch(errorMessage); len(match) > 1 {
+			undefinedVar = match[1]
+		} else if match := regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)[^A-Za-z0-9_]+(?:undefined|not defined)`).FindStringSubmatch(errorMessage); len(match) > 1 {
+			undefinedVar = match[1]
+		}
+		if undefinedVar != "" {
 			hints = append(hints, fmt.Sprintf("Variable '%s' is not defined.", undefinedVar))
+			hints = append(hints, "Note: Each executeToolCode call runs in a fresh scope — no variables persist between calls.")
 			if len(serverKeys) > 0 {
 				hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
 				hints = append(hints, "Access tools using: server_name.tool_name(param=\"value\")")
@@ -298,7 +312,7 @@ func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, re
 	}
 }
 
-// parseToolName parses the tool name to be JavaScript-compatible.
+// parseToolName normalizes a raw tool name into a Starlark-compatible identifier.
 func parseToolName(toolName string) string {
 	if toolName == "" {
 		return ""
@@ -347,6 +361,61 @@ func parseToolName(toolName string) string {
 	}
 
 	return parsed
+}
+
+// getCanonicalToolName returns the exact callable tool identifier exposed in Starlark.
+func getCanonicalToolName(clientName, originalToolName string) string {
+	return parseToolName(stripClientPrefix(originalToolName, clientName))
+}
+
+// getCompatibilityToolAlias returns the case-preserving alias derived from the raw tool name.
+// This is used as a compatibility alias when the raw name is still a valid Starlark identifier.
+func getCompatibilityToolAlias(clientName, originalToolName string) string {
+	return strings.ReplaceAll(stripClientPrefix(originalToolName, clientName), "-", "_")
+}
+
+// matchesToolReference reports whether the requested tool name matches any supported identifier form.
+// We accept the canonical callable name plus legacy display forms for backward compatibility.
+func matchesToolReference(requestedToolName, clientName, originalToolName string) bool {
+	requested := strings.ToLower(requestedToolName)
+	if requested == "" {
+		return false
+	}
+
+	candidates := []string{
+		getCanonicalToolName(clientName, originalToolName),
+		getCompatibilityToolAlias(clientName, originalToolName),
+		stripClientPrefix(originalToolName, clientName),
+	}
+
+	for _, candidate := range candidates {
+		if candidate != "" && requested == strings.ToLower(candidate) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isValidStarlarkIdentifier reports whether name can be used directly in Starlark code.
+func isValidStarlarkIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	runes := []rune(name)
+	first := runes[0]
+	if !unicode.IsLetter(first) && first != '_' && first != '$' {
+		return false
+	}
+
+	for _, r := range runes[1:] {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '$' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // validateNormalizedToolName validates a normalized tool name to prevent path traversal.
