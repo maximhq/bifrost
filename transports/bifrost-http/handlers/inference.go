@@ -1836,11 +1836,6 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *
 		editType = typeValues[0]
 	}
 	promptValues := form.Value["prompt"]
-	if editType != "background_removal" {
-		if len(promptValues) == 0 || promptValues[0] == "" {
-			return nil, nil, fmt.Errorf("prompt is required")
-		}
-	}
 	var imageFiles []*multipart.FileHeader
 	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
 		imageFiles = imageFilesArray
