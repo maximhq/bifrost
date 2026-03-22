@@ -233,6 +233,13 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		max_conns_per_host: z
+			.number()
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -278,6 +285,13 @@ export const networkFormConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		max_conns_per_host: z.coerce
+			.number("Max connections must be a number")
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
