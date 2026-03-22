@@ -3087,6 +3087,76 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 	return config.Redacted(), nil
 }
 
+// GetProviderKeysRaw retrieves the raw keys configured for a provider.
+func (c *Config) GetProviderKeysRaw(provider schemas.ModelProvider) ([]schemas.Key, error) {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	config, exists := c.Providers[provider]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	keys := append([]schemas.Key(nil), config.Keys...)
+	return keys, nil
+}
+
+// GetProviderKeysRedacted retrieves redacted keys configured for a provider.
+func (c *Config) GetProviderKeysRedacted(provider schemas.ModelProvider) ([]schemas.Key, error) {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	config, exists := c.Providers[provider]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	return append([]schemas.Key(nil), config.Redacted().Keys...), nil
+}
+
+// GetProviderKeyRaw retrieves a single raw key configured for a provider.
+func (c *Config) GetProviderKeyRaw(provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	config, exists := c.Providers[provider]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	index := slices.IndexFunc(config.Keys, func(key schemas.Key) bool {
+		return key.ID == keyID
+	})
+	if index == -1 {
+		return nil, ErrNotFound
+	}
+
+	key := config.Keys[index]
+	return &key, nil
+}
+
+// GetProviderKeyRedacted retrieves a single redacted key configured for a provider.
+func (c *Config) GetProviderKeyRedacted(provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	config, exists := c.Providers[provider]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	redacted := config.Redacted()
+	index := slices.IndexFunc(redacted.Keys, func(key schemas.Key) bool {
+		return key.ID == keyID
+	})
+	if index == -1 {
+		return nil, ErrNotFound
+	}
+
+	key := redacted.Keys[index]
+	return &key, nil
+}
+
 // GetAllProviders returns all configured provider names.
 func (c *Config) GetAllProviders() ([]schemas.ModelProvider, error) {
 	c.Mu.RLock()
@@ -3237,6 +3307,162 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 	}
 
 	logger.Info("Updated configuration for provider: %s", provider)
+	return nil
+}
+
+// AddProviderKey adds a new key to an existing provider configuration.
+func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	existingConfig, exists := c.Providers[provider]
+	if !exists {
+		return ErrNotFound
+	}
+
+	if key.ID == "" {
+		key.ID = uuid.NewString()
+	}
+
+	updatedConfig := existingConfig
+	updatedConfig.Keys = append(append([]schemas.Key(nil), existingConfig.Keys...), key)
+
+	skipDBUpdate := false
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
+		}
+	}
+	if c.ConfigStore != nil && !skipDBUpdate {
+		if err := c.ConfigStore.CreateProviderKey(ctx, provider, key); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("failed to create provider key in store: %w", err)
+		}
+	}
+
+	c.Providers[provider] = updatedConfig
+
+	c.Mu.Unlock()
+	clientErr := c.client.UpdateProvider(provider)
+	c.Mu.Lock()
+
+	if clientErr != nil {
+		if reflect.DeepEqual(c.Providers[provider], updatedConfig) {
+			c.Providers[provider] = existingConfig
+		}
+		return fmt.Errorf("failed to update provider: %w", clientErr)
+	}
+
+	logger.Info("Added key %s to provider: %s", key.ID, provider)
+	return nil
+}
+
+// UpdateProviderKey updates a single key on an existing provider configuration.
+func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	existingConfig, exists := c.Providers[provider]
+	if !exists {
+		return ErrNotFound
+	}
+
+	index := slices.IndexFunc(existingConfig.Keys, func(existingKey schemas.Key) bool {
+		return existingKey.ID == keyID
+	})
+	if index == -1 {
+		return ErrNotFound
+	}
+
+	updatedConfig := existingConfig
+	updatedConfig.Keys = append([]schemas.Key(nil), existingConfig.Keys...)
+	key.ID = keyID
+	updatedConfig.Keys[index] = key
+
+	skipDBUpdate := false
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
+		}
+	}
+	if c.ConfigStore != nil && !skipDBUpdate {
+		if err := c.ConfigStore.UpdateProviderKey(ctx, provider, keyID, key); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("failed to update provider key in store: %w", err)
+		}
+	}
+
+	c.Providers[provider] = updatedConfig
+
+	c.Mu.Unlock()
+	clientErr := c.client.UpdateProvider(provider)
+	c.Mu.Lock()
+
+	if clientErr != nil {
+		if reflect.DeepEqual(c.Providers[provider], updatedConfig) {
+			c.Providers[provider] = existingConfig
+		}
+		return fmt.Errorf("failed to update provider: %w", clientErr)
+	}
+
+	logger.Info("Updated key %s for provider: %s", keyID, provider)
+	return nil
+}
+
+// RemoveProviderKey removes a single key from an existing provider configuration.
+func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	existingConfig, exists := c.Providers[provider]
+	if !exists {
+		return ErrNotFound
+	}
+
+	index := slices.IndexFunc(existingConfig.Keys, func(existingKey schemas.Key) bool {
+		return existingKey.ID == keyID
+	})
+	if index == -1 {
+		return ErrNotFound
+	}
+
+	updatedConfig := existingConfig
+	updatedConfig.Keys = append([]schemas.Key(nil), existingConfig.Keys[:index]...)
+	updatedConfig.Keys = append(updatedConfig.Keys, existingConfig.Keys[index+1:]...)
+
+	skipDBUpdate := false
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
+		}
+	}
+	if c.ConfigStore != nil && !skipDBUpdate {
+		if err := c.ConfigStore.DeleteProviderKey(ctx, provider, keyID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("failed to delete provider key from store: %w", err)
+		}
+	}
+
+	c.Providers[provider] = updatedConfig
+
+	c.Mu.Unlock()
+	clientErr := c.client.UpdateProvider(provider)
+	c.Mu.Lock()
+
+	if clientErr != nil {
+		if reflect.DeepEqual(c.Providers[provider], updatedConfig) {
+			c.Providers[provider] = existingConfig
+		}
+		return fmt.Errorf("failed to update provider: %w", clientErr)
+	}
+
+	logger.Info("Removed key %s from provider: %s", keyID, provider)
 	return nil
 }
 
