@@ -285,12 +285,13 @@ core/providers/<name>/
 func NewProvider(config schemas.ProviderConfig) (*Provider, error) {
     // Validate config, set up fasthttp.Client with connection pooling
     client := &fasthttp.Client{
-        MaxConnsPerHost:     5000,
+        MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost, // configurable, default 5000
         MaxIdleConnDuration: 30 * time.Second,
     }
     return &Provider{client: client, ...}, nil
 }
 ```
+**Note:** Bedrock uses `net/http` (not fasthttp) with HTTP/2 support. Its `http.Transport` is configured with `ForceAttemptHTTP2: true` and `MaxConnsPerHost` from `NetworkConfig` to allow multiple HTTP/2 connections when the server's per-connection stream limit (100 for AWS Bedrock) is reached.
 
 ### The Provider Interface
 
@@ -458,8 +459,9 @@ When `BlockRestrictedWrites()` is active, writes to reserved keys (governance ID
 
 Bifrost uses `github.com/valyala/fasthttp` for provider HTTP calls. The API is different from `net/http`:
 - Use `fasthttp.AcquireRequest()`/`fasthttp.ReleaseRequest()` for lifecycle
-- `fasthttp.Client` pools connections per-host (5000 conns, 30s idle)
+- `fasthttp.Client` pools connections per-host (`NetworkConfig.MaxConnsPerHost`, default 5000, 30s idle)
 - Request/response bodies accessed via `resp.Body()` (returns `[]byte`, not `io.Reader`)
+- **Exception:** Bedrock uses `net/http` (for AWS SigV4 signing) with `http.Transport` configured for HTTP/2 multi-connection support
 
 ### 13. `sonic`, Not `encoding/json`
 
@@ -480,6 +482,10 @@ Tool access follows: Global filter → Client-level filter → Tool-level filter
 ### 17. UI `data-testid` Attributes Are Load-Bearing
 
 E2E tests depend on `data-testid` attributes. Convention: `data-testid="<entity>-<element>-<qualifier>"`. If you rename or remove one, search `tests/e2e/` for references. If you add new interactive elements, add `data-testid`.
+
+### 18. E2E Tests — Never Marshal Payloads to Maps
+
+In `tests/e2e/core/`, **never marshal API payloads to a `Record`/`Map`/plain-object and then re-serialize**. Field ordering matters for backend validation and snapshot comparisons. Construct payloads as object literals with fields in the intended order and pass directly to Playwright's `request.post({ data })`. Avoid `Object.fromEntries()`, `JSON.parse(JSON.stringify(...))` round-trips, or destructuring into an intermediate `Record<string, unknown>` — these can silently reorder fields.
 
 ---
 
@@ -543,6 +549,7 @@ Playwright tests with page objects, data factories, fixtures:
 - Data factories use `Date.now()` for unique names (prevents collision in parallel runs)
 - Track created resources in arrays, clean up in `afterEach`
 - Import `test`/`expect` from `../../core/fixtures/base.fixture` (never from `@playwright/test`)
+- **Never marshal API payloads to a `Record`/`Map`/plain-object and then re-serialize.** Field ordering matters for snapshot comparisons and some backend validations. Construct payloads as object literals with fields in the intended order and pass directly to Playwright's `request.post({ data })`. Do NOT destructure into an intermediate `Record<string, unknown>` or use `Object.fromEntries()` / `JSON.parse(JSON.stringify(...))` round-trips, as these can reorder fields.
 
 Run: `make run-e2e FLOW=<feature>`
 
