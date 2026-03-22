@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -737,6 +740,294 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
+func TestPrepareFallbackRequest_AppliesFallbackParamsToExtraParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{
+		account: account,
+		logger:  NewDefaultLogger(schemas.LogLevelError),
+	}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"reasoning_effort": "low",
+					"base_param":       "keep-me",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  2048,
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback chat request with params")
+	}
+
+	if fallbackReq.ChatRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.ChatRequest.Provider)
+	}
+	if fallbackReq.ChatRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.ChatRequest.Model)
+	}
+
+	extra := fallbackReq.ChatRequest.Params.ExtraParams
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort override to high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["thinking_budget"] != 2048 {
+		t.Fatalf("expected fallback thinking_budget=2048, got %#v", extra["thinking_budget"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.ChatRequest.Params.ExtraParams["reasoning_effort"] != "low" {
+		t.Fatalf("expected primary request params to remain unchanged, got %#v", primaryReq.ChatRequest.Params.ExtraParams["reasoning_effort"])
+	}
+	if _, exists := primaryReq.ChatRequest.Params.ExtraParams["thinking_budget"]; exists {
+		t.Fatal("expected primary request params to not receive fallback-only thinking_budget")
+	}
+}
+
+func TestPrepareFallbackRequest_WithoutFallbackParams_PreservesBaseParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"base_param": "keep-me"},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback request with chat params")
+	}
+	if fallbackReq.ChatRequest.Params.ExtraParams["base_param"] != "keep-me" {
+		t.Fatalf("expected base param to be preserved, got %#v", fallbackReq.ChatRequest.Params.ExtraParams["base_param"])
+	}
+}
+
+func TestPrepareFallbackRequest_WithBaseParamsNil_UsesFallbackParams(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   nil,
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil || fallbackReq.ChatRequest.Params == nil {
+		t.Fatal("expected fallback request with initialized params")
+	}
+	if fallbackReq.ChatRequest.Params.ExtraParams["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback-only param, got %#v", fallbackReq.ChatRequest.Params.ExtraParams["reasoning_effort"])
+	}
+}
+
+func TestPrepareFallbackRequest_FallbackParamsReachProviderPayloadGeneration(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: Ptr("hello"),
+				},
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"base_param": "keep-me"},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"reasoning_effort": "high",
+			"thinking_budget":  2048,
+		},
+	})
+	if fallbackReq == nil || fallbackReq.ChatRequest == nil {
+		t.Fatal("expected fallback chat request")
+	}
+
+	openAIReq := openai.ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fallbackReq.ChatRequest)
+	if openAIReq == nil {
+		t.Fatal("expected openai request conversion output")
+	}
+
+	jsonBody, err := sonic.MarshalIndent(openAIReq, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal openai request body: %v", err)
+	}
+
+	mergedBody, err := providerUtils.MergeExtraParamsIntoJSON(jsonBody, openAIReq.GetExtraParams())
+	if err != nil {
+		t.Fatalf("failed to merge extra params into request body: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(mergedBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal merged payload: %v", err)
+	}
+
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort in provider payload, got %#v", payload["reasoning_effort"])
+	}
+	if payload["thinking_budget"] != float64(2048) {
+		t.Fatalf("expected thinking_budget in provider payload, got %#v", payload["thinking_budget"])
+	}
+	if payload["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param in provider payload, got %#v", payload["base_param"])
+	}
+
+	t.Logf("fallback provider payload reasoning_effort=%v thinking_budget=%v base_param=%v", payload["reasoning_effort"], payload["thinking_budget"], payload["base_param"])
+}
+
+func TestPrepareFallbackRequest_ImageVariationParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ImageVariationRequest,
+		ImageVariationRequest: &schemas.BifrostImageVariationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1",
+			Input: &schemas.ImageVariationInput{
+				Image: schemas.ImageInput{Image: []byte{0x89, 0x50, 0x4E, 0x47}},
+			},
+			Params: &schemas.ImageVariationParameters{
+				ExtraParams: map[string]interface{}{
+					"variation_strength": 0.2,
+					"base_param":         "keep-me",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"variation_strength": 0.9,
+			"reasoning_effort":   "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ImageVariationRequest == nil || fallbackReq.ImageVariationRequest.Params == nil {
+		t.Fatal("expected fallback image variation request with params")
+	}
+
+	if fallbackReq.ImageVariationRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.ImageVariationRequest.Provider)
+	}
+	if fallbackReq.ImageVariationRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.ImageVariationRequest.Model)
+	}
+
+	extra := fallbackReq.ImageVariationRequest.Params.ExtraParams
+	if extra["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength override to 0.9, got %#v", extra["variation_strength"])
+	}
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"] != 0.2 {
+		t.Fatalf("expected primary request params to remain unchanged, got %#v", primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"])
+	}
+	if _, exists := primaryReq.ImageVariationRequest.Params.ExtraParams["reasoning_effort"]; exists {
+		t.Fatal("expected primary request params to not receive fallback-only reasoning_effort")
+	}
+
+	openAIReq := openai.ToOpenAIImageVariationRequest(fallbackReq.ImageVariationRequest)
+	if openAIReq == nil {
+		t.Fatal("expected openai image variation request conversion output")
+	}
+
+	jsonBody, err := sonic.MarshalIndent(openAIReq, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal openai image variation request body: %v", err)
+	}
+
+	mergedBody, err := providerUtils.MergeExtraParamsIntoJSON(jsonBody, openAIReq.GetExtraParams())
+	if err != nil {
+		t.Fatalf("failed to merge extra params into request body: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(mergedBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal merged payload: %v", err)
+	}
+
+	if payload["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength in provider payload, got %#v", payload["variation_strength"])
+	}
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort in provider payload, got %#v", payload["reasoning_effort"])
+	}
+	if payload["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param in provider payload, got %#v", payload["base_param"])
+	}
+}
+
 // Test selectKeyFromProviderForModel with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
@@ -1170,4 +1461,3 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 		}
 	})
 }
-

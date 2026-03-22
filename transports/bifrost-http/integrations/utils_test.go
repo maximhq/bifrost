@@ -275,3 +275,110 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, "req-123", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
 }
+
+func TestExtractAndParseFallbacks_StringAndObjectForms(t *testing.T) {
+	t.Run("string fallbacks remain supported", func(t *testing.T) {
+		type reqWithStringFallbacks struct {
+			Fallbacks []string `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithStringFallbacks{
+			Fallbacks: []string{"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"},
+		}, bifrostReq)
+		require.NoError(t, err)
+		require.Len(t, bifrostReq.ChatRequest.Fallbacks, 1)
+		assert.Equal(t, schemas.Bedrock, bifrostReq.ChatRequest.Fallbacks[0].Provider)
+		assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
+	})
+
+	t.Run("object fallbacks preserve params", func(t *testing.T) {
+		type reqWithObjectFallbacks struct {
+			Fallbacks []schemas.Fallback `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithObjectFallbacks{
+			Fallbacks: []schemas.Fallback{
+				{
+					Provider: schemas.Bedrock,
+					Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+					Params: map[string]any{
+						"reasoning_effort": "high",
+						"thinking_budget":  1024,
+					},
+				},
+				{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4.1-mini",
+				},
+			},
+		}, bifrostReq)
+		require.NoError(t, err)
+		require.Len(t, bifrostReq.ChatRequest.Fallbacks, 2)
+		assert.Equal(t, schemas.Bedrock, bifrostReq.ChatRequest.Fallbacks[0].Provider)
+		assert.Equal(t, "us.anthropic.claude-3-5-sonnet-20241022-v2:0", bifrostReq.ChatRequest.Fallbacks[0].Model)
+		assert.Equal(t, "high", bifrostReq.ChatRequest.Fallbacks[0].Params["reasoning_effort"])
+		assert.Equal(t, 1024, bifrostReq.ChatRequest.Fallbacks[0].Params["thinking_budget"])
+		assert.Equal(t, schemas.OpenAI, bifrostReq.ChatRequest.Fallbacks[1].Provider)
+		assert.Nil(t, bifrostReq.ChatRequest.Fallbacks[1].Params)
+	})
+
+	t.Run("invalid fallback object is rejected", func(t *testing.T) {
+		type reqWithInvalidObjectFallback struct {
+			Fallbacks []schemas.Fallback `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithInvalidObjectFallback{
+			Fallbacks: []schemas.Fallback{{Provider: schemas.Bedrock}},
+		}, bifrostReq)
+		require.Error(t, err)
+		assert.True(t, strings.Contains(err.Error(), invalidFallbackEntryError))
+	})
+
+	t.Run("invalid fallback string is rejected", func(t *testing.T) {
+		type reqWithInvalidStringFallback struct {
+			Fallbacks []string `json:"fallbacks"`
+		}
+
+		router := newTestGenericRouter()
+		bifrostReq := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+			},
+		}
+
+		err := router.extractAndParseFallbacks(reqWithInvalidStringFallback{
+			Fallbacks: []string{"openai/"},
+		}, bifrostReq)
+		require.Error(t, err)
+		assert.True(t, strings.Contains(err.Error(), invalidFallbackEntryError))
+	})
+}
