@@ -400,10 +400,10 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 
 	tempEntry := &logstore.Log{}
 	updates["latency"] = float64(streamResponse.Data.Latency)
-	if streamResponse.Data.TimeToFirstToken >= 0 {
+	if streamResponse.Data.TimeToFirstToken != nil {
 		// TTFT is only available for streaming responses.
 		// For non-streaming requests, this field is intentionally left nil.
-		updates["time_to_first_token"] = float64(streamResponse.Data.TimeToFirstToken)
+		updates["time_to_first_token"] = float64(*streamResponse.Data.TimeToFirstToken)
 	}
 
 	// Update model if provided
@@ -548,10 +548,10 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	entry.Status = "success"
 	latF := float64(streamResponse.Data.Latency)
 	entry.Latency = &latF
-	if streamResponse.Data.TimeToFirstToken >= 0 {
+	if streamResponse.Data.TimeToFirstToken != nil {
 		// TTFT is only available for streaming responses.
 		// For non-streaming requests, this field is intentionally left nil.
-		ttft := float64(streamResponse.Data.TimeToFirstToken)
+		ttft := float64(*streamResponse.Data.TimeToFirstToken)
 		entry.TimeToFirstToken = &ttft
 	}
 
