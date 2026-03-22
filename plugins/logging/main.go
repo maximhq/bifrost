@@ -133,6 +133,17 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			"completion_tokens": deferredUsage.CompletionTokens,
 			"total_tokens":      deferredUsage.TotalTokens,
 		}
+
+		// tokens_per_second may also be computed during deferred usage updates
+		// when completion tokens are not available at initial finalization.
+		if logEntry, findErr := p.store.FindByID(p.ctx, requestID); findErr != nil {
+			p.logger.Warn("failed to load log entry for deferred usage update %s: %v", requestID, findErr)
+		} else if logEntry != nil && logEntry.Latency != nil {
+			if tokensPerSecond, ok := computeTokensPerSecond(deferredUsage.CompletionTokens, *logEntry.Latency); ok {
+				usageUpdates["tokens_per_second"] = tokensPerSecond
+			}
+		}
+
 		tempEntry := &logstore.Log{TokenUsageParsed: deferredUsage}
 		if serErr := tempEntry.SerializeFields(); serErr == nil {
 			usageUpdates["token_usage"] = tempEntry.TokenUsage
@@ -729,6 +740,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Apply streaming output fields to the entry
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse)
+			applyPerformanceMetricsToEntry(entry)
 		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
@@ -764,6 +776,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	} else if result != nil {
 		entry.Status = "success"
 		p.applyNonStreamingOutputToEntry(entry, result)
+		applyPerformanceMetricsToEntry(entry)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = "error"
