@@ -12079,7 +12079,7 @@ func TestSortAndRebuildPlugins_UnknownPlacement(t *testing.T) {
 }
 
 // TestLoadDefaultPlugins_PreservesPlacementAndOrder is the primary regression test:
-// verifies that loadDefaultPlugins correctly maps Placement and Order from DB rows.
+// verifies that loading plugins from store correctly maps Placement and Order from DB rows.
 func TestLoadDefaultPlugins_PreservesPlacementAndOrder(t *testing.T) {
 	initTestLogger()
 
@@ -12111,8 +12111,7 @@ func TestLoadDefaultPlugins_PreservesPlacementAndOrder(t *testing.T) {
 	}
 
 	config := &Config{ConfigStore: mock}
-	err := loadDefaultPlugins(context.Background(), config)
-	require.NoError(t, err)
+	loadPlugins(context.Background(), config, &ConfigData{})
 	require.Len(t, config.PluginConfigs, 3)
 
 	// Verify pre_builtin plugin
@@ -12182,7 +12181,7 @@ func TestSortAndRebuildPlugins_RebuildsCaches(t *testing.T) {
 	require.Equal(t, "llm-post", (*llmPlugins)[1].GetName(), "LLM cache should have post_builtin second")
 }
 
-// TestMergePluginsFromFile_PlacementChange verifies that mergePluginsFromFile
+// TestMergePluginsFromFile_PlacementChange verifies that mergePlugins
 // replaces a plugin when its placement or order changes, even without a version bump.
 func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	initTestLogger()
@@ -12207,8 +12206,7 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	}
 
 	config := &Config{ConfigStore: mock}
-	err := loadDefaultPlugins(context.Background(), config)
-	require.NoError(t, err)
+	loadPlugins(context.Background(), config, &ConfigData{})
 	require.Len(t, config.PluginConfigs, 1)
 	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[0].Placement)
 
@@ -12225,7 +12223,7 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 		},
 	}
 
-	mergePluginsFromFile(context.Background(), config, configData)
+	mergePlugins(context.Background(), config, configData)
 
 	// Should have been replaced because placement changed
 	require.Len(t, config.PluginConfigs, 1)
@@ -12235,7 +12233,7 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	require.Equal(t, 1, *config.PluginConfigs[0].Order, "order should be updated from file")
 }
 
-// TestMergePluginsFromFile_NoChangeSkipsMerge verifies that mergePluginsFromFile
+// TestMergePluginsFromFile_NoChangeSkipsMerge verifies that mergePlugins
 // does NOT replace a plugin when version, placement, and order are all unchanged.
 func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	initTestLogger()
@@ -12259,8 +12257,7 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	}
 
 	config := &Config{ConfigStore: mock}
-	err := loadDefaultPlugins(context.Background(), config)
-	require.NoError(t, err)
+	loadPlugins(context.Background(), config, &ConfigData{})
 
 	// Config file has same version, placement, order but different config value
 	configData := &ConfigData{
@@ -12276,7 +12273,7 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 		},
 	}
 
-	mergePluginsFromFile(context.Background(), config, configData)
+	mergePlugins(context.Background(), config, configData)
 
 	// Should NOT have been replaced (version and placement unchanged)
 	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
@@ -15930,7 +15927,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15967,7 +15964,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15996,7 +15993,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -16026,7 +16023,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify file config overwrote DB config
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -16064,7 +16061,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify the DB hash was reused (not re-hashed) since values match
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -16084,7 +16081,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			AuthConfig: nil,
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify no auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -16106,7 +16103,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -16135,7 +16132,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -16167,7 +16164,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -16202,7 +16199,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -16241,7 +16238,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify sessions were flushed because password changed
 		require.True(t, mockStore.flushSessionsCalled, "sessions should be flushed when password changes")
@@ -16280,7 +16277,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify sessions were NOT flushed because password did not change
 		require.False(t, mockStore.flushSessionsCalled, "sessions should not be flushed when password matches")
@@ -16662,4 +16659,596 @@ func TestSQLite_GetVirtualKeysPaginated(t *testing.T) {
 		require.Equal(t, int64(5), totalCount)
 		require.Len(t, results, 5) // all 5, since <100
 	})
+}
+
+// =============================================================================
+// LoadConfig Permutation Tests
+// =============================================================================
+// These tests cover all permutations of:
+//   - config.json present / absent
+//   - Each config section present / absent in config.json
+//   - DB data present / absent (first run vs subsequent runs)
+//
+// They exercise LoadConfig() as the public entry point and verify
+// both in-memory state and DB persistence.
+// =============================================================================
+
+// makeMinimalConfigData creates a ConfigData with only config_store configured (SQLite)
+func makeMinimalConfigData(tempDir string) *ConfigData {
+	dbPath := filepath.Join(tempDir, "config.db")
+	return &ConfigData{
+		ConfigStoreConfig: &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config: &configstore.SQLiteConfig{
+				Path: dbPath,
+			},
+		},
+	}
+}
+
+// assertDefaultClientConfigValues checks that client config matches DefaultClientConfig
+func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) {
+	t.Helper()
+	require.Equal(t, false, cc.DropExcessRequests, "DropExcessRequests should default to false")
+	require.Equal(t, schemas.DefaultInitialPoolSize, cc.InitialPoolSize, "InitialPoolSize should match default")
+	require.Equal(t, true, cc.EnableLogging, "EnableLogging should default to true")
+	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
+	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, false, cc.AllowDirectKeys, "AllowDirectKeys should default to false")
+	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
+	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
+	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
+	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
+	require.Equal(t, false, cc.EnableLiteLLMFallbacks, "EnableLiteLLMFallbacks should default to false")
+	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
+}
+
+// TestLoadConfig_NoConfigFile_FreshStart tests LoadConfig with no config.json and no existing DB
+func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify config store was created (default SQLite)
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be created by default")
+
+	// Verify default client config
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+
+	// HeaderMatcher is nil when no header filter is configured (DefaultClientConfig has nil HeaderFilterConfig)
+	// This is expected behavior - it's only set when HeaderFilterConfig is non-nil
+
+	// Verify providers map initialized (may be empty or auto-detected from env)
+	require.NotNil(t, config.Providers, "Providers map should be initialized")
+
+	// Verify governance/MCP are nil or empty (no config file)
+	// MCP and governance may be nil when no config and no DB data
+	// Plugins should be empty
+	require.Empty(t, config.PluginConfigs, "PluginConfigs should be empty with no config")
+
+	// Verify WebSocket defaults
+	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
+
+	// Verify KV store initialized
+	require.NotNil(t, config.KVStore, "KVStore should be initialized")
+}
+
+// TestLoadConfig_NoConfigFile_ExistingDB tests LoadConfig with no config.json but existing DB from previous run
+func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// First run: create a config.json to populate the DB
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config1)
+
+	// Verify first load populated DB
+	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1, "DB should have 1 provider after first load")
+	config1.Close(ctx)
+
+	// Remove config.json to simulate "no config file" on second run
+	require.NoError(t, os.Remove(filepath.Join(tempDir, "config.json")))
+
+	// Second run: no config.json, but DB has data
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify DB data was loaded (provider preserved from first run)
+	require.Len(t, config2.Providers, 1, "Provider from DB should be preserved")
+	_, hasOpenAI := config2.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI provider should be loaded from DB")
+
+	// Verify governance loaded from DB
+	require.NotNil(t, config2.GovernanceConfig, "GovernanceConfig should be loaded from DB")
+	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget from DB should be preserved")
+}
+
+// TestLoadConfig_FullConfigFile_FreshDB tests LoadConfig with all sections in config.json
+func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-openai-123"),
+		"anthropic": {
+			Keys: []schemas.Key{
+				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewEnvVar("sk-anthropic-123"), Weight: 1},
+			},
+		},
+	}
+
+	budgetID := "budget-1"
+	governance := &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: budgetID, MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+		VirtualKeys: []tables.TableVirtualKey{
+			makeVirtualKey("vk-1", "test-vk", "vk_test123"),
+		},
+	}
+
+	clientConfig := makeClientConfig(20, true)
+	configData := makeConfigDataFullWithDir(clientConfig, providers, governance, tempDir)
+
+	// Add plugins
+	pluginVersion := int16(1)
+	configData.Plugins = []*schemas.PluginConfig{
+		{Name: "test-plugin", Enabled: true, Version: &pluginVersion},
+	}
+
+	// Add MCP
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: uuid.NewString(), Name: "mcp_client_1", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewEnvVar("http://localhost:8080")},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify all sections loaded
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be initialized")
+	require.Equal(t, 20, config.ClientConfig.InitialPoolSize, "Client config InitialPoolSize from file")
+	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
+	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
+	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
+	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
+	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
+	require.Equal(t, "test-plugin", config.PluginConfigs[0].Name)
+
+	// Verify persisted to DB
+	dbProviders, err := config.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 2, "DB should have 2 providers")
+
+	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
+	require.Equal(t, "test-vk", dbVK.Name)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyProviders tests config.json with only providers section
+func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Providers = map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify providers loaded from file
+	require.Len(t, config.Providers, 1, "Should have 1 provider from file")
+	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI should be loaded from file")
+
+	// Verify client config gets defaults (no client in file)
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+
+	// Verify other sections are nil/empty
+	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
+
+	// Verify WebSocket defaults applied
+	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyClient tests config.json with only client section
+func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize:      50,
+		EnableLogging:        false,
+		MaxRequestBodySizeMB: 200,
+		AllowedOrigins:       []string{"http://example.com"},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify client config from file
+	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
+	require.Equal(t, false, config.ClientConfig.EnableLogging, "EnableLogging from file")
+	require.Equal(t, 200, config.ClientConfig.MaxRequestBodySizeMB, "MaxRequestBodySizeMB from file")
+
+	// Verify providers auto-detected (no providers in file)
+	// (may be empty if no env vars set, that's fine)
+	require.NotNil(t, config.Providers, "Providers map should be initialized")
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyGovernance tests config.json with only governance section
+func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 500.0, ResetDuration: "1M"},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify governance loaded from file
+	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
+	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
+	require.Equal(t, 500.0, config.GovernanceConfig.Budgets[0].MaxLimit)
+
+	// Verify client config gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyPlugins tests config.json with only plugins section
+func TestLoadConfig_PartialConfigFile_OnlyPlugins(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	pluginVersion := int16(1)
+	configData := makeMinimalConfigData(tempDir)
+	configData.Plugins = []*schemas.PluginConfig{
+		{Name: "my-plugin", Enabled: true, Version: &pluginVersion},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify plugins loaded from file
+	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
+	require.Equal(t, "my-plugin", config.PluginConfigs[0].Name)
+
+	// Verify client gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyMCP tests config.json with only MCP section
+func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: uuid.NewString(), Name: "mcp_test", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewEnvVar("http://localhost:9090")},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify MCP loaded from file
+	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
+	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Equal(t, "mcp_test", config.MCPConfig.ClientConfigs[0].Name)
+
+	// Verify client gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_ClientAndProviders tests the most common minimal config
+func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize:      100,
+		EnableLogging:        true,
+		MaxRequestBodySizeMB: 50,
+		AllowedOrigins:       []string{"*"},
+	}
+	configData.Providers = map[string]configstore.ProviderConfig{
+		"openai":    makeProviderConfig("openai-key", "sk-openai-abc"),
+		"anthropic": makeProviderConfig("anthropic-key", "sk-anthropic-def"),
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify both sections loaded
+	require.Equal(t, 100, config.ClientConfig.InitialPoolSize)
+	require.Len(t, config.Providers, 2, "Should have 2 providers")
+
+	// Verify other sections empty/nil
+	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
+}
+
+// TestLoadConfig_ConfigFile_NoConfigStoreSection tests config.json without config_store section
+func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// Create config.json without config_store section
+	configData := &ConfigData{
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeProviderConfig("openai-key", "sk-test-123"),
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// ConfigStore should be created as default SQLite when config_store section is absent
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be created as default SQLite when section is absent")
+
+	// Verify providers are loaded into memory
+	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI should be loaded")
+}
+
+// TestLoadConfig_ConfigFile_ConfigStoreDisabled tests config.json with config_store explicitly disabled
+func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := &ConfigData{
+		ConfigStoreConfig: &configstore.Config{
+			Enabled: false,
+		},
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeProviderConfig("openai-key", "sk-test-456"),
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// ConfigStore should be nil when explicitly disabled
+	require.Nil(t, config.ConfigStore, "ConfigStore should be nil when disabled")
+
+	// Providers should still be loaded into memory
+	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+}
+
+// TestLoadConfig_NoConfigFile_SecondRun tests that DB data persists across runs without config.json
+func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// First run: no config.json -> auto-detect and create defaults
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config1)
+
+	// Manually add a provider to DB to simulate dashboard addition
+	testProvider := configstore.ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewEnvVar("sk-manual-123"), Weight: 1},
+		},
+	}
+	err = config1.ConfigStore.AddProvider(ctx, schemas.OpenAI, testProvider)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	// Second run: still no config.json -> should load from DB
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify the manually added provider is preserved from DB
+	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	_, hasOpenAI := dbProviders[schemas.OpenAI]
+	require.True(t, hasOpenAI, "Provider added via dashboard should be preserved in DB")
+}
+
+// TestLoadConfig_PartialConfigFile_WithExistingDB tests partial config.json update with existing DB
+func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// First run: full config.json
+	providers1 := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewEnvVar("test-openai-key"), Weight: 1},
+			},
+		},
+		"anthropic": {
+			Keys: []schemas.Key{
+				{ID: "anthropic-key-1", Name: "anthropic-key", Value: *schemas.NewEnvVar("test-anthropic-key"), Weight: 1},
+			},
+		},
+	}
+	governance1 := &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+	}
+	configData1 := makeConfigDataFullWithDir(nil, providers1, governance1, tempDir)
+	createConfigFile(t, tempDir, configData1)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.Len(t, config1.Providers, 2, "Should have 2 providers from first load")
+	require.NotNil(t, config1.GovernanceConfig)
+	config1.Close(ctx)
+
+	// Second run: config.json with only changed providers (no governance section)
+	configData2 := makeMinimalConfigData(tempDir)
+	configData2.Providers = map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewEnvVar("test-openai-key-updated"), Weight: 1},
+			},
+		},
+	}
+	// Note: no governance section in this config.json
+	createConfigFile(t, tempDir, configData2)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify providers updated (only openai now from file)
+	require.Contains(t, config2.Providers, schemas.OpenAI, "OpenAI should be present")
+
+	// Verify governance preserved from DB (not wiped by missing section in file)
+	require.NotNil(t, config2.GovernanceConfig, "Governance should be preserved from DB")
+	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget should be preserved from DB")
+
+	_, hasAnthropic := config2.Providers[schemas.Anthropic]
+	require.True(t, hasAnthropic, "Anthropic should be preserved from DB")
+}
+
+// TestLoadConfig_WebSocket_Defaults tests WebSocket default handling
+func TestLoadConfig_WebSocket_Defaults(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	t.Run("no websocket section gets defaults", func(t *testing.T) {
+		configData := makeMinimalConfigData(tempDir)
+		createConfigFile(t, tempDir, configData)
+
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		defer config.Close(ctx)
+
+		require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should be set with defaults")
+	})
+}
+
+// TestLoadConfig_DefaultClientConfig_Values tests that all DefaultClientConfig values are correct
+func TestLoadConfig_DefaultClientConfig_Values(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// No config.json -> defaults applied
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialClientConfig_DefaultsFillGaps tests that missing client fields get defaults
+func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	// Only set InitialPoolSize, leave MaxRequestBodySizeMB as 0 (should get default)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize: 50,
+		EnableLogging:   true,
+		AllowedOrigins:  []string{"http://myapp.com"},
+		// MaxRequestBodySizeMB is 0 -> should get default 100
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify explicit values from file
+	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
+	require.Equal(t, true, config.ClientConfig.EnableLogging, "EnableLogging from file")
+
+	// Verify zero-value fields get defaults
+	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,
+		"MaxRequestBodySizeMB should get default when zero in file")
 }
