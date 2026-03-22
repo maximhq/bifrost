@@ -58,6 +58,10 @@ import (
 	"strconv"
 	"strings"
 
+	"encoding/json"
+	"os"
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -68,6 +72,27 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// #region agent log
+func routerIntDebugLog(id, message string, data map[string]interface{}, hypothesisID string) {
+	entry := map[string]interface{}{
+		"sessionId":    "8579a9",
+		"id":           id,
+		"timestamp":    time.Now().UnixMilli(),
+		"location":     "router.go(integrations)",
+		"message":      message,
+		"data":         data,
+		"hypothesisId": hypothesisID,
+	}
+	line, _ := json.Marshal(entry)
+	f, err := os.OpenFile("/Users/akshay/Codebase/universe/bifrost/.cursor/debug-8579a9.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
+}
+
+// #endregion
 
 // ExtensionRouter defines the interface that all integration routers must implement
 // to register their routes with the main HTTP router.
@@ -451,9 +476,11 @@ type RouteConfig struct {
 }
 
 type PassthroughConfig struct {
-	Provider         schemas.ModelProvider                                              // which provider's key pool to draw from
-	ProviderDetector func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
-	StripPrefix      []string                                                           // e.g. "/openai" — stripped before forwarding
+	Provider          schemas.ModelProvider                                              // which provider's key pool to draw from
+	ProviderDetector  func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
+	StripPrefix       []string                                                           // e.g. "/openai" — stripped before forwarding
+	ForwardAllHeaders bool                                                               // forward all client headers except hop-by-hop (host/connection/transfer-encoding)
+	SkipKeySelection  bool                                                               // skip key selection, pass empty key to provider
 }
 
 // LargePayloadHook is called before body parsing to detect and set up large payload streaming.
@@ -2639,25 +2666,71 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	cfg := g.passthroughCfg
 
 	safeHeaders := make(map[string]string)
+
+	// #region agent log
+	cookieYieldCount := 0
+	var cookieYieldSizes []int
+	// #endregion
+
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
-		switch keyStr {
-		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
-		default:
-			if strings.HasPrefix(keyStr, "x-bf-") {
-				return true // drop internal gateway headers
-			}
-			safeHeaders[keyStr] = string(value)
+
+		// #region agent log
+		if keyStr == "cookie" {
+			cookieYieldCount++
+			cookieYieldSizes = append(cookieYieldSizes, len(value))
 		}
+		// #endregion
+
+		if cfg.ForwardAllHeaders {
+			// True passthrough: drop hop-by-hop + internal gateway headers
+			switch keyStr {
+			case "host", "connection", "transfer-encoding", "accept-encoding":
+				return true
+			default:
+				if strings.HasPrefix(keyStr, "x-bf-") ||
+					strings.HasPrefix(keyStr, "x-bifrost-") ||
+					keyStr == "x-forwarded-host" {
+					return true
+				}
+			}
+		} else {
+			// Default: drop auth, cookies, and internal headers
+			switch keyStr {
+			case "authorization", "api-key", "x-api-key", "x-goog-api-key",
+				"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
+				return true
+			default:
+				if strings.HasPrefix(keyStr, "x-bf-") {
+					return true // drop internal gateway headers
+				}
+			}
+		}
+		safeHeaders[keyStr] = string(value)
 		return true
 	})
+
+	// #region agent log
+	rawCookieLen := len(ctx.Request.Header.Peek("Cookie"))
+	rawHeaderStr := string(ctx.Request.Header.Header())
+	rawCookieLines := strings.Count(rawHeaderStr, "Cookie:")
+	routerIntDebugLog("cookie-wire", "Cookie wire analysis", map[string]interface{}{
+		"cookieYieldCount": cookieYieldCount,
+		"cookieYieldSizes": cookieYieldSizes,
+		"peekCookieLen":    rawCookieLen,
+		"rawCookieLines":   rawCookieLines,
+		"rawHeaderLen":     len(rawHeaderStr),
+	}, "KL")
+	// #endregion
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher())
 	if directKey := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)); directKey != nil {
 		if key, ok := directKey.(schemas.Key); ok {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
+	}
+	if cfg.SkipKeySelection {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 	}
 
 	path := string(ctx.Path())
@@ -2706,13 +2779,42 @@ func (g *GenericRouter) handlePassthroughNonStream(
 ) {
 	defer cancel()
 
+	// #region agent log
+	routerIntDebugLog("passthrough-req", "Passthrough request", map[string]interface{}{
+		"provider": string(provider),
+		"method":   req.Method,
+		"path":     req.Path,
+		"model":    req.Model,
+	}, "G")
+	// #endregion
+
 	resp, bifrostErr := g.client.Passthrough(bifrostCtx, provider, req)
 	if bifrostErr != nil {
+		// #region agent log
+		errMsg := ""
+		if bifrostErr.Error != nil {
+			errMsg = bifrostErr.Error.Message
+		}
+		routerIntDebugLog("passthrough-err", "Passthrough error", map[string]interface{}{
+			"provider":    string(provider),
+			"path":        req.Path,
+			"isBifrost":   bifrostErr.IsBifrostError,
+			"errorMsg":    errMsg,
+			"statusCode":  fmt.Sprintf("%v", bifrostErr.StatusCode),
+		}, "G")
+		// #endregion
 		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
 		}, bifrostErr)
 		return
 	}
+	// #region agent log
+	routerIntDebugLog("passthrough-ok", "Passthrough success", map[string]interface{}{
+		"provider":   string(provider),
+		"path":       req.Path,
+		"statusCode": resp.StatusCode,
+	}, "G")
+	// #endregion
 
 	ctx.SetStatusCode(resp.StatusCode)
 	for k, v := range resp.Headers {

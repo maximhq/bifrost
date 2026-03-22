@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -20,6 +22,24 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// #region agent log
+func mwDebugLog(id, msg string, data map[string]interface{}, hyp string) {
+	data["sessionId"] = "8579a9"
+	data["location"] = "middlewares.go"
+	data["message"] = msg
+	data["hypothesisId"] = hyp
+	data["id"] = id
+	data["timestamp"] = time.Now().UnixMilli()
+	b, _ := json.Marshal(data)
+	f, err := os.OpenFile("/Users/akshay/Codebase/universe/bifrost/.cursor/debug-8579a9.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write(append(b, '\n'))
+		f.Close()
+	}
+}
+
+// #endregion
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
 
@@ -291,6 +311,14 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 		return func(ctx *fasthttp.RequestCtx) {
 			plugins := config.GetLoadedHTTPTransportPlugins()
 			if len(plugins) == 0 {
+				// #region agent log
+				if strings.Contains(string(ctx.Path()), "conversation") {
+					mwDebugLog("mw-skip", "No HTTP plugins, skipping middleware", map[string]interface{}{
+						"path":      string(ctx.Path()),
+						"cookieLen": len(ctx.Request.Header.Peek("Cookie")),
+					}, "N")
+				}
+				// #endregion
 				next(ctx)
 				return
 			}
@@ -300,6 +328,16 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
 			fasthttpToHTTPRequest(ctx, req)
+			// #region agent log
+			if strings.Contains(string(ctx.Path()), "conversation") {
+				mwDebugLog("mw-active", "TransportInterceptor running with plugins", map[string]interface{}{
+					"path":           string(ctx.Path()),
+					"pluginCount":    len(plugins),
+					"reqCookieLen":   len(req.Headers["cookie"]) + len(req.Headers["Cookie"]),
+					"peekCookieLen":  len(ctx.Request.Header.Peek("Cookie")),
+				}, "N")
+			}
+			// #endregion
 			// Run plugin interceptors
 			for _, plugin := range plugins {
 				resp, err := plugin.HTTPTransportPreHook(bifrostCtx, req)
@@ -421,10 +459,34 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return
 	}
-	// Apply headers
+	// #region agent log
+	isConvo := strings.Contains(string(ctx.Path()), "conversation")
+	if isConvo {
+		mwDebugLog("pre-apply", "Cookie BEFORE applyHTTPRequestToCtx loop", map[string]interface{}{
+			"path":             string(ctx.Path()),
+			"peekCookieBefore": len(ctx.Request.Header.Peek("Cookie")),
+			"reqCookieLen":     len(req.Headers["cookie"]) + len(req.Headers["Cookie"]),
+		}, "N")
+	}
+	// #endregion
+	// Apply headers — fasthttp's Set("Cookie", v) ADDS to existing cookies instead of
+	// replacing (documented in valyala/fasthttp#1862). Delete first to prevent doubling.
+	if _, hasCookie := req.Headers["cookie"]; hasCookie {
+		ctx.Request.Header.DelBytes([]byte("Cookie"))
+	} else if _, hasCookie := req.Headers["Cookie"]; hasCookie {
+		ctx.Request.Header.DelBytes([]byte("Cookie"))
+	}
 	for key, value := range req.Headers {
 		ctx.Request.Header.Set(key, value)
 	}
+	// #region agent log
+	if isConvo {
+		mwDebugLog("post-apply", "Cookie AFTER applyHTTPRequestToCtx loop", map[string]interface{}{
+			"path":            string(ctx.Path()),
+			"peekCookieAfter": len(ctx.Request.Header.Peek("Cookie")),
+		}, "N")
+	}
+	// #endregion
 	// Apply query params
 	for key, value := range req.Query {
 		ctx.Request.URI().QueryArgs().Set(key, value)
