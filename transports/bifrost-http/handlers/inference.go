@@ -3,7 +3,6 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 
 	"encoding/json"
@@ -1540,12 +1539,17 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
-	var includeEventType bool
-	// Use streaming response writer
-	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+	// Use SSEStreamReader to bypass fasthttp's internal pipe (fasthttputil.PipeConns)
+	// which batches multiple SSE events into single TCP segments.
+	// Each event is delivered individually via a channel, ensuring one HTTP chunk per event.
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
+	go func() {
 		defer func() {
 			schemas.ReleaseHTTPRequest(httpReq)
-			w.Flush()
+			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
@@ -1553,6 +1557,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			}
 		}()
 
+		var includeEventType bool
 		var skipDoneMarker bool
 
 		// Process streaming responses
@@ -1581,15 +1586,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 					if chunk == nil {
 						errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 						if marshalErr != nil {
-							cancel() // Client disconnected or payload invalid
+							cancel() // Payload invalid
 							return
 						}
-						// Return error event and stopping the streaming
-						if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", errorJSON); err != nil {
-							cancel() // Client disconnected (write error), cancel upstream stream
-							return
-						}
-						_ = w.Flush()
+						// Return error event and stop streaming
+						reader.SendError(errorJSON)
 						cancel()
 						return
 					}
@@ -1609,10 +1610,10 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				continue
 			}
 
-			// Send as SSE data
+			// Format and send as SSE data
+			var eventType string
 			if includeEventType {
 				// For responses and image gen API, use OpenAI-compatible format with event line
-				eventType := ""
 				if chunk.BifrostResponsesStreamResponse != nil {
 					eventType = string(chunk.BifrostResponsesStreamResponse.Type)
 				} else if chunk.BifrostImageGenerationStreamResponse != nil {
@@ -1620,43 +1621,25 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				} else if chunk.BifrostError != nil {
 					eventType = string(schemas.ResponsesStreamResponseTypeError)
 				}
-				if eventType != "" {
-					if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
-					}
-				}
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
-					return
-				}
-			} else {
-				// For other APIs, use standard format
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", chunkJSON); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
-					return
-				}
 			}
 
-			// Flush immediately to send the chunk
-			if err := w.Flush(); err != nil {
-				cancel() // Client disconnected (write error), cancel upstream stream
+			if !reader.SendEvent(eventType, chunkJSON) {
+				cancel() // Client disconnected, cancel upstream stream
 				return
 			}
 		}
 
 		if !includeEventType && !skipDoneMarker {
 			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)
-			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-				logger.Warn("Failed to write SSE [DONE] marker: %v", err)
-				cancel() // Client disconnected (write error), cancel upstream stream
+			if !reader.SendDone() {
+				cancel()
 				return
 			}
 		}
 		// Note: OpenAI responses API doesn't use [DONE] marker, it ends when the stream closes
 		// Stream completed normally, Bifrost handles cleanup internally
 		cancel()
-	})
+	}()
 }
 
 // validateAudioFile checks if the file size and format are valid

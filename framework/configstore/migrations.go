@@ -302,6 +302,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationRenameTruncatedPricingColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddImageQualityPricingColumns(ctx, db); err != nil {
 		return err
 	}
@@ -4232,7 +4235,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 				"output_cost_per_pixel",
 				"output_cost_per_image_premium_image",
 				"output_cost_per_image_above_512_and_512_pixels",
-				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_512x512_pixels_premium",
 				"output_cost_per_image_above_1024_and_1024_pixels",
 				"output_cost_per_image_above_1024x1024_pixels_premium",
 				"input_cost_per_audio_token",
@@ -4274,7 +4277,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 				"output_cost_per_pixel",
 				"output_cost_per_image_premium_image",
 				"output_cost_per_image_above_512_and_512_pixels",
-				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_512x512_pixels_premium",
 				"output_cost_per_image_above_1024_and_1024_pixels",
 				"output_cost_per_image_above_1024x1024_pixels_premium",
 				"input_cost_per_audio_token",
@@ -4304,6 +4307,48 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing refactor columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRenameTruncatedPricingColumn renames the output_cost_per_image_above_512_and_512_pixels_and_premium_image
+// column which at 64 chars exceeds PostgreSQL's 63-character identifier limit. PostgreSQL silently truncated
+// it to output_cost_per_image_above_512_and_512_pixels_and_premium_imag (63 chars), while SQLite kept the
+// full 64-char name. This migration renames whichever variant exists to the shorter canonical name.
+func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "rename_truncated_pricing_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			const newName = "output_cost_per_image_above_512x512_pixels_premium"
+			if mg.HasColumn(&tables.TableModelPricing{}, newName) {
+				return nil
+			}
+
+			// PostgreSQL truncated the 64-char name to 63 chars
+			const oldNamePG = "output_cost_per_image_above_512_and_512_pixels_and_premium_imag"
+			// SQLite kept the full 64-char name
+			const oldNameSQLite = "output_cost_per_image_above_512_and_512_pixels_and_premium_image"
+
+			if mg.HasColumn(&tables.TableModelPricing{}, oldNamePG) {
+				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNamePG + " TO " + newName).Error; err != nil {
+					return fmt.Errorf("failed to rename column %s to %s: %w", oldNamePG, newName, err)
+				}
+			} else if mg.HasColumn(&tables.TableModelPricing{}, oldNameSQLite) {
+				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNameSQLite + " TO " + newName).Error; err != nil {
+					return fmt.Errorf("failed to rename column %s to %s: %w", oldNameSQLite, newName, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running rename_truncated_pricing_column migration: %s", err.Error())
 	}
 	return nil
 }

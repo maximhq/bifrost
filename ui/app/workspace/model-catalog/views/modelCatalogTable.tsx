@@ -58,7 +58,7 @@ export default function ModelCatalogTable({
 			{/* Summary Cards */}
 			<div className="grid grid-cols-4 gap-4">
 				{summaryCards.map((card) => (
-					<Card key={card.label} className="py-4">
+					<Card key={card.label} className="py-4 shadow-none">
 						<CardContent className="px-4">
 							<p className="text-muted-foreground text-xs">{card.label}</p>
 							<p className="mt-1 text-xl font-semibold">{card.value}</p>
@@ -73,7 +73,11 @@ export default function ModelCatalogTable({
 					<h2 className="text-lg font-semibold">Model Catalog</h2>
 					<p className="text-muted-foreground text-sm">Overview of all configured providers, models, and usage.</p>
 				</div>
-				<Select value={providerFilter || "all"} onValueChange={(val) => onProviderFilterChange(val === "all" ? "" : val)} data-testid="model-catalog-provider-filter">
+				<Select
+					value={providerFilter || "all"}
+					onValueChange={(val) => onProviderFilterChange(val === "all" ? "" : val)}
+					data-testid="model-catalog-provider-filter"
+				>
 					<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-trigger">
 						<SelectValue placeholder="All Providers" />
 					</SelectTrigger>

@@ -28,7 +28,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { Clipboard, MoreVertical, Trash2 } from "lucide-react";
+import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
@@ -78,7 +78,7 @@ const isContainerOperation = (object: string) => {
 };
 
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
-	const [fetchLog, { data: fullLog }] = useLazyGetLogByIdQuery();
+	const [fetchLog, { data: fullLog, isFetching }] = useLazyGetLogByIdQuery();
 
 	useEffect(() => {
 		if (open && log?.id) {
@@ -88,10 +88,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	if (!log) return null;
 
-	// The list query omits large fields for performance (output_message, tools, params, etc.).
-	// Use the full log from the dedicated single-log fetch as the primary data source for the
-	// detail sheet, falling back to the list entry while the fetch is in flight.
-	const displayLog = fullLog?.id === log.id ? fullLog : log;
+	// Show a loader until the full log data is fetched from the dedicated single-log endpoint.
+	const isFullDataReady = fullLog?.id === log.id && !isFetching;
+	const displayLog = isFullDataReady ? fullLog : log;
 
 	const isContainer = isContainerOperation(displayLog.object);
 	const isPassthrough = isPassthroughOperation(displayLog.object);
@@ -125,6 +124,12 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
+				{!isFullDataReady ? (
+					<div className="flex h-full items-center justify-center">
+						<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+					</div>
+				) : (
+				<>
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -854,6 +859,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							</>
 						)}
 					</>
+				)}
+				</>
 				)}
 			</SheetContent>
 		</Sheet>

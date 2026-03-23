@@ -1,0 +1,6 @@
+- feat: added model catalog support
+- feat: MCP logs flow for high-volume log ingestion
+- fix: dashboard and logs list query optimizations
+- fix: PG query optimizations for materialized views
+- fix: truncate names exceeding 64 characters
+- chore: weaviate upgrade

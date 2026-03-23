@@ -21,6 +21,8 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	}
 
 	// Clean slate
+	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
+	db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
 	db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 	db.Exec("DROP TABLE IF EXISTS logs CASCADE")
@@ -30,12 +32,17 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	err := triggerMigrations(ctx, db)
 	require.NoError(t, err, "migrations should succeed")
 
+	err = ensureMatViews(ctx, db)
+	require.NoError(t, err, "matview creation should succeed")
+
 	store := &RDBLogStore{db: db}
 
 	t.Cleanup(func() {
 		for _, idx := range performanceIndexes {
 			db.Exec("DROP INDEX IF EXISTS " + idx.name)
 		}
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE")
+		db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_filterdata CASCADE")
 		db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE")
 		db.Exec("DROP TABLE IF EXISTS logs CASCADE")
@@ -111,6 +118,16 @@ func insertPerfMCPLog(t *testing.T, db *gorm.DB, opts mcpLogOpts) {
 	require.NoError(t, err, "Failed to insert MCP test log")
 }
 
+// refreshTestMatViews refreshes materialized views after inserting test data.
+// This is needed because matviews are populated at creation time and don't
+// automatically reflect new inserts until explicitly refreshed.
+func refreshTestMatViews(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	ctx := context.Background()
+	err := refreshMatViews(ctx, db)
+	require.NoError(t, err, "Failed to refresh materialized views")
+}
+
 // ---------- Phase 1: Defensive Limits ----------
 
 func TestSearchLogs_LimitClamping(t *testing.T) {
@@ -121,6 +138,7 @@ func TestSearchLogs_LimitClamping(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		insertPerfLog(t, db, logOpts{Timestamp: now})
 	}
+	refreshTestMatViews(t, db)
 
 	// Limit=0 should be clamped (not return 0 results)
 	result, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 0})
@@ -175,6 +193,7 @@ func TestGetModelRankings_HasLimit(t *testing.T) {
 			Model: fmt.Sprintf("model-%d", i), Timestamp: now,
 		})
 	}
+	refreshTestMatViews(t, db)
 
 	result, err := store.GetModelRankings(ctx, SearchFilters{StartTime: &start, EndTime: &now})
 	require.NoError(t, err)
@@ -215,6 +234,7 @@ func TestGetDistinctModels_TimeCutoff(t *testing.T) {
 
 	insertPerfLog(t, db, logOpts{Model: "recent-model", Timestamp: recent})
 	insertPerfLog(t, db, logOpts{Model: "old-model", Timestamp: old})
+	refreshTestMatViews(t, db)
 
 	models, err := store.GetDistinctModels(ctx)
 	require.NoError(t, err)
@@ -235,6 +255,7 @@ func TestGetDistinctKeyPairs_TimeCutoff(t *testing.T) {
 	insertPerfLog(t, db, logOpts{
 		Timestamp: old, VirtualKeyID: "vk-old", VirtualKeyName: "Old Key",
 	})
+	refreshTestMatViews(t, db)
 
 	pairs, err := store.GetDistinctKeyPairs(ctx, "virtual_key_id", "virtual_key_name")
 	require.NoError(t, err)
@@ -260,6 +281,7 @@ func TestGetDistinctRoutingEngines_TimeCutoff(t *testing.T) {
 	insertPerfLog(t, db, logOpts{
 		Timestamp: old, RoutingEnginesUsed: "routing-rule",
 	})
+	refreshTestMatViews(t, db)
 
 	engines, err := store.GetDistinctRoutingEngines(ctx)
 	require.NoError(t, err)

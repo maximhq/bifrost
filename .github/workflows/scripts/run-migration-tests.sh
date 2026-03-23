@@ -1111,6 +1111,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
   fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512x512_pixels_premium"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  # output_cost_per_image_above_512_and_512_pixels_and_premium_imag (PG-truncated 63-char name, renamed to output_cost_per_image_above_512x512_pixels_premium)
   if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_imag"; then
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 2;" >> "$output_file"
@@ -1521,6 +1526,11 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
     fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512x512_pixels_premium"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    # output_cost_per_image_above_512_and_512_pixels_and_premium_image (full 64-char name, renamed to output_cost_per_image_above_512x512_pixels_premium)
     if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_image"; then
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 2;" >> "$output_file"
@@ -2404,7 +2414,9 @@ compare_postgres_snapshots() {
     # Check that all before columns still exist (new columns are OK)
     # Columns that are intentionally renamed during migration should be excluded
     # routing_engine_used -> routing_engines_used (v1.4.7)
-    local renamed_columns="routing_engine_used"
+    # output_cost_per_image_above_512_and_512_pixels_and_premium_imag (PG-truncated) -> output_cost_per_image_above_512x512_pixels_premium
+    # output_cost_per_image_above_512_and_512_pixels_and_premium_image (SQLite full) -> output_cost_per_image_above_512x512_pixels_premium
+    local renamed_columns="routing_engine_used output_cost_per_image_above_512_and_512_pixels_and_premium_imag output_cost_per_image_above_512_and_512_pixels_and_premium_image"
     
     # Columns that are intentionally dropped during migration should be excluded
     # enable_governance (dropped in v1.4.8) - applies to all tables

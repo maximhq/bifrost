@@ -84,6 +84,8 @@ export const DefaultNetworkConfig = {
 	insecure_skip_verify: false,
 	ca_cert_pem: "",
 	stream_idle_timeout_in_seconds: 60,
+	max_conns_per_host: 5000,
+	enforce_http2: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {

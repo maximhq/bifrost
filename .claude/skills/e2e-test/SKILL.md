@@ -625,6 +625,7 @@ export class FeaturePage extends BasePage {
 - Provide factory functions with sensible defaults
 - Allow partial overrides via the spread pattern
 - Create sample constant objects for reusable configurations
+- **Never marshal payloads to a `Record`/`Map` and re-serialize** — field ordering matters for backend validation and snapshot comparisons. Always construct payloads as object literals with fields in the intended order. Do NOT use `Object.fromEntries()`, `JSON.parse(JSON.stringify(...))` round-trips, or destructure into an intermediate `Record<string, unknown>` — these can reorder fields.
 
 **Template:**
 ```typescript
@@ -658,6 +659,7 @@ export const SAMPLE_CONFIGS = {
 - Use unique names with `Date.now()` for test data
 - Write deterministic assertions (never `expect(count >= 0).toBe(true)`)
 - Use `test.describe.configure({ mode: 'serial' })` when tests have write ordering dependencies
+- **Never marshal API payloads to a `Record`/`Map`** — pass object literals directly to Playwright's `request.post({ data })`. Marshaling through an intermediate map can reorder fields, which breaks backend validation and snapshot comparisons.
 
 **Template:**
 ```typescript
