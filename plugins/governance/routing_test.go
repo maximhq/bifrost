@@ -266,6 +266,150 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	assert.Equal(t, "Global Rule", decision.MatchedRuleName)
 }
 
+func TestResolveRoutingModelTemplate(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		ctx      *RoutingContext
+		expected string
+		err      string
+	}{
+		{
+			name:     "multiple placeholders",
+			input:    "x/{{input.model}}/y/{{model}}",
+			ctx:      &RoutingContext{Model: "claude-sonnet-4-5"},
+			expected: "x/claude-sonnet-4-5/y/claude-sonnet-4-5",
+		},
+		{
+			name:  "partial invalid template",
+			input: "anthropic/{{input.model}}-{{bad}}",
+			ctx:   &RoutingContext{Model: "claude-sonnet-4-5"},
+			err:   "unknown template variable",
+		},
+		{
+			name:     "static value",
+			input:    "claude-sonnet-4-5",
+			ctx:      &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
+			expected: "claude-sonnet-4-5",
+		},
+		{
+			name:     "model template",
+			input:    "anthropic/{{input.model}}",
+			ctx:      &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
+			expected: "anthropic/claude-sonnet-4-5",
+		},
+		{
+			name:  "unknown variable",
+			input: "anthropic/{{input.unknown}}",
+			ctx:   &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
+			err:   "unknown template variable",
+		},
+		{
+			name:  "malformed template",
+			input: "anthropic/{{input.model}",
+			ctx:   &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
+			err:   "invalid template syntax in model target",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual, err := resolveRoutingModelTemplate(tt.input, tt.ctx)
+			if tt.err != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func TestEvaluateRoutingRules_TargetTemplateModel(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	engine, err := NewRoutingEngine(store, NewMockLogger())
+	require.NoError(t, err)
+
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "tmpl-1",
+		Name:          "Template Rule",
+		CelExpression: "true",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+
+	routingCtx := &RoutingContext{
+		Provider:    "",
+		Model:       "claude-sonnet-4-5",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	}
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, routingCtx)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "openrouter", decision.Provider)
+	assert.Equal(t, "anthropic/claude-sonnet-4-5", decision.Model)
+}
+
+func TestEvaluateRoutingRules_InvalidTemplateSkipsRule(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	engine, err := NewRoutingEngine(store, NewMockLogger())
+	require.NoError(t, err)
+
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	badRule := &configstoreTables.TableRoutingRule{
+		ID:            "tmpl-bad",
+		Name:          "Bad Template Rule",
+		CelExpression: "true",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.unknown}}"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
+	}
+	goodRule := &configstoreTables.TableRoutingRule{
+		ID:            "tmpl-good",
+		Name:          "Fallback Rule",
+		CelExpression: "true",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 1,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(badRule))
+	require.NoError(t, store.UpdateRoutingRuleInMemory(goodRule))
+
+	routingCtx := &RoutingContext{
+		Provider:    "",
+		Model:       "claude-sonnet-4-5",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	}
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, routingCtx)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "tmpl-good", decision.MatchedRuleID)
+	assert.Equal(t, "anthropic/claude-sonnet-4-5", decision.Model)
+}
+
 // TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey tests weighted target selection
 // with a seeded/stubbed approach: one target carries all the weight (1.0) and the other carries
 // none (0.0). Because selectWeightedTarget accumulates weights and picks the first target whose

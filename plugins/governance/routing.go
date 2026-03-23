@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -22,6 +23,9 @@ var paramKeyPattern = regexp.MustCompile(`params\[["']([^"']+)["']\]`)
 
 // paramInPattern matches "in params" membership test patterns like "Region" in params or 'Region' in params
 var paramInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+params`)
+
+// targetTemplatePattern matches template placeholders like {{input.model}}.
+var targetTemplatePattern = regexp.MustCompile(`\{\{\s*([^{}\s]+)\s*\}\}`)
 
 // ScopeLevel represents a level in the scope precedence hierarchy
 type ScopeLevel struct {
@@ -155,7 +159,13 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 				model := routingCtx.Model
 				if target.Model != nil && *target.Model != "" {
-					model = *target.Model
+					resolvedModel, resolveErr := resolveRoutingModelTemplate(*target.Model, routingCtx)
+					if resolveErr != nil {
+						re.logger.Warn("[RoutingEngine] Rule %s skipped: model template resolution failed: %v", rule.Name, resolveErr)
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → skipped: model template resolution failed: %v", rule.Name, rule.CelExpression, resolveErr))
+						continue
+					}
+					model = resolvedModel
 				}
 
 				keyID := ""
@@ -186,6 +196,71 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// NOTE:
+// CEL is used for rule matching (boolean evaluation) and does not currently
+// support string transformations. This lightweight templating is intentionally
+// scoped only for deriving the final target model string after a rule matches.
+//
+// This avoids introducing a full expression language into routing targets.
+// Future improvements may unify this under CEL or a dedicated transformation layer.
+//
+// Supported template variables (intentionally minimal):
+// - input.model
+// - model
+//
+// This is intentionally restricted to avoid turning routing into a full templating system.
+func resolveRoutingModelTemplate(templateValue string, ctx *RoutingContext) (string, error) {
+       if templateValue == "" {
+	       return "", nil
+       }
+       if ctx == nil {
+	       return "", fmt.Errorf("routing context cannot be nil")
+       }
+       if !strings.Contains(templateValue, "{{") {
+	       return templateValue, nil
+       }
+
+       matches := targetTemplatePattern.FindAllStringSubmatch(templateValue, -1)
+       if len(matches) == 0 {
+	       return "", fmt.Errorf("invalid template syntax in model target")
+       }
+
+       variables := map[string]string{
+	       "input.model": ctx.Model,
+	       "model":       ctx.Model,
+       }
+
+       unknownVars := make(map[string]struct{})
+       rendered := targetTemplatePattern.ReplaceAllStringFunc(templateValue, func(match string) string {
+	       submatches := targetTemplatePattern.FindStringSubmatch(match)
+	       if len(submatches) != 2 {
+		       return match
+	       }
+	       name := submatches[1]
+	       value, ok := variables[name]
+	       if !ok {
+		       unknownVars[name] = struct{}{}
+		       return match
+	       }
+	       return value
+       })
+
+       if len(unknownVars) > 0 {
+	       keys := make([]string, 0, len(unknownVars))
+	       for key := range unknownVars {
+		       keys = append(keys, key)
+	       }
+	       sort.Strings(keys)
+	       return "", fmt.Errorf("unknown template variable(s): %s", strings.Join(keys, ", "))
+       }
+
+       if strings.Contains(rendered, "{{") || strings.Contains(rendered, "}}") {
+	       return "", fmt.Errorf("invalid template syntax in model target")
+       }
+
+       return rendered, nil
 }
 
 // selectWeightedTarget picks one target from the slice using weighted random selection.
