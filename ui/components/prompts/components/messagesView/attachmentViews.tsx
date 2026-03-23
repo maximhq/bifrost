@@ -1,6 +1,18 @@
 import { MessageContent } from "@/lib/message";
 import { Mic, FileIcon, XIcon } from "lucide-react";
 
+/**
+ * Renders a compact badge for a single attachment with an inline remove control.
+ *
+ * Displays different visuals based on the attachment type:
+ * - image_url with a valid URL: a thumbnail and the label "Image"
+ * - input_audio: a microphone icon and the audio format in uppercase or "Audio"
+ * - other: a file icon and the filename or "File"
+ *
+ * @param attachment - The attachment to display; its `type` determines the badge content.
+ * @param onRemove - Callback invoked when the badge's remove button is clicked.
+ * @returns The rendered attachment badge element.
+ */
 export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageContent; onRemove: () => void }) {
 	const isImage = attachment.type === "image_url";
 	const isAudio = attachment.type === "input_audio";
@@ -34,6 +46,21 @@ export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageC
 	);
 }
 
+/**
+ * Renders a compact list of attachment previews (images, audio controls, or file rows).
+ *
+ * Renders each attachment according to its type:
+ * - image_url with a URL: an image thumbnail
+ * - input_audio: an HTML audio control built from base64 data
+ * - file: a row with a file icon, filename, and optional file type
+ *
+ * When `editable` is true and `onRemoveAttachment` is provided, a remove button is shown for each attachment and invokes the callback with the attachment's index when clicked.
+ *
+ * @param attachments - The attachments to render.
+ * @param editable - If true, show per-attachment remove controls.
+ * @param onRemoveAttachment - Callback invoked with the attachment index when a remove control is clicked.
+ * @returns A JSX element containing the rendered attachments, or `null` when `attachments` is empty.
+ */
 export function AttachmentDisplay({
 	attachments,
 	editable,

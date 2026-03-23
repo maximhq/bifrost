@@ -8,6 +8,18 @@ import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
+/**
+ * Renders the assistant message UI including role switcher, usage tooltip, edit/delete controls, and editable or view-only content.
+ *
+ * The component allows inline editing of plain text or JSON content (JSON edits are buffered and committed on blur), toggling role, and removing the message. Clicking outside the component exits edit mode.
+ *
+ * @param message - The message model to display and edit; updates are emitted via `onChange` as the message's serialized form.
+ * @param disabled - When true, disables editing, role changes, and delete action.
+ * @param isStreaming - When true, shows streaming state (loading indicator) and prevents entering edit mode.
+ * @param onChange - Called when the message is modified; receives the message's serialized representation.
+ * @param onRemove - Optional callback invoked when the delete action is triggered.
+ * @returns The rendered assistant message element.
+ */
 export function AssistantMessageView({
 	message,
 	disabled,

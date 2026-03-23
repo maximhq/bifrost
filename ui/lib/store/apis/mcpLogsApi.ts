@@ -3,9 +3,38 @@ import {
 	MCPToolLogFilters,
 	MCPToolLogStats,
 	MCPToolLogFilterData,
+	MCPHistogramResponse,
+	MCPCostHistogramResponse,
+	MCPTopToolsResponse,
 	Pagination,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
+
+// Helper function to build MCP histogram filter params
+function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string | number> {
+	const params: Record<string, string | number> = {};
+	if (filters.tool_names && filters.tool_names.length > 0) {
+		params.tool_names = filters.tool_names.join(",");
+	}
+	if (filters.server_labels && filters.server_labels.length > 0) {
+		params.server_labels = filters.server_labels.join(",");
+	}
+	if (filters.status && filters.status.length > 0) {
+		params.status = filters.status.join(",");
+	}
+	if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
+		params.virtual_key_ids = filters.virtual_key_ids.join(",");
+	}
+	if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
+		params.llm_request_ids = filters.llm_request_ids.join(",");
+	}
+	if (filters.start_time) params.start_time = filters.start_time;
+	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.content_search) params.content_search = filters.content_search;
+	return params;
+}
 
 export const mcpLogsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -106,6 +135,42 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 			providesTags: ["MCPLogs"],
 		}),
 
+		// Get MCP tool call volume histogram
+		getMCPHistogram: builder.query<
+			MCPHistogramResponse,
+			{ filters: MCPToolLogFilters }
+		>({
+			query: ({ filters }) => ({
+				url: "/mcp-logs/histogram",
+				params: buildMCPFilterParams(filters),
+			}),
+			providesTags: ["MCPLogs"],
+		}),
+
+		// Get MCP cost histogram
+		getMCPCostHistogram: builder.query<
+			MCPCostHistogramResponse,
+			{ filters: MCPToolLogFilters }
+		>({
+			query: ({ filters }) => ({
+				url: "/mcp-logs/histogram/cost",
+				params: buildMCPFilterParams(filters),
+			}),
+			providesTags: ["MCPLogs"],
+		}),
+
+		// Get top MCP tools by call count
+		getMCPTopTools: builder.query<
+			MCPTopToolsResponse,
+			{ filters: MCPToolLogFilters }
+		>({
+			query: ({ filters }) => ({
+				url: "/mcp-logs/histogram/top-tools",
+				params: buildMCPFilterParams(filters),
+			}),
+			providesTags: ["MCPLogs"],
+		}),
+
 		// Delete MCP tool logs by their IDs
 		deleteMCPLogs: builder.mutation<void, { ids: string[] }>({
 			query: ({ ids }) => ({
@@ -126,5 +191,8 @@ export const {
 	useLazyGetMCPLogsQuery,
 	useLazyGetMCPLogsStatsQuery,
 	useLazyGetMCPAvailableFilterDataQuery,
+	useLazyGetMCPHistogramQuery,
+	useLazyGetMCPCostHistogramQuery,
+	useLazyGetMCPTopToolsQuery,
 	useDeleteMCPLogsMutation,
 } = mcpLogsApi;

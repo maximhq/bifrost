@@ -69,6 +69,7 @@ func TestAnthropic(t *testing.T) {
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
 			PassthroughAPI:        true,
+			Compaction:            true,
 		},
 	}
 

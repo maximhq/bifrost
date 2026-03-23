@@ -394,7 +394,10 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 	isMultipartRequest := scenarioName == "Transcription" || scenarioName == "TranscriptionStream" ||
 		scenarioName == "ImageEdit" || scenarioName == "ImageEditStream" ||
 		scenarioName == "ImageVariation"
-	expectations = ApplyRawExpectations(expectations, testConfig, isStreaming, isMultipartRequest)
+	// Skip raw request/response for CountTokens - not all providers support it uniformly
+	if scenarioName != "CountTokens" {
+		expectations = ApplyRawExpectations(expectations, testConfig, isStreaming, isMultipartRequest)
+	}
 
 	return expectations
 }

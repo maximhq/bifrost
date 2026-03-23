@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -311,7 +310,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
-	if err := validateMCPClientName(req.Name); err != nil {
+	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
@@ -515,7 +514,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Validate client name
-	if err := validateMCPClientName(req.Name); err != nil {
+	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
@@ -711,28 +710,6 @@ func validateToolsToAutoExecute(toolsToAutoExecute []string, toolsToExecute []st
 		}
 	}
 
-	return nil
-}
-
-// validateMCPClientName validates the name of an MCP client
-func validateMCPClientName(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("client name is required")
-	}
-	for _, r := range name {
-		if r > 127 { // non-ASCII
-			return fmt.Errorf("name must contain only ASCII characters")
-		}
-	}
-	if strings.Contains(name, "-") {
-		return fmt.Errorf("client name cannot contain hyphens")
-	}
-	if strings.Contains(name, " ") {
-		return fmt.Errorf("client name cannot contain spaces")
-	}
-	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
-		return fmt.Errorf("client name cannot start with a number")
-	}
 	return nil
 }
 

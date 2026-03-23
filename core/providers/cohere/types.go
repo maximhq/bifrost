@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -79,10 +80,10 @@ type CohereMessageContent struct {
 // MarshalJSON implements custom JSON marshaling for CohereMessageContent
 func (c *CohereMessageContent) MarshalJSON() ([]byte, error) {
 	if c.StringContent != nil {
-		return json.Marshal(*c.StringContent)
+		return providerUtils.MarshalSorted(*c.StringContent)
 	}
 	if c.BlocksContent != nil {
-		return json.Marshal(c.BlocksContent)
+		return providerUtils.MarshalSorted(c.BlocksContent)
 	}
 	return []byte("null"), nil
 }
@@ -91,14 +92,14 @@ func (c *CohereMessageContent) MarshalJSON() ([]byte, error) {
 func (c *CohereMessageContent) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as string first
 	var str string
-	if err := json.Unmarshal(data, &str); err == nil {
+	if err := sonic.Unmarshal(data, &str); err == nil {
 		c.StringContent = &str
 		return nil
 	}
 
 	// Try to unmarshal as content blocks array
 	var blocks []CohereContentBlock
-	if err := json.Unmarshal(data, &blocks); err == nil {
+	if err := sonic.Unmarshal(data, &blocks); err == nil {
 		c.BlocksContent = blocks
 		return nil
 	}
@@ -420,8 +421,8 @@ type CohereCitation struct {
 type CohereSource struct {
 	Type       CohereSourceType `json:"type"`                  // Source type ("tool" or "document")
 	ID         *string          `json:"id,omitempty"`          // Source ID (nullable)
-	ToolOutput *map[string]any  `json:"tool_output,omitempty"` // Tool output (for tool sources)
-	Document   *map[string]any  `json:"document,omitempty"`    // Document data (for document sources)
+	ToolOutput *json.RawMessage  `json:"tool_output,omitempty"` // Tool output (for tool sources, json.RawMessage preserves key ordering)
+	Document   *json.RawMessage  `json:"document,omitempty"`    // Document data (for document sources, json.RawMessage preserves key ordering)
 }
 
 // ==================== STREAMING TYPES ====================
@@ -467,12 +468,12 @@ type CohereStreamToolCallStruct struct {
 // JSON marshaling for CohereStreamToolCall
 func (c *CohereStreamToolCallStruct) MarshalJSON() ([]byte, error) {
 	if c.CohereToolCallObject != nil {
-		return sonic.Marshal(c.CohereToolCallObject)
+		return providerUtils.MarshalSorted(c.CohereToolCallObject)
 	}
 	if c.CohereToolCallArray != nil {
-		return sonic.Marshal(c.CohereToolCallArray)
+		return providerUtils.MarshalSorted(c.CohereToolCallArray)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 func (c *CohereStreamToolCallStruct) UnmarshalJSON(data []byte) error {
@@ -503,12 +504,12 @@ type CohereStreamContentStruct struct {
 
 func (c *CohereStreamContentStruct) MarshalJSON() ([]byte, error) {
 	if c.CohereStreamContentObject != nil {
-		return sonic.Marshal(c.CohereStreamContentObject)
+		return providerUtils.MarshalSorted(c.CohereStreamContentObject)
 	}
 	if c.CohereStreamContentArray != nil {
-		return sonic.Marshal(c.CohereStreamContentArray)
+		return providerUtils.MarshalSorted(c.CohereStreamContentArray)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 func (c *CohereStreamContentStruct) UnmarshalJSON(data []byte) error {
@@ -539,12 +540,12 @@ type CohereStreamCitationStruct struct {
 
 func (c *CohereStreamCitationStruct) MarshalJSON() ([]byte, error) {
 	if c.CohereStreamCitationObject != nil {
-		return sonic.Marshal(c.CohereStreamCitationObject)
+		return providerUtils.MarshalSorted(c.CohereStreamCitationObject)
 	}
 	if c.CohereStreamCitationArray != nil {
-		return sonic.Marshal(c.CohereStreamCitationArray)
+		return providerUtils.MarshalSorted(c.CohereStreamCitationArray)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 func (c *CohereStreamCitationStruct) UnmarshalJSON(data []byte) error {

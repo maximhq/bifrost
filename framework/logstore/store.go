@@ -38,6 +38,7 @@ type LogStore interface {
 	GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error)
 	GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error)
 	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
+	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error
@@ -51,6 +52,11 @@ type LogStore interface {
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error)
+
+	// MCP Tool Log histogram methods
+	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
+	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
+	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error

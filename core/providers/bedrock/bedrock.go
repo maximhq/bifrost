@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -71,7 +73,40 @@ func releaseBedrockChatResponse(resp *BedrockConverseResponse) {
 func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*BedrockProvider, error) {
 	config.CheckAndSetDefaults()
 
-	client := &http.Client{Timeout: time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)}
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
+
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:  10 * time.Second,
+		ResponseHeaderTimeout: requestTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     config.NetworkConfig.EnforceHTTP2,
+	}
+
+	// Apply TLS settings from NetworkConfig
+	if config.NetworkConfig.InsecureSkipVerify || config.NetworkConfig.CACertPEM != "" {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if config.NetworkConfig.InsecureSkipVerify {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		if config.NetworkConfig.CACertPEM != "" {
+			certPool, err := x509.SystemCertPool()
+			if err != nil {
+				certPool = x509.NewCertPool()
+			}
+			if !certPool.AppendCertsFromPEM([]byte(config.NetworkConfig.CACertPEM)) {
+				return nil, fmt.Errorf("failed to parse CA certificate PEM")
+			}
+			tlsConfig.RootCAs = certPool
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+
+	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
@@ -91,6 +126,22 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 // GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
+}
+
+// ensureBedrockKeyConfig ensures key.BedrockKeyConfig is non-nil. When the key
+// uses API key authentication (key.Value is set) but has no Bedrock-specific
+// config, a minimal default is created so the request URL can be constructed
+// (region defaults to us-east-1). Returns false only when there is truly no
+// way to authenticate (no API key AND no bedrock config).
+func ensureBedrockKeyConfig(key *schemas.Key) bool {
+	if key.BedrockKeyConfig != nil {
+		return true
+	}
+	if key.Value.GetValue() != "" {
+		key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		return true
+	}
+	return false
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -325,7 +376,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContext, jsonData []byte, key schemas.Key, model string, action string) (*http.Response, string, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, "", providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -547,7 +598,7 @@ func signAWSRequest(
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -718,7 +769,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -798,7 +849,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -934,7 +985,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1294,7 +1345,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1633,7 +1684,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	}
 
 	providerName := provider.GetProviderKey()
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1743,7 +1794,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	}
 
 	providerName := provider.GetProviderKey()
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1826,7 +1877,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	}
 
 	providerName := provider.GetProviderKey()
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1907,7 +1958,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	}
 
 	providerName := provider.GetProviderKey()
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -1982,7 +2033,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	}
 
 	providerName := provider.GetProviderKey()
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -2087,7 +2138,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		provider.logger.Error("bedrock key config is is missing in file upload request")
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
@@ -2292,7 +2343,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Sign request for S3
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "s3", providerName); bifrostErr != nil {
@@ -2394,7 +2445,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.BedrockKeyConfig == nil {
+		if !ensureBedrockKeyConfig(&key) {
 			lastErr = providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 			continue
 		}
@@ -2501,7 +2552,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.BedrockKeyConfig == nil {
+		if !ensureBedrockKeyConfig(&key) {
 			lastErr = providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 			continue
 		}
@@ -2591,7 +2642,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.BedrockKeyConfig == nil {
+		if !ensureBedrockKeyConfig(&key) {
 			lastErr = providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 			continue
 		}
@@ -2679,7 +2730,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		provider.logger.Error("bedrock key config is not provided")
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
@@ -2949,7 +3000,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 		}, nil
 	}
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
@@ -3146,7 +3197,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.BedrockKeyConfig == nil {
+		if !ensureBedrockKeyConfig(&key) {
 			lastErr = providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 			continue
 		}
@@ -3290,7 +3341,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
-		if key.BedrockKeyConfig == nil {
+		if !ensureBedrockKeyConfig(&key) {
 			lastErr = providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 			continue
 		}
@@ -3536,7 +3587,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 
 	providerName := provider.GetProviderKey()
 
-	if key.BedrockKeyConfig == nil {
+	if !ensureBedrockKeyConfig(&key) {
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 

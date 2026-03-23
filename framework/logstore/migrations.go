@@ -28,6 +28,18 @@ const (
 	// so that the long-running CREATE INDEX CONCURRENTLY held by one pod's goroutine
 	// does not block other pods from running their (fast) migrations on startup.
 	ginIndexAdvisoryLockKey = 1000002
+
+	// perfIndexAdvisoryLockKey serializes the background performance index build
+	// (trigram + routing engine GIN indexes) across cluster nodes.
+	perfIndexAdvisoryLockKey = 1000003
+
+	// dashboardEnhancementsAdvisoryLockKey serializes the background dashboard
+	// enhancements work (backfill + covering index rebuild) across cluster nodes.
+	dashboardEnhancementsAdvisoryLockKey = 1000004
+
+	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
+	// refreshes across cluster nodes so only one replica refreshes at a time.
+	matviewRefreshAdvisoryLockKey = 1000005
 )
 
 // advisoryLock holds a dedicated connection and the advisory lock key.
@@ -86,7 +98,19 @@ func acquireGINIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error
 	return acquireAdvisoryLock(ctx, db, ginIndexAdvisoryLockKey, "gin_index")
 }
 
-// Migrate performs the necessary database migrations.
+// acquirePerfIndexLock acquires the serialization lock for the background performance index build.
+func acquirePerfIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
+	return acquireAdvisoryLock(ctx, db, perfIndexAdvisoryLockKey, "perf_index")
+}
+
+// acquireDashboardEnhancementsLock acquires the serialization lock for the background
+// dashboard enhancements work (backfill + covering index rebuild).
+func acquireDashboardEnhancementsLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
+	return acquireAdvisoryLock(ctx, db, dashboardEnhancementsAdvisoryLockKey, "dashboard_enhancements")
+}
+
+// triggerMigrations runs all registered logstore schema migrations in order under a
+// PostgreSQL advisory lock (shared with configstore) so only one node migrates at a time.
 func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	// Acquire advisory lock to serialize migrations across cluster nodes.
 	// Uses the same key as configstore to ensure all migrations are serialized.
@@ -192,10 +216,16 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMetadataGINIndex(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddDashboardEnhancements(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
-// migrationInit is the first migration
+// migrationInit creates the logs table if it does not exist.
 func migrationInit(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "logs_init",
@@ -227,7 +257,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationUpdateObjectColumnValues updates the object column values from old format to new format
+// migrationUpdateObjectColumnValues normalizes legacy object_type string values on the logs table.
 func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -306,7 +336,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddParentRequestIDColumn adds the parent_request_id column to the logs table
+// migrationAddParentRequestIDColumn adds the parent_request_id column to the logs table.
 func migrationAddParentRequestIDColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -338,6 +368,8 @@ func migrationAddParentRequestIDColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddResponsesOutputColumn adds columns for Responses API output, chat/embedding
+// payloads, and raw_response on the logs table.
 func migrationAddResponsesOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -401,6 +433,7 @@ func migrationAddResponsesOutputColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddCostAndCacheDebugColumn adds cost and cache_debug columns to the logs table.
 func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -440,6 +473,7 @@ func migrationAddCostAndCacheDebugColumn(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationAddResponsesInputHistoryColumn adds the responses_input_history column to the logs table.
 func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -471,6 +505,8 @@ func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB) e
 	return nil
 }
 
+// migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns adds retry,
+// fallback, selected API key, and virtual key columns to the logs table.
 func migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColumns(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -542,7 +578,7 @@ func migrationAddNumberOfRetriesAndFallbackIndexAndSelectedKeyAndVirtualKeyColum
 	return nil
 }
 
-// migrationAddPerformanceIndexes adds indexes for performance optimization
+// migrationAddPerformanceIndexes adds btree indexes on latency, total_tokens, and key columns.
 func migrationAddPerformanceIndexes(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -744,7 +780,8 @@ func migrationAddPerformanceIndexesV2(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationUpdateLogsTimestampFormat converts local timestamps to UTC timestamps in logs table
+// migrationUpdateTimestampFormat converts timestamp and created_at values to UTC ISO-8601 form
+// on SQLite only; other dialects are unchanged.
 func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 	// only run the migration for sqlite databases
 	dialect := db.Dialector.Name()
@@ -791,6 +828,7 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddRawRequestColumn adds the raw_request column to the logs table.
 func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -940,6 +978,7 @@ func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationAddImageGenerationOutputColumn adds the image_generation_output column to the logs table.
 func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -973,6 +1012,7 @@ func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB) e
 	return nil
 }
 
+// migrationAddImageGenerationInputColumn adds the image_generation_input column to the logs table.
 func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1006,6 +1046,7 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) er
 	return nil
 }
 
+// migrationAddRoutingRuleIDAndRoutingRuleNameColumns adds routing_rule_id and routing_rule_name to the logs table.
 func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1117,6 +1158,7 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+// migrationAddRoutingEngineUsedColumn adds routing_engine_used when the plural column does not exist yet.
 func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1152,6 +1194,7 @@ func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationAddRoutingEnginesUsedColumn renames routing_engine_used to routing_engines_used or drops the legacy column.
 func migrationAddRoutingEnginesUsedColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1201,6 +1244,7 @@ func migrationAddRoutingEnginesUsedColumn(ctx context.Context, db *gorm.DB) erro
 	return m.Migrate()
 }
 
+// migrationAddListModelsOutputColumn adds the list_models_output column to the logs table.
 func migrationAddListModelsOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1234,6 +1278,7 @@ func migrationAddListModelsOutputColumn(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddRerankOutputColumn adds the rerank_output column to the logs table.
 func migrationAddRerankOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1267,6 +1312,7 @@ func migrationAddRerankOutputColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddRoutingEngineLogsColumn adds the routing_engine_logs column to the logs table.
 func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1300,6 +1346,7 @@ func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB) error
 	return nil
 }
 
+// migrationAddLargePayloadColumns adds is_large_payload_request and is_large_payload_response to the logs table.
 func migrationAddLargePayloadColumns(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1343,6 +1390,7 @@ func migrationAddLargePayloadColumns(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationCreateAsyncJobsTable creates the async_jobs table and its indexes if missing.
 func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "async_jobs_init",
@@ -1388,6 +1436,7 @@ func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddMetadataColumn adds the metadata JSON column to the logs table.
 func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1530,6 +1579,7 @@ func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
+// migrationAddVideoColumns adds video generation, retrieval, download, list, and delete payload columns to the logs table.
 func migrationAddVideoColumns(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1641,6 +1691,7 @@ func migrationAddProviderHistogramIndex(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddPassthroughRequestBodyColumn adds passthrough_request_body to the logs table.
 func migrationAddPassthroughRequestBodyColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1674,6 +1725,7 @@ func migrationAddPassthroughRequestBodyColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
+// migrationAddPassthroughResponseBodyColumn adds passthrough_response_body to the logs table.
 func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -1750,7 +1802,7 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 					if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT").Error; err != nil {
 						return fmt.Errorf("failed to clean invalid metadata values: %w", err)
 					}
-				} else {					
+				} else {
 					// Go-based batch validation for PostgreSQL < 16.
 					type metadataRow struct {
 						ID       string
@@ -1788,7 +1840,7 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 							break
 						}
 					}
-				}				
+				}
 			}
 			return nil
 		},
@@ -1872,5 +1924,261 @@ func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	if err := db.WithContext(ctx).Exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL").Error; err != nil {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
 	}
+	return nil
+}
+
+// migrationAddDashboardEnhancements adds cached_read_tokens column to logs table.
+// The expensive backfill, covering index rebuild, and MCP index creation are deferred
+// to ensureDashboardEnhancements (called post-startup in a background goroutine) so
+// they do not block pod startup on large tables.
+func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_dashboard_enhancements",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			if !dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
+				if err := dbMigrator.AddColumn(&Log{}, "CachedReadTokens"); err != nil {
+					return fmt.Errorf("failed to add cached_read_tokens column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			if dbMigrator.HasColumn(&Log{}, "cached_read_tokens") {
+				_ = dbMigrator.DropColumn(&Log{}, "cached_read_tokens")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running dashboard enhancements migration: %s", err.Error())
+	}
+	return nil
+}
+
+// ensureDashboardEnhancements performs the expensive dashboard migration work that was
+// deferred from migrationAddDashboardEnhancements: backfilling cached_read_tokens from
+// the token_usage JSON, rebuilding the histogram covering index to include the new column,
+// and creating the MCP histogram covering index.
+//
+// This is intentionally separate so that the long-running UPDATE and index rebuild do not
+// block pod startup. Callers that want non-blocking behaviour should invoke this in a
+// goroutine (see postgres.go). All operations are idempotent and safe to re-run.
+func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	lock, err := acquireDashboardEnhancementsLock(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer lock.release(context.Background())
+
+	// Backfill cached_read_tokens from token_usage JSON.
+	// The extra `AND cached_read_tokens = 0` plus `AND COALESCE(...) > 0` makes
+	// re-runs cheap: rows already backfilled have non-zero values (skipped),
+	// and rows with genuinely zero cached tokens are also skipped (correct as-is).
+	backfillSQL := `UPDATE logs SET
+		cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
+		WHERE cached_read_tokens = 0
+		AND token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
+		AND token_usage ~ '^\s*\{.*\}\s*$'
+		AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0`
+	if err := db.WithContext(ctx).Exec(backfillSQL).Error; err != nil {
+		return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
+	}
+
+	// Rebuild histogram covering index with cached_read_tokens included,
+	// but only if missing or invalid (skip if already healthy).
+	var logsIndexValid bool
+	if err := db.WithContext(ctx).Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = 'logs'
+		  AND ic.relname = 'idx_logs_histogram_cover'
+	`).Scan(&logsIndexValid).Error; err != nil {
+		return fmt.Errorf("failed to check logs histogram index validity: %w", err)
+	}
+	if !logsIndexValid {
+		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+			return fmt.Errorf("failed to drop old covering index: %w", err)
+		}
+		createLogsIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_histogram_cover ON logs(
+			status, timestamp,
+			selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+			model, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
+		)`
+		if err := db.WithContext(ctx).Exec(createLogsIndexSQL).Error; err != nil {
+			return fmt.Errorf("failed to create updated covering index: %w", err)
+		}
+	}
+
+	// Create MCP histogram covering index if missing or invalid.
+	var mcpIndexValid bool
+	if err := db.WithContext(ctx).Raw(`
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relname = 'mcp_tool_logs'
+		  AND ic.relname = 'idx_mcp_logs_histogram_cover'
+	`).Scan(&mcpIndexValid).Error; err != nil {
+		return fmt.Errorf("failed to check MCP histogram index validity: %w", err)
+	}
+	if !mcpIndexValid {
+		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_mcp_logs_histogram_cover").Error; err != nil {
+			return fmt.Errorf("failed to drop invalid MCP histogram index: %w", err)
+		}
+		createMCPIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
+			status, timestamp, tool_name, server_label, virtual_key_id, cost
+		)`
+		if err := db.WithContext(ctx).Exec(createMCPIndexSQL).Error; err != nil {
+			return fmt.Errorf("failed to create MCP histogram covering index: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrationAddLogsAndDashboardPerformanceIndexes records the migration version for the performance
+// indexes. Actual index creation is deferred to ensurePerformanceIndexes (called
+// post-startup in a background goroutine) because CREATE INDEX CONCURRENTLY cannot
+// run inside a transaction.
+func migrationAddLogsAndDashboardPerformanceIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_and_dashboard_performance_indexes",
+		Migrate: func(tx *gorm.DB) error {
+			// No-op: actual index creation is handled by ensurePerformanceIndexes
+			// to avoid blocking pod startup.
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			tx = tx.WithContext(ctx)
+			for _, indexName := range []string{
+				"idx_logs_content_summary_fts",
+				"idx_mcp_logs_arguments_fts",
+				"idx_mcp_logs_result_fts",
+				"idx_logs_routing_engines_arr",
+				"idx_mcp_logs_timestamp",
+			} {
+				if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + indexName).Error; err != nil {
+					return fmt.Errorf("failed to drop performance index %s: %w", indexName, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error recording performance gin indexes migration: %w", err)
+	}
+	return nil
+}
+
+// performanceIndexDef is the table name, index name, and CREATE INDEX SQL for one Postgres index.
+type performanceIndexDef struct {
+	table string
+	name  string
+	sql   string
+}
+
+// performanceIndexes is the set of full-text and GIN indexes built by ensurePerformanceIndexes.
+// Each statement uses CREATE INDEX CONCURRENTLY to avoid blocking writes.
+var performanceIndexes = []performanceIndexDef{
+	{
+		table: "logs",
+		name:  "idx_logs_content_summary_fts",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', content_summary)) WHERE content_summary IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_arguments_fts",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', arguments)) WHERE arguments IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_result_fts",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', result)) WHERE result IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_routing_engines_arr",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_routing_engines_arr ON logs USING GIN (string_to_array(routing_engines_used, ',')) WHERE routing_engines_used IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_timestamp",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_timestamp ON mcp_tool_logs (timestamp)",
+	},
+}
+
+// ensurePerformanceIndexes checks whether each performance GIN index exists and is
+// valid. If an index is missing or was left in an INVALID state by a previously
+// interrupted CREATE INDEX CONCURRENTLY, it drops the remnant and rebuilds.
+//
+// This is intentionally separate from migrationAddPerformanceGINIndexes so that the
+// long-running CREATE INDEX CONCURRENTLY does not block pod startup. Callers that
+// want non-blocking behaviour should invoke this in a goroutine (see postgres.go).
+func ensurePerformanceIndexes(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+
+	lock, err := acquirePerfIndexLock(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer lock.release(context.Background())
+
+	// Use the pinned advisory-lock connection for all statements so that
+	// session-scoped SET commands and the subsequent DDL share one backend.
+	conn := lock.conn
+
+	// Boost memory for sort phase during index builds.
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	for _, idx := range performanceIndexes {
+		// Check if the index exists and is valid.
+		var indexValid bool
+		if err := conn.QueryRowContext(ctx, `
+			SELECT COALESCE(bool_and(pi.indisvalid), false)
+			FROM pg_class pc
+			JOIN pg_index pi ON pi.indrelid = pc.oid
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pc.relname = $1
+			  AND ic.relname = $2
+		`, idx.table, idx.name).Scan(&indexValid); err != nil {
+			return fmt.Errorf("failed to check index %s validity: %w", idx.name, err)
+		}
+		if indexValid {
+			continue
+		}
+
+		// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+idx.name); err != nil {
+			return fmt.Errorf("failed to drop invalid index %s: %w", idx.name, err)
+		}
+
+		// Create the index concurrently (does not block writes).
+		if _, err := conn.ExecContext(ctx, idx.sql); err != nil {
+			return fmt.Errorf("failed to create index %s: %w", idx.name, err)
+		}
+	}
+
 	return nil
 }

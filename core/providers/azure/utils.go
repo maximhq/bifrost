@@ -62,6 +62,9 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			reqBody.Stream = schemas.Ptr(true)
 		}
 
+		// Add provider-aware beta headers for Azure
+		anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
+
 		// Marshal struct to JSON bytes, preserving field order
 		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {

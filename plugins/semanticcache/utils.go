@@ -738,7 +738,11 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 		maps.Copy(metadata, params.ExtraParams)
 	}
 	if len(params.Tools) > 0 {
-		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
+		tools := make([]interface{}, len(params.Tools))
+		for i, t := range params.Tools {
+			tools[i] = t
+		}
+		if toolsJSON, err := schemas.MarshalDeeplySorted(tools); err != nil {
 			plugin.logger.Warn("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err)
 		} else {
 			toolHash := xxhash.Sum64(toolsJSON)
@@ -827,7 +831,11 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 		maps.Copy(metadata, params.ExtraParams)
 	}
 	if len(params.Tools) > 0 {
-		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
+		tools := make([]interface{}, len(params.Tools))
+		for i, t := range params.Tools {
+			tools[i] = t
+		}
+		if toolsJSON, err := schemas.MarshalDeeplySorted(tools); err != nil {
 			plugin.logger.Warn("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err)
 		} else {
 			toolHash := xxhash.Sum64(toolsJSON)

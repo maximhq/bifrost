@@ -7,6 +7,20 @@ import { Wrench, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
+/**
+ * Renders a UI for viewing and editing tool-call entries on a message, including optional argument editing and submitting tool responses.
+ *
+ * The component displays each tool call's name, id, and arguments (JSON arguments open in an editable code editor). JSON edits are buffered locally and only committed to `onChange` when the editor loses focus or when the message role changes. The component also exposes controls for switching the message role, deleting the message, and entering/submitting a response for individual tool calls.
+ *
+ * @param message - Message instance containing zero or more toolCalls to render; edits are serialized via `onChange`.
+ * @param disabled - When true, disables interactive controls and makes editors read-only.
+ * @param onChange - Called with the message's serialized form after committed edits (e.g., buffered JSON arguments flushed or role changed).
+ * @param onRemove - If provided, called when the delete button is clicked.
+ * @param onSubmitToolResult - If provided, called with (toolCallId, content) when a user submits a response for a tool call.
+ * @param respondedToolCallIds - Optional set of toolCall ids that have already received responses; tool calls in this set hide the response UI.
+ *
+ * @returns The rendered React element for the tool-call message view.
+ */
 export default function ToolCallMessageView({
 	message,
 	disabled,

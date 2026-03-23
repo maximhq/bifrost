@@ -3,7 +3,7 @@
 import type { ProviderLatencyHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS } from "../utils/chartUtils";
+import { formatFullTimestamp, formatLatency, formatTimestamp, getModelColor, LATENCY_COLORS } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -131,7 +131,7 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
@@ -162,10 +162,38 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
+								<Bar
+									isAnimationActive={false}
+									dataKey="avg_latency"
+									fill={LATENCY_COLORS.avg}
+									fillOpacity={0.9}
+									barSize={8}
+									radius={[2, 2, 0, 0]}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="p90_latency"
+									fill={LATENCY_COLORS.p90}
+									fillOpacity={0.9}
+									barSize={8}
+									radius={[2, 2, 0, 0]}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="p95_latency"
+									fill={LATENCY_COLORS.p95}
+									fillOpacity={0.9}
+									barSize={8}
+									radius={[2, 2, 0, 0]}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="p99_latency"
+									fill={LATENCY_COLORS.p99}
+									fillOpacity={0.9}
+									barSize={8}
+									radius={[2, 2, 0, 0]}
+								/>
 							</>
 						) : (
 							<>
@@ -175,6 +203,7 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 										key={provider}
 										dataKey={`provider_${idx}`}
 										fill={getModelColor(idx)}
+										isAnimationActive={false}
 										fillOpacity={0.9}
 										barSize={8}
 										radius={[2, 2, 0, 0]}
@@ -208,10 +237,38 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} />
-								<Area type="monotone" dataKey="p99_latency" stroke={LATENCY_COLORS.p99} fill={LATENCY_COLORS.p99} fillOpacity={0.15} />
-								<Area type="monotone" dataKey="p95_latency" stroke={LATENCY_COLORS.p95} fill={LATENCY_COLORS.p95} fillOpacity={0.2} />
-								<Area type="monotone" dataKey="p90_latency" stroke={LATENCY_COLORS.p90} fill={LATENCY_COLORS.p90} fillOpacity={0.25} />
-								<Area type="monotone" dataKey="avg_latency" stroke={LATENCY_COLORS.avg} fill={LATENCY_COLORS.avg} fillOpacity={0.4} />
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="p99_latency"
+									stroke={LATENCY_COLORS.p99}
+									fill={LATENCY_COLORS.p99}
+									fillOpacity={0.15}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="p95_latency"
+									stroke={LATENCY_COLORS.p95}
+									fill={LATENCY_COLORS.p95}
+									fillOpacity={0.2}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="p90_latency"
+									stroke={LATENCY_COLORS.p90}
+									fill={LATENCY_COLORS.p90}
+									fillOpacity={0.25}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="avg_latency"
+									stroke={LATENCY_COLORS.avg}
+									fill={LATENCY_COLORS.avg}
+									fillOpacity={0.4}
+								/>
 							</>
 						) : (
 							<>
@@ -220,6 +277,7 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 									<Area
 										key={provider}
 										type="monotone"
+										isAnimationActive={false}
 										dataKey={`provider_${idx}`}
 										stroke={getModelColor(idx)}
 										fill={getModelColor(idx)}

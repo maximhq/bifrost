@@ -28,6 +28,13 @@ import { usePathname } from "next/navigation";
 import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import { usePromptContext } from "../context";
 
+/**
+ * Renders the prompt-manager sidebar including search, folder hierarchy, root prompts, and drag-and-drop reorganization.
+ *
+ * The sidebar supports creating, renaming, and deleting folders and prompts (when permitted), selecting prompts, auto-expanding the folder that contains the selected prompt, filtering by search query, and dragging prompts between folders or to the root. Visual drag-over feedback and permission gating for create/update/delete actions are applied.
+ *
+ * @returns The sidebar React element containing the search input, folder list, root prompt drop zone, and drag-and-drop provider.
+ */
 export function PromptSidebar() {
 	const {
 		folders,
@@ -272,6 +279,19 @@ interface RootDropZoneProps {
 	canDelete: boolean;
 }
 
+/**
+ * Renders the droppable root area that lists and hosts draggable root-level prompts.
+ *
+ * @param isDragOver - Whether a draggable item is currently over the root drop zone (applies drag-over styling).
+ * @param rootPrompts - Array of prompts that belong at the root (no folder).
+ * @param selectedPromptId - ID of the currently selected prompt, used to mark its item as selected.
+ * @param onSelectPrompt - Callback invoked with a prompt ID when a prompt is selected.
+ * @param onEditPrompt - Callback invoked with a prompt when the prompt's edit action is triggered.
+ * @param onDeletePrompt - Callback invoked with a prompt when the prompt's delete action is triggered.
+ * @param canUpdate - Whether prompts are movable/editable (enables dragging).
+ * @param canDelete - Whether prompts may be deleted (controls delete action visibility).
+ * @returns The JSX element for the root drop zone containing draggable prompt items.
+ */
 function RootDropZone({
 	isDragOver,
 	rootPrompts,
@@ -320,6 +340,26 @@ interface DroppableFolderProps {
 	canDelete: boolean;
 }
 
+/**
+ * Renders a droppable folder header with optional action menu and its list of prompts.
+ *
+ * @param folder - Folder metadata (id, name, etc.)
+ * @param prompts - Prompts that belong to this folder
+ * @param isExpanded - Whether the folder is expanded to show its prompts
+ * @param isDragOver - Whether a draggable item is currently over this folder (affects visual state)
+ * @param selectedPromptId - ID of the currently selected prompt, used to highlight an item
+ * @param onToggle - Callback invoked to toggle the folder's expanded state
+ * @param onSelectPrompt - Callback invoked with a prompt ID when a prompt is selected
+ * @param onEdit - Callback invoked to start editing the folder
+ * @param onDelete - Callback invoked to start deleting the folder
+ * @param onCreatePrompt - Callback invoked to create a new prompt inside this folder
+ * @param onEditPrompt - Callback invoked with a prompt to start editing that prompt
+ * @param onDeletePrompt - Callback invoked with a prompt to start deleting that prompt
+ * @param canCreate - Whether the current user may create prompts in this folder
+ * @param canUpdate - Whether the current user may move/rename prompts or edit the folder
+ * @param canDelete - Whether the current user may delete prompts or the folder
+ * @returns A JSX element containing the folder row and, when expanded, its nested prompt items
+ */
 function DroppableFolder({
 	folder,
 	prompts,
@@ -455,6 +495,20 @@ interface DraggablePromptItemProps {
 	canDelete: boolean;
 }
 
+/**
+ * Renders a draggable prompt list item that shows the prompt name, selection/drag states, and an actions menu when permitted.
+ *
+ * Displays a file icon and truncated prompt name, applies visual styles for selection and dragging, prevents selection while dragging, and exposes rename/delete actions via a dropdown when `canUpdate` or `canDelete` are true.
+ *
+ * @param prompt - The prompt object to render.
+ * @param isSelected - Whether this prompt is currently selected; used for styling.
+ * @param onSelect - Callback invoked when the item is clicked (not invoked if the item is being dragged).
+ * @param onEdit - Callback invoked to start editing/renaming the prompt.
+ * @param onDelete - Callback invoked to delete the prompt.
+ * @param canUpdate - When true, enables dragging and shows the rename action.
+ * @param canDelete - When true, shows the delete action.
+ * @returns The rendered prompt item JSX element.
+ */
 function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
 	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}`, disabled: !canUpdate });
 	const showActions = canUpdate || canDelete;

@@ -237,6 +237,8 @@ bifrost:
     #     max_retries: 3                                # Maximum number of retries
     #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
+    #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
+    #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #   # Concurrency configuration (optional)
     #   concurrency_and_buffer_size:
     #     concurrency: 100                              # Number of concurrent requests

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -345,7 +346,7 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 		for _, item := range s {
 			if m, ok := item.(map[string]interface{}); ok {
 				// Re-marshal and unmarshal to capture all fields (text, guardContent, cachePoint)
-				itemBytes, err := sonic.Marshal(m)
+				itemBytes, err := providerUtils.MarshalSorted(m)
 				if err != nil {
 					continue
 				}
@@ -390,7 +391,8 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			spec.Description = &desc
 		}
 		if inputSchema, ok := toolMap["input_schema"]; ok {
-			spec.InputSchema = BedrockToolInputSchema{JSON: inputSchema}
+			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
+			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
@@ -857,7 +859,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		return nil, nil
 	}
 
-	bytes, err := sonic.Marshal(event)
+	bytes, err := providerUtils.MarshalSorted(event)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal invoke stream event: %w", err)
 	}

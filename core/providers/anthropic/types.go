@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -31,6 +32,12 @@ const (
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
 
+	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
+	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
+	AnthropicComputerUseBetaHeader20251124 = "computer-use-2025-11-24"
+	// computer_20250124 (all other supported models) uses the older beta header.
+	AnthropicComputerUseBetaHeader20250124 = "computer-use-2025-01-24"
+
 	// Prefixes for Vertex-unsupported beta headers (version-bump proof).
 	// Use these with strings.HasPrefix when filtering headers for Vertex AI,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
@@ -39,6 +46,54 @@ const (
 	AnthropicPromptCachingScopeBetaHeaderPrefix = "prompt-caching-scope-"
 	AnthropicMCPClientBetaHeaderPrefix          = "mcp-client-"
 )
+
+// ProviderFeatureSupport defines which Anthropic features a given provider supports.
+// Source: https://docs.anthropic.com/en/build-with-claude/overview (March 2026)
+type ProviderFeatureSupport struct {
+	WebSearch          bool // web_search server tool
+	WebSearchDynamic   bool // web_search_20260209 (dynamic filtering, requires code_execution)
+	WebFetch           bool // web_fetch server tool
+	CodeExecution      bool // code_execution server tool
+	ComputerUse        bool // computer_use client tool
+	Bash               bool // bash client tool
+	Memory             bool // memory client tool
+	TextEditor         bool // text_editor client tool
+	ToolSearch         bool // tool_search server tool
+	MCP                bool // MCP connector
+	AdvancedToolUse    bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
+	StructuredOutputs  bool // strict tool validation and output_format
+	PromptCachingScope bool // prompt caching scope
+	Compaction         bool // server-side context compaction
+	ContextEditing     bool // context editing (clear_tool_uses, clear_thinking)
+	FilesAPI           bool // Files API
+	FileSearch         bool // file_search server tool (OpenAI-only)
+	ImageGeneration    bool // image_generation server tool (OpenAI-only)
+}
+
+// ProviderFeatures maps each provider to its supported Anthropic features.
+var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
+	schemas.Anthropic: {
+		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
+		Compaction: true, ContextEditing: true, FilesAPI: true,
+	},
+	schemas.Vertex: {
+		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		Compaction: true, ContextEditing: true,
+	},
+	schemas.Bedrock: {
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		StructuredOutputs: true, Compaction: true, ContextEditing: true,
+	},
+	schemas.Azure: {
+		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
+		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
+		Compaction: true, ContextEditing: true, FilesAPI: true,
+	},
+}
 
 // ==================== REQUEST TYPES ====================
 
@@ -71,7 +126,7 @@ func (req *AnthropicTextRequest) IsStreamingRequested() bool {
 // AnthropicOutputConfig represents the GA structured outputs config (output_config.format)
 // and the effort parameter (output_config.effort) for controlling token spending.
 type AnthropicOutputConfig struct {
-	Format interface{} `json:"format,omitempty"`
+	Format json.RawMessage `json:"format,omitempty"`
 	Effort *string     `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
 }
 
@@ -92,7 +147,7 @@ type AnthropicMessageRequest struct {
 	ToolChoice        *AnthropicToolChoice   `json:"tool_choice,omitempty"`
 	MCPServers        []AnthropicMCPServer   `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking          *AnthropicThinking     `json:"thinking,omitempty"`
-	OutputFormat      interface{}            `json:"output_format,omitempty"` // Beta: requires header "anthropic-beta": "structured-outputs-2025-11-13"
+	OutputFormat      json.RawMessage        `json:"output_format,omitempty"` // Beta: requires header "anthropic-beta": "structured-outputs-2025-11-13" (json.RawMessage preserves key ordering)
 	OutputConfig      *AnthropicOutputConfig `json:"output_config,omitempty"` // GA: structured outputs without beta header
 	ServiceTier       *string                `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
@@ -154,12 +209,12 @@ func (tv CompactManagementEditTypeAndValue) MarshalJSON() ([]byte, error) {
 	}
 
 	if tv.TypeAndValueString != nil {
-		return sonic.Marshal(*tv.TypeAndValueString)
+		return providerUtils.MarshalSorted(*tv.TypeAndValueString)
 	}
 	if tv.TypeAndValueObject != nil {
-		return sonic.Marshal(tv.TypeAndValueObject)
+		return providerUtils.MarshalSorted(tv.TypeAndValueObject)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for CompactManagementEditTypeAndValue.
@@ -206,12 +261,12 @@ func (ct ClearToolInputs) MarshalJSON() ([]byte, error) {
 	}
 
 	if ct.ClearToolInputsBoolean != nil {
-		return sonic.Marshal(*ct.ClearToolInputsBoolean)
+		return providerUtils.MarshalSorted(*ct.ClearToolInputsBoolean)
 	}
 	if ct.ClearToolInputsArray != nil {
-		return sonic.Marshal(ct.ClearToolInputsArray)
+		return providerUtils.MarshalSorted(ct.ClearToolInputsArray)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ClearToolInputs.
@@ -257,13 +312,13 @@ func (edit ContextManagementEdit) MarshalJSON() ([]byte, error) {
 	switch edit.Type {
 	case ContextManagementEditTypeCompact:
 		if edit.CompactManagementEditConfig == nil {
-			return sonic.Marshal(struct {
+			return providerUtils.MarshalSorted(struct {
 				Type ContextManagementEditType `json:"type"`
 			}{
 				Type: edit.Type,
 			})
 		}
-		return sonic.Marshal(struct {
+		return providerUtils.MarshalSorted(struct {
 			Type ContextManagementEditType `json:"type"`
 			*CompactManagementEditConfig
 		}{
@@ -274,7 +329,7 @@ func (edit ContextManagementEdit) MarshalJSON() ([]byte, error) {
 		if edit.CompactManagementEditClearThinking == nil {
 			return nil, fmt.Errorf("compact management edit clear thinking is nil for type clear_thinking_20251015")
 		}
-		return sonic.Marshal(struct {
+		return providerUtils.MarshalSorted(struct {
 			Type ContextManagementEditType `json:"type"`
 			*CompactManagementEditClearThinking
 		}{
@@ -285,7 +340,7 @@ func (edit ContextManagementEdit) MarshalJSON() ([]byte, error) {
 		if edit.CompactManagementEditClearToolUses == nil {
 			return nil, fmt.Errorf("compact management edit clear tool uses is nil for type clear_tool_uses_20250919")
 		}
-		return sonic.Marshal(struct {
+		return providerUtils.MarshalSorted(struct {
 			Type ContextManagementEditType `json:"type"`
 			*CompactManagementEditClearToolUses
 		}{
@@ -417,6 +472,20 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	// Compact known json.RawMessage fields for deterministic cache keys
+	if len(req.OutputFormat) > 0 {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, req.OutputFormat); err == nil {
+			req.OutputFormat = json.RawMessage(buf.Bytes())
+		}
+	}
+	if req.OutputConfig != nil && len(req.OutputConfig.Format) > 0 {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, req.OutputConfig.Format); err == nil {
+			req.OutputConfig.Format = json.RawMessage(buf.Bytes())
+		}
+	}
+
 	return nil
 }
 
@@ -477,10 +546,10 @@ func (req *AnthropicMessageRequest) MarshalJSON() ([]byte, error) {
 			reqCopy.Messages = messagesCopy
 		}
 
-		return sonic.Marshal((*Alias)(&reqCopy))
+		return providerUtils.MarshalSorted((*Alias)(&reqCopy))
 	}
 
-	return sonic.Marshal((*Alias)(req))
+	return providerUtils.MarshalSorted((*Alias)(req))
 }
 
 // stripScopeFromContent strips scope from all cache control blocks in content
@@ -540,10 +609,10 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return sonic.Marshal(*mc.ContentStr)
+		return providerUtils.MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return sonic.Marshal(mc.ContentBlocks)
+		return providerUtils.MarshalSorted(mc.ContentBlocks)
 	}
 	// If both are nil, return empty array instead of null.
 	// Anthropic's API requires content to be an array, not null.
@@ -608,7 +677,7 @@ type AnthropicContentBlock struct {
 	ToolUseID        *string                   `json:"tool_use_id,omitempty"`       // For tool_result content
 	ID               *string                   `json:"id,omitempty"`                // For tool_use content
 	Name             *string                   `json:"name,omitempty"`              // For tool_use content
-	Input            any                       `json:"input,omitempty"`             // For tool_use content
+	Input            json.RawMessage           `json:"input,omitempty"`             // For tool_use content (json.RawMessage preserves key ordering for prompt caching)
 	ServerName       *string                   `json:"server_name,omitempty"`       // For mcp_tool_use content
 	Content          *AnthropicContent         `json:"content,omitempty"`           // For tool_result content
 	IsError          *bool                     `json:"is_error,omitempty"`          // For tool_result content, indicates error state
@@ -696,12 +765,12 @@ func (ac *AnthropicCitations) MarshalJSON() ([]byte, error) {
 	}
 
 	if ac.Config != nil {
-		return sonic.Marshal(ac.Config)
+		return providerUtils.MarshalSorted(ac.Config)
 	}
 	if ac.TextCitations != nil {
-		return sonic.Marshal(ac.TextCitations)
+		return providerUtils.MarshalSorted(ac.TextCitations)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements the json.Unmarshaler interface
@@ -812,7 +881,7 @@ type AnthropicToolWebFetch struct {
 
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
-	Input       any     `json:"input"`
+	Input       json.RawMessage `json:"input"`
 	Description *string `json:"description,omitempty"`
 }
 

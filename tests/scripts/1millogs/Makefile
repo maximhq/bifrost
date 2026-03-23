@@ -11,12 +11,17 @@ help:
 	@echo "  populate-large     - Large dataset with 2M rows (~35 GB)"
 	@echo "  clean             - Remove generated SQLite database"
 	@echo ""
+	@echo "Options:"
+	@echo "  TYPE=llm|mcp       - Log type to generate (default: llm)"
+	@echo ""
 	@echo "Examples:"
 	@echo "  make populate-sqlite"
 	@echo "  make populate-postgres POSTGRES_PASSWORD=yourpassword"
+	@echo "  make populate-postgres TYPE=mcp ROWS=100000"
 	@echo ""
 
 # Default values
+TYPE ?= llm
 ROWS ?= 1000000
 SIZE ?= 17.5
 BATCH ?= 1000
@@ -31,11 +36,13 @@ POSTGRES_DB ?= bifrost
 # Populate SQLite database (default)
 populate-sqlite:
 	@echo "🚀 Populating SQLite database..."
+	@echo "   Type: $(TYPE)"
 	@echo "   Rows: $(ROWS)"
 	@echo "   Target size: $(SIZE) GB"
 	@echo "   Database: $(DB_PATH)"
 	@echo ""
 	go run main.go \
+		-type $(TYPE) \
 		-db sqlite \
 		-path $(DB_PATH) \
 		-rows $(ROWS) \
@@ -45,12 +52,14 @@ populate-sqlite:
 # Populate PostgreSQL database
 populate-postgres:
 	@echo "🚀 Populating PostgreSQL database..."
+	@echo "   Type: $(TYPE)"
 	@echo "   Rows: $(ROWS)"
 	@echo "   Target size: $(SIZE) GB"
 	@echo "   Host: $(POSTGRES_HOST):$(POSTGRES_PORT)"
 	@echo "   Database: $(POSTGRES_DB)"
 	@echo ""
 	go run main.go \
+		-type $(TYPE) \
 		-db postgres \
 		-host $(POSTGRES_HOST) \
 		-port $(POSTGRES_PORT) \
@@ -89,13 +98,16 @@ clean:
 	rm -f $(DB_PATH)-wal
 	@echo "✅ Done!"
 
+# Derive table name from TYPE
+TABLE_NAME = $(if $(filter mcp,$(TYPE)),mcp_tool_logs,logs)
+
 # Get database stats
 stats:
 	@if [ -f "$(DB_PATH)" ]; then \
 		echo "📊 Database Statistics"; \
 		echo "======================"; \
 		du -h $(DB_PATH) | awk '{print "Size: " $$1}'; \
-		sqlite3 $(DB_PATH) "SELECT COUNT(*) FROM logs" | awk '{print "Rows: " $$1}'; \
+		sqlite3 $(DB_PATH) "SELECT COUNT(*) FROM $(TABLE_NAME)" | awk '{print "Rows: " $$1}'; \
 	else \
 		echo "❌ Database not found at: $(DB_PATH)"; \
 	fi

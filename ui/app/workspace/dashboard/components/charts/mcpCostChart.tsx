@@ -1,14 +1,14 @@
 "use client";
 
-import type { LogsHistogramResponse } from "@/lib/types/logs";
+import type { MCPCostHistogramResponse } from "@/lib/types/logs";
 import { useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../utils/chartUtils";
+import { CHART_COLORS, formatCost, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
-interface LogVolumeChartProps {
-	data: LogsHistogramResponse | null;
+interface MCPCostChartProps {
+	data: MCPCostHistogramResponse | null;
 	chartType: ChartType;
 	startTime: number;
 	endTime: number;
@@ -26,24 +26,17 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-emerald-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cost }} />
+						<span className="text-zinc-600 dark:text-zinc-400">Cost</span>
 					</span>
-					<span className="font-medium text-emerald-600 dark:text-emerald-400">{data.success.toLocaleString()}</span>
-				</div>
-				<div className="flex items-center justify-between gap-4">
-					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 rounded-full bg-red-500" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
-					</span>
-					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
+					<span className="font-medium">{formatCost(data.total_cost)}</span>
 				</div>
 			</div>
 		</div>
 	);
 }
 
-export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolumeChartProps) {
+export function MCPCostChart({ data, chartType, startTime, endTime }: MCPCostChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -62,11 +55,11 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 
 	const commonProps = {
 		data: chartData,
-		margin: { top: 6, right: 4, left: -8, bottom: 0 },
+		margin: { top: 6, right: 4, left: 4, bottom: 0 },
 	};
 
 	return (
-		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
+		<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}-${chartType}`}>
 			<ResponsiveContainer width="100%" height="100%">
 				{chartType === "bar" ? (
 					<BarChart {...commonProps} barCategoryGap={1}>
@@ -85,14 +78,13 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
-							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
+							width={50}
+							tickFormatter={(v) => formatCost(v)}
+							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-						<Bar dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar isAnimationActive={false} dataKey="total_cost" fill={CHART_COLORS.cost} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -111,21 +103,13 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
-							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
+							width={50}
+							tickFormatter={(v) => formatCost(v)}
+							domain={[0, (dataMax: number) => Math.max(dataMax, 0.01)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} />
-						<Area
-							type="monotone"
-							dataKey="success"
-							stackId="1"
-							stroke={CHART_COLORS.success}
-							fill={CHART_COLORS.success}
-							fillOpacity={0.7}
-						/>
-						<Area type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+						<Area isAnimationActive={false} type="monotone" dataKey="total_cost" stroke={CHART_COLORS.cost} fill={CHART_COLORS.cost} fillOpacity={0.7} />
 					</AreaChart>
 				)}
 			</ResponsiveContainer>

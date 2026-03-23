@@ -11,6 +11,16 @@ import { AttachmentDisplay } from "./attachmentViews";
 import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
+/**
+ * Render an interactive user message block that supports viewing and editing content, role switching, file attachments (via picker or drag-and-drop), and special handling for JSON and Jinja-variable content.
+ *
+ * @param message - The message model to render and edit; its updates are emitted via `onChange`.
+ * @param disabled - When true, disables editing and attachment interactions.
+ * @param supportsVision - When true, enables attaching files (images, audio, documents) and drag-and-drop attachments.
+ * @param onChange - Called with the message's serialized form whenever the message is modified (content, role, or attachments).
+ * @param onRemove - Optional callback invoked when the message's delete action is triggered.
+ * @returns The JSX element that renders the user message view and its interactive controls.
+ */
 export function UserMessageView({
 	message,
 	disabled,

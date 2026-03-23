@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 
@@ -105,6 +106,37 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			return
 		}
 		logger.Info("logstore: metadata GIN index is ready")
+	}()
+
+	// Run dashboard enhancements first (backfill + covering index rebuild),
+	// then performance indexes second, in a single goroutine to avoid
+	// deadlocks from concurrent DDL on the same table.
+	go func() {
+		if err := ensureDashboardEnhancements(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+		} else {
+			logger.Info("logstore: dashboard enhancements completed")
+		}
+
+		if err := ensurePerformanceIndexes(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+		} else {
+			logger.Info("logstore: performance indexes are ready")
+		}
+	}()
+
+	// Create materialized views and start periodic refresh for dashboard queries.
+	go func() {
+		if err := ensureMatViews(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
+			return
+		}
+		if err := refreshMatViews(context.Background(), db); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))
+		} else {
+			logger.Info("logstore: materialized views are ready")
+		}
+		startMatViewRefresher(context.Background(), db, 30*time.Second, logger)
 	}()
 
 	return d, nil

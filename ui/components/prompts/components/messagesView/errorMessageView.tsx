@@ -1,6 +1,14 @@
 import { Message } from "@/lib/message";
 import { AlertCircle, XIcon } from "lucide-react";
 
+/**
+ * Render a styled error message block with an optional delete control.
+ *
+ * @param message - The message object whose `content` is displayed inside the error block.
+ * @param disabled - When true, the remove button is not rendered.
+ * @param onRemove - Callback invoked when the delete button is clicked.
+ * @returns The React element that displays the error message view.
+ */
 export default function ErrorMessageView({ message, disabled, onRemove }: { message: Message; disabled?: boolean; onRemove?: () => void }) {
 	return (
 		<div className="group hover:border-destructive/30 focus-within:border-destructive/30 rounded-sm border border-transparent px-3 py-2 transition-colors">

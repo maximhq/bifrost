@@ -8,6 +8,11 @@ import ToolResultMessageView from "./toolCallResultView";
 import ToolCallMessageView from "./toolCallView";
 import ErrorMessageView from "./errorMessageView";
 
+/**
+ * Render and manage the chat messages list, mapping each message to its appropriate view, handling edits, removals, variable recomputation, and automatic scrolling during streaming.
+ *
+ * @returns A React element that renders the messages list and provides handlers for message changes, removals, tool submissions, and variable updates.
+ */
 export function MessagesView() {
 	const { messages, setMessages: onUpdateMessages, setVariables, isStreaming, supportsVision, handleSubmitToolResult } = usePromptContext();
 	const messagesEndRef = useRef<HTMLDivElement>(null);

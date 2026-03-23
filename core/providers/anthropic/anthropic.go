@@ -84,7 +84,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client := &fasthttp.Client{
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
-		MaxConnsPerHost:     5000,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConnDuration: 30 * time.Second,
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
@@ -436,7 +436,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 			if convErr != nil {
 				return nil, convErr
 			}
-			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		},
 		provider.GetProviderKey())
@@ -520,7 +520,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 				return nil, convErr
 			}
 			anthropicReq.Stream = schemas.Ptr(true)
-			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
 			return anthropicReq, nil
 		},
 		provider.GetProviderKey())
@@ -1269,6 +1269,29 @@ func HandleAnthropicResponsesStream(
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				break
+			}
+			// Passthrough: when conversion returns no responses but we need to forward raw events,
+			// create a minimal pass-through response to carry the raw event data.
+			// This ensures events like compaction content_block_start/stop are not silently dropped.
+			if len(responses) == 0 && sendBackRawResponse {
+				passthroughResp := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseType(eventType),
+					SequenceNumber: chunkIndex,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ResponsesStreamRequest,
+						Provider:       providerName,
+						ModelRequested: modelName,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+						RawResponse:    eventData,
+					},
+				}
+				lastChunkTime = time.Now()
+				chunkIndex++
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, passthroughResp, nil, nil, nil),
+					responseChan)
+				continue
 			}
 			// Handle each response in the slice
 			for i, response := range responses {

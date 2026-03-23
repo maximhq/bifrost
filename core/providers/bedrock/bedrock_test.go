@@ -14,6 +14,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func mustMarshalJSON(v interface{}) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return json.RawMessage(b)
+}
+
+// jsonEqual compares two json.RawMessage values semantically (ignoring key order).
+func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...interface{}) {
+	t.Helper()
+	if expected == nil && actual == nil {
+		return
+	}
+	var e, a interface{}
+	if err := json.Unmarshal(expected, &e); err != nil {
+		t.Errorf("failed to unmarshal expected JSON: %v", err)
+		return
+	}
+	if err := json.Unmarshal(actual, &a); err != nil {
+		t.Errorf("failed to unmarshal actual JSON: %v", err)
+		return
+	}
+	assert.Equal(t, e, a, msgAndArgs...)
+}
+
+// mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
+// matching the conversion code path for deterministic output.
+func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
+	b, _ := json.Marshal(params)
+	return json.RawMessage(b)
+}
+
 // Common test variables
 var (
 	testMaxTokens = 100
@@ -27,6 +57,14 @@ var (
 			"type":        "string",
 			"description": "The city name",
 		}),
+	)
+	// testPropsFromJSON is the same as testProps but with nested values as *OrderedMap
+	// (as produced by json.Unmarshal -> OrderedMap.UnmarshalJSON)
+	testPropsFromJSON = *schemas.NewOrderedMapFromPairs(
+		schemas.KV("location", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "string"),
+			schemas.KV("description", "The city name"),
+		)),
 	)
 )
 
@@ -128,7 +166,6 @@ func TestBedrock(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
-			{Provider: schemas.Bedrock, Model: "anthropic.claude-sonnet-4-20250514-v1:0"}, // Used for count tokens
 		},
 		EmbeddingModel:      "cohere.embed-v4:0",
 		RerankModel:         rerankModelARN,
@@ -433,11 +470,11 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
-										"type":       "object",
-										"properties": &props,
-										"required":   []string{"location"},
-									},
+									JSON: mustMarshalToolParams(&schemas.ToolFunctionParameters{
+										Type:       "object",
+										Properties: &props,
+										Required:   []string{"location"},
+									}),
 								},
 							},
 						},
@@ -644,10 +681,10 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "hello",
 								Description: schemas.Ptr("Tool extracted from conversation history"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type":       "object",
 										"properties": map[string]interface{}{},
-									},
+									}),
 								},
 							},
 						},
@@ -656,10 +693,10 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "world",
 								Description: schemas.Ptr("Tool extracted from conversation history"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type":       "object",
 										"properties": map[string]interface{}{},
-									},
+									}),
 								},
 							},
 						},
@@ -779,12 +816,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]any{
+											JSON: mustMarshalJSON(map[string]any{
 												"results": []any{
 													any(map[string]any{"period": "now", "weather": "sunny"}),
 													any(map[string]any{"period": "next_1_hour", "weather": "cloudy"}),
 												},
-											},
+											}),
 										},
 									},
 									Status: schemas.Ptr("success"),
@@ -801,11 +838,11 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
-										"type":       "object",
-										"properties": &props,
-										"required":   []string{"location"},
-									},
+									JSON: mustMarshalToolParams(&schemas.ToolFunctionParameters{
+										Type:       "object",
+										Properties: &props,
+										Required:   []string{"location"},
+									}),
 								},
 							},
 						},
@@ -827,11 +864,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-				if tt.name == "ParallelToolCalls" {
-					assertBedrockRequestEqual(t, tt.expected, actual)
-				} else {
-					assert.Equal(t, tt.expected, actual)
-				}
+				assertBedrockRequestEqual(t, tt.expected, actual)
 			}
 		})
 	}
@@ -845,6 +878,22 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
+	_ = props // used in input construction
+
+	// Build expected params via JSON round-trip so keyOrder and nested OrderedMap match
+	expectedParamsJSON := mustMarshalJSON(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"location": map[string]interface{}{
+				"type":        "string",
+				"description": "The city name",
+			},
+		},
+		"required": []string{"location"},
+	})
+	var expectedParams schemas.ToolFunctionParameters
+	_ = json.Unmarshal(expectedParamsJSON, &expectedParams)
+
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
@@ -1057,7 +1106,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								Name:        "get_weather",
 								Description: schemas.Ptr("Get weather information"),
 								InputSchema: bedrock.BedrockToolInputSchema{
-									JSON: map[string]interface{}{
+									JSON: mustMarshalJSON(map[string]interface{}{
 										"type": "object",
 										"properties": map[string]interface{}{
 											"location": map[string]interface{}{
@@ -1066,7 +1115,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 											},
 										},
 										"required": []string{"location"},
-									},
+									}),
 								},
 							},
 						},
@@ -1098,11 +1147,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 							Name:        schemas.Ptr("get_weather"),
 							Description: schemas.Ptr("Get weather information"),
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
-								Parameters: &schemas.ToolFunctionParameters{
-									Type:       "object",
-									Properties: &props,
-									Required:   []string{"location"},
-								},
+								Parameters: &expectedParams,
 							},
 						},
 					},
@@ -1513,7 +1558,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: callID,
 									Name:      toolName,
-									Input:     "invalid json {", // Should fallback to raw string
+									Input:     json.RawMessage("invalid json {"), // Should fallback to raw string
 								},
 							},
 						},
@@ -1707,10 +1752,10 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 									Status:    schemas.Ptr("success"),
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]interface{}{
+											JSON: mustMarshalJSON(map[string]interface{}{
 												"temperature": float64(72),
 												"location":    "NYC",
-											},
+											}),
 										},
 									},
 								},
@@ -1813,9 +1858,9 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 									Status:    schemas.Ptr("success"),
 									Content: []bedrock.BedrockContentBlock{
 										{
-											JSON: map[string]interface{}{
+											JSON: mustMarshalJSON(map[string]interface{}{
 												"temperature": float64(72),
-											},
+											}),
 										},
 									},
 								},
@@ -1912,9 +1957,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	totalTokens := 30
 	toolUseID := "call-123"
 	toolName := "get_weather"
-	toolInput := map[string]interface{}{
-		"location": "NYC",
-	}
+	toolInput := json.RawMessage(`{"location":"NYC"}`)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
@@ -2035,7 +2078,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID:    &toolUseID,
 							Name:      &toolName,
-							Arguments: schemas.Ptr(schemas.JsonifyInput(toolInput)),
+							Arguments: schemas.Ptr(string(toolInput)),
 						},
 					},
 				},
@@ -2175,7 +2218,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 		name                string
 		toolResultContent   string
 		expectedContentType string // "text" or "json"
-		expectedJSON        map[string]any
+		expectedJSON        json.RawMessage
 		expectedText        *string
 	}{
 		{
@@ -2194,54 +2237,54 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONObjectResult",
 			toolResultContent:   `{"location":"NYC","temperature":72}`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"location": "NYC", "temperature": float64(72)},
+			expectedJSON: mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
 		},
 		{
 			name:                "JSONArrayResult",
 			toolResultContent:   `[{"period":"now","weather":"sunny"},{"period":"next_1_hour","weather":"cloudy"}]`,
 			expectedContentType: "json",
-			expectedJSON: map[string]any{
+			expectedJSON: mustMarshalJSON(map[string]any{
 				"results": []any{
 					map[string]any{"period": "now", "weather": "sunny"},
 					map[string]any{"period": "next_1_hour", "weather": "cloudy"},
 				},
-			},
+			}),
 		},
 		{
 			name:                "JSONPrimitiveNumberResult",
 			toolResultContent:   `42`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": float64(42)},
+			expectedJSON: mustMarshalJSON(map[string]any{"value": float64(42)}),
 		},
 		{
 			name:                "JSONPrimitiveStringResult",
 			toolResultContent:   `"hello world"`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": "hello world"},
+			expectedJSON: mustMarshalJSON(map[string]any{"value": "hello world"}),
 		},
 		{
 			name:                "JSONPrimitiveBooleanResult",
 			toolResultContent:   `true`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": true},
+			expectedJSON: mustMarshalJSON(map[string]any{"value": true}),
 		},
 		{
 			name:                "JSONPrimitiveNullResult",
 			toolResultContent:   `null`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"value": nil},
+			expectedJSON: mustMarshalJSON(map[string]any{"value": nil}),
 		},
 		{
 			name:                "EmptyJSONObjectResult",
 			toolResultContent:   `{}`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{},
+			expectedJSON: mustMarshalJSON(map[string]any{}),
 		},
 		{
 			name:                "EmptyJSONArrayResult",
 			toolResultContent:   `[]`,
 			expectedContentType: "json",
-			expectedJSON:        map[string]any{"results": []any{}},
+			expectedJSON: mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
 	}
 
