@@ -367,8 +367,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Handle RequiredHeaders changes (no restart needed - governance plugin reads via pointer)
-	// Validate required_headers: empty pattern values are not allowed
+	// Validate required_headers: empty header names and empty pattern values are not allowed
 	for headerName, pattern := range payload.ClientConfig.RequiredHeaders {
+		if strings.TrimSpace(headerName) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "required_headers: header name must not be empty")
+			return
+		}
 		if strings.TrimSpace(pattern) == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("required_headers: pattern for %q must not be empty; use \"*\" for presence-only checks", headerName))
 			return

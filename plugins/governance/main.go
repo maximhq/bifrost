@@ -883,6 +883,10 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 
 // matchHeaderValue checks whether actual matches the configured pattern.
 // Returns true if the value is acceptable, false otherwise.
+//
+// Note: Non-env patterns are treated as regex by design, enabling patterns like
+// "us-east-1|eu-west-1". Users who need literal matching of strings containing
+// regex metacharacters (e.g., "token.abc") should escape them (e.g., "token\.abc").
 func matchHeaderValue(actual, pattern string) bool {
 	resolvedPattern, err := envutils.ProcessEnvValue(pattern)
 	if err != nil {
@@ -920,7 +924,17 @@ func matchHeaderValue(actual, pattern string) bool {
 // Returns a BifrostError with status 400 if any required headers are missing or have an invalid
 // value, or nil if all checks pass.
 func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
-	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
+	// Read required headers under mutex to get a consistent snapshot.
+	// The transport layer may replace the map during hot-reload.
+	p.cfgMutex.RLock()
+	rh := p.requiredHeaders
+	var snapshot map[string]string
+	if rh != nil {
+		snapshot = *rh
+	}
+	p.cfgMutex.RUnlock()
+
+	if len(snapshot) == 0 {
 		return nil
 	}
 
@@ -931,7 +945,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 
 	var missing []string
 	var invalid []string
-	for name, pattern := range *p.requiredHeaders {
+	for name, pattern := range snapshot {
 		name = strings.TrimSpace(name)
 		pattern = strings.TrimSpace(pattern)
 

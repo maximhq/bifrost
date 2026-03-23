@@ -201,14 +201,18 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
-	// Hash RequiredHeaders (sorted keys for deterministic hashing)
+	// Hash RequiredHeaders (sorted key-value pairs for deterministic hashing)
 	if len(c.RequiredHeaders) > 0 {
 		sortedKeys := make([]string, 0, len(c.RequiredHeaders))
 		for k := range c.RequiredHeaders {
 			sortedKeys = append(sortedKeys, k)
 		}
 		sort.Strings(sortedKeys)
-		data, err := sonic.Marshal(c.RequiredHeaders)
+		sortedPairs := make([][2]string, 0, len(sortedKeys))
+		for _, k := range sortedKeys {
+			sortedPairs = append(sortedPairs, [2]string{k, c.RequiredHeaders[k]})
+		}
+		data, err := sonic.Marshal(sortedPairs)
 		if err != nil {
 			return "", err
 		}

@@ -258,7 +258,16 @@ false
 {{- $_ := set $client "async_job_result_ttl" .Values.bifrost.client.asyncJobResultTTL }}
 {{- end }}
 {{- if .Values.bifrost.client.requiredHeaders }}
-{{- $_ := set $client "required_headers" .Values.bifrost.client.requiredHeaders }}
+{{- $rh := .Values.bifrost.client.requiredHeaders }}
+{{- if kindIs "slice" $rh }}
+{{- $rhMap := dict }}
+{{- range $rh }}
+{{- $_ := set $rhMap . "*" }}
+{{- end }}
+{{- $_ := set $client "required_headers" $rhMap }}
+{{- else }}
+{{- $_ := set $client "required_headers" $rh }}
+{{- end }}
 {{- end }}
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}

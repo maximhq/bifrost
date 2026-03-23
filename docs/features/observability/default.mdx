@@ -479,7 +479,7 @@ Metadata is displayed in the log detail view for both LLM and MCP logs as indivi
 
 | Feature | Purpose | Effect on Request |
 |---------|---------|-------------------|
-| **Required Headers** | Enforce header presence | Rejects request if missing (400) |
+| **Required Headers** | Enforce header presence and value constraints | Rejects request if missing or value mismatches (400) |
 | **Logging Headers** | Capture header values | No effect on request — only logs metadata |
 
 A common pattern is to require a header **and** log it:

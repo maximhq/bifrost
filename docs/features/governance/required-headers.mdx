@@ -67,9 +67,15 @@ When a request arrives:
 
 | Value pattern | Behaviour |
 |---------------|-----------|
-| `"*"` or `""` | Header must be **present** (any value accepted) |
+| `"*"` | Header must be **present** (any value accepted) |
 | `"env.VAR_NAME"` | Header must be present **and** its value must equal the resolved value of environment variable `VAR_NAME` |
 | Any other string | Treated as a **regex pattern** — header must be present **and** its value must fully match the pattern (anchored with `^` and `$`) |
+
+Empty string values are **not allowed** — use `"*"` for presence-only checks.
+
+<Warning>
+Patterns are treated as regular expressions. Characters like `.`, `*`, `+`, `?`, `(`, `)`, `[`, `]`, `{`, `}`, `\`, `^`, `$`, and `|` have special meaning. If you need to match these characters literally, escape them with a backslash (e.g., `token\.abc` to match `token.abc`).
+</Warning>
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -135,7 +141,7 @@ Add `required_headers` to the `client` section:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `required_headers` | `object` | No | Map of header names to value patterns. Keys are matched case-insensitively. Values: `"*"` or `""` for presence-only, `"env.VAR"` for environment variable resolution, or any other string as a regex pattern. |
+| `required_headers` | `object` | No | Map of header names to value patterns. Keys are matched case-insensitively. Values: `"*"` for presence-only, `"env.VAR"` for environment variable resolution, or any other string as a regex pattern. Empty values are not allowed. |
 
 </Tab>
 </Tabs>
