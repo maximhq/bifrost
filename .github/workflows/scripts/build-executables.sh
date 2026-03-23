@@ -2,14 +2,19 @@
 set -euo pipefail
 
 # Cross-compile Go binaries for multiple platforms
-# Usage: ./build-executables.sh <version>
+# Usage: ./build-executables.sh <version> [platforms]
+# Examples:
+#   ./build-executables.sh 1.4.15                                          # Build all platforms
+#   ./build-executables.sh 1.4.15 "darwin/amd64 darwin/arm64 linux/amd64 windows/amd64"  # Build specific platforms
+#   ./build-executables.sh 1.4.15 "linux/arm64"                            # Build single platform (native on ARM)
 
 # Require version argument (matches usage)
 if [[ -z "${1:-}" ]]; then
-  echo "Usage: $0 <version>" >&2
+  echo "Usage: $0 <version> [platforms]" >&2
   exit 1
 fi
 VERSION="$1"
+PLATFORM_FILTER="${2:-}"
 
 echo "🔨 Building Go executables with version: $VERSION"
 
@@ -21,15 +26,28 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 rm -rf "$PROJECT_ROOT/dist"
 mkdir -p "$PROJECT_ROOT/dist"
 
-
-# Define platforms
-platforms=(
+# Define platforms — use filter if provided, otherwise build all
+all_platforms=(
   "darwin/amd64"
   "darwin/arm64"
   "linux/amd64"
   "linux/arm64"
   "windows/amd64"
 )
+
+if [[ -n "$PLATFORM_FILTER" ]]; then
+  platforms=()
+  for p in $PLATFORM_FILTER; do
+    platforms+=("$p")
+  done
+  echo "📋 Building filtered platforms: ${platforms[*]}"
+else
+  platforms=("${all_platforms[@]}")
+  echo "📋 Building all platforms: ${platforms[*]}"
+fi
+
+# Detect host architecture for native build detection
+HOST_ARCH=$(uname -m)
 
 MODULE_PATH="$PROJECT_ROOT/transports/bifrost-http"
 
@@ -54,7 +72,16 @@ for platform in "${platforms[@]}"; do
   cd "$MODULE_PATH"
 
   if [[ "$GOOS" = "linux" ]]; then
-    if [[ "$GOARCH" = "amd64" ]]; then
+    # Detect native build: if target arch matches host, use system compiler
+    if [[ "$GOARCH" = "arm64" ]] && [[ "$HOST_ARCH" = "aarch64" || "$HOST_ARCH" = "arm64" ]]; then
+      echo "  🏠 Native ARM64 build detected — using system compiler"
+      CC_COMPILER="${CC:-gcc}"
+      CXX_COMPILER="${CXX:-g++}"
+    elif [[ "$GOARCH" = "amd64" ]] && [[ "$HOST_ARCH" = "x86_64" ]]; then
+      echo "  🏠 Native AMD64 build detected — using system compiler"
+      CC_COMPILER="${CC:-gcc}"
+      CXX_COMPILER="${CXX:-g++}"
+    elif [[ "$GOARCH" = "amd64" ]]; then
       CC_COMPILER="x86_64-linux-musl-gcc"
       CXX_COMPILER="x86_64-linux-musl-g++"
     elif [[ "$GOARCH" = "arm64" ]]; then
@@ -62,10 +89,9 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="aarch64-linux-musl-g++"
     fi
 
-    # Use lld linker to avoid gold linker bugs (ARM64 erratum 843419 internal error)
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,sqlite_static" \
-      -ldflags "-s -w -buildid= -extldflags '-static -fuse-ld=lld' -X main.Version=v${VERSION}" \
+      -ldflags "-s -w -buildid= -extldflags '-static' -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then

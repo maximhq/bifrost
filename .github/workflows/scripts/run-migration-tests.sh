@@ -24,8 +24,6 @@ set -euo pipefail
 #   BIFROST_PORT      - Port for bifrost server (default: 8089)
 #   VERSIONS_TO_TEST  - Number of previous versions to test (default: 3)
 
-exit 0
-
 # Pull all the tags available
 git fetch --tags
 
