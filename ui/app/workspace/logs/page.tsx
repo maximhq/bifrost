@@ -173,7 +173,14 @@ export default function LogsPage() {
 				}
 			})() : undefined,
 		}),
-		[urlState],
+		// Only re-derive filters when filter-related URL params change (not pagination)
+		[
+			urlState.providers, urlState.models, urlState.status, urlState.objects,
+			urlState.selected_key_ids, urlState.virtual_key_ids, urlState.routing_rule_ids,
+			urlState.routing_engine_used, urlState.content_search,
+			urlState.start_time, urlState.end_time,
+			urlState.missing_cost_only, urlState.metadata_filters,
+		],
 	);
 
 	const pagination: Pagination = useMemo(
@@ -183,7 +190,7 @@ export default function LogsPage() {
 			sort_by: urlState.sort_by as "timestamp" | "latency" | "tokens" | "cost",
 			order: urlState.order as "asc" | "desc",
 		}),
-		[urlState],
+		[urlState.limit, urlState.offset, urlState.sort_by, urlState.order],
 	);
 
 	const liveEnabled = urlState.live_enabled;
