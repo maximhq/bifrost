@@ -1002,7 +1002,7 @@ func convertResponseFormatToTool(
 	// Create the Bedrock tool
 	schemaObjBytes, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{

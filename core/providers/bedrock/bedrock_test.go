@@ -1245,7 +1245,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-123",
 									Name:      "get_weather",
-									Input: json.RawMessage(`{"location":"NYC"}`),
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1320,7 +1320,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-456",
 									Name:      "calculate",
-									Input: json.RawMessage(`{"expression":"2+2"}`),
+									Input:     json.RawMessage(`{"expression":"2+2"}`),
 								},
 							},
 						},
@@ -1849,7 +1849,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "call-111",
 									Name:      "get_weather",
-									Input: json.RawMessage(`{"location":"NYC"}`),
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 							{
@@ -2237,7 +2237,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONObjectResult",
 			toolResultContent:   `{"location":"NYC","temperature":72}`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
 		},
 		{
 			name:                "JSONArrayResult",
@@ -2254,37 +2254,37 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONPrimitiveNumberResult",
 			toolResultContent:   `42`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": float64(42)}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": float64(42)}),
 		},
 		{
 			name:                "JSONPrimitiveStringResult",
 			toolResultContent:   `"hello world"`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": "hello world"}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": "hello world"}),
 		},
 		{
 			name:                "JSONPrimitiveBooleanResult",
 			toolResultContent:   `true`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": true}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": true}),
 		},
 		{
 			name:                "JSONPrimitiveNullResult",
 			toolResultContent:   `null`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": nil}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": nil}),
 		},
 		{
 			name:                "EmptyJSONObjectResult",
 			toolResultContent:   `{}`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{}),
+			expectedJSON:        mustMarshalJSON(map[string]any{}),
 		},
 		{
 			name:                "EmptyJSONArrayResult",
 			toolResultContent:   `[]`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"results": []any{}}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
 	}
 
@@ -2876,6 +2876,47 @@ func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
 	}
 }
 
+func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
+	request := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-opus-4-6-v1",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+		AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+			schemas.KV("thinking", map[string]any{
+				"type":          "adaptive",
+				"budget_tokens": 2048,
+			}),
+			schemas.KV("output_config", schemas.NewOrderedMapFromPairs(
+				schemas.KV("effort", "medium"),
+			)),
+		),
+		ExtraParams: map[string]any{
+			"reasoning_summary": "auto",
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := request.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.Reasoning)
+	require.NotNil(t, result.Params.Reasoning.Effort)
+	assert.Equal(t, "medium", *result.Params.Reasoning.Effort)
+	require.NotNil(t, result.Params.Reasoning.MaxTokens)
+	assert.Equal(t, 2048, *result.Params.Reasoning.MaxTokens)
+	require.NotNil(t, result.Params.Reasoning.Summary)
+	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
+}
+
 // TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice ensures
 // Anthropic Bedrock structured output uses native output_config.format and does
 // not synthesize a forced tool choice, while keeping reasoning (thinking) active.
@@ -3068,8 +3109,8 @@ func TestNonAnthropicStructuredOutputStillUsesToolConversion(t *testing.T) {
 	assert.Equal(t, "bf_so_classification", result.ToolConfig.Tools[0].ToolSpec.Name)
 
 	schemaRaw := result.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON
-	schema, ok := schemaRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected non-anthropic structured output schema to remain ordered")
+	var schema schemas.OrderedMap
+	require.NoError(t, schema.UnmarshalJSON(schemaRaw))
 	schemaType, ok := schema.Get("type")
 	require.True(t, ok, "expected tool schema type")
 	assert.Equal(t, "object", schemaType)

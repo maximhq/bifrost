@@ -1500,19 +1500,29 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
 							summary = summaryValue
 						}
-						// Check for native output_config.effort first
+						// Check for native output_config.effort first.
+						// output_config may be preserved as OrderedMap by the merge path.
 						if outputConfig, ok := request.AdditionalModelRequestFields.Get("output_config"); ok {
-							if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
-								if effortStr, ok := schemas.SafeExtractString(outputConfigMap["effort"]); ok {
-									var maxTokens *int
-									if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
-										maxTokens = schemas.Ptr(budgetTokens)
-									}
-									bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
-										Effort:    schemas.Ptr(effortStr),
-										MaxTokens: maxTokens,
-										Summary:   summary,
-									}
+							var (
+								effortStr string
+								found     bool
+							)
+							if outputConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(outputConfig); ok && outputConfigOrderedMap != nil {
+								if effortValue, exists := outputConfigOrderedMap.Get("effort"); exists {
+									effortStr, found = schemas.SafeExtractString(effortValue)
+								}
+							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
+								effortStr, found = schemas.SafeExtractString(outputConfigMap["effort"])
+							}
+							if found {
+								var maxTokens *int
+								if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
+									maxTokens = schemas.Ptr(budgetTokens)
+								}
+								bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+									Effort:    schemas.Ptr(effortStr),
+									MaxTokens: maxTokens,
+									Summary:   summary,
 								}
 							}
 						} else if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
@@ -1847,15 +1857,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				inferenceConfig.StopSequences = stop
 			}
 
-				if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
-					if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
-						delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-						bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
-							bedrockReq.AdditionalModelRequestFields,
-							orderedFields,
-						)
-					}
+			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
+				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
+					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+						bedrockReq.AdditionalModelRequestFields,
+						orderedFields,
+					)
 				}
+			}
 
 			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
 				if fields, ok := responseFields.([]string); ok {
