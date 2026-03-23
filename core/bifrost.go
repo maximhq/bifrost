@@ -1248,8 +1248,12 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	// Prompt is not required when type is background_removal
-	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+	// Prompt is not required for certain operation types that work without a text prompt
+	var imageEditParamsType *string
+	if req.Params != nil {
+		imageEditParamsType = req.Params.Type
+	}
+	if !isPromptOptionalImageEditType(imageEditParamsType) &&
 		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1316,8 +1320,12 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
-	// Prompt is not required when type is background_removal
-	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+	// Prompt is not required for certain operation types that work without a text prompt
+	var imageEditStreamParamsType *string
+	if req.Params != nil {
+		imageEditStreamParamsType = req.Params.Type
+	}
+	if !isPromptOptionalImageEditType(imageEditStreamParamsType) &&
 		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,

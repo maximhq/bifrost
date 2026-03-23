@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -507,4 +508,18 @@ func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model 
 		discriminator = "__modelless__"
 	}
 	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
+}
+
+// isPromptOptionalImageEditType returns true for edit task types that do not require a text prompt.
+// It normalises hyphenated variants (e.g. "erase-object") to underscore form before matching.
+func isPromptOptionalImageEditType(t *string) bool {
+	if t == nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*t))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return slices.Contains(
+		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
+		normalized,
+	)
 }

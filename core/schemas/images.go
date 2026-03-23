@@ -254,7 +254,7 @@ type ImageInput struct {
 }
 
 type ImageEditParameters struct {
-	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal",
+	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale_fast", "upscale_creative", "upscale_conservative"
 	Background        *string                `json:"background,omitempty"`     // "transparent", "opaque", "auto"
 	InputFidelity     *string                `json:"input_fidelity,omitempty"` // "low", "high"
 	Mask              []byte                 `json:"mask,omitempty"`
