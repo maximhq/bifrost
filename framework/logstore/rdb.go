@@ -1081,7 +1081,18 @@ func buildRankedPercentileExpr(dialect, rankCol, countCol string, percentile flo
 	percentileInt := int(math.Round(percentile * 100.0))
 	thresholdExpr := fmt.Sprintf("CEIL(%.6f * %s)", percentile, countCol)
 	if dialect == "sqlite" {
-		// SQLite does not provide CEIL() by default; this is equivalent to CEIL(count * p).
+		// SQLite CEIL approximation using integer arithmetic:
+		//   CEIL(count * percentile) == (count * P + 99) / 100
+		// where P = percentile * 100 (integer), using truncating integer division.
+		//
+		// Proof: for any non-negative integer N and percentage P in [0,100]:
+		//   floor((N*P + 99) / 100) == ceil(N*P / 100)
+		//
+		// Examples:
+		//   CEIL(3 * 0.90) = (3*90 + 99)/100 = 369/100 = 3 ✓
+		//   CEIL(4 * 0.90) = (4*90 + 99)/100 = 459/100 = 4 ✓
+		//   CEIL(10 * 0.90) = (10*90 + 99)/100 = 999/100 = 9 ✓
+		//   CEIL(1 * 0.90) = (1*90 + 99)/100 = 189/100 = 1 ✓
 		thresholdExpr = fmt.Sprintf("((%s * %d + 100 - 1) / 100)", countCol, percentileInt)
 	}
 
@@ -1207,8 +1218,18 @@ func buildFinalHistogramAggregationQuery(db *gorm.DB, latencyAgg, tpsAgg, ttftAg
 }
 
 // GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
-// All databases use the same rank-based SQL strategy for consistent results.
+// On Postgres with eligible filters and bucket size >= 1h, uses materialized view for fast aggregation.
+// All other cases use rank-based window functions for cross-DB consistent results.
+//
+// Performance note: these queries benefit from the following indexes:
+//   CREATE INDEX idx_logs_timestamp_status_latency ON logs(timestamp, status, latency)
+//     WHERE status IN ('success', 'error');
+//   CREATE INDEX idx_logs_timestamp_status_provider ON logs(timestamp, status, provider);
+// These are NOT created automatically — add based on workload analysis.
 func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -1223,17 +1244,31 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 
 // getLatencyHistogramWindowed computes latency percentiles directly in SQL
 // using rank-based window functions.
+//
+// Query structure (avoids redundant base dataset re-computation):
+//   base: SELECT bucket_timestamp, latency, tokens_per_second, time_to_first_token FROM logs WHERE ...
+//   latencyRanked: ROW_NUMBER()/COUNT(*) OVER base (all rows — latency IS NOT NULL from outer filter)
+//   tpsRanked:     ROW_NUMBER()/COUNT(*) OVER base WHERE tokens_per_second IS NOT NULL
+//   ttftRanked:    ROW_NUMBER()/COUNT(*) OVER base WHERE time_to_first_token IS NOT NULL
+//   final: LEFT JOIN tps_agg, ttft_agg onto latency_agg by bucket_timestamp
 func (s *RDBLogStore) getLatencyHistogramWindowed(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	dialect := s.db.Dialector.Name()
 	bucketExpr := getBucketTimestampExpr(s.db.Dialector.Name(), bucketSizeSeconds)
 
+	// Build the pre-bucketed base dataset once. All three metric pipelines
+	// (latency, TPS, TTFT) derive from this single subquery.
 	base := baseQuery.Select(fmt.Sprintf("%s as bucket_timestamp, latency, tokens_per_second, time_to_first_token", bucketExpr))
 	baseDataset := buildHistogramBaseQuery(s.db.WithContext(ctx), base, false)
 
+	// Latency ranking: operates on ALL rows (latency IS NOT NULL enforced by outer filter)
 	latencyRanked := buildMetricRankedQuery(s.db.WithContext(ctx), baseDataset, false, "latency", "latency_value", "latency_rank", "latency_count")
-	tpsSource := s.db.WithContext(ctx).Table("(?) as base", baseDataset).Where("tokens_per_second IS NOT NULL")
+
+	// TPS/TTFT ranking: filter NULLs from the base dataset, then rank.
+	// Each uses a single Table() wrap of baseDataset with a WHERE filter,
+	// keeping subquery nesting minimal.
+	tpsSource := s.db.WithContext(ctx).Table("(?) as tps_base", baseDataset).Where("tokens_per_second IS NOT NULL")
 	tpsRanked := buildMetricRankedQuery(s.db.WithContext(ctx), tpsSource, false, "tokens_per_second", "tps_value", "tps_rank", "tps_count")
-	ttftSource := s.db.WithContext(ctx).Table("(?) as base", baseDataset).Where("time_to_first_token IS NOT NULL")
+	ttftSource := s.db.WithContext(ctx).Table("(?) as ttft_base", baseDataset).Where("time_to_first_token IS NOT NULL")
 	ttftRanked := buildMetricRankedQuery(s.db.WithContext(ctx), ttftSource, false, "time_to_first_token", "ttft_value", "ttft_rank", "ttft_count")
 
 	latencyAgg := buildLatencyAggregationQuery(s.db.WithContext(ctx), latencyRanked, false, dialect)
@@ -1697,8 +1732,12 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 }
 
 // GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters.
-// All databases use the same rank-based SQL strategy for consistent results.
+// On Postgres with eligible filters and bucket size >= 1h, uses materialized view for fast aggregation.
+// All other cases use rank-based window functions for cross-DB consistent results.
 func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+		return s.getProviderLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds)
+	}
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
@@ -1712,7 +1751,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 }
 
 // getProviderLatencyHistogramWindowed computes provider latency percentiles directly in SQL
-// using rank-based window functions.
+// using rank-based window functions, with provider-level partitioning.
 func (s *RDBLogStore) getProviderLatencyHistogramWindowed(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	dialect := s.db.Dialector.Name()
 	bucketExpr := getBucketTimestampExpr(s.db.Dialector.Name(), bucketSizeSeconds)
@@ -1720,9 +1759,9 @@ func (s *RDBLogStore) getProviderLatencyHistogramWindowed(ctx context.Context, b
 	baseDataset := buildHistogramBaseQuery(s.db.WithContext(ctx), base, true)
 
 	latencyRanked := buildMetricRankedQuery(s.db.WithContext(ctx), baseDataset, true, "latency", "latency_value", "latency_rank", "latency_count")
-	tpsSource := s.db.WithContext(ctx).Table("(?) as base", baseDataset).Where("tokens_per_second IS NOT NULL")
+	tpsSource := s.db.WithContext(ctx).Table("(?) as tps_base", baseDataset).Where("tokens_per_second IS NOT NULL")
 	tpsRanked := buildMetricRankedQuery(s.db.WithContext(ctx), tpsSource, true, "tokens_per_second", "tps_value", "tps_rank", "tps_count")
-	ttftSource := s.db.WithContext(ctx).Table("(?) as base", baseDataset).Where("time_to_first_token IS NOT NULL")
+	ttftSource := s.db.WithContext(ctx).Table("(?) as ttft_base", baseDataset).Where("time_to_first_token IS NOT NULL")
 	ttftRanked := buildMetricRankedQuery(s.db.WithContext(ctx), ttftSource, true, "time_to_first_token", "ttft_value", "ttft_rank", "ttft_count")
 
 	latencyAgg := buildLatencyAggregationQuery(s.db.WithContext(ctx), latencyRanked, true, dialect)
