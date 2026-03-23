@@ -907,8 +907,8 @@ func matchHeaderValue(actual, pattern string) bool {
 //
 // Each entry in the required headers map is a key-value pair:
 //   - key:   the header name (matched case-insensitively)
-//   - value: a pattern that the header value must match:
-//     - "*" or ""          — header must be present (any value accepted)
+//   - value: a pattern that the header value must match (must not be empty):
+//     - "*"               — header must be present (any value accepted)
 //     - "env.VAR_NAME"     — header must be present AND its value must match the resolved
 //       environment variable VAR_NAME
 //     - any other string   — treated as a regex pattern; header must be present AND its value
@@ -941,7 +941,12 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 			continue
 		}
 
-		if pattern == "*" || pattern == "" {
+		if pattern == "" {
+			invalid = append(invalid, fmt.Sprintf("%s (empty pattern)", name))
+			continue
+		}
+
+		if pattern == "*" {
 			continue
 		}
 

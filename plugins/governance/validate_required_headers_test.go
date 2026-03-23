@@ -48,12 +48,17 @@ func TestValidateRequiredHeaders_PresenceOnly_Wildcard(t *testing.T) {
 	assert.Nil(t, p.validateRequiredHeaders(ctx))
 }
 
-// TestValidateRequiredHeaders_PresenceOnly_Empty verifies that a header configured with ""
-// (empty value) passes when the header is present with any value.
-func TestValidateRequiredHeaders_PresenceOnly_Empty(t *testing.T) {
+// TestValidateRequiredHeaders_EmptyPattern_Rejected verifies that a header configured with ""
+// (empty pattern) is rejected even when the header is present.
+func TestValidateRequiredHeaders_EmptyPattern_Rejected(t *testing.T) {
 	p := pluginWithHeaders(map[string]string{"X-Tenant-ID": ""})
 	ctx := makeCtxWithHeaders(map[string]string{"x-tenant-id": "anything"})
-	assert.Nil(t, p.validateRequiredHeaders(ctx))
+	err := p.validateRequiredHeaders(ctx)
+	require.NotNil(t, err)
+	assert.Equal(t, 400, *err.StatusCode)
+	assert.Contains(t, err.Error.Message, "invalid required header value")
+	assert.Contains(t, err.Error.Message, "X-Tenant-ID")
+	assert.Contains(t, err.Error.Message, "empty pattern")
 }
 
 // TestValidateRequiredHeaders_PresenceOnly_Missing verifies that a missing header results in a
