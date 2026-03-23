@@ -422,6 +422,13 @@ export interface Annotation {
 	url_citation: Citation;
 }
 
+export interface PluginLogEntry {
+	plugin_name: string;
+	level: "debug" | "info" | "warn" | "error";
+	message: string;
+	timestamp: number;
+}
+
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
@@ -436,6 +443,7 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
+	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
 	routing_rule?: RoutingRule;

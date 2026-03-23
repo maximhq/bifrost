@@ -32,8 +32,8 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
-func (t *Tracer) CreateTrace(parentID string) string {
-	return t.store.CreateTrace(parentID)
+func (t *Tracer) CreateTrace(parentID string, requestID ...string) string {
+	return t.store.CreateTrace(parentID, requestID...)
 }
 
 // EndTrace completes a trace and returns the trace data for observation/export.
@@ -327,6 +327,18 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 // This is useful for plugins that need direct access to accumulator methods.
 func (t *Tracer) GetAccumulator() *streaming.Accumulator {
 	return t.accumulator
+}
+
+// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
+func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry) {
+	if len(logs) == 0 || traceID == "" {
+		return
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.AppendPluginLogs(logs)
 }
 
 // Stop stops the tracer and releases its resources.

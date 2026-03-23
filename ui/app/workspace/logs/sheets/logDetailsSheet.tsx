@@ -1,7 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
-import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -15,7 +13,14 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { CodeEditor } from "@/components/ui/codeEditor";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
@@ -27,9 +32,11 @@ import {
 	Status,
 	StatusColors,
 } from "@/lib/constants/logs";
+import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
 import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -37,10 +44,10 @@ import ImageView from "../views/imageView";
 import LogChatMessageView from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
 import LogResponsesMessageView from "../views/logResponsesMessageView";
+import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { CodeEditor } from "@/components/ui/codeEditor";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {
@@ -58,8 +65,7 @@ interface LogDetailSheetProps {
 }
 
 // Helper to detect passthrough operations
-const isPassthroughOperation = (object: string) =>
-	object === "passthrough" || object === "passthrough_stream";
+const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
@@ -96,11 +102,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	const isPassthrough = isPassthroughOperation(displayLog.object);
 	const passthroughParams = isPassthrough
 		? (displayLog.params as {
-			method?: string;
-			path?: string;
-			raw_query?: string;
-			status_code?: number;
-		})
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+			})
 		: null;
 
 	// Taking out tool call
@@ -108,7 +114,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (displayLog.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(displayLog.params.tools, null, 2);
-		} catch (ignored) { }
+		} catch (ignored) {}
 	}
 
 	// Extract audio format from request params
@@ -126,7 +132,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
-						<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 					</div>
 				) : (
 					<>
@@ -191,7 +197,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<AlertDialogContent>
 									<AlertDialogHeader>
 										<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-										<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+										<AlertDialogDescription>
+											This action cannot be undone. This will permanently delete the log entry.
+										</AlertDialogDescription>
 									</AlertDialogHeader>
 									<AlertDialogFooter>
 										<AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -250,19 +258,26 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 										label="Type"
 										value={
 											<div
-												className={`${RequestTypeColors[displayLog.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-													} rounded-sm px-3 py-1`}
+												className={`${
+													RequestTypeColors[displayLog.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+												} rounded-sm px-3 py-1`}
 											>
 												{RequestTypeLabels[displayLog.object as keyof typeof RequestTypeLabels] ?? displayLog.object ?? "unknown"}
 											</div>
 										}
 									/>
-									{displayLog.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={displayLog.selected_key.name} />}
+									{displayLog.selected_key && (
+										<LogEntryDetailsView className="w-full" label="Selected Key" value={displayLog.selected_key.name} />
+									)}
 									{displayLog.number_of_retries > 0 && (
 										<LogEntryDetailsView className="w-full" label="Number of Retries" value={displayLog.number_of_retries} />
 									)}
-									{displayLog.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={displayLog.fallback_index} />}
-									{displayLog.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={displayLog.virtual_key.name} />}
+									{displayLog.fallback_index > 0 && (
+										<LogEntryDetailsView className="w-full" label="Fallback Index" value={displayLog.fallback_index} />
+									)}
+									{displayLog.virtual_key && (
+										<LogEntryDetailsView className="w-full" label="Virtual Key" value={displayLog.virtual_key.name} />
+									)}
 									{displayLog.routing_engines_used && displayLog.routing_engines_used.length > 0 && (
 										<LogEntryDetailsView
 											className="w-full"
@@ -272,7 +287,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 													{displayLog.routing_engines_used.map((engine) => (
 														<Badge
 															key={engine}
-															className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}
+															className={
+																RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"
+															}
 														>
 															<div className="flex items-center gap-2">
 																{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.()}
@@ -284,7 +301,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 											}
 										/>
 									)}
-									{displayLog.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={displayLog.routing_rule.name} />}
+									{displayLog.routing_rule && (
+										<LogEntryDetailsView className="w-full" label="Routing Rule" value={displayLog.routing_rule.name} />
+									)}
 
 									{/* Display audio params if present */}
 									{(displayLog.params as any)?.audio && (
@@ -304,18 +323,12 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 											{passthroughParams.method && (
 												<LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />
 											)}
-											{passthroughParams.path && (
-												<LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />
-											)}
+											{passthroughParams.path && <LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />}
 											{passthroughParams.raw_query && (
 												<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
 											)}
 											{(passthroughParams.status_code ?? 0) !== 0 && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Status Code"
-													value={passthroughParams.status_code}
-												/>
+												<LogEntryDetailsView className="w-full" label="Status Code" value={passthroughParams.status_code} />
 											)}
 										</>
 									)}
@@ -326,10 +339,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 											.filter(([key]) => {
 												const passthroughKeys = ["method", "path", "raw_query", "status_code"];
 												return (
-													key !== "tools" &&
-													key !== "instructions" &&
-													key !== "audio" &&
-													!(isPassthrough && passthroughKeys.includes(key))
+													key !== "tools" && key !== "instructions" && key !== "audio" && !(isPassthrough && passthroughKeys.includes(key))
 												);
 											})
 											.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
@@ -343,27 +353,31 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 										<BlockHeader title="Tokens" />
 										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 											<LogEntryDetailsView className="w-full" label="Input Tokens" value={displayLog.token_usage?.prompt_tokens || "-"} />
-											<LogEntryDetailsView className="w-full" label="Output Tokens" value={displayLog.token_usage?.completion_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Output Tokens"
+												value={displayLog.token_usage?.completion_tokens || "-"}
+											/>
 											<LogEntryDetailsView className="w-full" label="Total Tokens" value={displayLog.token_usage?.total_tokens || "-"} />
-											<LogEntryDetailsView className="w-full" label="Cost" value={displayLog.cost != null ? `$${parseFloat(displayLog.cost.toFixed(6))}` : "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Cost"
+												value={displayLog.cost != null ? `$${parseFloat(displayLog.cost.toFixed(6))}` : "-"}
+											/>
 											{displayLog.token_usage?.prompt_tokens_details && (
 												<>
-													{(displayLog.token_usage.prompt_tokens_details.cached_read_tokens) && (
+													{displayLog.token_usage.prompt_tokens_details.cached_read_tokens && (
 														<LogEntryDetailsView
 															className="w-full"
 															label="Cache Read Tokens"
-															value={
-																(displayLog.token_usage.prompt_tokens_details.cached_read_tokens ?? 0)
-															}
+															value={displayLog.token_usage.prompt_tokens_details.cached_read_tokens ?? 0}
 														/>
 													)}
-													{(displayLog.token_usage.prompt_tokens_details.cached_write_tokens) && (
+													{displayLog.token_usage.prompt_tokens_details.cached_write_tokens && (
 														<LogEntryDetailsView
 															className="w-full"
 															label="Cache Write Tokens"
-															value={
-																(displayLog.token_usage.prompt_tokens_details.cached_write_tokens ?? 0)
-															}
+															value={displayLog.token_usage.prompt_tokens_details.cached_write_tokens ?? 0}
 														/>
 													)}
 													{displayLog.token_usage.prompt_tokens_details.audio_tokens && (
@@ -454,7 +468,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 																}
 															/>
 														)}
-														{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+														{reasoning.max_tokens && (
+															<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
+														)}
 													</div>
 												</div>
 											</>
@@ -492,10 +508,18 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 																		/>
 																	)}
 																	{displayLog.cache_debug.model_used && (
-																		<LogEntryDetailsView className="w-full" label="Embedding Model" value={displayLog.cache_debug.model_used} />
+																		<LogEntryDetailsView
+																			className="w-full"
+																			label="Embedding Model"
+																			value={displayLog.cache_debug.model_used}
+																		/>
 																	)}
 																	{displayLog.cache_debug.threshold && (
-																		<LogEntryDetailsView className="w-full" label="Threshold" value={displayLog.cache_debug.threshold || "-"} />
+																		<LogEntryDetailsView
+																			className="w-full"
+																			label="Threshold"
+																			value={displayLog.cache_debug.threshold || "-"}
+																		/>
 																	)}
 																	{displayLog.cache_debug.similarity && (
 																		<LogEntryDetailsView
@@ -531,7 +555,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 																<LogEntryDetailsView className="w-full" label="Embedding Model" value={displayLog.cache_debug.model_used} />
 															)}
 															{displayLog.cache_debug.input_tokens && (
-																<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={displayLog.cache_debug.input_tokens} />
+																<LogEntryDetailsView
+																	className="w-full"
+																	label="Embedding Input Tokens"
+																	value={displayLog.cache_debug.input_tokens}
+																/>
 															)}
 														</>
 													)}
@@ -564,6 +592,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</div>
 							</CollapsibleBox>
 						)}
+						{displayLog.plugin_logs && <PluginLogsView pluginLogs={displayLog.plugin_logs} />}
 						{toolsParameter && (
 							<CollapsibleBox title={`Tools (${displayLog.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
 								<CodeEditor
@@ -600,7 +629,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						)}
 
 						{(displayLog.image_generation_input || displayLog.image_generation_output) && (
-							<ImageView imageInput={displayLog.image_generation_input} imageOutput={displayLog.image_generation_output} requestType={displayLog.object} />
+							<ImageView
+								imageInput={displayLog.image_generation_input}
+								imageOutput={displayLog.image_generation_output}
+								requestType={displayLog.object}
+							/>
 						)}
 
 						{(displayLog.video_generation_input || videoOutput || videoListOutput) && (
@@ -631,34 +664,39 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						)}
 
 						{/* Passthrough request body */}
-						{isPassthrough && passthroughRequestBody && (() => {
-							return (
-								<CollapsibleBox title="Request Body" onCopy={() => {
-									try {
-										return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
-									} catch {
-										return passthroughRequestBody || "";
-									}
-								}}>
-									<CodeEditor
-										className="z-0 w-full"
-										shouldAdjustInitialHeight={true}
-										maxHeight={450}
-										wrap={true}
-										code={(() => {
+						{isPassthrough &&
+							passthroughRequestBody &&
+							(() => {
+								return (
+									<CollapsibleBox
+										title="Request Body"
+										onCopy={() => {
 											try {
 												return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
 											} catch {
 												return passthroughRequestBody || "";
 											}
-										})()}
-										lang="json"
-										readonly={true}
-										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-									/>
-								</CollapsibleBox>
-							);
-						})()}
+										}}
+									>
+										<CodeEditor
+											className="z-0 w-full"
+											shouldAdjustInitialHeight={true}
+											maxHeight={450}
+											wrap={true}
+											code={(() => {
+												try {
+													return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+												} catch {
+													return passthroughRequestBody || "";
+												}
+											})()}
+											lang="json"
+											readonly={true}
+											options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+										/>
+									</CollapsibleBox>
+								);
+							})()}
 
 						{/* Show conversation history for chat/text completions */}
 						{displayLog.input_history && displayLog.input_history.length > 1 && (
@@ -693,12 +731,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							</div>
 						)}
 
-						{displayLog.is_large_payload_response && !displayLog.output_message && !displayLog.responses_output?.length && displayLog.status !== "processing" && (
-							<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-								Large payload response — response content was streamed directly to the client and is not available for display.
-								{displayLog.raw_response && " A truncated preview is available in the Raw Response section below."}
-							</div>
-						)}
+						{displayLog.is_large_payload_response &&
+							!displayLog.output_message &&
+							!displayLog.responses_output?.length &&
+							displayLog.status !== "processing" && (
+								<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+									Large payload response — response content was streamed directly to the client and is not available for display.
+									{displayLog.raw_response && " A truncated preview is available in the Raw Response section below."}
+								</div>
+							)}
 
 						{displayLog.status !== "processing" && (
 							<>

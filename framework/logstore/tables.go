@@ -128,6 +128,7 @@ type Log struct {
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
 	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
 	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
+	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`               // JSON serialized plugin log entries grouped by plugin name
 	Metadata                *string   `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]interface{}
 	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
@@ -1169,7 +1170,7 @@ type MCPHistogramBucket struct {
 // MCPHistogramResult represents the MCP tool call volume histogram query result
 type MCPHistogramResult struct {
 	Buckets           []MCPHistogramBucket `json:"buckets"`
-	BucketSizeSeconds int64               `json:"bucket_size_seconds"`
+	BucketSizeSeconds int64                `json:"bucket_size_seconds"`
 }
 
 // MCPCostHistogramBucket represents a single time bucket for MCP cost data

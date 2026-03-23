@@ -220,6 +220,8 @@ const (
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
+	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
+	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"              // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -274,6 +276,27 @@ type RoutingEngineLogEntry struct {
 	Engine    string // e.g., "governance", "routing-rule", "openrouter"
 	Message   string // Human-readable decision/action message
 	Timestamp int64  // Unix milliseconds
+}
+
+// PluginLogEntry represents a structured log entry emitted by a plugin via ctx.Log().
+type PluginLogEntry struct {
+	PluginName string   `json:"plugin_name"`
+	Level      LogLevel `json:"level"`
+	Message    string   `json:"message"`
+	Timestamp  int64    `json:"timestamp"` // Unix milliseconds
+}
+
+// GroupPluginLogsByName groups a flat slice of plugin log entries by plugin name.
+// Returns nil if the input is empty.
+func GroupPluginLogsByName(logs []PluginLogEntry) map[string][]PluginLogEntry {
+	if len(logs) == 0 {
+		return nil
+	}
+	grouped := make(map[string][]PluginLogEntry, min(len(logs), 4))
+	for _, entry := range logs {
+		grouped[entry.PluginName] = append(grouped[entry.PluginName], entry)
+	}
+	return grouped
 }
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
