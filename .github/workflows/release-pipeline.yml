@@ -951,7 +951,7 @@ jobs:
   # Build darwin, windows, linux/amd64 binaries and upload to R2
   build-binaries-x86:
     needs: [bifrost-http-prep, detect-changes]
-    if: needs.bifrost-http-prep.outputs.success == 'true'
+    if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1002,7 +1002,7 @@ jobs:
   # Build linux/arm64 natively on ARM runner and upload to R2
   build-binaries-arm64:
     needs: [bifrost-http-prep, detect-changes]
-    if: needs.bifrost-http-prep.outputs.success == 'true'
+    if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
