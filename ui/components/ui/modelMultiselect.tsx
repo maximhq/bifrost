@@ -23,6 +23,10 @@ interface ModelMultiselectPropsBase {
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** Menu position strategy. Use "absolute" inside popovers to avoid portal issues. Defaults to "fixed". */
+	menuPosition?: "absolute" | "fixed";
+	/** Target element for the menu portal. */
+	menuPortalTarget?: HTMLElement | null;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -242,6 +246,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			isClearable={false}
 			closeMenuOnSelect={isSingleSelect}
 			menuPlacement="auto"
+			menuPosition={props.menuPosition}
+			menuPortalTarget={props.menuPortalTarget}
 			menuListClassName="mx-1"
 			inputValue={inputValue}
 			onInputChange={handleInputChange}

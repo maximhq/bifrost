@@ -15,6 +15,7 @@ import { ModelParams, PromptSession } from "@/lib/types/prompts";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { PromptDeploymentView } from "./promptDeploymentView";
 
 export default function PromptsViewHeader() {
 	const {
@@ -29,7 +30,6 @@ export default function PromptsViewHeader() {
 		variables,
 		hasChanges,
 		hasVersionChanges,
-		hasSessionChanges,
 		isStreaming,
 		canUpdate,
 	} = usePromptContext();
@@ -180,6 +180,7 @@ export default function PromptsViewHeader() {
 						Clear
 					</Button>
 				)}
+				<PromptDeploymentView />
 				<SplitButton
 					onClick={handleSaveSession}
 					disabled={isCreatingSession || isStreaming}

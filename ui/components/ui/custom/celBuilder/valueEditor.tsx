@@ -24,6 +24,8 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 
 	// Get validateRegex from context if provided
 	const validateRegex: ((pattern: string) => string | null) | undefined = context?.validateRegex;
+	const menuPosition: "absolute" | "fixed" | undefined = context?.menuPosition;
+	const menuPortalTarget: HTMLElement | null | undefined = context?.menuPortalTarget;
 
 	// Get valueEditorType, handling both string and function types
 	const valueEditorType =
@@ -114,6 +116,8 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 					placeholder="Select models..."
 					loadModelsOnEmptyProvider
 					className="!min-h-9 w-[360px]"
+					menuPosition={menuPosition}
+					menuPortalTarget={menuPortalTarget}
 				/>
 			);
 		}
@@ -127,6 +131,8 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 				isSingleSelect
 				loadModelsOnEmptyProvider
 				className="w-[360px] border-input"
+				menuPosition={menuPosition}
+				menuPortalTarget={menuPortalTarget}
 			/>
 		);
 	}

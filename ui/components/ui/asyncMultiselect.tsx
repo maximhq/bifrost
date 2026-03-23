@@ -149,6 +149,8 @@ interface AsyncMultiSelectProps<T> {
 	reload?: (query: string, callback: (options: Option<T>[] | OptionGroup<T>[]) => void) => void;
 
 	menuPosition?: "absolute" | "fixed";
+	/** Target element for the menu portal. When set, the menu renders inside this element instead of document.body. */
+	menuPortalTarget?: HTMLElement | null;
 
 	/** enable dynamic option creation from the input */
 	dynamicOptionCreation?: boolean;
@@ -394,13 +396,16 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				menuPlacement={props.menuPlacement}
 				blurInputOnSelect={false}
 				menuPosition={props.menuPosition ?? "fixed"}
+				menuPortalTarget={props.menuPortalTarget}
 				onInputChange={(newValue, actionMeta) => {
 					if (props.onInputChange) {
 						props.onInputChange(newValue, { action: actionMeta.action });
 					}
 				}}
 				onBlur={(e) => {
-					radixDialogOnBlurWorkaround(e);
+					if (!props.menuPortalTarget) {
+						radixDialogOnBlurWorkaround(e);
+					}
 					if (props.onBlur) props.onBlur();
 				}}
 				onMenuOpen={() => {
@@ -417,6 +422,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}
 				inputValue={props.inputValue}
 				styles={{
+					menuPortal: (base) => ({ ...base, zIndex: 9999 }),
 					control: (base) => ({ ...base, boxShadow: "none", minHeight: "32px" }),
 					multiValue: () => ({}),
 					multiValueLabel: () => ({}),

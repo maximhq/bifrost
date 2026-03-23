@@ -88,7 +88,7 @@ interface SelectItemProps extends React.ComponentProps<typeof SelectPrimitive.It
 function SelectItem({ className, children, disabled, disabledReason, icon, ...props }: SelectItemProps) {
 	return (
 		<SelectPrimitive.Item
-			data-disabled={disabled}
+			data-disabled={disabled || undefined}
 			data-disabled-reason={disabledReason}
 			data-slot="select-item"
 			className={cn(
