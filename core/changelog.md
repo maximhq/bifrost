@@ -9,3 +9,4 @@
 - fix: Gemini flow for OpenAI-compatible integration
 - fix: removed map marshals from core for improved serialization
 - fix: PG query optimizations
+- fix: fallback missing Gemini thought signatures to the official bypass sentinel for replayed tool calls (thanks [@mrcfps](https://github.com/mrcfps)!)
