@@ -134,13 +134,16 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			"total_tokens":      deferredUsage.TotalTokens,
 		}
 
-		// tokens_per_second may also be computed during deferred usage updates
-		// when completion tokens are not available at initial finalization.
+		// Compute TPS only if it wasn't already set by PostLLMHook finalization.
+		// This preserves the single-source computation model: TPS is computed
+		// once at finalization time, and deferred updates only fill in the gap
+		// when token usage wasn't available at that point.
 		if logEntry, findErr := p.store.FindByID(p.ctx, requestID); findErr != nil {
 			p.logger.Warn("failed to load log entry for deferred usage update %s: %v", requestID, findErr)
 		} else if logEntry != nil && logEntry.Latency != nil {
-			if tokensPerSecond, ok := computeTokensPerSecond(deferredUsage.CompletionTokens, *logEntry.Latency); ok {
-				usageUpdates["tokens_per_second"] = tokensPerSecond
+			computeTPSIfMissing(logEntry, deferredUsage.CompletionTokens, *logEntry.Latency)
+			if logEntry.TokensPerSecond != nil {
+				usageUpdates["tokens_per_second"] = *logEntry.TokensPerSecond
 			}
 		}
 

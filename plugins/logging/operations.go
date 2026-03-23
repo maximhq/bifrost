@@ -643,30 +643,28 @@ func computeTokensPerSecond(completionTokens int, latencyMs float64) (float64, b
 	return float64(completionTokens) / (latencyMs / 1000.0), true
 }
 
+// computeTPSIfMissing computes and sets tokens_per_second on the entry
+// only if it hasn't been set already. This enforces single-source computation:
+// TPS is computed once at finalization (PostLLMHook), and deferred updates
+// only fill in the gap when token usage wasn't available at that point.
+//
+// Used by both applyPerformanceMetricsToEntry and scheduleDeferredUsageUpdate.
+func computeTPSIfMissing(entry *logstore.Log, completionTokens int, latencyMs float64) {
+	if entry == nil || entry.TokensPerSecond != nil {
+		return
+	}
+	if tps, ok := computeTokensPerSecond(completionTokens, latencyMs); ok {
+		entry.TokensPerSecond = &tps
+	}
+}
+
 // applyPerformanceMetricsToEntry computes derived performance metrics for a finalized log entry.
-//
-// Design note:
-// tokens_per_second is computed at write-time to ensure consistency
-// across logs, APIs, and aggregations. It may also be computed during
-// deferred usage updates when token usage arrives asynchronously.
-//
-// Lifecycle:
-//   - Called once from PostLLMHook after output fields are finalized.
-//   - Not called from intermediate streaming update paths.
-//
-// Formula:
-//   - tokens_per_second = completion_tokens / (latency_ms / 1000.0)
-//
-// Constraints:
-//   - completion_tokens > 0
-//   - latency_ms > 0
+// Uses computeTPSIfMissing to enforce single-source TPS computation.
 func applyPerformanceMetricsToEntry(entry *logstore.Log) {
 	if entry == nil || entry.Latency == nil {
 		return
 	}
-	if tokensPerSecond, ok := computeTokensPerSecond(entry.CompletionTokens, *entry.Latency); ok {
-		entry.TokensPerSecond = &tokensPerSecond
-	}
+	computeTPSIfMissing(entry, entry.CompletionTokens, *entry.Latency)
 }
 
 // isPassthroughErrorResponse returns true when the result is a passthrough

@@ -1063,6 +1063,31 @@ func nullableFloatPointer(v sql.NullFloat64) *float64 {
 	return &val
 }
 
+// buildCeilExpr returns a SQL CEIL(p * N) expression for the given dialect.
+// SQLite lacks a native CEIL, so we use integer arithmetic:
+//
+//	CEIL(N * p) == (N * P + 99) / 100
+//
+// where P = round(p * 100) (integer), using truncating integer division.
+//
+// Proof: for non-negative integer product N*P:
+//
+//	floor((N*P + 99) / 100) == ceil(N*P / 100)
+//
+// Examples (p=0.90, P=90):
+//
+//	N=3:  (3*90 + 99)/100 = 369/100 = 3 ✓
+//	N=4:  (4*90 + 99)/100 = 459/100 = 4 ✓
+//	N=10: (10*90 + 99)/100 = 999/100 = 9 ✓
+//	N=1:  (1*90 + 99)/100 = 189/100 = 1 ✓
+func buildCeilExpr(dialect string, countCol string, percentile float64) string {
+	percentileInt := int(math.Round(percentile * 100.0))
+	if dialect == "sqlite" {
+		return fmt.Sprintf("((%s * %d + 99) / 100)", countCol, percentileInt)
+	}
+	return fmt.Sprintf("CEIL(%.6f * %s)", percentile, countCol)
+}
+
 // Percentile computation strategy:
 //
 // We use a rank-based percentile approximation:
@@ -1078,23 +1103,7 @@ func nullableFloatPointer(v sql.NullFloat64) *float64 {
 //   - For nullable metrics (TPS/TTFT), NULL values are excluded from both
 //     ranking and counting using filtered value columns.
 func buildRankedPercentileExpr(dialect, rankCol, countCol string, percentile float64, valueCol string) string {
-	percentileInt := int(math.Round(percentile * 100.0))
-	thresholdExpr := fmt.Sprintf("CEIL(%.6f * %s)", percentile, countCol)
-	if dialect == "sqlite" {
-		// SQLite CEIL approximation using integer arithmetic:
-		//   CEIL(count * percentile) == (count * P + 99) / 100
-		// where P = percentile * 100 (integer), using truncating integer division.
-		//
-		// Proof: for any non-negative integer N and percentage P in [0,100]:
-		//   floor((N*P + 99) / 100) == ceil(N*P / 100)
-		//
-		// Examples:
-		//   CEIL(3 * 0.90) = (3*90 + 99)/100 = 369/100 = 3 ✓
-		//   CEIL(4 * 0.90) = (4*90 + 99)/100 = 459/100 = 4 ✓
-		//   CEIL(10 * 0.90) = (10*90 + 99)/100 = 999/100 = 9 ✓
-		//   CEIL(1 * 0.90) = (1*90 + 99)/100 = 189/100 = 1 ✓
-		thresholdExpr = fmt.Sprintf("((%s * %d + 100 - 1) / 100)", countCol, percentileInt)
-	}
+	thresholdExpr := buildCeilExpr(dialect, countCol, percentile)
 
 	return fmt.Sprintf(`CASE
 		WHEN %s = 0 THEN NULL
@@ -1217,6 +1226,98 @@ func buildFinalHistogramAggregationQuery(db *gorm.DB, latencyAgg, tpsAgg, ttftAg
 		Order("latency_agg.bucket_timestamp ASC")
 }
 
+// buildLatencyHistogramCTE generates a CTE-based SQL query for latency histogram computation.
+//
+// The CTE structure ensures the base query is defined once and referenced by all three
+// ranking pipelines (latency, TPS, TTFT), eliminating subquery re-evaluation.
+// Each metric is:
+//  1. Ranked independently (NULL-filtered BEFORE ranking for TPS/TTFT)
+//  2. Aggregated per-metric (GROUP BY bucket_timestamp[, provider])
+//  3. Joined at the bucket level (LEFT JOIN — no row-level joins)
+func buildLatencyHistogramCTE(dialect, baseSql string, includeProvider bool) string {
+	partition := "bucket_timestamp"
+	providerCol := ""
+	providerGroupBy := ""
+	tpsJoin := "lat.bucket_timestamp = tps.bucket_timestamp"
+	ttftJoin := "lat.bucket_timestamp = ttft.bucket_timestamp"
+	providerFinalSelect := ""
+	orderBy := "lat.bucket_timestamp ASC"
+
+	if includeProvider {
+		partition = "bucket_timestamp, provider"
+		providerCol = "provider, "
+		providerGroupBy = ", provider"
+		tpsJoin += " AND lat.provider = tps.provider"
+		ttftJoin += " AND lat.provider = ttft.provider"
+		providerFinalSelect = "lat.provider, "
+		orderBy = "lat.bucket_timestamp ASC, lat.provider ASC"
+	}
+
+	p90Lat := buildRankedPercentileExpr(dialect, "latency_rank", "latency_count", 0.90, "latency_value")
+	p95Lat := buildRankedPercentileExpr(dialect, "latency_rank", "latency_count", 0.95, "latency_value")
+	p99Lat := buildRankedPercentileExpr(dialect, "latency_rank", "latency_count", 0.99, "latency_value")
+	p90TPS := buildRankedPercentileExpr(dialect, "tps_rank", "tps_count", 0.90, "tps_value")
+	p90TTFT := buildRankedPercentileExpr(dialect, "ttft_rank", "ttft_count", 0.90, "ttft_value")
+
+	return fmt.Sprintf(`WITH base AS (%s),
+latency_ranked AS (
+  SELECT %sbucket_timestamp, latency AS latency_value,
+    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY latency ASC) AS latency_rank,
+    COUNT(*) OVER (PARTITION BY %s) AS latency_count
+  FROM base
+),
+tps_ranked AS (
+  SELECT %sbucket_timestamp, tokens_per_second AS tps_value,
+    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY tokens_per_second ASC) AS tps_rank,
+    COUNT(*) OVER (PARTITION BY %s) AS tps_count
+  FROM base WHERE tokens_per_second IS NOT NULL
+),
+ttft_ranked AS (
+  SELECT %sbucket_timestamp, time_to_first_token AS ttft_value,
+    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY time_to_first_token ASC) AS ttft_rank,
+    COUNT(*) OVER (PARTITION BY %s) AS ttft_count
+  FROM base WHERE time_to_first_token IS NOT NULL
+),
+latency_agg AS (
+  SELECT %sbucket_timestamp,
+    AVG(latency_value) AS avg_latency,
+    %s AS p90_latency, %s AS p95_latency, %s AS p99_latency,
+    COUNT(*) AS total_requests
+  FROM latency_ranked GROUP BY bucket_timestamp%s
+),
+tps_agg AS (
+  SELECT %sbucket_timestamp,
+    AVG(tps_value) AS avg_tokens_per_second,
+    %s AS p90_tokens_per_second
+  FROM tps_ranked GROUP BY bucket_timestamp%s
+),
+ttft_agg AS (
+  SELECT %sbucket_timestamp,
+    AVG(ttft_value) AS avg_time_to_first_token,
+    %s AS p90_time_to_first_token
+  FROM ttft_ranked GROUP BY bucket_timestamp%s
+)
+SELECT %slat.bucket_timestamp,
+  lat.avg_latency, lat.p90_latency, lat.p95_latency, lat.p99_latency,
+  tps.avg_tokens_per_second, tps.p90_tokens_per_second,
+  ttft.avg_time_to_first_token, ttft.p90_time_to_first_token,
+  lat.total_requests
+FROM latency_agg lat
+LEFT JOIN tps_agg tps ON %s
+LEFT JOIN ttft_agg ttft ON %s
+ORDER BY %s`,
+		baseSql,
+		providerCol, partition, partition,
+		providerCol, partition, partition,
+		providerCol, partition, partition,
+		providerCol, p90Lat, p95Lat, p99Lat, providerGroupBy,
+		providerCol, p90TPS, providerGroupBy,
+		providerCol, p90TTFT, providerGroupBy,
+		providerFinalSelect,
+		tpsJoin, ttftJoin, orderBy,
+	)
+}
+
 // GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
 // On Postgres with eligible filters and bucket size >= 1h, uses materialized view for fast aggregation.
 // All other cases use rank-based window functions for cross-DB consistent results.
@@ -1243,39 +1344,35 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 }
 
 // getLatencyHistogramWindowed computes latency percentiles directly in SQL
-// using rank-based window functions.
+// using CTE-based window functions.
 //
-// Query structure (avoids redundant base dataset re-computation):
-//   base: SELECT bucket_timestamp, latency, tokens_per_second, time_to_first_token FROM logs WHERE ...
-//   latencyRanked: ROW_NUMBER()/COUNT(*) OVER base (all rows — latency IS NOT NULL from outer filter)
-//   tpsRanked:     ROW_NUMBER()/COUNT(*) OVER base WHERE tokens_per_second IS NOT NULL
-//   ttftRanked:    ROW_NUMBER()/COUNT(*) OVER base WHERE time_to_first_token IS NOT NULL
-//   final: LEFT JOIN tps_agg, ttft_agg onto latency_agg by bucket_timestamp
+// Query structure (CTE ensures base is defined once, never re-evaluated):
+//
+//	WITH base AS (SELECT bucket_ts, latency, tps, ttft FROM logs WHERE ...),
+//	  latency_ranked AS (ROW_NUMBER/COUNT OVER base),
+//	  tps_ranked     AS (ROW_NUMBER/COUNT OVER base WHERE tps IS NOT NULL),
+//	  ttft_ranked    AS (ROW_NUMBER/COUNT OVER base WHERE ttft IS NOT NULL),
+//	  latency_agg    AS (GROUP BY bucket_ts FROM latency_ranked),
+//	  tps_agg        AS (GROUP BY bucket_ts FROM tps_ranked),
+//	  ttft_agg       AS (GROUP BY bucket_ts FROM ttft_ranked)
+//	SELECT ... FROM latency_agg LEFT JOIN tps_agg LEFT JOIN ttft_agg
 func (s *RDBLogStore) getLatencyHistogramWindowed(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	db := s.db.WithContext(ctx).Debug()
 	dialect := s.db.Dialector.Name()
-	bucketExpr := getBucketTimestampExpr(s.db.Dialector.Name(), bucketSizeSeconds)
+	bucketExpr := getBucketTimestampExpr(dialect, bucketSizeSeconds)
 
-	// Build the pre-bucketed base dataset once. All three metric pipelines
-	// (latency, TPS, TTFT) derive from this single subquery.
-	base := baseQuery.Select(fmt.Sprintf("%s as bucket_timestamp, latency, tokens_per_second, time_to_first_token", bucketExpr))
-	baseDataset := buildHistogramBaseQuery(s.db.WithContext(ctx), base, false)
+	// Extract the base query SQL using ToSQL (fully interpolated, dialect-safe).
+	baseSql := s.db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		q := tx.Model(&Log{})
+		q = s.applyFilters(q, filters)
+		q = q.Where("status IN ?", []string{"success", "error"})
+		q = q.Where("latency IS NOT NULL")
+		q = q.Select(fmt.Sprintf("%s as bucket_timestamp, latency, tokens_per_second, time_to_first_token", bucketExpr))
+		return q.Find(&[]Log{})
+	})
 
-	// Latency ranking: operates on ALL rows (latency IS NOT NULL enforced by outer filter)
-	latencyRanked := buildMetricRankedQuery(s.db.WithContext(ctx), baseDataset, false, "latency", "latency_value", "latency_rank", "latency_count")
-
-	// TPS/TTFT ranking: filter NULLs from the base dataset, then rank.
-	// Each uses a single Table() wrap of baseDataset with a WHERE filter,
-	// keeping subquery nesting minimal.
-	tpsSource := s.db.WithContext(ctx).Table("(?) as tps_base", baseDataset).Where("tokens_per_second IS NOT NULL")
-	tpsRanked := buildMetricRankedQuery(s.db.WithContext(ctx), tpsSource, false, "tokens_per_second", "tps_value", "tps_rank", "tps_count")
-	ttftSource := s.db.WithContext(ctx).Table("(?) as ttft_base", baseDataset).Where("time_to_first_token IS NOT NULL")
-	ttftRanked := buildMetricRankedQuery(s.db.WithContext(ctx), ttftSource, false, "time_to_first_token", "ttft_value", "ttft_rank", "ttft_count")
-
-	latencyAgg := buildLatencyAggregationQuery(s.db.WithContext(ctx), latencyRanked, false, dialect)
-	tpsAgg := buildOptionalMetricAggregationQuery(s.db.WithContext(ctx), tpsRanked, false, dialect, "tps_value", "tps_rank", "tps_count", "avg_tokens_per_second", "p90_tokens_per_second")
-	ttftAgg := buildOptionalMetricAggregationQuery(s.db.WithContext(ctx), ttftRanked, false, dialect, "ttft_value", "ttft_rank", "ttft_count", "avg_time_to_first_token", "p90_time_to_first_token")
-
-	finalQuery := buildFinalHistogramAggregationQuery(s.db.WithContext(ctx), latencyAgg, tpsAgg, ttftAgg, false)
+	cteQuery := buildLatencyHistogramCTE(dialect, baseSql, false)
+	finalQuery := db.Raw(cteQuery)
 
 	var results []struct {
 		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
@@ -1751,24 +1848,23 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 }
 
 // getProviderLatencyHistogramWindowed computes provider latency percentiles directly in SQL
-// using rank-based window functions, with provider-level partitioning.
+// using CTE-based window functions, with provider-level partitioning.
 func (s *RDBLogStore) getProviderLatencyHistogramWindowed(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	db := s.db.WithContext(ctx)
 	dialect := s.db.Dialector.Name()
-	bucketExpr := getBucketTimestampExpr(s.db.Dialector.Name(), bucketSizeSeconds)
-	base := baseQuery.Select(fmt.Sprintf("%s as bucket_timestamp, provider, latency, tokens_per_second, time_to_first_token", bucketExpr))
-	baseDataset := buildHistogramBaseQuery(s.db.WithContext(ctx), base, true)
+	bucketExpr := getBucketTimestampExpr(dialect, bucketSizeSeconds)
 
-	latencyRanked := buildMetricRankedQuery(s.db.WithContext(ctx), baseDataset, true, "latency", "latency_value", "latency_rank", "latency_count")
-	tpsSource := s.db.WithContext(ctx).Table("(?) as tps_base", baseDataset).Where("tokens_per_second IS NOT NULL")
-	tpsRanked := buildMetricRankedQuery(s.db.WithContext(ctx), tpsSource, true, "tokens_per_second", "tps_value", "tps_rank", "tps_count")
-	ttftSource := s.db.WithContext(ctx).Table("(?) as ttft_base", baseDataset).Where("time_to_first_token IS NOT NULL")
-	ttftRanked := buildMetricRankedQuery(s.db.WithContext(ctx), ttftSource, true, "time_to_first_token", "ttft_value", "ttft_rank", "ttft_count")
+	baseSql := s.db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		q := tx.Model(&Log{})
+		q = s.applyFilters(q, filters)
+		q = q.Where("status IN ?", []string{"success", "error"})
+		q = q.Where("latency IS NOT NULL")
+		q = q.Select(fmt.Sprintf("%s as bucket_timestamp, provider, latency, tokens_per_second, time_to_first_token", bucketExpr))
+		return q.Find(&[]Log{})
+	})
 
-	latencyAgg := buildLatencyAggregationQuery(s.db.WithContext(ctx), latencyRanked, true, dialect)
-	tpsAgg := buildOptionalMetricAggregationQuery(s.db.WithContext(ctx), tpsRanked, true, dialect, "tps_value", "tps_rank", "tps_count", "avg_tokens_per_second", "p90_tokens_per_second")
-	ttftAgg := buildOptionalMetricAggregationQuery(s.db.WithContext(ctx), ttftRanked, true, dialect, "ttft_value", "ttft_rank", "ttft_count", "avg_time_to_first_token", "p90_time_to_first_token")
-
-	finalQuery := buildFinalHistogramAggregationQuery(s.db.WithContext(ctx), latencyAgg, tpsAgg, ttftAgg, true)
+	cteQuery := buildLatencyHistogramCTE(dialect, baseSql, true)
+	finalQuery := db.Raw(cteQuery)
 
 	var results []struct {
 		BucketTimestamp int64           `gorm:"column:bucket_timestamp"`
