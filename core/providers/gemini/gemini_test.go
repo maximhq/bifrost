@@ -400,6 +400,18 @@ func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	assert.NotContains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
 }
 
+func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
+	part := gemini.Part{ThoughtSignature: []byte("skip_thought_signature_validator")}
+
+	encoded, err := json.Marshal(part)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+
+	var decoded gemini.Part
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, []byte("skip_thought_signature_validator"), decoded.ThoughtSignature)
+}
+
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
 func TestBifrostToGeminiToolConversion(t *testing.T) {
 	tests := []struct {

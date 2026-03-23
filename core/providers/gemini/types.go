@@ -1258,20 +1258,24 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.Text = aux.Text
 
 	if aux.ThoughtSignature != "" {
-		// Convert URL-safe base64 to standard base64
-		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.ThoughtSignature, "_", "/"), "-", "+")
-		// Add padding if necessary
-		switch len(standardBase64) % 4 {
-		case 2:
-			standardBase64 += "=="
-		case 3:
-			standardBase64 += "="
+		if aux.ThoughtSignature == skipThoughtSignatureValidator {
+			p.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+		} else {
+			// Convert URL-safe base64 to standard base64
+			standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.ThoughtSignature, "_", "/"), "-", "+")
+			// Add padding if necessary
+			switch len(standardBase64) % 4 {
+			case 2:
+				standardBase64 += "=="
+			case 3:
+				standardBase64 += "="
+			}
+			decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+			if err != nil {
+				return fmt.Errorf("failed to decode base64 thoughtSignature: %v", err)
+			}
+			p.ThoughtSignature = decoded
 		}
-		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 thoughtSignature: %v", err)
-		}
-		p.ThoughtSignature = decoded
 	}
 
 	return nil
