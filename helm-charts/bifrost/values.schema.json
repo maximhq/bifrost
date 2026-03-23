@@ -360,11 +360,9 @@
               "description": "Default TTL for async job results in seconds"
             },
             "requiredHeaders": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Headers that must be present on every request"
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Headers that must be present on every request. Keys are header names (case-insensitive). Values are patterns: \"*\" for any value, \"env.VAR\" for env var lookup, or a regex pattern."
             },
             "loggingHeaders": {
               "type": "array",
@@ -544,17 +542,9 @@
                       "type": "boolean"
                     },
                     "required_headers": {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "additionalProperties": { "type": "string" }
-                        },
-                        {
-                          "type": "array",
-                          "items": { "type": "string" }
-                        }
-                      ],
-                      "description": "Headers that must be present in requests. Object format: keys are header names, values are patterns (* for any value, env.VAR for env var, or regex). Legacy array format is also accepted and converted to object with * wildcards."
+                      "type": "object",
+                      "additionalProperties": { "type": "string" },
+                      "description": "Headers that must be present in requests. Keys are header names, values are patterns (* for any value, env.VAR for env var, or regex)."
                     },
                     "is_enterprise": {
                       "type": "boolean",
