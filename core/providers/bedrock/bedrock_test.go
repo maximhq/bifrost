@@ -3025,6 +3025,67 @@ func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
 	require.True(t, ok, "expected output_config.format.schema to remain ordered")
 }
 
+// TestNonAnthropicStructuredOutputStillUsesToolConversion ensures Bedrock models
+// other than Anthropic continue to use the legacy response_format->tool path.
+func TestNonAnthropicStructuredOutputStillUsesToolConversion(t *testing.T) {
+	responseFormat := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("json_schema", schemas.NewOrderedMapFromPairs(
+			schemas.KV("name", "classification"),
+			schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("description", "Return structured classification"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+					schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "string"),
+					)),
+				)),
+				schemas.KV("required", []any{"topic"}),
+			)),
+		)),
+	))
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "amazon.nova-pro-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Non-Anthropic models should not use output_config.format.
+	if result.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic structured output")
+	}
+
+	require.NotNil(t, result.ToolConfig, "expected tool_config for non-anthropic structured output")
+	require.NotEmpty(t, result.ToolConfig.Tools, "expected synthetic structured output tool to be added")
+	require.NotNil(t, result.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, result.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.ToolChoice.Tool.Name)
+	assert.Equal(t, "bf_so_classification", result.ToolConfig.Tools[0].ToolSpec.Name)
+
+	schemaRaw := result.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON
+	schema, ok := schemaRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected non-anthropic structured output schema to remain ordered")
+	schemaType, ok := schema.Get("type")
+	require.True(t, ok, "expected tool schema type")
+	assert.Equal(t, "object", schemaType)
+}
+
 // TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths ensures
 // additionalModelRequestFieldPaths are merged into existing AdditionalModelRequestFields
 // and output_config is deep-merged instead of overwritten.
