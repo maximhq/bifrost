@@ -18,11 +18,42 @@ sudo apt-get install -y \
   xz-utils \
   curl
 
-# Create symbolic links for musl compilers
+# Create symbolic links for x86_64 musl compilers
 sudo ln -sf /usr/bin/x86_64-linux-gnu-gcc /usr/local/bin/x86_64-linux-musl-gcc
 sudo ln -sf /usr/bin/x86_64-linux-gnu-g++ /usr/local/bin/x86_64-linux-musl-g++
-sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-linux-musl-gcc
-sudo ln -sf /usr/bin/aarch64-linux-gnu-g++ /usr/local/bin/aarch64-linux-musl-g++
+
+# Create wrapper scripts for aarch64 musl compilers
+# Go passes -fuse-ld=gold for ARM64, but ld.gold is unavailable on Ubuntu 24.04+
+# Wrapper intercepts and rewrites to -fuse-ld=lld
+sudo tee /usr/local/bin/aarch64-linux-musl-gcc > /dev/null << 'WRAPPER_EOF'
+#!/bin/bash
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    -fuse-ld=gold) args+=("-fuse-ld=lld") ;;
+    *) args+=("$arg") ;;
+  esac
+done
+exec /usr/bin/aarch64-linux-gnu-gcc "${args[@]}"
+WRAPPER_EOF
+
+sudo tee /usr/local/bin/aarch64-linux-musl-g++ > /dev/null << 'WRAPPER_EOF'
+#!/bin/bash
+args=()
+for arg in "$@"; do
+  case "$arg" in
+    -fuse-ld=gold) args+=("-fuse-ld=lld") ;;
+    *) args+=("$arg") ;;
+  esac
+done
+exec /usr/bin/aarch64-linux-gnu-g++ "${args[@]}"
+WRAPPER_EOF
+
+sudo chmod +x /usr/local/bin/aarch64-linux-musl-gcc /usr/local/bin/aarch64-linux-musl-g++
+
+# GCC's collect2 searches for cross-prefixed linker (aarch64-linux-gnu-ld.lld)
+# but apt's lld package only provides /usr/bin/ld.lld — create the cross-prefixed symlink
+sudo ln -sf /usr/bin/ld.lld /usr/bin/aarch64-linux-gnu-ld.lld
 
 echo "🍎 Setting up Darwin cross-compilation..."
 
