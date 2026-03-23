@@ -166,7 +166,6 @@ func TestBedrock(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
-			{Provider: schemas.Bedrock, Model: "anthropic.claude-sonnet-4-20250514-v1:0"}, // Used for count tokens
 		},
 		EmbeddingModel:      "cohere.embed-v4:0",
 		RerankModel:         rerankModelARN,
