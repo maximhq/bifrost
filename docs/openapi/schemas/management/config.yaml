@@ -61,7 +61,7 @@ ClientConfig:
       type: object
       additionalProperties:
         type: string
-      description: Headers that must be present on every request. Keys are header names (case-insensitive). Values are patterns - "*" for any value, "env.VAR" for env var lookup, or a regex pattern.
+      description: Headers that must be present on every request. Keys are header names (case-insensitive). Values are patterns - "*" for any value, "env.VAR" for env var lookup (matched literally), or a regex pattern.
     logging_headers:
       type: array
       items:

@@ -4770,7 +4770,10 @@ func migrationConvertRequiredHeadersToMap(ctx context.Context, db *gorm.DB) erro
 					return fmt.Errorf("failed to marshal converted required headers for config %d: %w", row.ID, err)
 				}
 
-				if err := tx.Table("config_client").Where("id = ?", row.ID).Update("required_headers_json", string(data)).Error; err != nil {
+				if err := tx.Table("config_client").Where("id = ?", row.ID).Updates(map[string]interface{}{
+					"required_headers_json": string(data),
+					"config_hash":           "",
+				}).Error; err != nil {
 					return fmt.Errorf("failed to update required headers for config %d: %w", row.ID, err)
 				}
 			}

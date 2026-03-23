@@ -127,10 +127,14 @@
         },
         "required_headers": {
           "type": "object",
-          "additionalProperties": {
-            "type": "string"
+          "propertyNames": {
+            "pattern": "\\S"
           },
-          "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime, and any other string is treated as a regex pattern. Empty string values are not allowed. Examples: {\"X-Tenant-ID\": \"*\", \"X-Proxy-Token\": \"env.MY_SECRET\", \"X-Region\": \"us-east-1|eu-west-1\"}"
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime (matched literally), and any other string is treated as a regex pattern. Empty string values are not allowed. Examples: {\"X-Tenant-ID\": \"*\", \"X-Proxy-Token\": \"env.MY_SECRET\", \"X-Region\": \"us-east-1|eu-west-1\"}"
         },
         "logging_headers": {
           "type": "array",
@@ -1063,10 +1067,14 @@
                     },
                     "required_headers": {
                       "type": "object",
-                      "additionalProperties": {
-                        "type": "string"
+                      "propertyNames": {
+                        "pattern": "\\S"
                       },
-                      "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime, and any other string is treated as a regex pattern. Empty string values are not allowed."
+                      "additionalProperties": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime (matched literally), and any other string is treated as a regex pattern. Empty string values are not allowed."
                     },
                     "is_enterprise": {
                       "type": "boolean",

@@ -75,7 +75,7 @@ func TestValidateRequiredHeaders_PresenceOnly_Missing(t *testing.T) {
 }
 
 // TestValidateRequiredHeaders_ExactValue_Correct verifies that a header configured with an exact
-// regex value passes when the header is present with the correct value.
+// string value passes when the header is present with the correct value.
 func TestValidateRequiredHeaders_ExactValue_Correct(t *testing.T) {
 	p := pluginWithHeaders(map[string]string{"X-Proxy-Token": "secretval"})
 	ctx := makeCtxWithHeaders(map[string]string{"x-proxy-token": "secretval"})
@@ -221,7 +221,7 @@ func TestValidateRequiredHeaders_RegexWildcardPattern(t *testing.T) {
 	assert.Nil(t, p.validateRequiredHeaders(ctx))
 }
 
-// TestValidateRequiredHeaders_RegexNumericPattern verifies a numeric-only pattern.
+// TestValidateRequiredHeaders_RegexNumericPattern verifies a numeric-only regex pattern.
 func TestValidateRequiredHeaders_RegexNumericPattern(t *testing.T) {
 	p := pluginWithHeaders(map[string]string{"X-Tenant-ID": "[0-9]+"})
 
