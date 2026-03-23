@@ -19,6 +19,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -133,12 +135,6 @@ var responsesParamsKnownFields = map[string]bool{
 	"tool_choice":          true,
 	"tools":                true,
 	"truncation":           true,
-}
-
-type ResponsesCompactRequest struct {
-	Input     any      `json:"input,omitempty"`
-	Model     string   `json:"model"`
-	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 var embeddingParamsKnownFields = map[string]bool{
@@ -1072,31 +1068,27 @@ func extractPassthroughSafeHeaders(ctx *fasthttp.RequestCtx) map[string]string {
 
 // responsesCompact handles POST /v1/responses/compact - Process OpenAI responses compact requests
 func (h *CompletionHandler) responsesCompact(ctx *fasthttp.RequestCtx) {
-	var req ResponsesCompactRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+	body := string(ctx.PostBody())
+
+	model := gjson.Get(body, "model")
+	if !model.Exists() || model.String() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model field is required")
 		return
 	}
 
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(model.String(), "")
 	if provider == "" || modelName == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
 		return
 	}
 
-	requestBody := map[string]any{}
-	if err := sonic.Unmarshal(ctx.PostBody(), &requestBody); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
-		return
-	}
-	requestBody["model"] = modelName
-	delete(requestBody, "fallbacks")
-
-	rewrittenBody, err := sonic.Marshal(requestBody)
+	rewritten, err := sjson.Set(body, "model", modelName)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to rewrite model: %v", err))
 		return
 	}
+	rewritten, _ = sjson.Delete(rewritten, "fallbacks")
+	rewrittenBody := []byte(rewritten)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
 	if bifrostCtx == nil {
