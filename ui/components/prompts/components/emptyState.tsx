@@ -2,8 +2,6 @@ import { Button } from "@/components/ui/button";
 import { ArrowUpRight, SquareTerminal } from "lucide-react";
 import { usePromptContext } from "../context";
 
-const PROMPTS_DOCS_URL = "https://docs.getbifrost.ai/features/prompt-repo/overview";
-
 export function EmptyState() {
 	const { setPromptSheet, canCreate } = usePromptContext();
 
@@ -49,7 +47,7 @@ export function PromptsEmptyState() {
 						aria-label="Read more about prompt repository (opens in new tab)"
 						data-testid="empty-state-read-more"
 						onClick={() => {
-							window.open(`${PROMPTS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
+							window.open(`https://docs.getbifrost.ai/features/prompt-repository?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
