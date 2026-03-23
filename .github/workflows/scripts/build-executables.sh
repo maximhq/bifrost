@@ -62,10 +62,9 @@ for platform in "${platforms[@]}"; do
       CXX_COMPILER="aarch64-linux-musl-g++"
     fi
 
-    # Use lld linker to avoid gold linker bugs (ARM64 erratum 843419 internal error)
     env GOWORK=off CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" CC="$CC_COMPILER" CXX="$CXX_COMPILER" \
       go build -trimpath -tags "netgo,osusergo,sqlite_static" \
-      -ldflags "-s -w -buildid= -extldflags '-static -fuse-ld=lld' -X main.Version=v${VERSION}" \
+      -ldflags "-s -w -buildid= -extldflags '-static' -X main.Version=v${VERSION}" \
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
 
   elif [[ "$GOOS" = "windows" ]]; then

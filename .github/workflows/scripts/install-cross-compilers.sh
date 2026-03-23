@@ -18,11 +18,9 @@ sudo apt-get install -y \
   xz-utils \
   curl
 
-# Create symbolic links for x86_64 musl compilers
+# Create symbolic links for musl compilers
 sudo ln -sf /usr/bin/x86_64-linux-gnu-gcc /usr/local/bin/x86_64-linux-musl-gcc
 sudo ln -sf /usr/bin/x86_64-linux-gnu-g++ /usr/local/bin/x86_64-linux-musl-g++
-
-# Create symbolic links for aarch64 musl compilers
 sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-linux-musl-gcc
 sudo ln -sf /usr/bin/aarch64-linux-gnu-g++ /usr/local/bin/aarch64-linux-musl-g++
 
@@ -47,26 +45,24 @@ if [ ! -d "$SDK_DIR" ]; then
 fi
 
 # Create wrapper scripts with proper shebang and linker configuration
-# -nostartfiles: Go has its own entry point, skip C startup files (crt1.o)
-#   which newer lld versions may fail to locate via syslibroot
 sudo tee /usr/local/bin/o64-clang > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -nostartfiles -Wno-unused-command-line-argument "$@"
+exec clang -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/o64-clang++ > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang++ -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -nostartfiles -Wno-unused-command-line-argument "$@"
+exec clang++ -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/oa64-clang > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -nostartfiles -Wno-unused-command-line-argument "$@"
+exec clang -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/oa64-clang++ > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang++ -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -nostartfiles -Wno-unused-command-line-argument "$@"
+exec clang++ -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo chmod +x /usr/local/bin/o64-clang /usr/local/bin/o64-clang++ \
