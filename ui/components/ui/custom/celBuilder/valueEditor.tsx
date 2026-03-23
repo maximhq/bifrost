@@ -11,7 +11,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { validateRegexPattern } from "@/lib/utils/celConverterRouting";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
@@ -20,6 +19,11 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";
 	const isNullOperator = operator === "null" || operator === "notNull";
+
+	// Get validateRegex from context if provided
+	const validateRegex: ((pattern: string) => string | null) | undefined = context?.validateRegex;
+	const menuPosition: "absolute" | "fixed" | undefined = context?.menuPosition;
+	const menuPortalTarget: HTMLElement | null | undefined = context?.menuPortalTarget;
 
 	// Get valueEditorType, handling both string and function types
 	const valueEditorType =
@@ -110,6 +114,8 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 					placeholder="Select models..."
 					loadModelsOnEmptyProvider
 					className="!min-h-9 w-[360px]"
+					menuPosition={menuPosition}
+					menuPortalTarget={menuPortalTarget}
 				/>
 			);
 		}
@@ -122,7 +128,9 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 				placeholder="Search for a model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
-				className="border-input w-[360px]"
+				className="w-[360px] border-input"
+				menuPosition={menuPosition}
+				menuPortalTarget={menuPortalTarget}
 			/>
 		);
 	}
@@ -258,7 +266,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 
 	// Use text input with validation for regex
 	if (isRegexOperator) {
-		const regexError = value ? validateRegexPattern(String(value)) : null;
+		const regexError = validateRegex && value ? validateRegex(String(value)) : null;
 
 		return (
 			<div className="flex flex-col gap-1">
