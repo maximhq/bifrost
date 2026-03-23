@@ -17,6 +17,9 @@ const (
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
 	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultMaxConnsPerHost            = 5000
+	MaxConnsPerHostUpperBound         = 10000
+	DefaultMaxIdleConnsPerHost        = 40
 )
 
 // Pre-defined errors for provider operations
@@ -58,6 +61,8 @@ type NetworkConfig struct {
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
 	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
+	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
+	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -75,6 +80,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
+		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -90,6 +97,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.InsecureSkipVerify = alias.InsecureSkipVerify
 	nc.CACertPEM = alias.CACertPEM
 	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
+	nc.MaxConnsPerHost = alias.MaxConnsPerHost
+	nc.EnforceHTTP2 = alias.EnforceHTTP2
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -118,6 +127,8 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
+		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -131,6 +142,8 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		InsecureSkipVerify:         nc.InsecureSkipVerify,
 		CACertPEM:                  nc.CACertPEM,
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
+		MaxConnsPerHost:            nc.MaxConnsPerHost,
+		EnforceHTTP2:               nc.EnforceHTTP2,
 	}
 
 	return json.Marshal(alias)
@@ -155,6 +168,7 @@ var DefaultNetworkConfig = NetworkConfig{
 	RetryBackoffInitial:            DefaultRetryBackoffInitial,
 	RetryBackoffMax:                DefaultRetryBackoffMax,
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
+	MaxConnsPerHost:                DefaultMaxConnsPerHost,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -437,6 +451,12 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.StreamIdleTimeoutInSeconds <= 0 {
 		config.NetworkConfig.StreamIdleTimeoutInSeconds = DefaultStreamIdleTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.MaxConnsPerHost <= 0 {
+		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
+	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
+		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races

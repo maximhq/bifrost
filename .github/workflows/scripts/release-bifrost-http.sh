@@ -129,9 +129,29 @@ if [ "$CURRENT_BRANCH" = "HEAD" ]; then
 fi
 
 echo "Pulling latest changes from origin/$CURRENT_BRANCH..."
+# Stash local go.mod/go.sum changes to avoid merge conflicts during pull
+# These files are modified by go get operations earlier in the script
+if ! git diff --quiet transports/go.mod transports/go.sum 2>/dev/null; then
+  echo "📦 Stashing local transports/go.mod and go.sum changes..."
+  git stash push -m "release-script: stash go.mod/go.sum" -- transports/go.mod transports/go.sum
+  STASHED_GO_MOD=true
+else
+  STASHED_GO_MOD=false
+fi
+
 if ! git pull origin "$CURRENT_BRANCH"; then
   echo "❌ Error: git pull origin $CURRENT_BRANCH failed"
+  # Restore stashed changes if pull failed
+  if [ "$STASHED_GO_MOD" = true ]; then
+    git stash pop || true
+  fi
   exit 1
+fi
+
+# Restore stashed go.mod/go.sum changes (our local changes take precedence)
+if [ "$STASHED_GO_MOD" = true ]; then
+  echo "📦 Restoring local transports/go.mod and go.sum changes..."
+  git stash pop
 fi
 
 # Stage any changes made to transports/

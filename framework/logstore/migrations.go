@@ -219,7 +219,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddDashboardEnhancements(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddPerformanceGINIndexes(ctx, db); err != nil {
+	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -2050,15 +2050,15 @@ func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddPerformanceGINIndexes records the migration version for the performance
+// migrationAddLogsAndDashboardPerformanceIndexes records the migration version for the performance
 // indexes. Actual index creation is deferred to ensurePerformanceIndexes (called
 // post-startup in a background goroutine) because CREATE INDEX CONCURRENTLY cannot
 // run inside a transaction.
-func migrationAddPerformanceGINIndexes(ctx context.Context, db *gorm.DB) error {
+func migrationAddLogsAndDashboardPerformanceIndexes(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "logs_add_performance_gin_indexes",
+		ID: "logs_and_dashboard_performance_indexes",
 		Migrate: func(tx *gorm.DB) error {
 			// No-op: actual index creation is handled by ensurePerformanceIndexes
 			// to avoid blocking pod startup.

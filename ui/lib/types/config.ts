@@ -157,6 +157,8 @@ export interface NetworkConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: string;
 	stream_idle_timeout_in_seconds?: number;
+	max_conns_per_host?: number;
+	enforce_http2?: boolean;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize

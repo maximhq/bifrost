@@ -404,6 +404,7 @@ If UI changes are involved, recommend E2E test updates following the patterns in
 - Page objects in `tests/e2e/features/<feature>/pages/`
 - Specs in `tests/e2e/features/<feature>/`
 - Reference the `/e2e-test` skill for full E2E test creation workflow
+- **Never marshal API payloads to a `Record`/`Map`** — construct payloads as object literals with fields in the intended order and pass directly to Playwright's `request.post({ data })`. Marshaling through intermediate maps can reorder fields, breaking backend validation and snapshot comparisons.
 
 ```bash
 make run-e2e FLOW=<feature>

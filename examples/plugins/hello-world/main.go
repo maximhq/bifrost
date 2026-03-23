@@ -23,7 +23,7 @@ func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest)
 	// Modify request in-place
 	req.Headers["x-hello-world-plugin"] = "transport-pre-hook-value"
 	// Store value in context for PreLLMHook/PostLLMHook
-	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"), "transport-pre-hook-value")
+	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"), "transport-pre-hook-value")	
 	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit
 	return nil, nil
 }

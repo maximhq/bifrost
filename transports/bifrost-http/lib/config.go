@@ -21,6 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -322,7 +323,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
-	// Initialize separate database connections for optimal performance at scale
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
 	logsDBPath := filepath.Join(configDirPath, "logs.db")
@@ -332,111 +332,90 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
 	}
-	// Getting absolute path for config file
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for config file: %w", err)
 	}
-	// Check if config file exists
+	// Parse config file if it exists; otherwise use empty ConfigData (defaults will apply)
+	var configData ConfigData
 	data, err := os.ReadFile(configFilePath)
 	if err != nil {
-		// If config file doesn't exist, we will directly use the config store (create one if it doesn't exist)
-		if os.IsNotExist(err) {
-			logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
-			return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-	// If file exists, we will do a quick check if that file includes "$schema":"https://www.getbifrost.ai/schema", If not we will show a warning in a box - yellow color
-	var schema map[string]any
-	if err := json.Unmarshal(data, &schema); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
-	}
-	if schema["$schema"] != "https://www.getbifrost.ai/schema" {
-		// Print warning in yellow ASCII box
-		yellowColor := "\033[33m"
-		resetColor := "\033[0m"
-		message := fmt.Sprintf("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
-
-		// Fixed box width, content width is box - 4 (for "║ " and " ║")
-		boxWidth := 100
-		contentWidth := boxWidth - 4
-
-		// Word wrap the message into lines
-		words := strings.Fields(message)
-		var lines []string
-		currentLine := ""
-		for _, word := range words {
-			if currentLine == "" {
-				currentLine = word
-			} else if len(currentLine)+1+len(word) <= contentWidth {
-				currentLine += " " + word
-			} else {
+		// No config file — configData stays zero-value, defaults will apply
+		logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
+	} else {
+		// Schema warning check
+		var schema map[string]any
+		if err := json.Unmarshal(data, &schema); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
+		}
+		if schema["$schema"] != "https://www.getbifrost.ai/schema" {
+			yellowColor := "\033[33m"
+			resetColor := "\033[0m"
+			message := fmt.Sprintf("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
+			boxWidth := 100
+			contentWidth := boxWidth - 4
+			words := strings.Fields(message)
+			var lines []string
+			currentLine := ""
+			for _, word := range words {
+				if currentLine == "" {
+					currentLine = word
+				} else if len(currentLine)+1+len(word) <= contentWidth {
+					currentLine += " " + word
+				} else {
+					lines = append(lines, currentLine)
+					currentLine = word
+				}
+			}
+			if currentLine != "" {
 				lines = append(lines, currentLine)
-				currentLine = word
 			}
-		}
-		if currentLine != "" {
-			lines = append(lines, currentLine)
-		}
-
-		// Print top border
-		fmt.Printf("%s╔%s╗%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
-
-		// Print each line with proper padding
-		for _, l := range lines {
-			padding := contentWidth - len(l)
-			if padding < 0 {
-				padding = 0
+			fmt.Printf("%s╔%s╗%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
+			for _, l := range lines {
+				padding := contentWidth - len(l)
+				if padding < 0 {
+					padding = 0
+				}
+				fmt.Printf("%s║ %s%s ║%s\n", yellowColor, l, strings.Repeat(" ", padding), resetColor)
 			}
-			fmt.Printf("%s║ %s%s ║%s\n", yellowColor, l, strings.Repeat(" ", padding), resetColor)
+			fmt.Printf("%s╚%s╝%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
+			fmt.Println("")
+			logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
 		}
+		// Validate config file against the schema
+		if err := ValidateConfigSchema(data); err != nil {
+			logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
+		}
+		// Parse config data
+		if err := json.Unmarshal(data, &configData); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+		logger.Info("loading configuration from: %s", absConfigFilePath)
+	}
 
-		// Print bottom border
-		fmt.Printf("%s╚%s╝%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
-		fmt.Println("")
-		logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
-	}
-	// Validate config file against the schema - fatal on validation errors
-	if err := ValidateConfigSchema(data); err != nil {
-		logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
-	}
-	// If config file exists, we will use it to bootstrap config tables
-	logger.Info("loading configuration from: %s", absConfigFilePath)
-	return loadConfigFromFile(ctx, config, data)
-}
-
-// loadConfigFromFile initializes configuration from a JSON config file.
-// It merges config file data with existing database config, with store taking priority.
-func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Config, error) {
-	var configData ConfigData
-	if err := json.Unmarshal(data, &configData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-	var err error
-	// Initialize encryption before stores so BeforeSave hooks and EncryptPlaintextRows work correctly
-	if err = initEncryptionFromFile(&configData); err != nil {
+	// 1. Encryption (before stores so BeforeSave hooks work correctly)
+	if err := initEncryption(&configData); err != nil {
 		return nil, err
 	}
-	// Initialize stores from config file
-	if err = initStoresFromFile(ctx, config, &configData); err != nil {
+	// 2. Stores (config, logs, vector) — creates defaults for absent configs
+	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
 	}
-	// Initialize kvstore
+	// 3. KV store
 	if err := initKVStore(config); err != nil {
 		return nil, err
 	}
-	// From now on, config store gets priority if enabled and we find data.
-	// If we don't find any data in the store, then we resort to config file.
-	// NOTE: We follow a standard practice: store -> config file -> update store.
-	// Load client config
-	loadClientConfigFromFile(ctx, config, &configData)
-	// Compile header filter config into optimized matcher
+	// 4. Client config (store → file → defaults)
+	loadClientConfig(ctx, config, &configData)
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
-	// Load providers config with hash reconciliation
-	if err = loadProvidersFromFile(ctx, config, &configData); err != nil {
+	// 5. Providers (store → file → auto-detect)
+	if err := loadProviders(ctx, config, &configData); err != nil {
 		return nil, err
 	}
+<<<<<<< HEAD
 	// Load MCP config
 	loadMCPConfigFromFile(ctx, config, &configData)
 	// Load governance config
@@ -458,8 +437,21 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 		}
 	}
 	// Sync encryption: encrypt any plaintext rows written during config loading
+=======
+	// 6. MCP config
+	loadMCPConfig(ctx, config, &configData)
+	// 7. Governance config
+	loadGovernanceConfig(ctx, config, &configData)
+	// 8. Auth config
+	loadAuthConfig(ctx, config, &configData)
+	// 9. Plugins
+	loadPlugins(ctx, config, &configData)
+	// 10. Framework config and pricing manager
+	initFrameworkConfig(ctx, config, &configData)
+	// 11. Encryption sync
+>>>>>>> main
 	syncEncryption(ctx, config)
-	// Load WebSocket config (always enabled, apply defaults for any missing values)
+	// 12. WebSocket defaults
 	if configData.WebSocket != nil {
 		configData.WebSocket.CheckAndSetDefaults()
 		config.WebSocketConfig = configData.WebSocket
@@ -471,30 +463,105 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	return config, nil
 }
 
-// initStoresFromFile initializes config, logs, and vector stores from config file
-func initStoresFromFile(ctx context.Context, config *Config, configData *ConfigData) error {
+// initStores initializes config, logs, and vector stores.
+// When config data sections are absent (nil), creates default SQLite stores for persistence.
+func initStores(ctx context.Context, config *Config, configData *ConfigData, configDBPath, logsDBPath string) error {
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
+		// Explicit config store configuration from config.json
 		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
 		if err != nil {
 			return err
 		}
 		logger.Info("config store initialized")
-		// Clear restart required flag on server startup
+	} else if configData.ConfigStoreConfig == nil {
+		// No config store section — create default SQLite store for persistence
+		config.ConfigStore, err = configstore.NewConfigStore(ctx, &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config: &configstore.SQLiteConfig{
+				Path: configDBPath,
+			},
+		}, logger)
+		if err != nil {
+			return fmt.Errorf("failed to initialize default config store: %w", err)
+		}
+		logger.Info("config store initialized (default SQLite)")
+	}
+	// else: ConfigStoreConfig is present but Enabled == false — leave ConfigStore nil
+
+	// Clear restart required flag on server startup
+	if config.ConfigStore != nil {
 		if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {
 			logger.Warn("failed to clear restart required config: %v", err)
 		}
 	}
+
 	// Initialize log store
 	if configData.LogsStoreConfig != nil && configData.LogsStoreConfig.Enabled {
+		// Explicit logs store configuration from config.json
 		config.LogsStore, err = logstore.NewLogStore(ctx, configData.LogsStoreConfig, logger)
 		if err != nil {
 			return err
 		}
 		logger.Info("logs store initialized")
+	} else if configData.LogsStoreConfig == nil {
+		// No logs store section — check DB for stored config (if available), then fall back to default SQLite
+		var logStoreConfig *logstore.Config
+		if config.ConfigStore != nil {
+			var dbErr error
+			logStoreConfig, dbErr = config.ConfigStore.GetLogsStoreConfig(ctx)
+			if dbErr != nil {
+				return fmt.Errorf("failed to get logs store config: %w", dbErr)
+			}
+		}
+		if logStoreConfig == nil {
+			logStoreConfig = &logstore.Config{
+				Enabled: true,
+				Type:    logstore.LogStoreTypeSQLite,
+				Config: &logstore.SQLiteConfig{
+					Path: logsDBPath,
+				},
+			}
+		}
+		config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
+		if err != nil {
+			// Handle case where stored path doesn't exist, create new at default path
+			if logStoreConfig.Type == logstore.LogStoreTypeSQLite && errors.Is(err, os.ErrNotExist) {
+				storedPath := ""
+				if sqliteConfig, ok := logStoreConfig.Config.(*logstore.SQLiteConfig); ok {
+					storedPath = sqliteConfig.Path
+				}
+				if storedPath != logsDBPath {
+					logger.Warn("failed to locate logstore file at path: %s: %v. Creating new one at path: %s", storedPath, err, logsDBPath)
+					logStoreConfig = &logstore.Config{
+						Enabled: true,
+						Type:    logstore.LogStoreTypeSQLite,
+						Config: &logstore.SQLiteConfig{
+							Path: logsDBPath,
+						},
+					}
+					config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
+					if err != nil {
+						return fmt.Errorf("failed to initialize logs store: %v", err)
+					}
+				} else {
+					return fmt.Errorf("failed to initialize logs store: %v", err)
+				}
+			} else {
+				return fmt.Errorf("failed to initialize logs store: %v", err)
+			}
+		}
+		logger.Info("logs store initialized")
+		if config.ConfigStore != nil {
+			if err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig); err != nil {
+				return fmt.Errorf("failed to update logs store config: %w", err)
+			}
+		}
 	}
-	// Initialize vector store
+
+	// Initialize vector store (only if explicitly configured)
 	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
 		logger.Info("connecting to vectorstore")
 		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
@@ -510,8 +577,31 @@ func initStoresFromFile(ctx context.Context, config *Config, configData *ConfigD
 	return nil
 }
 
-// loadClientConfigFromFile loads and merges client config from file with store using hash-based reconciliation
-func loadClientConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+// applyClientConfigDefaults fills in default values for zero-value fields in a ClientConfig.
+// This ensures partial configs (from file or DB) get sensible defaults for unset fields.
+func applyClientConfigDefaults(cc *configstore.ClientConfig) {
+	if cc.InitialPoolSize == 0 {
+		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
+	}
+	if cc.MaxRequestBodySizeMB == 0 {
+		cc.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+	}
+	if cc.MCPAgentDepth == 0 {
+		cc.MCPAgentDepth = DefaultClientConfig.MCPAgentDepth
+	}
+	if cc.MCPToolExecutionTimeout == 0 {
+		cc.MCPToolExecutionTimeout = DefaultClientConfig.MCPToolExecutionTimeout
+	}
+	if cc.MCPCodeModeBindingLevel == "" {
+		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
+	}
+	if cc.AllowedOrigins == nil {
+		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
+	}
+}
+
+// loadClientConfig loads and merges client config from file with store using hash-based reconciliation
+func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
 	var err error
 	if config.ConfigStore != nil {
@@ -525,9 +615,7 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
 			config.ClientConfig = *configData.Client
-			if config.ClientConfig.MaxRequestBodySizeMB == 0 {
-				config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
-			}
+			applyClientConfigDefaults(&config.ClientConfig)
 			// Generate hash for the file config
 			fileHash, hashErr := configData.Client.GenerateClientConfigHash()
 			if hashErr != nil {
@@ -555,10 +643,7 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 	}
 	// Case 2: Config exists in DB
 	config.ClientConfig = *clientConfig
-	// For backward compatibility, handle cases where max request body size is not set
-	if config.ClientConfig.MaxRequestBodySizeMB == 0 {
-		config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
-	}
+	applyClientConfigDefaults(&config.ClientConfig)
 	// Case 2a: No file config - use DB config as-is
 	if configData.Client == nil {
 		logger.Debug("no client config in file, using DB config")
@@ -575,10 +660,7 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
 		config.ClientConfig = *configData.Client
 		config.ClientConfig.ConfigHash = fileHash
-		// Apply defaults for zero values
-		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
-			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
-		}
+		applyClientConfigDefaults(&config.ClientConfig)
 		// Update store with file config
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store from file")
@@ -592,8 +674,8 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 	}
 }
 
-// loadProvidersFromFile loads and merges providers from file with store using hash reconciliation
-func loadProvidersFromFile(ctx context.Context, config *Config, configData *ConfigData) error {
+// loadProviders loads and merges providers from file with store using hash reconciliation
+func loadProviders(ctx context.Context, config *Config, configData *ConfigData) error {
 	var providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig
 	var err error
 	if config.ConfigStore != nil {
@@ -608,14 +690,18 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 		providersInConfigStore = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	}
 	// Process provider configurations from file
-	if configData.Providers != nil {
+	if len(configData.Providers) > 0 {
 		for providerName, providerCfgInFile := range configData.Providers {
-			if err = processProviderFromFile(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+			if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
 				logger.Warn("failed to process provider %s: %v", providerName, err)
 			}
 		}
-	} else {
+	} else if len(providersInConfigStore) == 0 {
+		// No providers in file and none in DB — auto-detect from environment
 		config.autoDetectProviders(ctx)
+		for k, v := range config.Providers {
+			providersInConfigStore[k] = v
+		}
 	}
 	// Update store and config
 	if config.ConfigStore != nil {
@@ -628,8 +714,8 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 	return nil
 }
 
-// processProviderFromFile processes a single provider configuration from config file
-func processProviderFromFile(
+// processProvider processes a single provider configuration from config file
+func processProvider(
 	config *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
@@ -837,14 +923,30 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 	return mergedKeys
 }
 
-// loadMCPConfigFromFile loads and merges MCP config from file
-func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+// loadMCPConfig loads and merges MCP config from file
+func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			logger.Warn("config store is disabled - MCP manager will not be initialized. MCP clients require config store for persistence.")
 		}
 		return
 	}
+	// Validate MCP client names from config file before processing
+	if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
+		valid := make([]*schemas.MCPClientConfig, 0, len(configData.MCP.ClientConfigs))
+		for _, c := range configData.MCP.ClientConfigs {
+			if c == nil {
+				continue
+			}
+			if err := mcp.ValidateMCPClientName(c.Name); err != nil {
+				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
+				continue
+			}
+			valid = append(valid, c)
+		}
+		configData.MCP.ClientConfigs = valid
+	}
+
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
 		tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
@@ -921,8 +1023,13 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 }
 
+<<<<<<< HEAD
 // loadGovernanceConfigFromFile loads and merges governance config from file
 func loadGovernanceConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) error {
+=======
+// loadGovernanceConfig loads and merges governance config from file
+func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+>>>>>>> main
 	var governanceConfig *configstore.GovernanceConfig
 	var err error
 	// Checking from the store
@@ -1595,9 +1702,9 @@ func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
 	}
 }
 
-// loadAuthConfigFromFile loads auth config from file.
+// loadAuthConfig loads auth config from file.
 // File config (configData) always takes precedence over DB config.
-func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	hasFileConfig := configData != nil && (configData.AuthConfig != nil || (configData.Governance != nil && configData.Governance.AuthConfig != nil))
 	if !hasFileConfig && (config.GovernanceConfig == nil || config.GovernanceConfig.AuthConfig == nil) {
 		return
@@ -1704,8 +1811,8 @@ func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *Con
 	}
 }
 
-// loadPluginsFromFile loads and merges plugins from file
-func loadPluginsFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+// loadPlugins loads and merges plugins from file
+func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 	// First load plugins from DB
 	if config.ConfigStore != nil {
 		logger.Debug("getting plugins from store")
@@ -1736,7 +1843,7 @@ func loadPluginsFromFile(ctx context.Context, config *Config, configData *Config
 
 	// Merge with config file plugins
 	if len(configData.Plugins) > 0 {
-		mergePluginsFromFile(ctx, config, configData)
+		mergePlugins(ctx, config, configData)
 	}
 }
 
@@ -1762,8 +1869,8 @@ func orderEqual(a, b *int) bool {
 	return *a == *b
 }
 
-// mergePluginsFromFile merges plugins from config file with existing config
-func mergePluginsFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+// mergePlugins merges plugins from config file with existing config
+func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 	logger.Debug("processing plugins from config file")
 	if len(config.PluginConfigs) == 0 {
 		logger.Debug("no plugins found in store, using plugins from config file")
@@ -1878,7 +1985,7 @@ func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.C
 			for toolName, costPerExecution := range dbClientConfig.ToolPricing {
 				// Tool names in the DB are stored without the client/server prefix.
 				// Build the key using fmt.Sprintf("%s/%s", clientName, toolName) to match
-				// buildMCPPricingDataFromFile and EditMCPClient patterns.
+				// buildMCPPricingDataFromConfig and EditMCPClient patterns.
 				mcpPricingData[fmt.Sprintf("%s/%s", dbClientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
 					Server:           dbClientConfig.Name,
 					ToolName:         toolName,
@@ -1890,7 +1997,7 @@ func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.C
 	return mcpPricingData
 }
 
-func buildMCPPricingDataFromFile(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
+func buildMCPPricingDataFromConfig(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
 	mcpPricingData := mcpcatalog.MCPPricingData{}
 	if configData == nil || configData.MCP == nil {
 		return mcpPricingData
@@ -1966,8 +2073,8 @@ func ResolveFrameworkPricingConfig(
 		}, needsDBUpdate
 }
 
-// initFrameworkConfigFromFile initializes framework config and pricing manager from file
-func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+// initFrameworkConfig initializes framework config and pricing manager from file
+func initFrameworkConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	mcpPricingConfig := &mcpcatalog.Config{}
 	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
@@ -2015,7 +2122,7 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 
 	// Initialize MCP catalog
 	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
-		PricingData: buildMCPPricingDataFromFile(ctx, configData),
+		PricingData: buildMCPPricingDataFromConfig(ctx, configData),
 	}, logger)
 	if err != nil {
 		logger.Warn("failed to initialize MCP catalog: %v", err)
@@ -2023,8 +2130,9 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 	config.MCPCatalog = mcpCatalog
 }
 
-// initEncryptionFromFile initializes encryption from config file
-func initEncryptionFromFile(configData *ConfigData) error {
+// initEncryption initializes encryption from config data or environment variables.
+// When configData.EncryptionKey is nil (no config file), falls through to env var check.
+func initEncryption(configData *ConfigData) error {
 	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
 		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
@@ -2049,6 +2157,7 @@ func syncEncryption(ctx context.Context, config *Config) {
 	}
 }
 
+<<<<<<< HEAD
 // loadConfigFromDefaults initializes configuration when no config file exists.
 // It creates a default SQLite config store and loads/creates default configurations.
 func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, logsDBPath string) (*Config, error) {
@@ -2406,6 +2515,8 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	return nil
 }
 
+=======
+>>>>>>> main
 // resolveMCPConfigClientIDs resolves MCPClientName to MCPClientID for each MCP config.
 // This is needed when parsing virtual keys from config.json, which uses "mcp_client_name"
 // instead of "mcp_client_id". The function looks up each MCP client by name and sets the

@@ -614,6 +614,64 @@ test-plugins: install-gotestsum ## Run plugin tests
 		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
 	fi
 
+test-framework: install-gotestsum ## Run framework tests
+	@echo "$(GREEN)Running framework tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd framework && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
+			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
+			echo "Testing $$dir..."; \
+			cd $$dir && gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
+				-- -v ./... && cd - > /dev/null; \
+			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+				if which junit-viewer > /dev/null 2>&1; then \
+					echo "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
+					junit-viewer --results=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
+				fi; \
+			fi; \
+		done || echo "No framework tests found"
+	@echo ""
+	@if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/framework-*.html$(NC)"; \
+	else \
+		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/framework-*.xml$(NC)"; \
+	fi
+
+test-http-transport: install-gotestsum ## Run HTTP transport tests
+	@echo "$(GREEN)Running HTTP transport tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd transports/bifrost-http && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
+			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
+			echo "Testing $$dir..."; \
+			cd $$dir && gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml \
+				-- -v ./... && cd - > /dev/null; \
+			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+				if which junit-viewer > /dev/null 2>&1; then \
+					echo "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
+					junit-viewer --results=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml --save=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.html 2>/dev/null || true; \
+				fi; \
+			fi; \
+		done || echo "No HTTP transport tests found"
+	@echo ""
+	@if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/http-transport-*.html$(NC)"; \
+	else \
+		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/http-transport-*.xml$(NC)"; \
+	fi
+
 test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governance tests (Usage: make test-governance TESTCASE=TestName or PATTERN=substring, DEBUG=1 for debugger)
 	@echo "$(GREEN)Running governance tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
@@ -904,7 +962,7 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 		exit 1; \
 	fi
 
-test-all: test-core test-plugins test test-cli ## Run all tests
+test-all: test-core test-framework test-plugins test-http-transport test test-cli ## Run all tests
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)              All Tests Complete - Summary                 $(NC)"

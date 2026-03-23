@@ -559,7 +559,7 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if strings.TrimSpace(config.ID) == "" {
 		return fmt.Errorf("id is required for MCP client config")
 	}
-	if err := validateMCPClientName(config.Name); err != nil {
+	if err := ValidateMCPClientName(config.Name); err != nil {
 		return fmt.Errorf("invalid name for MCP client: %w", err)
 	}
 	if config.ConnectionType == "" {
@@ -586,7 +586,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	return nil
 }
 
-func validateMCPClientName(name string) error {
+// ValidateMCPClientName validates an MCP client name.
+// Names must be ASCII-only, cannot contain spaces or hyphens, and cannot start with a number.
+func ValidateMCPClientName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("name is required for MCP client")
 	}

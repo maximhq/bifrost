@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/litellmcompat
 go 1.26.1
 
 require (
-	github.com/maximhq/bifrost/core v1.4.11
-	github.com/maximhq/bifrost/framework v1.2.30
+	github.com/maximhq/bifrost/core v1.4.12
+	github.com/maximhq/bifrost/framework v1.2.31
 )
 
 require (

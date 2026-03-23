@@ -101,11 +101,19 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 
 // listProviders handles GET /api/providers - List all providers
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
-	// Fetching providers from database
-	providers, err := h.dbStore.GetProvidersConfig(ctx)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
-		return
+	// Fetching providers from database or in-memory store
+	var providers map[schemas.ModelProvider]configstore.ProviderConfig
+	if h.dbStore != nil {
+		var err error
+		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
+			return
+		}
+	} else {
+		h.inMemoryStore.Mu.RLock()
+		providers = h.inMemoryStore.Providers
+		h.inMemoryStore.Mu.RUnlock()
 	}
 	providersInClient, err := h.client.GetConfiguredProviders()
 	if err != nil {
@@ -149,14 +157,27 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	config, err := h.dbStore.GetProviderConfig(ctx, provider)
-	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+	var config *configstore.ProviderConfig
+	if h.dbStore != nil {
+		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
 			return
 		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
-		return
+	} else {
+		config, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+		if err != nil {
+			if errors.Is(err, lib.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+			return
+		}
 	}
 	redactedConfig := config.Redacted()
 

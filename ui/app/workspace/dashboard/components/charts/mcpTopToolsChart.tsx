@@ -69,6 +69,7 @@ export function MCPTopToolsChart({ data }: MCPTopToolsChartProps) {
 						tickLine={false}
 						axisLine={false}
 						width={120}
+						interval={0}
 					/>
 					<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 					<Bar isAnimationActive={false} dataKey="count" radius={[0, 2, 2, 0]} barSize={20}>
