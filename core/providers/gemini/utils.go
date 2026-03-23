@@ -1518,7 +1518,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 		if len(pendingToolResponseParts) > 0 && !isToolResponse {
 			contents = append(contents, Content{
 				Parts: pendingToolResponseParts,
-				Role:  "model", // Tool responses use "model" role in Gemini
+				Role:  "user", // Function responses must be sent back as user content in Gemini
 			})
 			pendingToolResponseParts = nil
 		}
@@ -1592,7 +1592,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			if i == len(messages)-1 && len(pendingToolResponseParts) > 0 {
 				contents = append(contents, Content{
 					Parts: pendingToolResponseParts,
-					Role:  "model",
+					Role:  "user",
 				})
 				pendingToolResponseParts = nil
 			}

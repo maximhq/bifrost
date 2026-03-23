@@ -1,3 +1,4 @@
+- fix: send Gemini function responses with user role for Vertex tool calling (thanks [@mrcfps](https://github.com/mrcfps)!)
 - feat: added compaction support for Anthropic provider
 - feat: MCP config validation for configs in config.json
 - feat: exposed max-open-connections for provider domains as a configurable field
