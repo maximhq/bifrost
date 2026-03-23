@@ -94,6 +94,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}
 	providerConfig.SendBackRawRequest = config.SendBackRawRequest
 	providerConfig.SendBackRawResponse = config.SendBackRawResponse
+	providerConfig.StoreRawRequestResponse = config.StoreRawRequestResponse
 	if config.CustomProviderConfig != nil {
 		providerConfig.CustomProviderConfig = config.CustomProviderConfig
 	}
