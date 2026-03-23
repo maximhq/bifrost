@@ -103,7 +103,7 @@ Select which coding agent you want to launch. The CLI shows installation status 
 | Harness | Binary | Provider Path | Notes |
 |---------|--------|---------------|-------|
 | Claude Code | `claude` | `/anthropic` | MCP auto-attach, worktree support |
-| Codex CLI | `codex` | `/openai` | Model override via `--model` flag |
+| Codex CLI | `codex` | `/openai` | Sets `OPENAI_BASE_URL` to `{base}/openai/v1`; model override via `--model` |
 | Gemini CLI | `gemini` | `/genai` | Model override via `--model` flag |
 | Opencode | `opencode` | `/openai` | Custom models configured automatically through generated OpenCode config |
 
