@@ -392,6 +392,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -410,6 +411,7 @@ func HandleGeminiChatCompletionStream(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -516,7 +518,7 @@ func HandleGeminiChatCompletionStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, provider.networkConfig.StreamReadBufferSize())
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
@@ -923,6 +925,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 
@@ -941,6 +944,7 @@ func HandleGeminiResponsesStream(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	streamReadBufferSize int,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1053,7 +1057,7 @@ func HandleGeminiResponsesStream(
 		var lineReader *bufio.Reader
 		var sseReader providerUtils.SSEDataReader
 		if skipInlineData {
-			lineReader = bufio.NewReaderSize(decompressedReader, provider.networkConfig.StreamReadBufferSize())
+			lineReader = bufio.NewReaderSize(decompressedReader, streamReadBufferSize)
 		} else {
 			sseReader = providerUtils.GetSSEDataReader(ctx, decompressedReader)
 		}
