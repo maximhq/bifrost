@@ -881,3 +881,123 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Equal(t, 120, decoded.StreamIdleTimeoutInSeconds, "stream_idle_timeout_in_seconds should round-trip")
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
+
+// TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
+// strings are normalized to their canonical ResponsesToolType values.
+func TestNormalizeResponsesToolType(t *testing.T) {
+	tests := []struct {
+		input ResponsesToolType
+		want  ResponsesToolType
+	}{
+		// Already canonical — returned unchanged
+		{ResponsesToolTypeWebSearch, ResponsesToolTypeWebSearch},
+		{ResponsesToolTypeWebSearchPreview, ResponsesToolTypeWebSearchPreview},
+		{ResponsesToolTypeWebFetch, ResponsesToolTypeWebFetch},
+		{ResponsesToolTypeComputerUsePreview, ResponsesToolTypeComputerUsePreview},
+		{ResponsesToolTypeCodeInterpreter, ResponsesToolTypeCodeInterpreter},
+		{ResponsesToolTypeMemory, ResponsesToolTypeMemory},
+		{ResponsesToolTypeFunction, ResponsesToolTypeFunction},
+		{ResponsesToolTypeCustom, ResponsesToolTypeCustom},
+
+		// web_search versioned aliases
+		{"web_search_20250305", ResponsesToolTypeWebSearch},
+		{"web_search_20260209", ResponsesToolTypeWebSearch},
+		{"web_search_2025_08_26", ResponsesToolTypeWebSearch},
+
+		// web_search_preview versioned aliases (must not collide with web_search)
+		{"web_search_preview_2025_03_11", ResponsesToolTypeWebSearchPreview},
+
+		// web_fetch versioned aliases
+		{"web_fetch_20250910", ResponsesToolTypeWebFetch},
+		{"web_fetch_20260209", ResponsesToolTypeWebFetch},
+		{"web_fetch_20260309", ResponsesToolTypeWebFetch},
+
+		// computer versioned aliases
+		{"computer_20250124", ResponsesToolTypeComputerUsePreview},
+		{"computer_20251124", ResponsesToolTypeComputerUsePreview},
+
+		// code_execution versioned aliases → code_interpreter
+		{"code_execution_20250522", ResponsesToolTypeCodeInterpreter},
+		{"code_execution_20250825", ResponsesToolTypeCodeInterpreter},
+		{"code_execution_20260120", ResponsesToolTypeCodeInterpreter},
+
+		// memory versioned aliases
+		{"memory_20250818", ResponsesToolTypeMemory},
+
+		// Unrecognized types pass through unchanged
+		{"totally_unknown", "totally_unknown"},
+		{"mcp", ResponsesToolTypeMCP},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.input), func(t *testing.T) {
+			got := normalizeResponsesToolType(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes verifies that versioned
+// tool types sent in Responses API requests are normalized and their embedded structs populated.
+func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		wantType       ResponsesToolType
+		wantWebSearch  bool
+		wantWebFetch   bool
+		wantComputer   bool
+		wantCodeInterp bool
+	}{
+		// web_search variants
+		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
+		{name: "web_search_20250305", input: `{"type":"web_search_20250305"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
+		{name: "web_search_20260209", input: `{"type":"web_search_20260209"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
+		{name: "web_search_20250305 with max_uses", input: `{"type":"web_search_20250305","max_uses":1}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
+
+		// web_search_preview variants
+		{name: "web_search_preview canonical", input: `{"type":"web_search_preview"}`, wantType: ResponsesToolTypeWebSearchPreview},
+		{name: "web_search_preview_2025_03_11", input: `{"type":"web_search_preview_2025_03_11"}`, wantType: ResponsesToolTypeWebSearchPreview},
+
+		// web_fetch variants
+		{name: "web_fetch canonical", input: `{"type":"web_fetch"}`, wantType: ResponsesToolTypeWebFetch, wantWebFetch: true},
+		{name: "web_fetch_20250910", input: `{"type":"web_fetch_20250910"}`, wantType: ResponsesToolTypeWebFetch, wantWebFetch: true},
+		{name: "web_fetch_20260309", input: `{"type":"web_fetch_20260309"}`, wantType: ResponsesToolTypeWebFetch, wantWebFetch: true},
+
+		// computer variants
+		{name: "computer_use_preview canonical", input: `{"type":"computer_use_preview","display_width":1024,"display_height":768,"environment":"browser"}`, wantType: ResponsesToolTypeComputerUsePreview, wantComputer: true},
+		{name: "computer_20250124", input: `{"type":"computer_20250124","display_width":1024,"display_height":768,"environment":"browser"}`, wantType: ResponsesToolTypeComputerUsePreview, wantComputer: true},
+		{name: "computer_20251124", input: `{"type":"computer_20251124","display_width":1024,"display_height":768,"environment":"browser"}`, wantType: ResponsesToolTypeComputerUsePreview, wantComputer: true},
+
+		// code_execution variants → code_interpreter
+		{name: "code_interpreter canonical", input: `{"type":"code_interpreter"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
+		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
+		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
+
+		// unrecognized types pass through unchanged
+		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
+		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tool ResponsesTool
+			err := Unmarshal([]byte(tt.input), &tool)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, tool.Type)
+
+			if tt.wantWebSearch {
+				assert.NotNil(t, tool.ResponsesToolWebSearch, "ResponsesToolWebSearch should be populated")
+			}
+			if tt.wantWebFetch {
+				assert.NotNil(t, tool.ResponsesToolWebFetch, "ResponsesToolWebFetch should be populated")
+			}
+			if tt.wantComputer {
+				assert.NotNil(t, tool.ResponsesToolComputerUsePreview, "ResponsesToolComputerUsePreview should be populated")
+			}
+			if tt.wantCodeInterp {
+				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
+			}
+		})
+	}
+}

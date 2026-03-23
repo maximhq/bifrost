@@ -1,0 +1,2 @@
+- fix: merged indexing goroutines for postgres to avoid deadlocks from concurrent CREATE INDEX CONCURRENTLY
+- fix: deferred provider histogram index creation to background goroutine to avoid blocking pod startup
