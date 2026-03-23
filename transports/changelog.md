@@ -5,3 +5,4 @@
 - feat: add support for request level extra headers in MCP tool execution.
 - fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an MCP gateway.
 - refactor: parallelize model listing for providers to speed up startup time.
+- fix: send back accumulated usage in MCP agent mode.
