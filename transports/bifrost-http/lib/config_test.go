@@ -17099,6 +17099,14 @@ func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
+	// Clear auto-detect environment variables to ensure deterministic test behavior
+	autoDetectEnvVars := []string{"OPENAI_API_KEY", "OPENAI_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "MISTRAL_API_KEY", "MISTRAL_KEY"}
+	for _, envVar := range autoDetectEnvVars {
+		if orig := os.Getenv(envVar); orig != "" {
+			t.Setenv(envVar, "")
+		}
+	}
+
 	// First run: no config.json -> auto-detect and create defaults
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
