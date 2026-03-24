@@ -239,8 +239,8 @@ type BedrockDocumentSourceData struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string      `json:"toolUseId"` // Required: Unique identifier for this tool use
-	Name      string      `json:"name"`      // Required: Name of the tool to use
+	ToolUseID string          `json:"toolUseId"` // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`      // Required: Name of the tool to use
 	Input     json.RawMessage `json:"input"`     // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
 }
 
@@ -645,10 +645,10 @@ type BedrockMetadataEvent struct {
 
 // BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
 type BedrockTitanEmbeddingRequest struct {
-	InputText   string                 `json:"inputText"` // Required: Text to embed
+	InputText   string                 `json:"inputText"`            // Required: Text to embed
+	Dimensions  *int                   `json:"dimensions,omitempty"` // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
+	Normalize   *bool                  `json:"normalize,omitempty"`  // Optional: normalize the embedding
 	ExtraParams map[string]interface{} `json:"-"`
-	// Note: Titan models have fixed dimensions and don't support the dimensions parameter
-	// ExtraParams can be used for any additional model-specific parameters
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -660,6 +660,53 @@ func (req *BedrockTitanEmbeddingRequest) GetExtraParams() map[string]interface{}
 type BedrockTitanEmbeddingResponse struct {
 	Embedding           []float32 `json:"embedding"`           // The embedding vector
 	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
+}
+
+// BedrockCohereEmbeddingContentBlock represents a single content block in a mixed input
+type BedrockCohereEmbeddingContentBlock struct {
+	Type     string                               `json:"type"`               // "text" or "image_url"
+	Text     *string                              `json:"text,omitempty"`     // for type=text
+	ImageURL *BedrockCohereEmbeddingImageURL      `json:"image_url,omitempty"` // for type=image_url
+}
+
+// BedrockCohereEmbeddingImageURL holds the URL for an image content block
+type BedrockCohereEmbeddingImageURL struct {
+	URL string `json:"url"`
+}
+
+// BedrockCohereEmbeddingInput represents a mixed text+image input
+type BedrockCohereEmbeddingInput struct {
+	Content []BedrockCohereEmbeddingContentBlock `json:"content"`
+}
+
+// BedrockCohereEmbeddingRequest represents a Bedrock Cohere embedding request.
+// Unlike the direct Cohere API, Bedrock does not accept a "model" field in the body.
+type BedrockCohereEmbeddingRequest struct {
+	InputType       string                        `json:"input_type"`                 // Required
+	Texts           []string                      `json:"texts,omitempty"`            // text-only inputs
+	Images          []string                      `json:"images,omitempty"`           // image-only inputs (data URIs)
+	Inputs          []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // mixed text+image inputs
+	EmbeddingTypes  []string                      `json:"embedding_types,omitempty"`  // e.g. ["float"]
+	OutputDimension *int                          `json:"output_dimension,omitempty"` // 256, 512, 1024, or 1536
+	MaxTokens       *int                          `json:"max_tokens,omitempty"`       // max 128000
+	Truncate        *string                       `json:"truncate,omitempty"`         // NONE, LEFT, or RIGHT
+	ExtraParams     map[string]interface{}        `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (req *BedrockCohereEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
+// BedrockCohereEmbeddingResponse handles both Bedrock Cohere embedding response shapes.
+// When embedding_types is not set, Bedrock returns embeddings as a raw [][]float32
+// ("embeddings_floats"). When embedding_types is set, it returns an object with typed
+// arrays ("embeddings_by_type"). Using json.RawMessage defers parsing until we know the shape.
+type BedrockCohereEmbeddingResponse struct {
+	ID           string          `json:"id"`
+	Embeddings   json.RawMessage `json:"embeddings"`
+	ResponseType string          `json:"response_type"`
+	Texts        []string        `json:"texts,omitempty"`
 }
 
 const TaskTypeTextImage = "TEXT_IMAGE"
@@ -822,11 +869,11 @@ func (req *StabilityAIImageEditRequest) GetExtraParams() map[string]interface{} 
 // BedrockImageGenerationResponse represents a Bedrock image generation response.
 // The Seeds and FinishReasons fields are populated by Stability AI edit models only.
 type BedrockImageGenerationResponse struct {
-	Images        []string  `json:"images"`         // list of Base64 encoded images
-	MaskImage     string    `json:"maskImage"`      // Base64 encoded mask image (optional)
-	Error         string    `json:"error"`          // error message (if present)
-	Seeds         []int     `json:"seeds"`          // Stability AI: seeds used per image
-	FinishReasons []*string `json:"finish_reasons"` // Stability AI: finish reason per image (may be null)
+	Images        []string  `json:"images"`                    // list of Base64 encoded images
+	MaskImage     string    `json:"maskImage,omitempty"`       // Base64 encoded mask image (optional)
+	Error         string    `json:"error,omitempty"`           // error message (if present)
+	Seeds         []int     `json:"seeds,omitempty"`           // Stability AI: seeds used per image
+	FinishReasons []*string `json:"finish_reasons,omitempty"`  // Stability AI: finish reason per image (may be null)
 }
 
 // ==================== MODELS TYPES ====================
@@ -1019,6 +1066,37 @@ type BedrockInvokeRequest struct {
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 
+	// ==================== BEDROCK IMAGE GEN / EDIT / VARIATION (Titan/Nova Canvas) ====================
+
+	TaskType                *string                         `json:"taskType,omitempty"`
+	TextToImageParams       *BedrockTextToImageParams       `json:"textToImageParams,omitempty"`
+	ImageVariationParams    *BedrockImageVariationParams    `json:"imageVariationParams,omitempty"`
+	InPaintingParams        *BedrockInPaintingParams        `json:"inPaintingParams,omitempty"`
+	OutPaintingParams       *BedrockOutPaintingParams       `json:"outPaintingParams,omitempty"`
+	BackgroundRemovalParams *BedrockBackgroundRemovalParams `json:"backgroundRemovalParams,omitempty"`
+	ImageGenerationConfig   *ImageGenerationConfig          `json:"imageGenerationConfig,omitempty"`
+
+	// ==================== STABILITY AI IMAGE ====================
+
+	// Image is the base64-encoded input image (SA edit / variation)
+	Image          *string `json:"image,omitempty"`
+	Mask           *string `json:"mask,omitempty"`            // base64 mask for inpainting
+	NegativePrompt *string `json:"negative_prompt,omitempty"` // SA gen / edit
+	AspectRatio    *string `json:"aspect_ratio,omitempty"`    // SA gen
+	OutputFormat   *string `json:"output_format,omitempty"`   // SA gen
+	Seed           *int    `json:"seed,omitempty"`            // SA gen / edit
+
+	// ==================== EMBEDDINGS ====================
+
+	InputText       string   `json:"inputText,omitempty"`        // Titan embed
+	Texts           []string `json:"texts,omitempty"`            // Cohere embed
+	InputType       *string  `json:"input_type,omitempty"`       // Cohere embed
+	Normalize       *bool    `json:"normalize,omitempty"`        // Titan embed v2
+	Dimensions      *int     `json:"dimensions,omitempty"`       // Titan embed v2
+	EmbeddingTypes  []string                      `json:"embedding_types,omitempty"`  // Cohere embed: ["float","int8","uint8","binary","ubinary"]
+	OutputDimension *int                          `json:"output_dimension,omitempty"` // Cohere embed: 256, 512, 1024, 1536
+	Inputs          []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // Cohere embed: mixed text+image inputs
+
 	// ==================== INTERNAL ====================
 	Stream      bool                   `json:"-"`
 	ExtraParams map[string]interface{} `json:"-"`
@@ -1028,4 +1106,16 @@ type BedrockInvokeRequest struct {
 type BedrockCohereRMessage struct {
 	Role    string `json:"role"`    // "USER" or "CHATBOT"
 	Message string `json:"message"` // Message content
+}
+
+// BedrockInvokeEmbeddingResp is the Titan single-embedding invoke response format.
+type BedrockInvokeEmbeddingResp struct {
+	Embedding           []float32 `json:"embedding"`
+	InputTextTokenCount int       `json:"inputTextTokenCount"`
+}
+
+// BedrockInvokeCohereEmbeddingResp is the Cohere multi-embedding invoke response format.
+type BedrockInvokeCohereEmbeddingResp struct {
+	Embeddings   [][]float32 `json:"embeddings"`
+	ResponseType string      `json:"response_type"`
 }

@@ -59,6 +59,31 @@ def _create_base64_image(width: int = 64, height: int = 64) -> str:
     return base64.b64encode(img_bytes).decode('utf-8')
 
 BASE64_IMAGE = _create_base64_image(64, 64)
+BASE64_IMAGE_LARGE = _create_base64_image(512, 512)
+
+
+def _create_titan_mask_image(width: int = 512, height: int = 512) -> str:
+    """Create a base64-encoded grayscale PNG mask for Titan inpainting/outpainting.
+    Titan requires mask pixel values to be exactly 0 (preserve) or 255 (edit area)."""
+    from PIL import Image, ImageDraw
+    import io
+    import base64
+
+    # Grayscale image, all black (preserve) by default
+    mask = Image.new('L', (width, height), 0)
+
+    # White rectangle in center marks the area to edit
+    draw = ImageDraw.Draw(mask)
+    cx, cy = width // 2, height // 2
+    w, h = width // 3, height // 3
+    draw.rectangle([cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], fill=255)
+
+    buffer = io.BytesIO()
+    mask.save(buffer, format='PNG')
+    return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+
+BASE64_TITAN_MASK_IMAGE = _create_titan_mask_image(512, 512)
 
 # Common Test Data
 SIMPLE_CHAT_MESSAGES = [{"role": "user", "content": "Hello! How are you today?"}]
