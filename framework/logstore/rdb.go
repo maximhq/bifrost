@@ -1094,21 +1094,28 @@ func buildCeilExpr(dialect string, countCol string, percentile float64) string {
 //
 //	percentile ~= value at position CEIL(p * N)
 //
-// This corresponds to a discrete percentile (similar to PERCENTILE_DISC).
-// We intentionally use this method across supported databases to keep
-// histogram behavior consistent without in-memory aggregation.
+// This corresponds to a discrete percentile (similar to PERCENTILE_DISC),
+// not percentile_cont-style interpolation. We intentionally use this method
+// across supported databases to keep histogram behavior consistent without
+// in-memory aggregation.
 //
 // Edge-case behavior:
-//   - When N == 0 (all values are NULL), percentile returns NULL.
+//   - Partition sizes are computed in separate per-bucket CTEs and joined into
+//     the ranked datasets before aggregation.
 //   - For nullable metrics (TPS/TTFT), NULL values are excluded from both
-//     ranking and counting using filtered value columns.
-func buildRankedPercentileExpr(dialect, rankCol, countCol string, percentile float64, valueCol string) string {
-	thresholdExpr := buildCeilExpr(dialect, countCol, percentile)
+//     ranking and counting before percentile candidates are generated.
+//   - If no percentile candidate exists for a metric bucket, MIN(...) returns
+//     NULL. For TPS/TTFT buckets with no non-NULL rows, the metric-specific
+//     aggregation CTE emits no row and the final LEFT JOIN surfaces NULLs.
+func buildRankedPercentileExpr(dialect, rankCol, partitionSizeCol string, percentile float64, valueCol string) string {
+	thresholdExpr := buildCeilExpr(dialect, partitionSizeCol, percentile)
 
-	return fmt.Sprintf(`CASE
-		WHEN %s = 0 THEN NULL
-		ELSE MIN(CASE WHEN %s >= %s THEN %s END)
-	END`, countCol, rankCol, thresholdExpr, valueCol)
+	// partitionSizeCol supplies the per-partition cardinality used in CEIL(p * N).
+	// The final percentile value is selected from ranked row candidates.
+	return fmt.Sprintf(`MIN(CASE
+		WHEN %s IS NOT NULL AND %s >= %s THEN %s
+		ELSE NULL
+	END)`, partitionSizeCol, rankCol, thresholdExpr, valueCol)
 }
 
 func buildHistogramBaseQuery(db *gorm.DB, base *gorm.DB, includeProvider bool) *gorm.DB {
@@ -1234,19 +1241,38 @@ func buildFinalHistogramAggregationQuery(db *gorm.DB, latencyAgg, tpsAgg, ttftAg
 //  1. Ranked independently (NULL-filtered BEFORE ranking for TPS/TTFT)
 //  2. Aggregated per-metric (GROUP BY bucket_timestamp[, provider])
 //  3. Joined at the bucket level (LEFT JOIN — no row-level joins)
+//
+// IMPORTANT: each *_counts CTE must stay logically aligned with its
+// corresponding ranked CTE. If their filters or partition keys diverge,
+// percentile thresholds become invalid.
+//
+// Performance note: the separate count CTEs trade additional scans of base for
+// cross-database correctness and clearer invariants. The Postgres materialized
+// view path still handles eligible large-bucket queries; revisit the windowed
+// path if fallback workloads become scan-bound.
 func buildLatencyHistogramCTE(dialect, baseSql string, includeProvider bool) string {
-	partition := "bucket_timestamp"
+	partition := "b.bucket_timestamp"
 	providerCol := ""
+	rankedProviderCol := ""
 	providerGroupBy := ""
+	countProviderCol := ""
+	latencyCountJoin := "b.bucket_timestamp = lc.bucket_timestamp"
+	tpsCountJoin := "b.bucket_timestamp = tc.bucket_timestamp"
+	ttftCountJoin := "b.bucket_timestamp = fc.bucket_timestamp"
 	tpsJoin := "lat.bucket_timestamp = tps.bucket_timestamp"
 	ttftJoin := "lat.bucket_timestamp = ttft.bucket_timestamp"
 	providerFinalSelect := ""
 	orderBy := "lat.bucket_timestamp ASC"
 
 	if includeProvider {
-		partition = "bucket_timestamp, provider"
+		partition = "b.bucket_timestamp, b.provider"
 		providerCol = "provider, "
+		rankedProviderCol = "b.provider, "
+		countProviderCol = "provider, "
 		providerGroupBy = ", provider"
+		latencyCountJoin += " AND b.provider = lc.provider"
+		tpsCountJoin += " AND b.provider = tc.provider"
+		ttftCountJoin += " AND b.provider = fc.provider"
 		tpsJoin += " AND lat.provider = tps.provider"
 		ttftJoin += " AND lat.provider = ttft.provider"
 		providerFinalSelect = "lat.provider, "
@@ -1260,42 +1286,62 @@ func buildLatencyHistogramCTE(dialect, baseSql string, includeProvider bool) str
 	p90TTFT := buildRankedPercentileExpr(dialect, "ttft_rank", "ttft_count", 0.90, "ttft_value")
 
 	return fmt.Sprintf(`WITH base AS (%s),
+latency_counts AS (
+	SELECT %sbucket_timestamp,
+		COUNT(*) AS latency_count
+	FROM base GROUP BY bucket_timestamp%s
+),
+tps_counts AS (
+	SELECT %sbucket_timestamp,
+		COUNT(*) AS tps_count
+	FROM base WHERE tokens_per_second IS NOT NULL GROUP BY bucket_timestamp%s
+),
+ttft_counts AS (
+	SELECT %sbucket_timestamp,
+		COUNT(*) AS ttft_count
+	FROM base WHERE time_to_first_token IS NOT NULL GROUP BY bucket_timestamp%s
+),
 latency_ranked AS (
-  SELECT %sbucket_timestamp, latency AS latency_value,
-    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY latency ASC) AS latency_rank,
-    COUNT(*) OVER (PARTITION BY %s) AS latency_count
-  FROM base
+	SELECT b.bucket_timestamp, %sb.latency AS latency_value,
+		ROW_NUMBER() OVER (PARTITION BY %s ORDER BY b.latency ASC) AS latency_rank,
+		lc.latency_count
+	FROM base b
+	LEFT JOIN latency_counts lc ON %s
 ),
 tps_ranked AS (
-  SELECT %sbucket_timestamp, tokens_per_second AS tps_value,
-    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY tokens_per_second ASC) AS tps_rank,
-    COUNT(*) OVER (PARTITION BY %s) AS tps_count
-  FROM base WHERE tokens_per_second IS NOT NULL
+	SELECT b.bucket_timestamp, %sb.tokens_per_second AS tps_value,
+		ROW_NUMBER() OVER (PARTITION BY %s ORDER BY b.tokens_per_second ASC) AS tps_rank,
+		tc.tps_count
+	FROM base b
+	LEFT JOIN tps_counts tc ON %s
+	WHERE b.tokens_per_second IS NOT NULL
 ),
 ttft_ranked AS (
-  SELECT %sbucket_timestamp, time_to_first_token AS ttft_value,
-    ROW_NUMBER() OVER (PARTITION BY %s ORDER BY time_to_first_token ASC) AS ttft_rank,
-    COUNT(*) OVER (PARTITION BY %s) AS ttft_count
-  FROM base WHERE time_to_first_token IS NOT NULL
+	SELECT b.bucket_timestamp, %sb.time_to_first_token AS ttft_value,
+		ROW_NUMBER() OVER (PARTITION BY %s ORDER BY b.time_to_first_token ASC) AS ttft_rank,
+		fc.ttft_count
+	FROM base b
+	LEFT JOIN ttft_counts fc ON %s
+	WHERE b.time_to_first_token IS NOT NULL
 ),
 latency_agg AS (
   SELECT %sbucket_timestamp,
     AVG(latency_value) AS avg_latency,
     %s AS p90_latency, %s AS p95_latency, %s AS p99_latency,
     COUNT(*) AS total_requests
-  FROM latency_ranked GROUP BY bucket_timestamp%s
+	FROM latency_ranked GROUP BY bucket_timestamp%s
 ),
 tps_agg AS (
   SELECT %sbucket_timestamp,
     AVG(tps_value) AS avg_tokens_per_second,
     %s AS p90_tokens_per_second
-  FROM tps_ranked GROUP BY bucket_timestamp%s
+	FROM tps_ranked GROUP BY bucket_timestamp%s
 ),
 ttft_agg AS (
   SELECT %sbucket_timestamp,
     AVG(ttft_value) AS avg_time_to_first_token,
     %s AS p90_time_to_first_token
-  FROM ttft_ranked GROUP BY bucket_timestamp%s
+	FROM ttft_ranked GROUP BY bucket_timestamp%s
 )
 SELECT %slat.bucket_timestamp,
   lat.avg_latency, lat.p90_latency, lat.p95_latency, lat.p99_latency,
@@ -1307,9 +1353,12 @@ LEFT JOIN tps_agg tps ON %s
 LEFT JOIN ttft_agg ttft ON %s
 ORDER BY %s`,
 		baseSql,
-		providerCol, partition, partition,
-		providerCol, partition, partition,
-		providerCol, partition, partition,
+		countProviderCol, providerGroupBy,
+		countProviderCol, providerGroupBy,
+		countProviderCol, providerGroupBy,
+		rankedProviderCol, partition, latencyCountJoin,
+		rankedProviderCol, partition, tpsCountJoin,
+		rankedProviderCol, partition, ttftCountJoin,
 		providerCol, p90Lat, p95Lat, p99Lat, providerGroupBy,
 		providerCol, p90TPS, providerGroupBy,
 		providerCol, p90TTFT, providerGroupBy,
@@ -1323,9 +1372,11 @@ ORDER BY %s`,
 // All other cases use rank-based window functions for cross-DB consistent results.
 //
 // Performance note: these queries benefit from the following indexes:
-//   CREATE INDEX idx_logs_timestamp_status_latency ON logs(timestamp, status, latency)
-//     WHERE status IN ('success', 'error');
-//   CREATE INDEX idx_logs_timestamp_status_provider ON logs(timestamp, status, provider);
+//
+//	CREATE INDEX idx_logs_timestamp_status_latency ON logs(timestamp, status, latency)
+//	  WHERE status IN ('success', 'error');
+//	CREATE INDEX idx_logs_timestamp_status_provider ON logs(timestamp, status, provider);
+//
 // These are NOT created automatically — add based on workload analysis.
 func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) && bucketSizeSeconds >= 3600 {
@@ -1357,7 +1408,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 //	  ttft_agg       AS (GROUP BY bucket_ts FROM ttft_ranked)
 //	SELECT ... FROM latency_agg LEFT JOIN tps_agg LEFT JOIN ttft_agg
 func (s *RDBLogStore) getLatencyHistogramWindowed(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
-	db := s.db.WithContext(ctx).Debug()
+	db := s.db.WithContext(ctx)
 	dialect := s.db.Dialector.Name()
 	bucketExpr := getBucketTimestampExpr(dialect, bucketSizeSeconds)
 

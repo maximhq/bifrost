@@ -1841,6 +1841,8 @@ func migrationDropPerformanceMetricIndexes(ctx context.Context, db *gorm.DB) err
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
+			// These indexes are intentionally not recreated on rollback because they
+			// are no longer part of the supported schema and add write overhead.
 			return nil
 		},
 	}})
