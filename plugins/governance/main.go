@@ -45,6 +45,7 @@ type Config struct {
 
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
+	GetMCPClientsAllowingAllVirtualKeys() map[string]string // clientID → clientName
 }
 
 type BaseGovernancePlugin interface {
@@ -895,30 +896,45 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 		headers = make(map[string]string)
 	}
 
-	// Empty MCPConfigs means no MCP tools are allowed (deny-by-default)
-	if len(virtualKey.MCPConfigs) == 0 {
-		headers["x-bf-mcp-include-tools"] = ""
-		return headers, nil
+	executeOnlyTools := make([]string, 0)
+
+	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName
+	var allowAllVKsClients map[string]string
+	if p.inMemoryStore != nil {
+		allowAllVKsClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+	}
+	if allowAllVKsClients == nil {
+		allowAllVKsClients = make(map[string]string)
 	}
 
-	executeOnlyTools := make([]string, 0)
+	// Process VK-specific MCP configs first — explicit config always overrides AllowOnAllVirtualKeys.
+	// Track which AllowOnAllVirtualKeys clients have an explicit VK config so we don't double-add them.
+	handledClients := make(map[string]bool)
 	for _, vkMcpConfig := range virtualKey.MCPConfigs {
+		clientID := vkMcpConfig.MCPClient.ClientID
+		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
+			// Explicit VK config exists — it takes precedence; mark as handled regardless of tool list
+			handledClients[clientID] = true
+		}
 		if vkMcpConfig.ToolsToExecute.IsEmpty() {
 			// No tools specified in virtual key config - skip this client entirely
 			continue
 		}
-		// Handle wildcard in virtual key config - allow all tools from this client
 		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
-			// Virtual key uses wildcard - use client-specific wildcard
 			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
 			continue
 		}
-
 		for _, tool := range vkMcpConfig.ToolsToExecute {
 			if tool != "" {
-				// Add the tool - client config filtering will be handled by mcp.go
 				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
 			}
+		}
+	}
+
+	// For AllowOnAllVirtualKeys clients with no explicit VK config, fall back to allowing all tools
+	for clientID, clientName := range allowAllVKsClients {
+		if !handledClients[clientID] {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
 		}
 	}
 
@@ -1020,25 +1036,22 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// than raw header patterns (e.g. "youtube-*"), giving us exact per-tool validation.
 	if result.Decision == DecisionAllow && result.VirtualKey != nil {
 		if addedTools, ok := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string); ok && len(addedTools) > 0 {
-			if len(result.VirtualKey.MCPConfigs) == 0 {
+			// Fetch once before the loop to avoid repeated lock acquisitions per tool.
+			var allowAllClients map[string]string
+			if p.inMemoryStore != nil {
+				allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+			}
+			var disallowed []string
+			for _, tool := range addedTools {
+				if !p.isMCPToolAllowedByVKWith(result.VirtualKey, tool, allowAllClients) {
+					disallowed = append(disallowed, tool)
+				}
+			}
+			if len(disallowed) > 0 {
 				result = &EvaluationResult{
 					Decision:   DecisionMCPToolBlocked,
-					Reason:     fmt.Sprintf("no MCP tools are configured for virtual key '%s'", result.VirtualKey.Name),
+					Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", result.VirtualKey.Name, strings.Join(disallowed, ", ")),
 					VirtualKey: result.VirtualKey,
-				}
-			} else {
-				var disallowed []string
-				for _, tool := range addedTools {
-					if !isMCPToolAllowedByVK(result.VirtualKey, tool) {
-						disallowed = append(disallowed, tool)
-					}
-				}
-				if len(disallowed) > 0 {
-					result = &EvaluationResult{
-						Decision:   DecisionMCPToolBlocked,
-						Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", result.VirtualKey.Name, strings.Join(disallowed, ", ")),
-						VirtualKey: result.VirtualKey,
-					}
 				}
 			}
 		}
@@ -1108,28 +1121,45 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 // isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
 // format) is permitted by the virtual key's MCPConfigs.
 //
+// Priority order:
+//  1. If the VK has an explicit MCP config for this client, that config is authoritative (can allow or deny).
+//  2. If no explicit config exists and the client has AllowOnAllVirtualKeys=true, all tools are allowed.
+//
 // For wildcard patterns ("clientName-*"): allowed if VK has the client configured with any tools.
 // Specific tool enforcement happens at execution time via checkVKMCPToolAllowance.
 // For specific tools ("clientName-toolName"): allowed if VK has "*" or the exact tool name.
-func isMCPToolAllowedByVK(vk *configstoreTables.TableVirtualKey, toolPattern string) bool {
+func (p *GovernancePlugin) isMCPToolAllowedByVK(vk *configstoreTables.TableVirtualKey, toolPattern string) bool {
+	var allowAllClients map[string]string
+	if p.inMemoryStore != nil {
+		allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+	}
+	return p.isMCPToolAllowedByVKWith(vk, toolPattern, allowAllClients)
+}
+
+// isMCPToolAllowedByVKWith checks whether a tool pattern is allowed by the virtual key,
+// using a pre-fetched allowAllClients map (clientID → clientName) to avoid repeated lock
+// acquisitions in loops.
+func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableVirtualKey, toolPattern string, allowAllClients map[string]string) bool {
+	// Check VK-specific MCP configs first — explicit config always overrides AllowOnAllVirtualKeys.
 	for _, mcpConfig := range vk.MCPConfigs {
 		clientName := mcpConfig.MCPClient.Name
-		// Wildcard pattern "clientName-*": VK just needs to have this client configured at all.
-		if toolPattern == clientName+"-*" {
-			if !mcpConfig.ToolsToExecute.IsEmpty() {
-				return true
-			}
+		if toolPattern != clientName+"-*" && !strings.HasPrefix(toolPattern, clientName+"-") {
 			continue
 		}
-		// Specific tool "clientName-toolName"
-		if strings.HasPrefix(toolPattern, clientName+"-") {
-			if mcpConfig.ToolsToExecute.IsUnrestricted() {
-				return true
-			}
-			toolSuffix := strings.TrimPrefix(toolPattern, clientName+"-")
-			if mcpConfig.ToolsToExecute.Contains(toolSuffix) {
-				return true
-			}
+		// Found an explicit config for this client — use it; do not fall back to AllowOnAllVirtualKeys.
+		if toolPattern == clientName+"-*" {
+			return !mcpConfig.ToolsToExecute.IsEmpty()
+		}
+		if mcpConfig.ToolsToExecute.IsUnrestricted() {
+			return true
+		}
+		toolSuffix := strings.TrimPrefix(toolPattern, clientName+"-")
+		return mcpConfig.ToolsToExecute.Contains(toolSuffix)
+	}
+	// No explicit VK config found — fall back to AllowOnAllVirtualKeys (allows all tools).
+	for _, clientName := range allowAllClients {
+		if strings.HasPrefix(toolPattern, clientName+"-") || toolPattern == clientName+"-*" {
+			return true
 		}
 	}
 	return false
@@ -1303,17 +1333,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 				},
 			}}, nil
 		}
-		if len(vk.MCPConfigs) == 0 {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
-				StatusCode: bifrost.Ptr(403),
-				Error: &schemas.ErrorField{
-					Message: fmt.Sprintf("no MCP tools are configured for virtual key '%s'", vk.Name),
-				},
-			}}, nil
-		}
-		if !isMCPToolAllowedByVK(vk, toolName) {
+		if !p.isMCPToolAllowedByVK(vk, toolName) {
 			ctx.SetValue(governanceRejectedContextKey, true)
 			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),

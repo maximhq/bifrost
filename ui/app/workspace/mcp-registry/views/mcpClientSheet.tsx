@@ -136,6 +136,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -151,6 +152,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -168,6 +170,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
 					is_ping_available: data.is_ping_available,
+					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
 					headers: data.headers ?? {},
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
@@ -387,6 +390,38 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											</div>
 											<FormControl>
 												<Switch checked={field.value === true} onCheckedChange={field.onChange} />
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="allow_on_all_virtual_keys"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<div className="flex items-center gap-2">
+												<FormLabel>Allow on All Virtual Keys</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																When enabled, this MCP server is accessible to all virtual keys without requiring explicit
+																per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP
+																config for this server, that config takes precedence and overrides this behaviour.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value === true}
+													onCheckedChange={field.onChange}
+													data-testid="mcpclient-allow-on-all-virtual-keys-switch"
+												/>
 											</FormControl>
 										</FormItem>
 									)}
@@ -779,47 +814,58 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 								{mcpClient.tools && mcpClient.tools.length > 0 && (
 									<div className="space-y-4 pb-10 mt-6">
-										<div className="flex items-center justify-between">
-											<div className="flex items-center gap-2">
-												<div className="font-semibold text-md">Virtual Key Access</div>
-												<TooltipProvider>
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-														</TooltipTrigger>
-														<TooltipContent className="max-w-xs">
-															<p>Control which virtual keys can use this MCP server and which specific tools they can call.</p>
-														</TooltipContent>
-													</Tooltip>
-												</TooltipProvider>
+										<div className="flex flex-col gap-2">
+											<div className="flex items-center justify-between">
+												<div className="flex items-center gap-2">
+													<div className="font-semibold text-md">Virtual Key Access</div>
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs">
+																<p>Control which virtual keys can use this MCP server and which specific tools they can call.</p>
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</div>
+												{vkOptions.length > 0 && (
+													<Select value={vkSelectValue} onValueChange={(v) => { addVKConfig(v); setVKSearch(""); setVKSelectValue(""); }}>
+														<SelectTrigger
+															className="h-7.5 w-auto gap-1.5 px-2 py-1 text-sm font-medium"
+															data-testid="mcpclient-virtualkey-add-trigger"
+														>
+															<Plus className="h-4 w-4" />
+															Add Virtual Key
+														</SelectTrigger>
+														<SelectContent>
+															<div className="px-2 pb-1">
+																<Input
+																	placeholder="Search virtual keys..."
+																	value={vkSearch}
+																	onChange={(e) => setVKSearch(e.target.value)}
+																	onKeyDown={(e) => e.stopPropagation()}
+																	className="h-7 text-sm"
+																/>
+															</div>
+															{vkOptions.length > 0 ? vkOptions.map((opt) => (
+																<SelectItem key={opt.value} value={opt.value}>
+																	{opt.label}
+																</SelectItem>
+															)) : (
+																<div className="px-2 py-1.5 text-sm text-muted-foreground">No virtual keys found</div>
+															)}
+														</SelectContent>
+													</Select>
+												)}
 											</div>
-											<Select value={vkSelectValue} onValueChange={(v) => { addVKConfig(v); setVKSearch(""); setVKSelectValue(""); }}>
-												<SelectTrigger
-													className="h-7.5 w-auto gap-1.5 px-2 py-1 text-sm font-medium"
-													data-testid="mcpclient-virtualkey-add-trigger"
-												>
-													<Plus className="h-4 w-4" />
-													Add Virtual Key
-												</SelectTrigger>
-												<SelectContent>
-													<div className="px-2 pb-1">
-														<Input
-															placeholder="Search virtual keys..."
-															value={vkSearch}
-															onChange={(e) => setVKSearch(e.target.value)}
-															onKeyDown={(e) => e.stopPropagation()}
-															className="h-7 text-sm"
-														/>
-													</div>
-													{vkOptions.length > 0 ? vkOptions.map((opt) => (
-														<SelectItem key={opt.value} value={opt.value}>
-															{opt.label}
-														</SelectItem>
-													)) : (
-														<div className="px-2 py-1.5 text-sm text-muted-foreground">No virtual keys found</div>
-													)}
-												</SelectContent>
-											</Select>
+											{form.watch("allow_on_all_virtual_keys") && (
+												<p className="text-muted-foreground flex items-center gap-1 text-xs">
+													<Info className="h-3 w-3 shrink-0" />
+													Configuring access for a virtual key here overrides the{" "}
+													<span className="font-medium">Allow on All Virtual Keys</span>&nbsp;setting for that key.
+												</p>
+											)}
 										</div>
 
 										{vkConfigs.length > 0 ? (
@@ -876,6 +922,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														))}
 													</TableBody>
 												</Table>
+											</div>
+										) : form.watch("allow_on_all_virtual_keys") ? (
+											<div className="text-muted-foreground rounded-sm border p-6 text-center">
+												<p className="text-sm">All virtual keys can access this MCP server unless a key has an explicit override.</p>
 											</div>
 										) : (
 											<div className="text-muted-foreground rounded-sm border p-6 text-center">

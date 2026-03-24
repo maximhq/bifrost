@@ -971,6 +971,29 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										</TooltipProvider>
 									</div>
 
+									{/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
+									{(() => {
+										const defaultMCPClients = mcpClientsData.filter(
+											(client) =>
+												client.config.allow_on_all_virtual_keys &&
+												!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+										);
+										return defaultMCPClients.length > 0 ? (
+											<div className="text-muted-foreground rounded-md border p-3 text-xs">
+												<div className="flex items-start gap-1.5">
+													<Info className="mt-0.5 h-3 w-3 shrink-0" />
+													<span>
+														The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
+														<span className="text-foreground font-medium">
+															{defaultMCPClients.map((c) => c.config.name).join(", ")}
+														</span>
+														. Adding an explicit config for any of them below will override the all-tools default for this key.
+													</span>
+												</div>
+											</div>
+										) : null;
+									})()}
+
 									{/* Add MCP Client Dropdown */}
 									{mcpClientsData && mcpClientsData.length > 0 && (
 										<div className="flex gap-2">

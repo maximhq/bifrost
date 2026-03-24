@@ -102,10 +102,11 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable  *bool              `json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
-	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`         // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`        // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`              // Tool pricing for each tool (cost per execution)
+	ConfigHash            string             `json:"-"`                                   // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.

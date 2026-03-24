@@ -322,34 +322,47 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 	ctx := context.Background()
 	var toolFilter []string
 
-	// Empty MCPConfigs means no MCP tools are allowed (deny-by-default)
 	executeOnlyTools := make([]string, 0)
 
-	if len(vk.MCPConfigs) > 0 {
-		for _, vkMcpConfig := range vk.MCPConfigs {
-			if vkMcpConfig.ToolsToExecute.IsEmpty() {
-				// No tools specified in virtual key config - skip this client entirely
-				continue
-			}
+	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName.
+	// Explicit VK MCPConfigs always take precedence over AllowOnAllVirtualKeys.
+	allowAllVKsClients := h.config.GetAllowOnAllVirtualKeysClients()
+	if allowAllVKsClients == nil {
+		allowAllVKsClients = make(map[string]string)
+	}
 
-			// Handle wildcard in virtual key config - allow all tools from this client
-			if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
-				// Virtual key uses wildcard - use client-specific wildcard
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
-				continue
-			}
-
-			for _, tool := range vkMcpConfig.ToolsToExecute {
-				if tool != "" {
-					// Add the tool - client config filtering will be handled by mcp.go
-					// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
-					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
-				}
+	// Process explicit VK MCPConfigs first.
+	handledClients := make(map[string]bool)
+	for _, vkMcpConfig := range vk.MCPConfigs {
+		clientID := vkMcpConfig.MCPClient.ClientID
+		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
+			// Explicit config exists — it takes precedence; mark handled regardless of tool list.
+			handledClients[clientID] = true
+		}
+		if vkMcpConfig.ToolsToExecute.IsEmpty() {
+			continue
+		}
+		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
+			continue
+		}
+		for _, tool := range vkMcpConfig.ToolsToExecute {
+			if tool != "" {
+				// Add the tool - client config filtering will be handled by mcp.go
+				// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
+				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
 			}
 		}
 	}
 
-	// Always set the include-tools filter (empty = deny-all when no MCPConfigs)
+	// For AllowOnAllVirtualKeys clients with no explicit VK config, allow all their tools.
+	for clientID, clientName := range allowAllVKsClients {
+		if !handledClients[clientID] {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
+		}
+	}
+
+	// Always set the include-tools filter (empty = deny-all when no MCPConfigs and no AllowOnAllVirtualKeys clients)
 	ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, executeOnlyTools)
 	toolFilter = executeOnlyTools
 

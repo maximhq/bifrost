@@ -2,3 +2,4 @@
 - feat: add MCPDisableAutoToolInject column to TableClientConfig
 - refactor: standardize empty array conventions in modelcatalog and tables.
 - feat: add AllowedExtraHeadersJSON column to TableMCPClient
+- feat: add AllowOnAllVirtualKeys column to TableMCPClient

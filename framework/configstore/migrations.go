@@ -335,6 +335,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationMakeBasePricingColumnsNullable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowOnAllVirtualKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5199,6 +5202,36 @@ func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running make_base_pricing_columns_nullable migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_on_all_virtual_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_allow_on_all_virtual_keys_column migration: %s", err.Error())
 	}
 	return nil
 }
