@@ -120,6 +120,7 @@ client-by-id:
     description: |
       Updates an existing MCP client's configuration.
       Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
+      Optionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.
     tags:
       - MCP
     parameters:
