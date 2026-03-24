@@ -61,6 +61,9 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		vkMCPServers:    make(map[string]*server.MCPServer),
 	}
 
+	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
+	server.WithToolFilter(handler.makeIncludeClientsFilter())(handler.globalMCPServer)
+
 	if err := handler.SyncAllMCPServers(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -171,11 +174,13 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 		h.vkMCPServers = make(map[string]*server.MCPServer)
 		for i := range virtualKeys {
 			vk := &virtualKeys[i]
-			h.vkMCPServers[vk.Value] = server.NewMCPServer(
+			vkServer := server.NewMCPServer(
 				vk.Name,
 				version,
 				server.WithToolCapabilities(true),
 			)
+			server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
+			h.vkMCPServers[vk.Value] = vkServer
 			availableTools, toolFilter := h.fetchToolsForVK(vk)
 			h.syncServer(h.vkMCPServers[vk.Value], availableTools, toolFilter)
 			logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
@@ -195,6 +200,7 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
 			version,
 			server.WithToolCapabilities(true),
 		)
+		server.WithToolFilter(h.makeIncludeClientsFilter())(vkServer)
 		h.vkMCPServers[vk.Value] = vkServer
 	}
 	availableTools, toolFilter := h.fetchToolsForVK(vk)
@@ -347,6 +353,31 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 	}
 
 	return h.toolManager.GetAvailableMCPTools(ctx), toolFilter
+}
+
+// makeIncludeClientsFilter returns a ToolFilterFunc that dynamically filters the tools/list
+// response based on the x-bf-mcp-include-clients and x-bf-mcp-include-tools request headers.
+// When neither header is present the filter is a no-op, preserving existing behaviour.
+func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
+	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+		if ctx.Value(schemas.BifrostContextKey("mcp-include-clients")) == nil && ctx.Value(schemas.BifrostContextKey("mcp-include-tools")) == nil {
+			return tools
+		}
+		allowed := h.toolManager.GetAvailableMCPTools(ctx)
+		allowedNames := make(map[string]bool, len(allowed))
+		for _, t := range allowed {
+			if t.Function != nil {
+				allowedNames[t.Function.Name] = true
+			}
+		}
+		result := make([]mcp.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if allowedNames[tool.Name] {
+				result = append(result, tool)
+			}
+		}
+		return result
+	}
 }
 
 // Utility methods
