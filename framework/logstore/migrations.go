@@ -1737,6 +1737,85 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB)
 	return nil
 }
 
+// metadataCleanupBatchSize caps how many rows each metadata cleanup UPDATE touches.
+// Smaller batches reduce lock duration and contention with concurrent log writes.
+const metadataCleanupBatchSize = 1000
+
+// ensureMetadataCleanup nullifies logs.metadata values that cannot be cast to jsonb for the GIN index.
+// Runs in short batches to avoid long table-wide locks.
+func ensureMetadataCleanup(ctx context.Context, db *gorm.DB) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	for {
+		res := db.WithContext(ctx).Exec(`
+			UPDATE logs SET metadata = NULL
+			WHERE id IN (SELECT id FROM logs WHERE metadata = '' LIMIT ?)`, metadataCleanupBatchSize)
+		if res.Error != nil {
+			return fmt.Errorf("failed to clean empty metadata strings: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			break
+		}
+	}
+
+	var pgVersionNum int
+	if err := db.WithContext(ctx).Raw("SELECT current_setting('server_version_num')::int").Scan(&pgVersionNum).Error; err != nil {
+		pgVersionNum = 0
+	}
+	if pgVersionNum >= 160000 {
+		for {
+			res := db.WithContext(ctx).Exec(`
+				UPDATE logs SET metadata = NULL
+				WHERE id IN (
+					SELECT id FROM logs
+					WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT
+					LIMIT ?)`, metadataCleanupBatchSize)
+			if res.Error != nil {
+				return fmt.Errorf("failed to clean invalid metadata values: %w", res.Error)
+			}
+			if res.RowsAffected == 0 {
+				break
+			}
+		}
+		return nil
+	}
+
+	type metadataRow struct {
+		ID       string
+		Metadata string
+	}
+	const batchSize = 5000
+	var lastSeenID string
+	for {
+		var batch []metadataRow
+		if err := db.WithContext(ctx).Raw(
+			"SELECT id, metadata FROM logs WHERE metadata IS NOT NULL AND metadata != '' AND id > ? ORDER BY id LIMIT ?",
+			lastSeenID, batchSize).Scan(&batch).Error; err != nil {
+			return fmt.Errorf("failed to fetch metadata rows: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		var invalidIDs []string
+		for _, row := range batch {
+			if !isValidJSON(row.Metadata) {
+				invalidIDs = append(invalidIDs, row.ID)
+			}
+		}
+		if len(invalidIDs) > 0 {
+			if err := db.WithContext(ctx).Exec("UPDATE logs SET metadata = NULL WHERE id IN ?", invalidIDs).Error; err != nil {
+				return fmt.Errorf("failed to clean invalid metadata values: %w", err)
+			}
+		}
+		lastSeenID = batch[len(batch)-1].ID
+		if len(batch) < batchSize {
+			break
+		}
+	}
+	return nil
+}
+
 // migrationAddMetadataGINIndex adds a GIN index on the metadata column for Postgres
 // to speed up jsonb ->> queries used for metadata filtering.
 // For SQLite, this is a no-op since json_extract works without special indices.
@@ -1750,76 +1829,9 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 		ID: "logs_add_metadata_gin_index_v3",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			// Only create GIN index for Postgres
-			if tx.Dialector.Name() == "postgres" {
-				// Clean empty strings first (not valid JSON).
-				// Done in its own statement (no wrapping transaction) so row locks
-				// are released immediately and don't conflict with concurrent writes.
-				if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata = ''").Error; err != nil {
-					return fmt.Errorf("failed to clean empty metadata values: %w", err)
-				}
-
-				// Clean invalid JSON values before the GIN index is created.
-				// The index expression (metadata::jsonb) will fail if any row contains invalid JSON.
-				//
-				// PostgreSQL 16+ ships json_is_valid(), which allows a single server-side
-				// UPDATE with no round-trips. For older versions we fall back to fetching
-				// rows into Go and validating there.
-				//
-				// Index creation itself is intentionally omitted from this migration callback.
-				// It is handled by ensureMetadataGINIndex, called post-startup so that the
-				// potentially long-running CREATE INDEX CONCURRENTLY does not block pod startup.
-				var pgVersionNum int
-				if err := tx.Raw("SELECT current_setting('server_version_num')::int").Scan(&pgVersionNum).Error; err != nil {
-					pgVersionNum = 0 // safe: forces the Go-based fallback
-				}
-
-				if pgVersionNum >= 160000 {
-					// Single server-side pass — no rows transferred to Go, no round-trips.
-					// json_is_valid returns FALSE for empty strings and all malformed JSON.
-					if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT").Error; err != nil {
-						return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-					}
-				} else {
-					// Go-based batch validation for PostgreSQL < 16.
-					type metadataRow struct {
-						ID       string
-						Metadata string
-					}
-
-					const batchSize = 5000
-					var lastSeenID string
-
-					for {
-						var batch []metadataRow
-						if err := tx.Raw("SELECT id, metadata FROM logs WHERE metadata IS NOT NULL AND metadata != '' AND id > ? ORDER BY id LIMIT ?", lastSeenID, batchSize).Scan(&batch).Error; err != nil {
-							return fmt.Errorf("failed to fetch metadata rows: %w", err)
-						}
-						if len(batch) == 0 {
-							break
-						}
-
-						var invalidIDs []string
-						for _, row := range batch {
-							if !isValidJSON(row.Metadata) {
-								invalidIDs = append(invalidIDs, row.ID)
-							}
-						}
-
-						if len(invalidIDs) > 0 {
-							// Use raw SQL — GORM's Update("col", nil) may silently no-op on nil values.
-							if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE id IN ?", invalidIDs).Error; err != nil {
-								return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-							}
-						}
-
-						lastSeenID = batch[len(batch)-1].ID
-						if len(batch) < batchSize {
-							break
-						}
-					}
-				}
-			}
+			// Postgres: metadata cleanup and GIN index creation run post-startup in
+			// ensureMetadataGINIndex (batched cleanup + CREATE INDEX CONCURRENTLY) so
+			// startup does not hold long table-wide locks.
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -1873,6 +1885,10 @@ func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	}
 	if indexValid {
 		return nil
+	}
+
+	if err := ensureMetadataCleanup(ctx, db); err != nil {
+		return err
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
