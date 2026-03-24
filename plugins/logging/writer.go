@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -34,6 +35,14 @@ type PendingLogData struct {
 	RoutingEnginesUsed []string
 	InitialData        *InitialLogData
 	CreatedAt          time.Time // For cleanup of stale entries
+}
+
+// pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.
+// The mutex protects concurrent appends to the entries slice within the same traceID.
+type pendingInjectEntries struct {
+	mu        sync.Mutex
+	entries   []*logstore.Log
+	createdAt time.Time
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
@@ -167,10 +176,18 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 // never fires for a request (e.g., request was cancelled before reaching the provider).
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
-	p.pendingLogs.Range(func(key, value any) bool {
+	p.pendingLogsEntries.Range(func(key, value any) bool {
 		if pending, ok := value.(*PendingLogData); ok {
 			if pending.CreatedAt.Before(cutoff) {
-				p.pendingLogs.Delete(key)
+				p.pendingLogsEntries.Delete(key)
+			}
+		}
+		return true
+	})
+	p.pendingLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingInjectEntries); ok {
+			if pending.createdAt.Before(cutoff) {
+				p.pendingLogsToInject.Delete(key)
 			}
 		}
 		return true

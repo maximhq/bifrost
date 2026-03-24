@@ -38,7 +38,8 @@ type StreamAccumulatorResult struct {
 type Tracer interface {
 	// CreateTrace creates a new trace with optional parent ID and returns the trace ID.
 	// The parentID can be extracted from W3C traceparent headers for distributed tracing.
-	CreateTrace(parentID string) string
+	// The requestID is optional and can be used to identify the request.
+	CreateTrace(parentID string, requestID ...string) string
 
 	// EndTrace completes a trace and returns the trace data for observation/export.
 	// After this call, the trace is removed from active tracking and returned for cleanup.
@@ -111,6 +112,10 @@ type Tracer interface {
 	// The ctx parameter must contain the stream end indicator for proper final chunk detection.
 	ProcessStreamingChunk(traceID string, isFinalChunk bool, result *BifrostResponse, err *BifrostError) *StreamAccumulatorResult
 
+	// AttachPluginLogs appends plugin log entries to the trace identified by traceID.
+	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
+	AttachPluginLogs(traceID string, logs []PluginLogEntry)
+
 	// Stop releases resources associated with the tracer.
 	// Should be called during shutdown to stop background goroutines.
 	Stop()
@@ -121,7 +126,7 @@ type Tracer interface {
 type NoOpTracer struct{}
 
 // CreateTrace returns an empty string (no trace created).
-func (n *NoOpTracer) CreateTrace(_ string) string { return "" }
+func (n *NoOpTracer) CreateTrace(_ string, _ ...string) string { return "" }
 
 // EndTrace returns nil (no trace to end).
 func (n *NoOpTracer) EndTrace(_ string) *Trace { return nil }
@@ -175,6 +180,9 @@ func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
 func (n *NoOpTracer) ProcessStreamingChunk(_ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {
 	return nil
 }
+
+// AttachPluginLogs does nothing.
+func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
 
 // Stop does nothing.
 func (n *NoOpTracer) Stop() {}

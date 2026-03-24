@@ -1961,6 +1961,20 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	return &log, nil
 }
 
+// IsLogEntryPresent checks if a log entry is present in the database.
+// Here we dont load entire log entry in memory - just check if it exists.
+func (s *RDBLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {
+	var log Log
+	err := s.db.WithContext(ctx).Select("id").Where("id = ?", id).First(&log).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // FindFirst gets a log entry from the database.
 func (s *RDBLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	var log Log

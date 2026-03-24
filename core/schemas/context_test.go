@@ -207,3 +207,125 @@ func TestNewBifrostContext_NilParent(t *testing.T) {
 		t.Errorf("Cancelled context should have Canceled error, got %v", ctx.Err())
 	}
 }
+
+// Plugin logging tests
+
+func TestPluginLog_NoScopeIsNoop(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.Log(LogLevelInfo, "should be ignored")
+	logs := ctx.GetPluginLogs()
+	if logs != nil {
+		t.Errorf("expected nil logs without plugin scope, got %v", logs)
+	}
+}
+
+func TestPluginLog_SinglePlugin(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	name := "test-plugin"
+	scoped := ctx.WithPluginScope(&name)
+	scoped.Log(LogLevelInfo, "hello")
+	scoped.Log(LogLevelError, "oops")
+	scoped.ReleasePluginScope()
+
+	logs := ctx.GetPluginLogs()
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 logs, got %d", len(logs))
+	}
+	if logs[0].PluginName != "test-plugin" || logs[0].Level != LogLevelInfo || logs[0].Message != "hello" {
+		t.Errorf("unexpected first log: %+v", logs[0])
+	}
+	if logs[1].Level != LogLevelError || logs[1].Message != "oops" {
+		t.Errorf("unexpected second log: %+v", logs[1])
+	}
+}
+
+func TestPluginLog_MultiplePlugins(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+
+	name1 := "plugin-a"
+	s1 := ctx.WithPluginScope(&name1)
+	s1.Log(LogLevelDebug, "a-msg")
+	s1.ReleasePluginScope()
+
+	name2 := "plugin-b"
+	s2 := ctx.WithPluginScope(&name2)
+	s2.Log(LogLevelWarn, "b-msg")
+	s2.ReleasePluginScope()
+
+	logs := ctx.GetPluginLogs()
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 logs, got %d", len(logs))
+	}
+	if logs[0].PluginName != "plugin-a" {
+		t.Errorf("expected plugin-a, got %s", logs[0].PluginName)
+	}
+	if logs[1].PluginName != "plugin-b" {
+		t.Errorf("expected plugin-b, got %s", logs[1].PluginName)
+	}
+}
+
+func TestPluginLog_DrainTransfersOwnership(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	name := "drain-test"
+	scoped := ctx.WithPluginScope(&name)
+	scoped.Log(LogLevelInfo, "msg1")
+	scoped.ReleasePluginScope()
+
+	drained := ctx.DrainPluginLogs()
+	if len(drained) != 1 {
+		t.Fatalf("expected 1 drained log, got %d", len(drained))
+	}
+
+	// After drain, GetPluginLogs should return nil
+	after := ctx.GetPluginLogs()
+	if after != nil {
+		t.Errorf("expected nil after drain, got %v", after)
+	}
+
+	// Second drain should return nil
+	second := ctx.DrainPluginLogs()
+	if second != nil {
+		t.Errorf("expected nil on second drain, got %v", second)
+	}
+}
+
+func TestPluginLog_ScopedContextValueDelegation(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyTraceID, "trace-123")
+
+	name := "delegate-test"
+	scoped := ctx.WithPluginScope(&name)
+
+	// Scoped should read from root
+	val := scoped.Value(BifrostContextKeyTraceID)
+	if val != "trace-123" {
+		t.Errorf("expected trace-123, got %v", val)
+	}
+
+	// Scoped should write to root
+	type testContextKey string
+	const customKey testContextKey = "custom-key"
+	scoped.SetValue(customKey, "custom-val")
+	if ctx.Value(customKey) != "custom-val" {
+		t.Errorf("SetValue on scoped did not delegate to root")
+	}
+
+	scoped.ReleasePluginScope()
+}
+
+func TestPluginLog_PoolReuse(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+
+	// Create and release multiple scoped contexts to exercise the pool
+	for i := 0; i < 100; i++ {
+		name := "pool-test"
+		scoped := ctx.WithPluginScope(&name)
+		scoped.Log(LogLevelInfo, "pooled")
+		scoped.ReleasePluginScope()
+	}
+
+	logs := ctx.DrainPluginLogs()
+	if len(logs) != 100 {
+		t.Errorf("expected 100 logs from pool reuse, got %d", len(logs))
+	}
+}

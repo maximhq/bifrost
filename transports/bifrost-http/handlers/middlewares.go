@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -90,15 +91,15 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-			// Set Allow-Credentials for credentialed requests. Only skip when wildcard
-			// is configured AND the origin was matched by the wildcard (not by localhost rule
-			// or explicit listing). Localhost origins and explicitly listed origins always
-			// get credentials support since we return the specific origin.
-			if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
-				isLocalhostOrigin(origin) ||
-				slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
-				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-			}
+				// Set Allow-Credentials for credentialed requests. Only skip when wildcard
+				// is configured AND the origin was matched by the wildcard (not by localhost rule
+				// or explicit listing). Localhost origins and explicitly listed origins always
+				// get credentials support since we return the specific origin.
+				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+					isLocalhostOrigin(origin) ||
+					slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
+					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+				}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
 				// Vary: Origin tells caches that the response varies based on the Origin
 				// request header, preventing incorrect CORS headers from being served.
@@ -302,19 +303,32 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			fasthttpToHTTPRequest(ctx, req)
 			// Run plugin interceptors
 			for _, plugin := range plugins {
-				resp, err := plugin.HTTPTransportPreHook(bifrostCtx, req)
+				pluginName := plugin.GetName()
+				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+				resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+				pluginCtx.ReleasePluginScope()
 				if err != nil {
-					// Short-circuit with error
+					// Short-circuit with error — drain plugin logs before returning
+					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
+						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
+					}
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
 					return
 				}
 				if resp != nil {
-					// Short-circuit with response
+					// Short-circuit with response — drain plugin logs before returning
+					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
+						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
+					}
 					applyHTTPResponseToCtx(ctx, resp)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
+			}
+			// Drain pre-hook plugin logs and store on fasthttp context for trace attachment
+			if preHookLogs := bifrostCtx.DrainPluginLogs(); len(preHookLogs) > 0 {
+				ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, preHookLogs)
 			}
 			// Apply modifications back to fasthttp context
 			applyHTTPRequestToCtx(ctx, req)
@@ -324,31 +338,70 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			next(ctx)
 
-			// Skip HTTPTransportPostHook for streaming responses
-			// Streaming handlers set DeferTraceCompletion and use StreamChunkInterceptor for per-chunk hooks
+			// For streaming responses, store a callback to run post-hooks after the stream ends.
+			// The streaming handler calls this before traceCompleter.
 			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+				ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, func() {
+					runTransportPostHooks(ctx, plugins, bifrostCtx)
+				})
 				return
 			}
 
-			// Acquire pooled response for post-hooks (non-streaming only)
-			httpResp := schemas.AcquireHTTPResponse()
-			defer schemas.ReleaseHTTPResponse(httpResp)
-			fasthttpResponseToHTTPResponse(ctx, httpResp)
-			// Run http post-hooks in reverse order
-			for i := len(plugins) - 1; i >= 0; i-- {
-				plugin := plugins[i]
-				err := plugin.HTTPTransportPostHook(bifrostCtx, req, httpResp)
-				if err != nil {
-					logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", plugin.GetName(), err.Error())
-					// Short-circuit with response
-					applyHTTPResponseToCtx(ctx, httpResp)
-					return
-				}
-			}
-			// Apply modifications back to fasthttp context
-			applyHTTPResponseToCtx(ctx, httpResp)
+			runTransportPostHooks(ctx, plugins, bifrostCtx)
 		}
 	}
+}
+
+// runTransportPostHooks runs HTTPTransportPostHook for all plugins in reverse order,
+// drains plugin logs, and applies the response back to the fasthttp context.
+// Used for both non-streaming (inline) and streaming (deferred callback) paths.
+//
+// Transport-level plugin logs are stored in fasthttp UserValues (keyed by
+// BifrostContextKeyTransportPluginLogs) rather than directly on BifrostContext,
+// because transport hooks operate at the fasthttp layer before/after the core
+// BifrostContext lifecycle. These logs are merged into the trace by the
+// TracingMiddleware at trace completion, alongside core-level plugin logs
+// which travel through BifrostContext → Trace → AttachPluginLogs.
+func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext) {
+	httpResp := schemas.AcquireHTTPResponse()
+	defer schemas.ReleaseHTTPResponse(httpResp)
+	fasthttpResponseToHTTPResponse(ctx, httpResp)
+
+	// Build request from current fasthttp state (original pooled req may have been released)
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+
+	// Run http post-hooks in reverse order
+	for i := len(plugins) - 1; i >= 0; i-- {
+		plugin := plugins[i]
+		pluginName := plugin.GetName()
+		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		pluginCtx.ReleasePluginScope()
+		if err != nil {
+			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
+			// Drain plugin logs before returning on error
+			if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
+				if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
+					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
+				} else {
+					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
+				}
+			}
+			applyHTTPResponseToCtx(ctx, httpResp)
+			return
+		}
+	}
+	// Drain post-hook plugin logs and merge with pre-hook logs
+	if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
+		if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
+			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
+		} else {
+			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
+		}
+	}
+	applyHTTPResponseToCtx(ctx, httpResp)
 }
 
 // getBifrostContextFromFastHTTP gets or creates a BifrostContext from fasthttp context.
@@ -766,14 +819,19 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
+			requestID := string(ctx.Request.Header.Peek("x-request-id"))
+			if requestID == "" {
+				requestID = uuid.New().String()
+				// Injecting this back to be picked up by the next middleware
+				ctx.Request.Header.Set("x-request-id", requestID)
+			}
 			// Extract trace ID from W3C traceparent header (if present)
 			// This is the 32-char trace ID that links all spans in a distributed trace
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
-			traceID := m.tracer.Load().CreateTrace(inheritedTraceID)
+			traceID := m.tracer.Load().CreateTrace(inheritedTraceID, requestID)			
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
-
 			// Extract parent span ID from W3C traceparent header (if present)
 			// This is the 16-char span ID from the upstream service that should be
 			// set as the ParentID of our root span for proper trace linking in Datadog/etc.
@@ -784,6 +842,14 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 
 			// Store a trace completion callback for streaming handlers to use
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func() {
+				// Run deferred HTTPTransportPostHook for streaming responses
+				if postHookCompleter, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(func()); ok {
+					postHookCompleter()
+				}
+				// Attach transport plugin logs before completing the trace (streaming path)
+				if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+					m.tracer.Load().AttachPluginLogs(traceID, transportLogs)
+				}
 				m.completeAndFlushTrace(traceID)
 			})
 			// Create root span for the HTTP request
@@ -811,6 +877,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// If deferred, the streaming handler will complete the trace after stream ends
 				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
 					return
+				}
+				// Attach transport plugin logs to trace before completion
+				if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+					m.tracer.Load().AttachPluginLogs(traceID, transportLogs)
 				}
 				// After response written - async flush
 				m.completeAndFlushTrace(traceID)
