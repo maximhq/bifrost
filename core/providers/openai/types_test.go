@@ -1,9 +1,11 @@
 package openai
 
 import (
+	"context"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -330,6 +332,78 @@ func TestOpenAIChatRequest_UnmarshalJSON_ChatParametersCustomLogic(t *testing.T)
 	}
 }
 
+func TestOpenAIVideoRemixRequest_PreservesExtraParams(t *testing.T) {
+	extraParams := map[string]interface{}{
+		"guided_json": map[string]interface{}{"type": "object"},
+		"min_tokens":  10,
+	}
+
+	req, err := ToOpenAIVideoRemixRequest(&schemas.BifrostVideoRemixRequest{
+		ID:          "video_123",
+		Provider:    schemas.OpenAI,
+		ExtraParams: extraParams,
+		Input: &schemas.VideoGenerationInput{
+			Prompt: "add dramatic lighting",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ToOpenAIVideoRemixRequest returned error: %v", err)
+	}
+
+	if req.ExtraParams == nil {
+		t.Fatal("expected extra params to be preserved on the OpenAI remix request")
+	}
+	if req.ExtraParams["min_tokens"] != 10 {
+		t.Fatalf("expected min_tokens to be preserved, got %v", req.ExtraParams["min_tokens"])
+	}
+}
+
+func TestOpenAIVideoRemixRequestBodyIncludesPassthroughExtraParams(t *testing.T) {
+	extraParams := map[string]interface{}{
+		"guided_json": map[string]interface{}{"type": "object"},
+		"min_tokens":  10,
+	}
+	request := &schemas.BifrostVideoRemixRequest{
+		ID:          "video_123",
+		Provider:    schemas.OpenAI,
+		ExtraParams: extraParams,
+		Input: &schemas.VideoGenerationInput{
+			Prompt: "add dramatic lighting",
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIVideoRemixRequest(request)
+		},
+		schemas.OpenAI,
+	)
+	if bifrostErr != nil {
+		t.Fatalf("CheckContextAndGetRequestBody returned error: %v", bifrostErr)
+	}
+
+	var body map[string]interface{}
+	if err := sonic.Unmarshal(jsonBody, &body); err != nil {
+		t.Fatalf("failed to parse generated request body: %v", err)
+	}
+
+	guidedJSON, ok := body["guided_json"].(map[string]interface{})
+	if !ok || guidedJSON["type"] != "object" {
+		t.Fatalf("expected guided_json passthrough field in request body, got %#v", body["guided_json"])
+	}
+	if body["min_tokens"] != float64(10) {
+		t.Fatalf("expected min_tokens passthrough field in request body, got %#v", body["min_tokens"])
+	}
+	if body["prompt"] != "add dramatic lighting" {
+		t.Fatalf("expected prompt in request body, got %#v", body["prompt"])
+	}
+}
+
 func TestOpenAIChatRequest_UnmarshalJSON_PresenceAssertions(t *testing.T) {
 	// Test that verifies presence of fields (not just values)
 	jsonPayload := `{
@@ -460,4 +534,3 @@ func TestOpenAIChatRequest_UnmarshalJSON_ValueAssertions(t *testing.T) {
 		t.Errorf("Expected Stop value ['END', 'STOP'], got %v", req.Stop)
 	}
 }
-

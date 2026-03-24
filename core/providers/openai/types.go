@@ -860,6 +860,12 @@ func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{}
 	return req.ExtraParams
 }
 
+// SetExtraParams implements RequestWithSettableExtraParams.
+func (req *OpenAIVideoGenerationRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+	req.VideoGenerationParameters.ExtraParams = params
+}
+
 // OpenAIVideoRemixRequest represents an OpenAI video remix request
 type OpenAIVideoRemixRequest struct {
 	Prompt string `json:"prompt"`
@@ -874,6 +880,11 @@ type OpenAIVideoRemixRequest struct {
 // GetExtraParams implements the ExtraParamsGetter interface
 func (r *OpenAIVideoRemixRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// SetExtraParams implements RequestWithSettableExtraParams.
+func (r *OpenAIVideoRemixRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
 }
 
 // ErrVideoNotReady is an error that is returned when a video is not ready yet

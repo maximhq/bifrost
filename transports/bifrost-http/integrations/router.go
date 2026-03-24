@@ -50,12 +50,15 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -592,6 +595,142 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	}
 }
 
+// extraBodyBlocklist contains Bifrost control fields that must be filtered out
+// when extracting extra_body parameters. These fields are used for routing and
+// fallback configuration and should not be forwarded to downstream providers.
+// If a new Bifrost control field is added to the SDK compat request types,
+// it must also be added here.
+var extraBodyBlocklist = map[string]struct{}{
+	"provider":     {},
+	"fallbacks":    {},
+	"extra_params": {},
+	"extra_body":   {},
+}
+
+var sdkCompatCanonicalFieldCache sync.Map
+
+func extractSDKPassthroughParams(rawBody []byte, req interface{}) (map[string]interface{}, error, error) {
+	if len(rawBody) == 0 {
+		return nil, nil, nil
+	}
+
+	var root map[string]json.RawMessage
+	if err := sonic.Unmarshal(rawBody, &root); err != nil {
+		return nil, err, err
+	}
+
+	merged := make(map[string]interface{})
+	canonicalFields := sdkCompatCanonicalJSONFields(req)
+
+	extraBody, extraBodyErr := extractJSONObjectField(root, "extra_body")
+	for key, value := range extraBody {
+		if _, blocked := extraBodyBlocklist[key]; blocked {
+			continue
+		}
+		if _, canonical := canonicalFields[key]; canonical {
+			continue
+		}
+		merged[key] = value
+	}
+
+	extraParams, extraParamsErr := extractJSONObjectField(root, "extra_params")
+	for key, value := range extraParams {
+		if _, blocked := extraBodyBlocklist[key]; blocked {
+			continue
+		}
+		if _, canonical := canonicalFields[key]; canonical {
+			continue
+		}
+		merged[key] = value
+	}
+
+	if len(merged) == 0 {
+		return nil, extraBodyErr, extraParamsErr
+	}
+	return merged, extraBodyErr, extraParamsErr
+}
+
+func extractJSONObjectField(root map[string]json.RawMessage, field string) (map[string]interface{}, error) {
+	raw, ok := root[field]
+	if !ok || len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+
+	var value map[string]interface{}
+	if err := sonic.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	if len(value) == 0 {
+		return nil, nil
+	}
+	return value, nil
+}
+
+func sdkCompatCanonicalJSONFields(req interface{}) map[string]struct{} {
+	reqType := reflect.TypeOf(req)
+	if reqType == nil {
+		return extraBodyBlocklist
+	}
+	if cached, ok := sdkCompatCanonicalFieldCache.Load(reqType); ok {
+		return cached.(map[string]struct{})
+	}
+
+	fields := make(map[string]struct{}, len(extraBodyBlocklist)+8)
+	for key := range extraBodyBlocklist {
+		fields[key] = struct{}{}
+	}
+	collectSDKCompatJSONFields(reqType, fields, make(map[reflect.Type]struct{}))
+	sdkCompatCanonicalFieldCache.Store(reqType, fields)
+	return fields
+}
+
+func collectSDKCompatJSONFields(reqType reflect.Type, fields map[string]struct{}, visited map[reflect.Type]struct{}) {
+	for reqType != nil && reqType.Kind() == reflect.Pointer {
+		reqType = reqType.Elem()
+	}
+	if reqType == nil || reqType.Kind() != reflect.Struct {
+		return
+	}
+	if _, ok := visited[reqType]; ok {
+		return
+	}
+	visited[reqType] = struct{}{}
+
+	for i := 0; i < reqType.NumField(); i++ {
+		field := reqType.Field(i)
+		if field.Anonymous {
+			collectSDKCompatJSONFields(field.Type, fields, visited)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+
+		jsonName := jsonFieldName(field)
+		if jsonName == "" {
+			continue
+		}
+		fields[jsonName] = struct{}{}
+	}
+}
+
+func jsonFieldName(field reflect.StructField) string {
+	tag := field.Tag.Get("json")
+	if tag == "-" {
+		return ""
+	}
+	if tag == "" {
+		return field.Name
+	}
+	if commaIdx := strings.Index(tag, ","); commaIdx >= 0 {
+		tag = tag[:commaIdx]
+	}
+	if tag == "" {
+		return field.Name
+	}
+	return tag
+}
+
 // createHandler creates a fasthttp handler for the given route configuration.
 // The handler follows this flow:
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
@@ -663,10 +802,13 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				}
 			}
 
-			// Extract the "extra_params" JSON key when passthrough is
+			// Extract "extra_params" and "extra_body" JSON keys when passthrough is
 			// explicitly enabled via x-bf-passthrough-extra-params: true.
-			// Provider-specific fields (e.g. Bedrock guardrailConfig)
-			// must be nested under "extra_params" in the request body.
+			// Provider-specific fields can be nested under "extra_params" or passed
+			// via "extra_body" (SDK compat). Both are filtered against the route's
+			// canonical request fields so they cannot override parsed inputs.
+			// extra_body fields are merged first, then extra_params overwrites on
+			// conflict for the remaining passthrough keys.
 			// Runs after both RequestParser and default JSON paths.
 			if !isLargePayload && bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 				if rws, ok := req.(RequestWithSettableExtraParams); ok {
@@ -674,11 +816,15 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 						rawBody = ctx.Request.Body()
 					}
 					if len(rawBody) > 0 {
-						var wrapper struct {
-							ExtraParams map[string]interface{} `json:"extra_params"`
+						merged, extraBodyErr, extraParamsErr := extractSDKPassthroughParams(rawBody, req)
+						if extraBodyErr != nil {
+							g.logger.Warn("failed to parse extra_body passthrough params for route %s: %v", config.Path, extraBodyErr)
 						}
-						if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
-							rws.SetExtraParams(wrapper.ExtraParams)
+						if extraParamsErr != nil {
+							g.logger.Warn("failed to parse extra_params passthrough params for route %s: %v", config.Path, extraParamsErr)
+						}
+						if len(merged) > 0 {
+							rws.SetExtraParams(merged)
 						}
 					}
 				}

@@ -229,6 +229,66 @@ func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
+// isOpenAICompatiblePassthroughProvider reports whether a provider uses the
+// OpenAI-compatible request/body family for passthrough fallback purposes.
+func isOpenAICompatiblePassthroughProvider(providerKey schemas.ModelProvider) bool {
+	switch providerKey {
+	case schemas.OpenAI,
+		schemas.Azure,
+		schemas.Cerebras,
+		schemas.Groq,
+		schemas.Nebius,
+		schemas.Ollama,
+		schemas.OpenRouter,
+		schemas.Parasail,
+		schemas.Perplexity,
+		schemas.SGL,
+		schemas.VLLM,
+		schemas.XAI:
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveProviderBaseType(account schemas.Account, provider schemas.ModelProvider) schemas.ModelProvider {
+	config, err := account.GetConfigForProvider(provider)
+	if err != nil || config == nil || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return provider
+	}
+	return config.CustomProviderConfig.BaseProviderType
+}
+
+func cloneExtraParamsIfPreserved(params map[string]interface{}, preserve bool) map[string]interface{} {
+	if !preserve || len(params) == 0 {
+		return nil
+	}
+	return cloneExtraParamsMap(params)
+}
+
+func cloneExtraParamsMap(params map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		cloned[key] = cloneExtraParamsAny(value)
+	}
+	return cloned
+}
+
+func cloneExtraParamsAny(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneExtraParamsMap(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneExtraParamsAny(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest

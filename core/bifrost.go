@@ -3921,74 +3921,151 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 
 	// Create a new request with the fallback provider and model
 	fallbackReq := *req
+	sourceProvider, _, _ := req.GetRequestFields()
+	preserveExtraParams := bifrost.shouldPreserveExtraParamsForFallback(sourceProvider, fallback.Provider)
+	setFallbackTarget := func(provider *schemas.ModelProvider, model *string) {
+		*provider = fallback.Provider
+		*model = fallback.Model
+	}
 
 	if req.TextCompletionRequest != nil {
 		tmp := *req.TextCompletionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.TextCompletionRequest = &tmp
 	}
 
 	if req.ChatRequest != nil {
 		tmp := *req.ChatRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.ChatRequest = &tmp
 	}
 
 	if req.ResponsesRequest != nil {
 		tmp := *req.ResponsesRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.ResponsesRequest = &tmp
 	}
 
 	if req.CountTokensRequest != nil {
 		tmp := *req.CountTokensRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.EmbeddingRequest = &tmp
 	}
 	if req.RerankRequest != nil {
 		tmp := *req.RerankRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.RerankRequest = &tmp
 	}
 
 	if req.SpeechRequest != nil {
 		tmp := *req.SpeechRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.SpeechRequest = &tmp
 	}
 
 	if req.TranscriptionRequest != nil {
 		tmp := *req.TranscriptionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.TranscriptionRequest = &tmp
 	}
 	if req.ImageGenerationRequest != nil {
 		tmp := *req.ImageGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.ImageGenerationRequest = &tmp
+	}
+	if req.ImageEditRequest != nil {
+		tmp := *req.ImageEditRequest
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
+		fallbackReq.ImageEditRequest = &tmp
+	}
+	if req.ImageVariationRequest != nil {
+		tmp := *req.ImageVariationRequest
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
+		fallbackReq.ImageVariationRequest = &tmp
 	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
+		setFallbackTarget(&tmp.Provider, &tmp.Model)
+		if tmp.Params != nil {
+			paramsCopy := *tmp.Params
+			paramsCopy.ExtraParams = cloneExtraParamsIfPreserved(paramsCopy.ExtraParams, preserveExtraParams)
+			tmp.Params = &paramsCopy
+		}
 		fallbackReq.VideoGenerationRequest = &tmp
 	}
 	return &fallbackReq
+}
+
+func (bifrost *Bifrost) shouldPreserveExtraParamsForFallback(sourceProvider, fallbackProvider schemas.ModelProvider) bool {
+	sourceBase := resolveProviderBaseType(bifrost.account, sourceProvider)
+	fallbackBase := resolveProviderBaseType(bifrost.account, fallbackProvider)
+
+	if sourceBase == fallbackBase {
+		return true
+	}
+
+	return isOpenAICompatiblePassthroughProvider(sourceBase) && isOpenAICompatiblePassthroughProvider(fallbackBase)
 }
 
 // shouldContinueWithFallbacks processes errors from fallback attempts

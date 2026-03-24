@@ -1171,3 +1171,150 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 	})
 }
 
+func TestPrepareFallbackRequest_ExtraParamsCompatibility(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.AddProvider(schemas.Anthropic, 3, 500)
+	account.AddProvider(schemas.VLLM, 5, 1000)
+	customOpenAIProvider := schemas.ModelProvider("openai-custom")
+	account.AddProvider(customOpenAIProvider, 5, 1000)
+	account.configs[customOpenAIProvider].CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.OpenAI,
+	}
+
+	ctx := context.Background()
+	b, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	extraParams := map[string]interface{}{
+		"guided_json": map[string]interface{}{"type": "object"},
+		"min_tokens":  10,
+	}
+
+	t.Run("preserves extra params for openai-compatible fallback", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4",
+				Params: &schemas.ChatParameters{
+					ExtraParams: extraParams,
+				},
+			},
+		}
+
+		fallbackReq := b.prepareFallbackRequest(req, schemas.Fallback{
+			Provider: schemas.VLLM,
+			Model:    "meta-llama/Llama-3-8b",
+		})
+		if fallbackReq == nil {
+			t.Fatal("prepareFallbackRequest returned nil")
+		}
+		if fallbackReq.ChatRequest.Params == nil {
+			t.Fatal("fallback chat params should not be nil")
+		}
+		if fallbackReq.ChatRequest.Params.ExtraParams == nil {
+			t.Fatal("fallback chat extra params should be preserved")
+		}
+		if fallbackReq.ChatRequest.Params.ExtraParams["min_tokens"] != 10 {
+			t.Fatalf("expected preserved extra params, got %v", fallbackReq.ChatRequest.Params.ExtraParams)
+		}
+
+		fallbackGuidedJSON, ok := fallbackReq.ChatRequest.Params.ExtraParams["guided_json"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected guided_json map, got %T", fallbackReq.ChatRequest.Params.ExtraParams["guided_json"])
+		}
+		fallbackGuidedJSON["type"] = "array"
+		if originalGuidedJSON, ok := req.ChatRequest.Params.ExtraParams["guided_json"].(map[string]interface{}); !ok || originalGuidedJSON["type"] != "object" {
+			t.Fatalf("original extra params should remain isolated, got %v", req.ChatRequest.Params.ExtraParams["guided_json"])
+		}
+	})
+
+	t.Run("preserves extra params for custom providers with openai base", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: customOpenAIProvider,
+				Model:    "gpt-4o-mini",
+				Params: &schemas.ResponsesParameters{
+					ExtraParams: extraParams,
+				},
+			},
+		}
+
+		fallbackReq := b.prepareFallbackRequest(req, schemas.Fallback{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4.1-mini",
+		})
+		if fallbackReq == nil {
+			t.Fatal("prepareFallbackRequest returned nil")
+		}
+		if fallbackReq.ResponsesRequest.Params == nil || fallbackReq.ResponsesRequest.Params.ExtraParams == nil {
+			t.Fatal("fallback responses extra params should be preserved")
+		}
+		if fallbackReq.ResponsesRequest.Params.ExtraParams["min_tokens"] != 10 {
+			t.Fatalf("expected preserved extra params, got %v", fallbackReq.ResponsesRequest.Params.ExtraParams)
+		}
+	})
+
+	t.Run("strips extra params for incompatible fallback", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.OpenAI,
+				Model:    "text-embedding-3-small",
+				Params: &schemas.EmbeddingParameters{
+					ExtraParams: extraParams,
+				},
+			},
+		}
+
+		fallbackReq := b.prepareFallbackRequest(req, schemas.Fallback{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-haiku",
+		})
+		if fallbackReq == nil {
+			t.Fatal("prepareFallbackRequest returned nil")
+		}
+		if fallbackReq.EmbeddingRequest.Params == nil {
+			t.Fatal("fallback embedding params should not be nil")
+		}
+		if fallbackReq.EmbeddingRequest.Params.ExtraParams != nil {
+			t.Fatalf("expected incompatible fallback to strip extra params, got %v", fallbackReq.EmbeddingRequest.Params.ExtraParams)
+		}
+		if req.EmbeddingRequest.Params.ExtraParams == nil {
+			t.Fatal("original embedding request should not be mutated")
+		}
+	})
+
+	t.Run("preserves video generation extra params for openai-compatible fallback", func(t *testing.T) {
+		req := &schemas.BifrostRequest{
+			VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+				Provider: schemas.OpenAI,
+				Model:    "sora-2",
+				Input: &schemas.VideoGenerationInput{
+					Prompt: "generate a city flythrough",
+				},
+				Params: &schemas.VideoGenerationParameters{
+					ExtraParams: extraParams,
+				},
+			},
+		}
+
+		fallbackReq := b.prepareFallbackRequest(req, schemas.Fallback{
+			Provider: schemas.VLLM,
+			Model:    "sora-compatible",
+		})
+		if fallbackReq == nil {
+			t.Fatal("prepareFallbackRequest returned nil")
+		}
+		if fallbackReq.VideoGenerationRequest.Params == nil || fallbackReq.VideoGenerationRequest.Params.ExtraParams == nil {
+			t.Fatal("video generation extra params should be preserved for compatible fallback")
+		}
+		if fallbackReq.VideoGenerationRequest.Params.ExtraParams["min_tokens"] != 10 {
+			t.Fatalf("expected preserved video extra params, got %v", fallbackReq.VideoGenerationRequest.Params.ExtraParams)
+		}
+	})
+}

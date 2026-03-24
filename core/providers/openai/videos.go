@@ -71,7 +71,8 @@ func ToOpenAIVideoRemixRequest(bifrostReq *schemas.BifrostVideoRemixRequest) (*O
 	}
 
 	req := &OpenAIVideoRemixRequest{
-		Prompt: bifrostReq.Input.Prompt,
+		Prompt:      bifrostReq.Input.Prompt,
+		ExtraParams: bifrostReq.ExtraParams,
 	}
 
 	return req, nil
@@ -88,8 +89,9 @@ func ToBifrostVideoRemixRequest(openaiReq *OpenAIVideoRemixRequest) *schemas.Bif
 	}
 
 	return &schemas.BifrostVideoRemixRequest{
-		ID:       openaiReq.ID,
-		Provider: provider,
+		ID:          openaiReq.ID,
+		Provider:    provider,
+		ExtraParams: openaiReq.ExtraParams,
 		Input: &schemas.VideoGenerationInput{
 			Prompt: openaiReq.Prompt,
 		},
