@@ -328,6 +328,10 @@ func (f *HTTPClientFactory) createHTTPClient(purpose ClientPurpose) *http.Client
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    false,
 		DisableKeepAlives:     false,
+		// Disable HTTP/2 — these clients are used for auxiliary purposes (proxy/SCIM/API)
+		// where HTTP/1.1 is sufficient. Without this, Go's http2 package auto-registers
+		// h2 via TLSNextProto in init(), causing unintended HTTP/2 connections.
+		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 
 	// Configure proxy if enabled for this purpose

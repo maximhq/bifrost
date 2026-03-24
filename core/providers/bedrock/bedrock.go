@@ -87,6 +87,14 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		ForceAttemptHTTP2:     config.NetworkConfig.EnforceHTTP2,
 	}
 
+	// Disable HTTP/2 auto-negotiation when not explicitly enforced.
+	// ForceAttemptHTTP2=false alone does NOT prevent HTTP/2 — Go's http2 package
+	// auto-registers h2 via TLSNextProto in init(). Setting TLSNextProto to an
+	// empty map prevents ALPN negotiation from upgrading connections to h2.
+	if !config.NetworkConfig.EnforceHTTP2 {
+		transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	}
+
 	// Apply TLS settings from NetworkConfig
 	if config.NetworkConfig.InsecureSkipVerify || config.NetworkConfig.CACertPEM != "" {
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
