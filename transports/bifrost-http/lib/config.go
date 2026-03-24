@@ -338,7 +338,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	DropExcessRequests:              false,
 	PrometheusLabels:                []string{},
 	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
-	EnableLogging:                   true,
+	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
 	AllowDirectKeys:                 false,
@@ -617,6 +617,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 	if cc.AllowedOrigins == nil {
 		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
+	}
+	if cc.EnableLogging == nil {
+		cc.EnableLogging = new(true)
 	}
 }
 

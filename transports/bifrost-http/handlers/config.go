@@ -308,10 +308,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.InitialPoolSize = payload.ClientConfig.InitialPoolSize
 	}
 
-	if payload.ClientConfig.EnableLogging != currentConfig.EnableLogging {
-		restartReasons = append(restartReasons, "Logging enabled")
+	if payload.ClientConfig.EnableLogging != nil {
+		payloadLogging := *payload.ClientConfig.EnableLogging
+		currentLogging := currentConfig.EnableLogging == nil || *currentConfig.EnableLogging
+		if payloadLogging != currentLogging {
+			restartReasons = append(restartReasons, "Logging enabled")
+		}
+		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
-	updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 
 	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
 		restartReasons = append(restartReasons, "Content logging")
