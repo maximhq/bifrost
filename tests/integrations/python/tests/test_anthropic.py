@@ -2857,7 +2857,7 @@ This document is used to verify that the AI can read and understand text documen
         messages = convert_to_anthropic_messages(SIMPLE_CHAT_MESSAGES)
 
         response = client.messages.create(
-            model=format_provider_model(provider, model),
+            model=model,
             messages=messages,
             max_tokens=100,
         )
@@ -2885,7 +2885,7 @@ This document is used to verify that the AI can read and understand text documen
         messages = convert_to_anthropic_messages(STREAMING_CHAT_MESSAGES)
 
         stream = client.messages.create(
-            model=format_provider_model(provider, model),
+            model=model,
             messages=messages,
             max_tokens=200,
             stream=True,
