@@ -187,17 +187,20 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 						if tableKey.Value.GetValue() != "" {
 							// Full key definition - add to provider
 							keysToAddToProvider = append(keysToAddToProvider, schemas.Key{
-								ID:               tableKey.KeyID,
-								Name:             tableKey.Name,
-								Value:            tableKey.Value,
-								Models:           tableKey.Models,
-								Weight:           getWeight(tableKey.Weight),
-								Enabled:          tableKey.Enabled,
-								UseForBatchAPI:   tableKey.UseForBatchAPI,
-								AzureKeyConfig:   tableKey.AzureKeyConfig,
-								VertexKeyConfig:  tableKey.VertexKeyConfig,
-								BedrockKeyConfig: tableKey.BedrockKeyConfig,
-								ConfigHash:       tableKey.ConfigHash,
+								ID:                 tableKey.KeyID,
+								Name:               tableKey.Name,
+								Value:              tableKey.Value,
+								Models:             tableKey.Models,
+								BlacklistedModels:  tableKey.BlacklistedModels,
+								Weight:             getWeight(tableKey.Weight),
+								Enabled:            tableKey.Enabled,
+								UseForBatchAPI:     tableKey.UseForBatchAPI,
+								AzureKeyConfig:     tableKey.AzureKeyConfig,
+								VertexKeyConfig:    tableKey.VertexKeyConfig,
+								BedrockKeyConfig:   tableKey.BedrockKeyConfig,
+								ReplicateKeyConfig: tableKey.ReplicateKeyConfig,
+								VLLMKeyConfig:      tableKey.VLLMKeyConfig,
+								ConfigHash:         tableKey.ConfigHash,
 							})
 						}
 						// Reference lookups (no Value) are NOT added to provider - they already exist there
@@ -825,13 +828,18 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					BlacklistedModels:  dbKey.BlacklistedModels,
+					Weight:             dbKey.Weight,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -898,13 +906,18 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					BlacklistedModels:  dbKey.BlacklistedModels,
+					Weight:             dbKey.Weight,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -3009,14 +3022,19 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 			if models == nil {
 				models = []string{}
 			}
+			blacklisted := key.BlacklistedModels
+			if blacklisted == nil {
+				blacklisted = []string{}
+			}
 			keys = append(keys, configstoreTables.TableKey{
-				KeyID:      key.ID,
-				Name:       key.Name,
-				Value:      *schemas.NewEnvVar(""),
-				Models:     models,
-				Weight:     bifrost.Ptr(key.Weight),
-				Provider:   string(providerKey),
-				ConfigHash: key.ConfigHash,
+				KeyID:             key.ID,
+				Name:              key.Name,
+				Value:             *schemas.NewEnvVar(""),
+				Models:            models,
+				BlacklistedModels: blacklisted,
+				Weight:            bifrost.Ptr(key.Weight),
+				Provider:          string(providerKey),
+				ConfigHash:        key.ConfigHash,
 			})
 		}
 	}

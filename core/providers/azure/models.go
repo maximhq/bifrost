@@ -3,6 +3,7 @@ package azure
 import (
 	"slices"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -58,7 +59,7 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -116,6 +117,10 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 			modelID = matchedAllowedModel
 		}
 
+		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, model.ID, modelID, deploymentAlias, matchedAllowedModel) {
+			continue
+		}
+
 		modelEntry := schemas.Model{
 			ID:      string(schemas.Azure) + "/" + modelID,
 			Created: schemas.Ptr(model.CreatedAt),
@@ -142,6 +147,9 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
 				continue
 			}
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, alias) {
+				continue
+			}
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 				ID:         string(schemas.Azure) + "/" + alias,
 				Name:       schemas.Ptr(alias),
@@ -154,6 +162,9 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(schemas.Azure) + "/" + allowedModel,

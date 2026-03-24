@@ -116,7 +116,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Create final response
-	response := mistralResponse.ToBifrostListModelsResponse(key.Models)
+	response := mistralResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 

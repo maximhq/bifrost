@@ -489,7 +489,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
-			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
@@ -770,6 +770,17 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	ctx.SetBodyString(params.Data)
 }
 
+// keyAllowsModelForList reports whether a provider key permits model for catalog listing.
+func keyAllowsModelForList(key schemas.Key, model string) bool {
+	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+		return false
+	}
+	if len(key.Models) > 0 {
+		return slices.Contains(key.Models, model)
+	}
+	return true
+}
+
 // filterModelsByKeys filters models based on key-level model restrictions
 func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
 	// Get provider config to access keys
@@ -778,42 +789,28 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
 		return models
 	}
-	// Build a set of allowed models from the specified keys
-	// Track whether we have any unrestricted keys (which grant access to all models)
-	// and whether we have any restricted keys (which limit to specific models)
-	allowedModels := make(map[string]bool)
-	hasRestrictedKey := false
-	hasUnrestrictedKey := false
+	keysByID := make(map[string]schemas.Key, len(config.Keys))
+	for i := range config.Keys {
+		k := config.Keys[i]
+		keysByID[k.ID] = k
+	}
+	matchedKeys := make([]schemas.Key, 0, len(keyIDs))
 	for _, keyID := range keyIDs {
-		for _, key := range config.Keys {
-			if key.ID == keyID {
-				if len(key.Models) > 0 {
-					// Key has model restrictions - add them to allowedModels
-					hasRestrictedKey = true
-					for _, model := range key.Models {
-						allowedModels[model] = true
-					}
-				} else {
-					// Key has no model restrictions - grants access to all models
-					hasUnrestrictedKey = true
-				}
-				break
-			}
+		if key, ok := keysByID[keyID]; ok {
+			matchedKeys = append(matchedKeys, key)
 		}
 	}
-	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
-	if hasUnrestrictedKey {
+	// Unknown key IDs (or empty keyIDs): do not filter
+	if len(matchedKeys) == 0 {
 		return models
 	}
-	// If no keys have model restrictions (e.g., unknown key IDs), return all models
-	if !hasRestrictedKey {
-		return models
-	}
-	// Filter models based on restrictions from restricted keys only
-	filtered := []string{}
+	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if allowedModels[model] {
-			filtered = append(filtered, model)
+		for _, key := range matchedKeys {
+			if keyAllowsModelForList(key, model) {
+				filtered = append(filtered, model)
+				break
+			}
 		}
 	}
 	return filtered

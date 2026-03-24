@@ -187,6 +187,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 
 	// Filter by key.Models
 	allowedModels := key.Models
+	blacklistedModels := key.BlacklistedModels
 	providerPrefix := string(schemas.OpenRouter) + "/"
 
 	if !request.Unfiltered && len(allowedModels) > 0 {
@@ -197,6 +198,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			if !(slices.Contains(allowedModels, rawID) || slices.Contains(allowedModels, providerPrefix+rawID)) {
 				continue
 			}
+			if slices.Contains(blacklistedModels, rawID) || slices.Contains(blacklistedModels, providerPrefix+rawID) {
+				continue
+			}
 			openrouterResponse.Data[i].ID = providerPrefix + rawID
 			filteredData = append(filteredData, openrouterResponse.Data[i])
 			includedModels[rawID] = true
@@ -204,6 +208,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		// Backfill allowed models not in the API response
 		for _, allowedModel := range allowedModels {
 			rawID := strings.TrimPrefix(allowedModel, providerPrefix)
+			if slices.Contains(blacklistedModels, rawID) || slices.Contains(blacklistedModels, providerPrefix+rawID) {
+				continue
+			}
 			if !includedModels[rawID] {
 				filteredData = append(filteredData, schemas.Model{
 					ID:   providerPrefix + rawID,

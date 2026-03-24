@@ -296,12 +296,17 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if models == nil {
 			models = []string{} // Ensure models is never nil in JSON response
 		}
+		blacklistedModels := key.BlacklistedModels
+		if blacklistedModels == nil {
+			blacklistedModels = []string{} // Match models: empty JSON array, not null
+		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:         key.ID,
-			Name:       key.Name,
-			Models:     models,
-			Weight:     key.Weight,
-			ConfigHash: key.ConfigHash,
+			ID:                key.ID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklistedModels,
+			Weight:            key.Weight,
+			ConfigHash:        key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -506,6 +511,18 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+	// Hash BlacklistedModels (key-level deny list)
+	if len(key.BlacklistedModels) > 0 {
+		sortedBlacklistedModels := make([]string, len(key.BlacklistedModels))
+		copy(sortedBlacklistedModels, key.BlacklistedModels)
+		sort.Strings(sortedBlacklistedModels)
+		data, err := sonic.Marshal(sortedBlacklistedModels)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("blacklistedModels:"))
 		hash.Write(data)
 	}
 	// Hash Weight

@@ -320,6 +320,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4798,6 +4801,41 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddKeyBlacklistedModelsJSONColumn adds blacklisted_models_json to config_keys
+// for per-key model deny lists (JSON array of model ids, default []).
+func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_key_blacklisted_models_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				if err := mg.AddColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
+					return fmt.Errorf("failed to add blacklisted_models_json column: %w", err)
+				}
+			}
+			if err := tx.Exec("UPDATE config_keys SET blacklisted_models_json = '[]' WHERE blacklisted_models_json IS NULL OR blacklisted_models_json = ''").Error; err != nil {
+				return fmt.Errorf("failed to backfill blacklisted_models_json: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				if err := mg.DropColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
+					return fmt.Errorf("failed to drop blacklisted_models_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
 	}
 	return nil
 }

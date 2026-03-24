@@ -6096,10 +6096,14 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		// Model filtering logic:
 		// - If model is nil or empty → include all keys (no model filter)
 		// - If model is specified:
-		//   - If key.Models is empty → include key (supports all models)
+		//   - If model is in key.BlacklistedModels → exclude (wins over Models allow list)
+		//   - If key.Models is empty → include key (supports all non-blacklisted models)
 		//   - If key.Models is non-empty → only include if model is in list
-		if model != nil && *model != "" && len(k.Models) > 0 {
-			if !slices.Contains(k.Models, *model) {
+		if model != nil && *model != "" {
+			if len(k.BlacklistedModels) > 0 && slices.Contains(k.BlacklistedModels, *model) {
+				continue
+			}
+			if len(k.Models) > 0 && !slices.Contains(k.Models, *model) {
 				continue
 			}
 		}
@@ -6167,7 +6171,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		keys = batchEnabledKeys
 	}
 
-	// filter out keys which don't support the model, if the key has no models, it is supported for all models
+	// Filter out keys that don't support the model: blacklisted_models wins over models allow list;
+	// if the key has no models list, it supports all models except those blacklisted.
 	var supportedKeys []schemas.Key
 
 	// Skip model check conditions
@@ -6192,7 +6197,12 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				continue
 			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
-			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
+			var modelSupported bool
+			if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+				modelSupported = false
+			} else {
+				modelSupported = (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
+			}
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

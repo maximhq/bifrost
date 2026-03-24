@@ -25,8 +25,8 @@ func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
 
 // CohereRerankResult represents a single result from Cohere rerank.
 type CohereRerankResult struct {
-	Index          int                    `json:"index"`
-	RelevanceScore float64                `json:"relevance_score"`
+	Index          int             `json:"index"`
+	RelevanceScore float64         `json:"relevance_score"`
 	Document       json.RawMessage `json:"document,omitempty"`
 }
 
@@ -44,7 +44,7 @@ type CohereRerankMeta struct {
 	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
 }
 
-func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -56,6 +56,9 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 	includedModels := make(map[string]bool)
 	for _, model := range response.Models {
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
+			continue
+		}
+		if !unfiltered && slices.Contains(blacklistedModels, model.Name) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -70,6 +73,9 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

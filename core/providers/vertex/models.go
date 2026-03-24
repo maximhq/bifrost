@@ -114,7 +114,7 @@ func findDeploymentMatch(deployments map[string]string, customModelID string) (d
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -176,6 +176,10 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 			modelID := customModelID
 
+			if !unfiltered && (slices.Contains(blacklistedModels, customModelID) || slices.Contains(blacklistedModels, deploymentAlias)) {
+				continue
+			}
+
 			modelEntry := schemas.Model{
 				ID:          string(schemas.Vertex) + "/" + modelID,
 				Name:        schemas.Ptr(model.DisplayName),
@@ -204,6 +208,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
 				continue
 			}
+			if slices.Contains(blacklistedModels, alias) {
+				continue
+			}
 
 			modelName := formatDeploymentName(alias)
 			modelEntry := schemas.Model{
@@ -225,6 +232,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			if addedModelIDs[modelID] {
 				continue
 			}
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 
 			modelName := formatDeploymentName(allowedModel)
 			modelEntry := schemas.Model{
@@ -244,7 +254,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 // ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
 // This is for foundation models from the Model Garden (publishers.models.list endpoint).
-func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -265,6 +275,9 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 
 		// Filter based on allowedModels if specified
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelID) {
+			continue
+		}
+		if !unfiltered && slices.Contains(blacklistedModels, modelID) {
 			continue
 		}
 

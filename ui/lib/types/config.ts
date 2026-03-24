@@ -118,6 +118,7 @@ export interface ModelProviderKey {
 	name: string;
 	value?: EnvVar;
 	models?: string[];
+	blacklisted_models?: string[];
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
@@ -141,6 +142,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 		from_env: false,
 	},
 	models: [],
+	blacklisted_models: [],
 	weight: 1.0,
 	enabled: true,
 };

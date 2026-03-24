@@ -1,1 +1,2 @@
-- fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an MCP gateway.
+- fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an 
+- feat: Provider keys support `blacklisted_models` in config and HTTP provider APIs; excluded models are omitted from filtered list-models and are not eligible for key selection (denylist wins over the `models` allow list).

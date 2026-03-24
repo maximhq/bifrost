@@ -187,13 +187,14 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				)}
 			{!isVLLM && (
+				<>
 				<FormField
 					control={control}
 					name={`key.models`}
 					render={({ field }) => (
 						<FormItem>
 							<div className="flex items-center gap-2">
-								<FormLabel>Models</FormLabel>
+								<FormLabel>Allowed Models</FormLabel>
 								<TooltipProvider>
 									<Tooltip>
 										<TooltipTrigger asChild>
@@ -214,6 +215,37 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						</FormItem>
 					)}
 				/>
+				<FormField
+				control={control}
+				name={`key.blacklisted_models`}
+				render={({ field }) => (
+					<FormItem data-testid="apikey-blacklisted-models-field">
+						<div className="flex items-center gap-2">
+							<FormLabel>Blacklisted models</FormLabel>
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span>
+											<Info className="text-muted-foreground h-3 w-3" />
+										</span>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-sm">
+										<p>
+											Comma-separated list of models this key must never use. If a model appears in both Allowed Models and here, the blacklist wins. Leave
+											empty if none.
+										</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
+						<FormControl>
+							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			</>
 			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (

@@ -171,6 +171,7 @@ export const modelProviderKeySchema = z
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
 		models: z.array(z.string()).default([]).optional(),
+		blacklisted_models: z.array(z.string()).default([]).optional(),
 		weight: z.union([
 			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
 			z

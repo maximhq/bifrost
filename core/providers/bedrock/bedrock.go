@@ -81,7 +81,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
 		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
 		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:  10 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: requestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     config.NetworkConfig.EnforceHTTP2,
@@ -732,7 +732,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Convert to Bifrost response
-	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, config.Deployments, request.Unfiltered)
+	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, config.Deployments, key.BlacklistedModels, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
 	}

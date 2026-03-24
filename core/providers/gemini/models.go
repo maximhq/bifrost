@@ -17,7 +17,7 @@ func toGeminiModelResourceName(modelID string) string {
 	return "models/" + modelID
 }
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -35,6 +35,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
 			continue
 		}
+		if !unfiltered && slices.Contains(blacklistedModels, modelName) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:               string(providerKey) + "/" + modelName,
 			Name:             schemas.Ptr(model.DisplayName),
@@ -50,6 +53,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
