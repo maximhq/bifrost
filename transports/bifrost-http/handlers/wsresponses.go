@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"strings"
-	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -15,6 +14,12 @@ import (
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
 )
+
+// wsWriter abstracts a WebSocket write target. Both *ws.Conn (pre-session)
+// and *bfws.Session (post-session, mutex-protected) satisfy this interface.
+type wsWriter interface {
+	WriteMessage(messageType int, data []byte) error
+}
 
 // WSResponsesHandler handles WebSocket connections for the Responses API WebSocket Mode.
 // Clients connect via `GET /v1/responses` with a WS upgrade and send `response.create` events.
@@ -132,15 +137,15 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 			Type string `json:"type"`
 		}
 		if err := sonic.Unmarshal(message, &envelope); err != nil {
-			writeWSError(conn, 400, "invalid_request_error", "failed to parse event JSON")
+			writeWSError(session, 400, "invalid_request_error", "failed to parse event JSON")
 			continue
 		}
 
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
-			h.handleResponseCreate(conn, session, auth, message)
+			h.handleResponseCreate(session, auth, message)
 		default:
-			writeWSError(conn, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
+			writeWSError(session, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
 		}
 	}
 }
@@ -148,16 +153,16 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 // handleResponseCreate processes a response.create event.
 // Strategy: try native WS upstream for providers that support it, otherwise use HTTP bridge.
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
-func (h *WSResponsesHandler) handleResponseCreate(conn *ws.Conn, session *bfws.Session, auth *authHeaders, message []byte) {
+func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte) {
 	var event schemas.WebSocketResponsesEvent
 	if err := sonic.Unmarshal(message, &event); err != nil {
-		writeWSError(conn, 400, "invalid_request_error", "failed to parse response.create event")
+		writeWSError(session, 400, "invalid_request_error", "failed to parse response.create event")
 		return
 	}
 
 	bifrostReq, err := h.convertEventToRequest(&event)
 	if err != nil {
-		writeWSError(conn, 400, "invalid_request_error", err.Error())
+		writeWSError(session, 400, "invalid_request_error", err.Error())
 		return
 	}
 
@@ -172,25 +177,24 @@ func (h *WSResponsesHandler) handleResponseCreate(conn *ws.Conn, session *bfws.S
 
 	bifrostCtx, cancel := h.createBifrostContext(auth)
 	if bifrostCtx == nil {
-		writeWSError(conn, 500, "server_error", "failed to create request context")
+		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
 	}
 
 	// Try native WS upstream first
-	if h.tryNativeWSUpstream(conn, session, bifrostCtx, bifrostReq, message) {
+	if h.tryNativeWSUpstream(session, bifrostCtx, bifrostReq, message) {
 		cancel()
 		return
 	}
 
 	// Fall back to HTTP bridge
-	h.executeHTTPBridge(conn, session, bifrostCtx, cancel, bifrostReq)
+	h.executeHTTPBridge(session, bifrostCtx, cancel, bifrostReq)
 }
 
 // tryNativeWSUpstream attempts to forward the event to a native WS upstream connection.
 // Returns true if the event was handled (successfully or with error sent to client).
 // Returns false if the provider doesn't support WS and we should fall back to HTTP bridge.
 func (h *WSResponsesHandler) tryNativeWSUpstream(
-	conn *ws.Conn,
 	session *bfws.Session,
 	ctx *schemas.BifrostContext,
 	req *schemas.BifrostResponsesRequest,
@@ -247,14 +251,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 	hooks, preErr := h.client.RunStreamPreHooks(ctx, bifrostReq)
 	if preErr != nil {
-		writeWSBifrostError(conn, preErr)
+		writeWSBifrostError(session, preErr)
 		return true
 	}
 	defer hooks.Cleanup()
 
 	// If a plugin short-circuited with a cached response, write it and skip upstream
 	if hooks.ShortCircuitResponse != nil {
-		writeWSShortCircuitResponse(conn, session, hooks.ShortCircuitResponse)
+		writeWSShortCircuitResponse(session, hooks.ShortCircuitResponse)
 		return true
 	}
 
@@ -281,7 +285,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			if !forwardedAny {
 				return false
 			}
-			writeWSError(conn, 502, "upstream_connection_error", "upstream websocket stream interrupted")
+			writeWSError(session, 502, "upstream_connection_error", "upstream websocket stream interrupted")
 			return true
 		}
 
@@ -303,12 +307,12 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			if postErr != nil {
 				h.pool.Discard(upstream)
 				session.SetUpstream(nil)
-				writeWSBifrostError(conn, postErr)
+				writeWSBifrostError(session, postErr)
 				return true
 			}
 		}
 
-		if writeErr := conn.WriteMessage(msgType, data); writeErr != nil {
+		if writeErr := session.WriteMessage(msgType, data); writeErr != nil {
 			h.pool.Discard(upstream)
 			session.SetUpstream(nil)
 			return true
@@ -323,13 +327,15 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 }
 
 // writeWSShortCircuitResponse writes a short-circuited plugin response as WS events.
-func writeWSShortCircuitResponse(conn *ws.Conn, session *bfws.Session, resp *schemas.BifrostResponse) {
+func writeWSShortCircuitResponse(session *bfws.Session, resp *schemas.BifrostResponse) {
 	if resp.ResponsesResponse != nil {
 		data, err := sonic.Marshal(resp.ResponsesResponse)
 		if err != nil {
 			return
 		}
-		conn.WriteMessage(ws.TextMessage, data)
+		if err := session.WriteMessage(ws.TextMessage, data); err != nil {
+			return
+		}
 		if resp.ResponsesResponse.ID != nil && *resp.ResponsesResponse.ID != "" {
 			session.SetLastResponseID(*resp.ResponsesResponse.ID)
 		}
@@ -338,7 +344,7 @@ func writeWSShortCircuitResponse(conn *ws.Conn, session *bfws.Session, resp *sch
 		if err != nil {
 			return
 		}
-		conn.WriteMessage(ws.TextMessage, data)
+		session.WriteMessage(ws.TextMessage, data)
 	}
 }
 
@@ -548,7 +554,6 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 
 // executeHTTPBridge runs the response through the existing streaming inference pipeline.
 func (h *WSResponsesHandler) executeHTTPBridge(
-	conn *ws.Conn,
 	session *bfws.Session,
 	ctx *schemas.BifrostContext,
 	cancel context.CancelFunc,
@@ -558,12 +563,11 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 
 	stream, bifrostErr := h.client.ResponsesStreamRequest(ctx, req)
 	if bifrostErr != nil {
-		writeWSBifrostError(conn, bifrostErr)
+		writeWSBifrostError(session, bifrostErr)
 		return
 	}
 
 	// Relay streaming chunks as WS messages
-	var writeMu sync.Mutex
 	for chunk := range stream {
 		if chunk == nil {
 			continue
@@ -575,12 +579,7 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 			continue
 		}
 
-		writeMu.Lock()
-		writeErr := conn.WriteMessage(ws.TextMessage, chunkJSON)
-		writeMu.Unlock()
-
-		if writeErr != nil {
-			cancel()
+		if writeErr := session.WriteMessage(ws.TextMessage, chunkJSON); writeErr != nil {
 			return
 		}
 
@@ -594,8 +593,9 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 	}
 }
 
-// writeWSError sends a JSON error event to the client WebSocket.
-func writeWSError(conn *ws.Conn, status int, code, message string) {
+// writeWSError sends a JSON error event to a WebSocket write target.
+// Accepts either a raw *ws.Conn (pre-session) or a *bfws.Session (mutex-protected).
+func writeWSError(w wsWriter, status int, code, message string) {
 	event := schemas.WebSocketErrorEvent{
 		Type:   schemas.WSEventError,
 		Status: status,
@@ -608,11 +608,11 @@ func writeWSError(conn *ws.Conn, status int, code, message string) {
 	if err != nil {
 		return
 	}
-	conn.WriteMessage(ws.TextMessage, data)
+	w.WriteMessage(ws.TextMessage, data)
 }
 
 // writeWSBifrostError converts a BifrostError to a WS error event.
-func writeWSBifrostError(conn *ws.Conn, bifrostErr *schemas.BifrostError) {
+func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
 	status := 500
 	if bifrostErr.StatusCode != nil && *bifrostErr.StatusCode > 0 {
 		status = *bifrostErr.StatusCode
@@ -629,7 +629,7 @@ func writeWSBifrostError(conn *ws.Conn, bifrostErr *schemas.BifrostError) {
 			msg = bifrostErr.Error.Message
 		}
 	}
-	writeWSError(conn, status, code, msg)
+	writeWSError(w, status, code, msg)
 }
 
 // wsResponsesKnownFields lists the fields explicitly handled by WebSocketResponsesEvent.

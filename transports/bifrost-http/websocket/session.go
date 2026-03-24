@@ -9,7 +9,8 @@ import (
 // Session tracks the binding between a client WebSocket connection and its upstream state.
 // For Responses WS mode, it tracks previous_response_id → upstream connection pinning.
 type Session struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
+	writeMu sync.Mutex // serializes all WriteMessage calls to clientConn
 
 	// Client connection
 	clientConn *ws.Conn
@@ -34,6 +35,15 @@ func NewSession(clientConn *ws.Conn) *Session {
 // ClientConn returns the client's WebSocket connection.
 func (s *Session) ClientConn() *ws.Conn {
 	return s.clientConn
+}
+
+// WriteMessage sends a message to the client WebSocket connection.
+// It serializes concurrent writes via writeMu to prevent panics from
+// simultaneous goroutine writes (e.g., heartbeat vs streaming relay).
+func (s *Session) WriteMessage(messageType int, data []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.clientConn.WriteMessage(messageType, data)
 }
 
 // SetUpstream pins an upstream connection to this session.
