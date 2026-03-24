@@ -105,6 +105,8 @@ type Log struct {
 	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
 	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
 	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
+	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
+	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
 	VideoGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
 	SpeechOutput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
 	TranscriptionOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
@@ -157,6 +159,8 @@ type Log struct {
 	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
 	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
 	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	ImageEditInputParsed        *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
+	ImageVariationInputParsed   *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
@@ -286,6 +290,22 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.ImageGenerationInput = string(data)
+		}
+	}
+
+	if l.ImageEditInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageEditInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageEditInput = string(data)
+		}
+	}
+
+	if l.ImageVariationInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageVariationInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageVariationInput = string(data)
 		}
 	}
 
@@ -588,6 +608,18 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationInputParsed = nil
+		}
+	}
+
+	if l.ImageEditInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageEditInput), &l.ImageEditInputParsed); err != nil {
+			l.ImageEditInputParsed = nil
+		}
+	}
+
+	if l.ImageVariationInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageVariationInput), &l.ImageVariationInputParsed); err != nil {
+			l.ImageVariationInputParsed = nil
 		}
 	}
 
@@ -1001,6 +1033,11 @@ func (l *Log) BuildContentSummary() string {
 	// Add image generation input prompt
 	if l.ImageGenerationInputParsed != nil && l.ImageGenerationInputParsed.Prompt != "" {
 		parts = append(parts, l.ImageGenerationInputParsed.Prompt)
+	}
+
+	// Add image edit input prompt
+	if l.ImageEditInputParsed != nil && l.ImageEditInputParsed.Prompt != "" {
+		parts = append(parts, l.ImageEditInputParsed.Prompt)
 	}
 
 	// Add video generation input prompt
