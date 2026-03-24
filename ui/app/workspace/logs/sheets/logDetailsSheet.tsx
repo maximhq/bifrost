@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import {
 	AlertDialog,
@@ -28,7 +29,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
@@ -55,6 +56,9 @@ interface LogDetailSheetProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	handleDelete: (log: LogEntry) => void;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 // Helper to detect passthrough operations
@@ -77,7 +81,7 @@ const isContainerOperation = (object: string) => {
 	return containerTypes.includes(object?.toLowerCase());
 };
 
-export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
+export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: LogDetailSheetProps) {
 	const [fetchLog, { data: fullLog, isFetching }] = useLazyGetLogByIdQuery();
 
 	useEffect(() => {
@@ -85,6 +89,10 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 			fetchLog(log.id);
 		}
 	}, [open, log?.id, fetchLog]);
+
+	// Keyboard navigation: arrow up/down to navigate between logs
+	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
+	useHotkeys("down", () => onNavigate?.("next"), { enabled: open && hasNext, preventDefault: true });
 
 	if (!log) return null;
 
@@ -126,6 +134,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
+						<SheetTitle className="sr-only">Loading log details</SheetTitle>
 						<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
 					</div>
 				) : (
@@ -167,10 +176,18 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							)}
 						</SheetTitle>
 					</div>
+					<div className="flex items-center">
+						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="logdetails-prev-button">
+							<ChevronUp className="size-4" />
+						</Button>
+						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="logdetails-next-button">
+							<ChevronDown className="size-4" />
+						</Button>
+					</div>
 					<AlertDialog>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" size="icon">
+								<Button variant="ghost" className="size-8">
 									<MoreVertical className="h-3 w-3" />
 								</Button>
 							</DropdownMenuTrigger>
