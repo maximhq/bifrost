@@ -630,11 +630,8 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputTextDone:
-		if bifrostResp.Text != nil && *bifrostResp.Text != "" {
-			candidate.Content.Parts = append(candidate.Content.Parts, &Part{
-				Text: *bifrostResp.Text,
-			})
-		}
+		// Text was already streamed via OutputTextDelta chunks, skip to avoid duplication
+		return nil
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryPartDone:
