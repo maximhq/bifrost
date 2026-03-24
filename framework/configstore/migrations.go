@@ -376,6 +376,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -785,9 +791,10 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		ID: "add_enable_litellm_fallbacks_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			// Use raw SQL since the struct field was removed in a later migration.
+			// This column is subsequently dropped by migrationReplaceEnableLiteLLMWithCompatColumns.
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
@@ -795,9 +802,7 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			if err := tx.Exec("ALTER TABLE config_client DROP COLUMN IF EXISTS enable_litellm_fallbacks").Error; err != nil {
 				return err
 			}
 			return nil
@@ -2162,7 +2167,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
 							MaxRequestBodySizeMB:    cc.MaxRequestBodySizeMB,
-							EnableLiteLLMFallbacks:  cc.EnableLiteLLMFallbacks,
 						}
 						hash, err := clientConfig.GenerateClientConfigHash()
 						if err != nil {
@@ -5611,7 +5615,6 @@ func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) er
 						AllowedOrigins:                  cc.AllowedOrigins,
 						AllowedHeaders:                  cc.AllowedHeaders,
 						MaxRequestBodySizeMB:            cc.MaxRequestBodySizeMB,
-						EnableLiteLLMFallbacks:          cc.EnableLiteLLMFallbacks,
 						HideDeletedVirtualKeysInFilters: cc.HideDeletedVirtualKeysInFilters,
 						MCPAgentDepth:                   cc.MCPAgentDepth,
 						MCPToolExecutionTimeout:         cc.MCPToolExecutionTimeout,
@@ -5907,7 +5910,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
 				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
 					return err
-
 				}
 			}
 			return nil
@@ -6063,21 +6065,155 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 					return fmt.Errorf("failed to add whitelisted_routes_json column: %w", err)
 				}
 			}
+
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+
 			if migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
 				if err := migrator.DropColumn(&tables.TableClientConfig{}, "whitelisted_routes_json"); err != nil {
 					return fmt.Errorf("failed to drop whitelisted_routes_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running whitelisted_routes_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationReplaceEnableLiteLLMWithCompatColumns replaces the single enable_litellm_fallbacks
+// boolean with compat feature columns. If enable_litellm_fallbacks was true,
+// only convert_text_to_chat is set to true (preserving the original behavior).
+func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "replace_enable_litellm_with_compat_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			// Add new columns
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_drop_params") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_drop_params"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_convert_params"); err != nil {
+					return err
+				}
+			}
+
+			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
+				return err
+			}
+
+			// Migrate data: if enable_litellm_fallbacks was true, set convert_text_to_chat = true
+			if mig.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
+					return err
+				}
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+			if mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				if err := tx.Exec("UPDATE config_client SET enable_litellm_fallbacks = COALESCE(compat_convert_text_to_chat, FALSE)").Error; err != nil {
+					return err
+				}
+			}
+			for _, col := range []string{
+				"compat_convert_text_to_chat",
+				"compat_convert_chat_to_responses",
+				"compat_should_drop_params",
+				"compat_should_convert_params",
+			} {
+				if mig.HasColumn(&tables.TableClientConfig{}, col) {
+					if err := mig.DropColumn(&tables.TableClientConfig{}, col); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running add_whitelisted_routes_json_column migration: %s", err.Error())
+		return fmt.Errorf("error while running replace_enable_litellm_with_compat_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDefaultCompatShouldConvertParamsFalse ensures existing deployments
+// converge to the new default for compat_should_convert_params. The earlier
+// compat migration may already be marked as applied, so changing its body is not
+// sufficient for installed databases.
+func migrationDefaultCompatShouldConvertParamsFalse(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "default_compat_should_convert_params_false",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				return nil
+			}
+
+			if err := tx.Exec("UPDATE config_client SET compat_should_convert_params = FALSE").Error; err != nil {
+				return err
+			}
+
+			if err := mig.AlterColumn(&tables.TableClientConfig{}, "CompatShouldConvertParams"); err != nil {
+				return fmt.Errorf("failed to alter compat_should_convert_params default: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_convert_params") {
+				return nil
+			}
+
+			switch tx.Dialector.Name() {
+			case "postgres":
+				if err := tx.Exec("ALTER TABLE config_client ALTER COLUMN compat_should_convert_params SET DEFAULT FALSE").Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running default_compat_should_convert_params_false migration: %s", err.Error())
 	}
 	return nil
 }

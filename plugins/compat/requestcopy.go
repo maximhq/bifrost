@@ -1,7 +1,6 @@
 package compat
 
 import (
-	"bytes"
 	"maps"
 	"slices"
 
@@ -15,44 +14,17 @@ func cloneBifrostReq(req *schemas.BifrostRequest) *schemas.BifrostRequest {
 
 	cloned := *req
 
-	if req.TextCompletionRequest != nil {
-		cloned.TextCompletionRequest = cloneTextCompletionRequest(req.TextCompletionRequest)
+	if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
+		cloned.TextCompletionRequest.Params = cloneTextCompletionParameters(req.TextCompletionRequest.Params)
 	}
-	if req.ChatRequest != nil {
-		cloned.ChatRequest = cloneChatRequest(req.ChatRequest)
+	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
+		cloned.ChatRequest.Params = cloneChatParameters(req.ChatRequest.Params)
 	}
-	if req.ResponsesRequest != nil {
-		cloned.ResponsesRequest = cloneResponsesRequest(req.ResponsesRequest)
+	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+		cloned.ResponsesRequest.Params = cloneResponsesParameters(req.ResponsesRequest.Params)
 	}
 
 	return &cloned
-}
-
-func cloneTextCompletionRequest(req *schemas.BifrostTextCompletionRequest) *schemas.BifrostTextCompletionRequest {
-	if req == nil {
-		return nil
-	}
-
-	cloned := *req
-	cloned.Input = cloneTextCompletionInput(req.Input)
-	cloned.Params = cloneTextCompletionParameters(req.Params)
-	cloned.Fallbacks = slices.Clone(req.Fallbacks)
-	cloned.RawRequestBody = bytes.Clone(req.RawRequestBody)
-	return &cloned
-}
-
-func cloneTextCompletionInput(input *schemas.TextCompletionInput) *schemas.TextCompletionInput {
-	if input == nil {
-		return nil
-	}
-	cloned := &schemas.TextCompletionInput{
-		PromptArray: slices.Clone(input.PromptArray),
-	}
-	if input.PromptStr != nil {
-		prompt := *input.PromptStr
-		cloned.PromptStr = &prompt
-	}
-	return cloned
 }
 
 func cloneTextCompletionParameters(params *schemas.TextCompletionParameters) *schemas.TextCompletionParameters {
@@ -74,24 +46,6 @@ func cloneTextCompletionParameters(params *schemas.TextCompletionParameters) *sc
 	if params.ExtraParams != nil {
 		cloned.ExtraParams = cloneAnyMap(params.ExtraParams)
 	}
-	return &cloned
-}
-
-func cloneChatRequest(req *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if req == nil {
-		return nil
-	}
-
-	cloned := *req
-	if req.Input != nil {
-		cloned.Input = make([]schemas.ChatMessage, len(req.Input))
-		for i, message := range req.Input {
-			cloned.Input[i] = schemas.DeepCopyChatMessage(message)
-		}
-	}
-	cloned.Params = cloneChatParameters(req.Params)
-	cloned.Fallbacks = slices.Clone(req.Fallbacks)
-	cloned.RawRequestBody = bytes.Clone(req.RawRequestBody)
 	return &cloned
 }
 
@@ -198,24 +152,6 @@ func cloneChatWebSearchOptions(options *schemas.ChatWebSearchOptions) *schemas.C
 		}
 		cloned.UserLocation = &userLocation
 	}
-	return &cloned
-}
-
-func cloneResponsesRequest(req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
-	if req == nil {
-		return nil
-	}
-
-	cloned := *req
-	if req.Input != nil {
-		cloned.Input = make([]schemas.ResponsesMessage, len(req.Input))
-		for i, message := range req.Input {
-			cloned.Input[i] = schemas.DeepCopyResponsesMessage(message)
-		}
-	}
-	cloned.Params = cloneResponsesParameters(req.Params)
-	cloned.Fallbacks = slices.Clone(req.Fallbacks)
-	cloned.RawRequestBody = bytes.Clone(req.RawRequestBody)
 	return &cloned
 }
 

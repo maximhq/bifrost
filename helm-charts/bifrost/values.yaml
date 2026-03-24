@@ -188,7 +188,11 @@ bifrost:
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
-    enableLitellmFallbacks: false
+    compat:
+      convertTextToChat: false
+      convertChatToResponses: false
+      shouldDropParams: false
+      shouldConvertParams: false
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:

@@ -7,19 +7,19 @@ func applyParameterConversion(req *schemas.BifrostRequest) {
 	if req == nil {
 		return
 	}
-	normalizeDeveloperRoleForChatRequest(req)
+
+	if req.ChatRequest != nil {
+		normalizeDeveloperRoleForChatRequest(req.ChatRequest)
+	}
 }
 
-func normalizeDeveloperRoleForChatRequest(req *schemas.BifrostRequest) {
-	if req.ChatRequest == nil {
+func normalizeDeveloperRoleForChatRequest(req *schemas.BifrostChatRequest) {
+	if req.Provider != schemas.Bedrock && req.Provider != schemas.Vertex && req.Provider != schemas.Gemini {
 		return
 	}
-	if req.ChatRequest.Provider != schemas.Bedrock && req.ChatRequest.Provider != schemas.Vertex && req.ChatRequest.Provider != schemas.Gemini {
-		return
-	}
-	for i := range req.ChatRequest.Input {
-		if req.ChatRequest.Input[i].Role == schemas.ChatMessageRoleDeveloper {
-			req.ChatRequest.Input[i].Role = schemas.ChatMessageRoleSystem
+	for i := range req.Input {
+		if req.Input[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Input[i].Role = schemas.ChatMessageRoleSystem
 		}
 	}
 }

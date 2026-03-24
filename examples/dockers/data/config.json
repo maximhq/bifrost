@@ -27,7 +27,9 @@
       "*"
     ],
     "max_request_body_size_mb": 100,
-    "enable_litellm_fallbacks": false
+    "compat": {
+      "should_convert_params": false
+    }
   },
   "framework": {
     "pricing": {

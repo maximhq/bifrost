@@ -215,13 +215,15 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(6))
 
-	// 7. Compat (if configured in PluginConfigs)
-	compatConfig := s.getPluginConfig(compat.PluginName)
-	if compatConfig != nil && compatConfig.Enabled {
-		s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatConfig.Config, false)
-	} else {
-		s.markPluginDisabled(compat.PluginName)
+	// 7. Compat (if any compat feature is enabled in ClientConfig)
+	cc := s.Config.ClientConfig.Compat
+	compatCfg := &compat.Config{
+		ConvertTextToChat:      cc.ConvertTextToChat,
+		ConvertChatToResponses: cc.ConvertChatToResponses,
+		ShouldDropParams:       cc.ShouldDropParams,
+		ShouldConvertParams:    cc.ShouldConvertParams,
 	}
+	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(7))
 
 	// 8. Maxim (if configured in PluginConfigs)

@@ -8,6 +8,7 @@ package lib
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -440,6 +441,47 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		if keyStr == "x-bf-passthrough-extra-params" {
 			if valueStr := string(value); valueStr == "true" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			return true
+		}
+
+		// Compat header: per-request override of compat plugin settings.
+		// Accepts: "true" (enable all), JSON array of feature names, or ["*"] (enable all).
+		// An empty array [] or absent header means no overrides.
+		if keyStr == "x-bf-compat" {
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertTextToChat)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatConvertChatToResponses)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldDropParams)
+			bifrostCtx.ClearValue(schemas.BifrostContextKeyCompatShouldConvertParams)
+			valueStr := strings.TrimSpace(string(value))
+			if valueStr == "true" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+			} else if strings.HasPrefix(valueStr, "[") {
+				var features []string
+				if err := json.Unmarshal([]byte(valueStr), &features); err == nil {
+					if len(features) == 1 && features[0] == "*" {
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+						bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+					} else {
+						for _, f := range features {
+							switch f {
+							case "convert_text_to_chat":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertTextToChat, true)
+							case "convert_chat_to_responses":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatConvertChatToResponses, true)
+							case "should_drop_params":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldDropParams, true)
+							case "should_convert_params":
+								bifrostCtx.SetValue(schemas.BifrostContextKeyCompatShouldConvertParams, true)
+							}
+						}
+					}
+				}
 			}
 			return true
 		}

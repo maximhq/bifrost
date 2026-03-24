@@ -400,6 +400,7 @@ func (m *MockConfigStore) DB() *gorm.DB                                   { retu
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
+
 func (m *MockConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
 	return nil
 }
@@ -1130,18 +1131,23 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
 	return nil
 }
@@ -1150,18 +1156,23 @@ func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *t
 func (m *MockConfigStore) GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
 	return nil
 }
+
 func (m *MockConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
 	return nil
 }
+
 func (m *MockConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error {
 	return nil
 }
@@ -1170,33 +1181,43 @@ func (m *MockConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, 
 func (m *MockConfigStore) GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error {
 	return nil
 }
+
 func (m *MockConfigStore) GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) DeletePerUserOAuthSession(ctx context.Context, id string) error {
 	return nil
 }
+
 func (m *MockConfigStore) GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
 	return nil
 }
@@ -1204,24 +1225,31 @@ func (m *MockConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tabl
 func (m *MockConfigStore) GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
 	return nil
 }
+
 func (m *MockConfigStore) DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error {
 	return nil
 }
+
 func (m *MockConfigStore) ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error) {
 	return 1, nil
 }
+
 func (m *MockConfigStore) GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error {
 	return nil
 }
+
 func (m *MockConfigStore) FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error) {
 	return 1, nil
 }
@@ -1263,12 +1291,15 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 func (m *MockConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreateFolder(ctx context.Context, folder *tables.TableFolder) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdateFolder(ctx context.Context, folder *tables.TableFolder) error {
 	return nil
 }
@@ -1278,12 +1309,15 @@ func (m *MockConfigStore) DeleteFolder(ctx context.Context, id string) error { r
 func (m *MockConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
 	return nil
 }
@@ -1293,15 +1327,19 @@ func (m *MockConfigStore) DeletePrompt(ctx context.Context, id string) error { r
 func (m *MockConfigStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error {
 	return nil
 }
@@ -1311,15 +1349,19 @@ func (m *MockConfigStore) DeletePromptVersion(ctx context.Context, id uint) erro
 func (m *MockConfigStore) GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error) {
 	return nil, nil
 }
+
 func (m *MockConfigStore) CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
 	return nil
 }
+
 func (m *MockConfigStore) RenamePromptSession(ctx context.Context, id uint, name string) error {
 	return nil
 }
@@ -11981,6 +12023,7 @@ type mockLLMPlugin struct {
 func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
+
 func (p *mockLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -12324,7 +12367,6 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		AllowDirectKeys:        true,
 		AllowedOrigins:         []string{"http://localhost:3000"},
 		MaxRequestBodySizeMB:   100,
-		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -12421,12 +12463,12 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		t.Error("Different MaxRequestBodySizeMB should produce different hash")
 	}
 
-	// Different EnableLiteLLMFallbacks should produce different hash
+	// Different Compat should produce different hash
 	cc13 := cc1
-	cc13.EnableLiteLLMFallbacks = true
+	cc13.Compat.ConvertTextToChat = true
 	hash13, _ := cc13.GenerateClientConfigHash()
 	if hash1 == hash13 {
-		t.Error("Different EnableLiteLLMFallbacks should produce different hash")
+		t.Error("Different Compat.ConvertTextToChat should produce different hash")
 	}
 
 	// PrometheusLabels order should not matter (sorted)
@@ -13459,7 +13501,6 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: false,
 			AllowDirectKeys:        true,
 			MaxRequestBodySizeMB:   100,
-			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
@@ -13473,7 +13514,12 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
 			AllowDirectKeys:        ccToSave.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
+			Compat: configstore.CompatConfig{
+				ConvertTextToChat:      ccToSave.CompatConvertTextToChat,
+				ConvertChatToResponses: ccToSave.CompatConvertChatToResponses,
+				ShouldDropParams:       ccToSave.CompatShouldDropParams,
+				ShouldConvertParams:    ccToSave.CompatShouldConvertParams,
+			},
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13492,7 +13538,12 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
 			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
+			Compat: configstore.CompatConfig{
+				ConvertTextToChat:      ccFromDB.CompatConvertTextToChat,
+				ConvertChatToResponses: ccFromDB.CompatConvertChatToResponses,
+				ShouldDropParams:       ccFromDB.CompatShouldDropParams,
+				ShouldConvertParams:    ccFromDB.CompatShouldConvertParams,
+			},
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -15649,13 +15700,13 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// Enterprise-only features: These fields exist in the JSON schema for documentation
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
-		"$schema":                      true,
-		"audit_logs":                   true,
-		"cluster_config":               true,
-		"saml_config":                  true,
-		"load_balancer_config":         true,
-		"guardrails_config":            true,
-		"large_payload_optimization":   true,
+		"$schema":                    true,
+		"audit_logs":                 true,
+		"cluster_config":             true,
+		"saml_config":                true,
+		"load_balancer_config":       true,
+		"guardrails_config":          true,
+		"large_payload_optimization": true,
 	}
 
 	schema := loadJSONSchema(t)
@@ -16602,7 +16653,10 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
 	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
-	require.Equal(t, false, cc.EnableLiteLLMFallbacks, "EnableLiteLLMFallbacks should default to false")
+	require.Equal(t, false, cc.Compat.ConvertTextToChat, "Compat.ConvertTextToChat should default to false")
+	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
+	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
+	require.Equal(t, false, cc.Compat.ShouldConvertParams, "Compat.ShouldConvertParams should default to false")
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 

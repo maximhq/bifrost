@@ -23,6 +23,7 @@ import {
 	Logs,
 	Network,
 	PanelLeftClose,
+	Plug,
 	Puzzle,
 	Router,
 	ScrollText,
@@ -718,6 +719,13 @@ export default function AppSidebar() {
 						url: "/workspace/config/client-settings",
 						icon: Settings,
 						description: "Client configuration settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Compatibility",
+						url: "/workspace/config/compatibility",
+						icon: Plug,
+						description: "Compatibility conversion settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
