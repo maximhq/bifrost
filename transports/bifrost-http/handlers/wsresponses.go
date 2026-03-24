@@ -485,7 +485,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
-				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(token, "sk-bf-"))
+				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			} else if h.handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
 					ID:     "header-provided",
@@ -653,7 +653,7 @@ var wsResponsesKnownFields = map[string]bool{
 }
 
 var (
-	errModelFormat  = errorf("model should be in provider/model format")
+	errModelFormat   = errorf("model should be in provider/model format")
 	errInputRequired = errorf("input is required for responses")
 )
 
