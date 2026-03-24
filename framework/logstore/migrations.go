@@ -23,19 +23,11 @@ const (
 	// all migrations are fully serialized.
 	migrationAdvisoryLockKey = 1000001
 
-	// ginIndexAdvisoryLockKey serializes the background GIN index build across
+	// indexAdvisoryLockKey serializes the background index build across
 	// cluster nodes. It is intentionally a DIFFERENT key from migrationAdvisoryLockKey
 	// so that the long-running CREATE INDEX CONCURRENTLY held by one pod's goroutine
 	// does not block other pods from running their (fast) migrations on startup.
-	ginIndexAdvisoryLockKey = 1000002
-
-	// perfIndexAdvisoryLockKey serializes the background performance index build
-	// (trigram + routing engine GIN indexes) across cluster nodes.
-	perfIndexAdvisoryLockKey = 1000003
-
-	// dashboardEnhancementsAdvisoryLockKey serializes the background dashboard
-	// enhancements work (backfill + covering index rebuild) across cluster nodes.
-	dashboardEnhancementsAdvisoryLockKey = 1000004
+	indexAdvisoryLockKey = 1000002
 
 	// matviewRefreshAdvisoryLockKey serializes periodic materialized view
 	// refreshes across cluster nodes so only one replica refreshes at a time.
@@ -93,20 +85,9 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*advisoryLock, erro
 	return acquireAdvisoryLock(ctx, db, migrationAdvisoryLockKey, "migration")
 }
 
-// acquireGINIndexLock acquires the serialization lock for the background GIN index build.
-func acquireGINIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
-	return acquireAdvisoryLock(ctx, db, ginIndexAdvisoryLockKey, "gin_index")
-}
-
-// acquirePerfIndexLock acquires the serialization lock for the background performance index build.
-func acquirePerfIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
-	return acquireAdvisoryLock(ctx, db, perfIndexAdvisoryLockKey, "perf_index")
-}
-
-// acquireDashboardEnhancementsLock acquires the serialization lock for the background
-// dashboard enhancements work (backfill + covering index rebuild).
-func acquireDashboardEnhancementsLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
-	return acquireAdvisoryLock(ctx, db, dashboardEnhancementsAdvisoryLockKey, "dashboard_enhancements")
+// acquireIndexLock acquires the serialization lock for the background index build.
+func acquireIndexLock(ctx context.Context, db *gorm.DB) (*advisoryLock, error) {
+	return acquireAdvisoryLock(ctx, db, indexAdvisoryLockKey, "index")
 }
 
 // triggerMigrations runs all registered logstore schema migrations in order under a
@@ -1749,77 +1730,6 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_add_metadata_gin_index_v3",
 		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			// Only create GIN index for Postgres
-			if tx.Dialector.Name() == "postgres" {
-				// Clean empty strings first (not valid JSON).
-				// Done in its own statement (no wrapping transaction) so row locks
-				// are released immediately and don't conflict with concurrent writes.
-				if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata = ''").Error; err != nil {
-					return fmt.Errorf("failed to clean empty metadata values: %w", err)
-				}
-
-				// Clean invalid JSON values before the GIN index is created.
-				// The index expression (metadata::jsonb) will fail if any row contains invalid JSON.
-				//
-				// PostgreSQL 16+ ships json_is_valid(), which allows a single server-side
-				// UPDATE with no round-trips. For older versions we fall back to fetching
-				// rows into Go and validating there.
-				//
-				// Index creation itself is intentionally omitted from this migration callback.
-				// It is handled by ensureMetadataGINIndex, called post-startup so that the
-				// potentially long-running CREATE INDEX CONCURRENTLY does not block pod startup.
-				var pgVersionNum int
-				if err := tx.Raw("SELECT current_setting('server_version_num')::int").Scan(&pgVersionNum).Error; err != nil {
-					pgVersionNum = 0 // safe: forces the Go-based fallback
-				}
-
-				if pgVersionNum >= 160000 {
-					// Single server-side pass — no rows transferred to Go, no round-trips.
-					// json_is_valid returns FALSE for empty strings and all malformed JSON.
-					if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT").Error; err != nil {
-						return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-					}
-				} else {
-					// Go-based batch validation for PostgreSQL < 16.
-					type metadataRow struct {
-						ID       string
-						Metadata string
-					}
-
-					const batchSize = 5000
-					var lastSeenID string
-
-					for {
-						var batch []metadataRow
-						if err := tx.Raw("SELECT id, metadata FROM logs WHERE metadata IS NOT NULL AND metadata != '' AND id > ? ORDER BY id LIMIT ?", lastSeenID, batchSize).Scan(&batch).Error; err != nil {
-							return fmt.Errorf("failed to fetch metadata rows: %w", err)
-						}
-						if len(batch) == 0 {
-							break
-						}
-
-						var invalidIDs []string
-						for _, row := range batch {
-							if !isValidJSON(row.Metadata) {
-								invalidIDs = append(invalidIDs, row.ID)
-							}
-						}
-
-						if len(invalidIDs) > 0 {
-							// Use raw SQL — GORM's Update("col", nil) may silently no-op on nil values.
-							if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE id IN ?", invalidIDs).Error; err != nil {
-								return fmt.Errorf("failed to clean invalid metadata values: %w", err)
-							}
-						}
-
-						lastSeenID = batch[len(batch)-1].ID
-						if len(batch) < batchSize {
-							break
-						}
-					}
-				}
-			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -1846,47 +1756,61 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 // This is intentionally separate from the migrationAddMetadataGINIndex migration so that
 // the long-running CREATE INDEX CONCURRENTLY does not block pod startup. Callers that
 // want non-blocking behaviour should invoke this in a goroutine (see postgres.go).
-func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
-
-	// Acquire advisory lock to serialize GIN index builds across cluster nodes.
-	lock, err := acquireGINIndexLock(ctx, db)
-	if err != nil {
-		return err
-	}
-	defer lock.release(ctx)
-
+func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	// pg_index.indisvalid is false when a CONCURRENTLY build was interrupted.
 	// COALESCE returns false when no row matches (index does not exist yet).
 	var indexValid bool
-	if err := db.WithContext(ctx).Raw(`
+
+	if err := conn.QueryRowContext(ctx, `
 		SELECT COALESCE(bool_and(pi.indisvalid), false)
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		WHERE pc.relname = 'logs'
 		  AND ic.relname = 'idx_logs_metadata_gin'
-	`).Scan(&indexValid).Error; err != nil {
-		return fmt.Errorf("failed to check GIN index validity: %w", err)
+	`).Scan(&indexValid); err != nil {
+		return fmt.Errorf("failed to query GIN index validity: %w", err)
 	}
+
 	if indexValid {
+		// Defensively clean up any invalid metadata values written after index creation.
+		// Use EXISTS + LIMIT 1 to avoid a full sequential scan when (the common case) no invalid rows exist.
+		var hasInvalid bool
+		if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM logs WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT LIMIT 1)").Scan(&hasInvalid); err != nil {
+			return fmt.Errorf("failed to query invalid metadata values: %w", err)
+		}
+		if hasInvalid {
+			if _, err := conn.ExecContext(ctx, "UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT"); err != nil {
+				return fmt.Errorf("failed to clean invalid metadata values: %w", err)
+			}
+		}
 		return nil
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
-	if err := db.WithContext(ctx).Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin").Error; err != nil {
+	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_metadata_gin"); err != nil {
 		return fmt.Errorf("failed to drop invalid metadata GIN index: %w", err)
 	}
 
 	// Boost memory available for the sort phase so PostgreSQL needs fewer merge
 	// passes. Non-fatal: a lower maintenance_work_mem just means a slower build.
-	_ = db.WithContext(ctx).Exec("SET maintenance_work_mem = '512MB'").Error
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
 
 	// Allow parallel workers for the index build (supported since PG 11).
 	// Non-fatal: falls back to a single worker on older versions.
-	_ = db.WithContext(ctx).Exec("SET max_parallel_maintenance_workers = 4").Error
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	// Defensively clean up any invalid metadata values before building the index.
+	// Use EXISTS + LIMIT 1 to short-circuit when no invalid rows exist.
+	var hasInvalid bool
+	if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM logs WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT LIMIT 1)").Scan(&hasInvalid); err != nil {
+		return fmt.Errorf("failed to query invalid metadata values: %w", err)
+	}
+	if hasInvalid {
+		if _, err := conn.ExecContext(ctx, "UPDATE logs SET metadata = NULL WHERE metadata IS NOT NULL AND metadata IS NOT JSON OBJECT"); err != nil {
+			return fmt.Errorf("failed to clean invalid metadata values: %w", err)
+		}
+	}
 
 	// CONCURRENTLY takes only a ShareUpdateExclusiveLock, which is compatible with
 	// RowExclusiveLock (INSERT/UPDATE/DELETE), so concurrent writes from other pods
@@ -1896,10 +1820,10 @@ func ensureMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 	// and value separately, making the index ~3x smaller and faster to build.
 	// It supports the @> containment operator used by all metadata filter queries.
 	//
-	// The partial predicate (WHERE metadata IS NOT NULL) skips NULL rows entirely,
+	// The partial predicate (WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT) skips NULL and non-object rows,
 	// further reducing build time and index size. Queries that filter on metadata
 	// always include an IS NOT NULL guard (rdb.go) so the planner will use this index.
-	if err := db.WithContext(ctx).Exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL").Error; err != nil {
+	if _, err := conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb) jsonb_path_ops) WHERE metadata IS NOT NULL AND metadata IS JSON OBJECT"); err != nil {
 		return fmt.Errorf("failed to create metadata GIN index: %w", err)
 	}
 	return nil
@@ -1949,17 +1873,7 @@ func migrationAddDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 // This is intentionally separate so that the long-running UPDATE and index rebuild do not
 // block pod startup. Callers that want non-blocking behaviour should invoke this in a
 // goroutine (see postgres.go). All operations are idempotent and safe to re-run.
-func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
-
-	lock, err := acquireDashboardEnhancementsLock(ctx, db)
-	if err != nil {
-		return err
-	}
-	defer lock.release(context.Background())
-
+func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 	// Backfill cached_read_tokens from token_usage JSON.
 	// The extra `AND cached_read_tokens = 0` plus `AND COALESCE(...) > 0` makes
 	// re-runs cheap: rows already backfilled have non-zero values (skipped),
@@ -1970,25 +1884,25 @@ func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 		AND token_usage IS NOT NULL AND token_usage != '' AND token_usage != 'null'
 		AND token_usage ~ '^\s*\{.*\}\s*$'
 		AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0`
-	if err := db.WithContext(ctx).Exec(backfillSQL).Error; err != nil {
+	if _, err := conn.ExecContext(ctx, backfillSQL); err != nil {
 		return fmt.Errorf("failed to backfill cached_read_tokens: %w", err)
 	}
 
 	// Rebuild histogram covering index with cached_read_tokens included,
 	// but only if missing or invalid (skip if already healthy).
 	var logsIndexValid bool
-	if err := db.WithContext(ctx).Raw(`
+	if err := conn.QueryRowContext(ctx, `
 		SELECT COALESCE(bool_and(pi.indisvalid), false)
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		WHERE pc.relname = 'logs'
 		  AND ic.relname = 'idx_logs_histogram_cover'
-	`).Scan(&logsIndexValid).Error; err != nil {
+	`).Scan(&logsIndexValid); err != nil {
 		return fmt.Errorf("failed to check logs histogram index validity: %w", err)
 	}
 	if !logsIndexValid {
-		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_histogram_cover"); err != nil {
 			return fmt.Errorf("failed to drop old covering index: %w", err)
 		}
 		createLogsIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_histogram_cover ON logs(
@@ -1996,31 +1910,31 @@ func ensureDashboardEnhancements(ctx context.Context, db *gorm.DB) error {
 			selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
 			model, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens
 		)`
-		if err := db.WithContext(ctx).Exec(createLogsIndexSQL).Error; err != nil {
+		if _, err := conn.ExecContext(ctx, createLogsIndexSQL); err != nil {
 			return fmt.Errorf("failed to create updated covering index: %w", err)
 		}
 	}
 
 	// Create MCP histogram covering index if missing or invalid.
 	var mcpIndexValid bool
-	if err := db.WithContext(ctx).Raw(`
+	if err := conn.QueryRowContext(ctx, `
 		SELECT COALESCE(bool_and(pi.indisvalid), false)
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		WHERE pc.relname = 'mcp_tool_logs'
 		  AND ic.relname = 'idx_mcp_logs_histogram_cover'
-	`).Scan(&mcpIndexValid).Error; err != nil {
+	`).Scan(&mcpIndexValid); err != nil {
 		return fmt.Errorf("failed to check MCP histogram index validity: %w", err)
 	}
 	if !mcpIndexValid {
-		if err := db.WithContext(ctx).Exec("DROP INDEX CONCURRENTLY IF EXISTS idx_mcp_logs_histogram_cover").Error; err != nil {
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_mcp_logs_histogram_cover"); err != nil {
 			return fmt.Errorf("failed to drop invalid MCP histogram index: %w", err)
 		}
 		createMCPIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
 			status, timestamp, tool_name, server_label, virtual_key_id, cost
 		)`
-		if err := db.WithContext(ctx).Exec(createMCPIndexSQL).Error; err != nil {
+		if _, err := conn.ExecContext(ctx, createMCPIndexSQL); err != nil {
 			return fmt.Errorf("failed to create MCP histogram covering index: %w", err)
 		}
 	}
@@ -2116,21 +2030,7 @@ var performanceIndexes = []performanceIndexDef{
 // This is intentionally separate from migrationAddPerformanceGINIndexes so that the
 // long-running CREATE INDEX CONCURRENTLY does not block pod startup. Callers that
 // want non-blocking behaviour should invoke this in a goroutine (see postgres.go).
-func ensurePerformanceIndexes(ctx context.Context, db *gorm.DB) error {
-	if db.Dialector.Name() != "postgres" {
-		return nil
-	}
-
-	lock, err := acquirePerfIndexLock(ctx, db)
-	if err != nil {
-		return err
-	}
-	defer lock.release(context.Background())
-
-	// Use the pinned advisory-lock connection for all statements so that
-	// session-scoped SET commands and the subsequent DDL share one backend.
-	conn := lock.conn
-
+func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn) error {
 	// Boost memory for sort phase during index builds.
 	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
 	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")

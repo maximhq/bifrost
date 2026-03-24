@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -50,6 +51,17 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	})
 
 	return store, db
+}
+
+// acquirePerfTestSQLConn returns a dedicated connection for ensurePerformanceIndexes (CONCURRENTLY + session SET).
+func acquirePerfTestSQLConn(t *testing.T, ctx context.Context, db *gorm.DB) *sql.Conn {
+	t.Helper()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }
 
 type logOpts struct {
@@ -465,8 +477,9 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 		db.Exec("DROP TABLE IF EXISTS migrations CASCADE")
 	})
 
+	conn := acquirePerfTestSQLConn(t, ctx, db)
 	// First run
-	err = ensurePerformanceIndexes(ctx, db)
+	err = ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err, "ensurePerformanceIndexes should succeed")
 
 	// Verify all indexes exist and are valid
@@ -485,7 +498,7 @@ func TestEnsurePerformanceIndexes(t *testing.T) {
 	}
 
 	// Idempotent — second run should be a no-op
-	err = ensurePerformanceIndexes(ctx, db)
+	err = ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err, "ensurePerformanceIndexes should be idempotent")
 }
 
@@ -496,7 +509,9 @@ func TestContentSearch_Postgres(t *testing.T) {
 	start := now.Add(-1 * time.Hour)
 
 	// Build indexes
-	err := ensurePerformanceIndexes(ctx, db)
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+
+	err := ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err)
 
 	insertPerfLog(t, db, logOpts{
@@ -536,7 +551,8 @@ func TestMCPContentSearch_Postgres(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Build indexes
-	err := ensurePerformanceIndexes(ctx, db)
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	err := ensurePerformanceIndexes(ctx, conn)
 	require.NoError(t, err)
 
 	insertPerfMCPLog(t, db, mcpLogOpts{

@@ -177,9 +177,14 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	if len(filters.MetadataFilters) > 0 {
-		// Single NULL guard for all metadata filters
-		baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata != ''")
 		dialect := s.db.Dialector.Name()
+		// Guard must match the partial-index predicate so the planner uses the GIN index.
+		// SQLite does not support IS JSON OBJECT, so fall back to the equivalent json_type check.
+		if dialect == "postgres" {
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata IS JSON OBJECT")
+		} else {
+			baseQuery = baseQuery.Where("metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object'")
+		}
 		for key, value := range filters.MetadataFilters {
 			if !isValidMetadataKey(key) {
 				continue
@@ -2083,8 +2088,15 @@ const (
 func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	var metadataStrings []string
+	// Guard must match the partial-index predicate so the planner uses the GIN index.
+	var metadataGuard string
+	if s.db.Dialector.Name() == "postgres" {
+		metadataGuard = "metadata IS NOT NULL AND metadata IS JSON OBJECT AND metadata != '{}' AND timestamp >= ?"
+	} else {
+		metadataGuard = "metadata IS NOT NULL AND json_valid(metadata) AND json_type(metadata) = 'object' AND metadata != '{}' AND timestamp >= ?"
+	}
 	err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("metadata IS NOT NULL AND metadata != '' AND metadata != '{}' AND timestamp >= ?", cutoff).
+		Where(metadataGuard, cutoff).
 		Order("timestamp DESC").
 		Limit(maxMetadataRows).
 		Pluck("metadata", &metadataStrings).Error
