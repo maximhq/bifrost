@@ -293,8 +293,13 @@
               "type": "integer",
               "minimum": 1
             },
-            "enableLitellmFallbacks": {
-              "type": "boolean"
+            "compat": {
+              "type": "object",
+              "properties": {
+                "convertTextToChat": { "type": "boolean" },
+                "convertChatToResponses": { "type": "boolean" },
+                "shouldDropParams": { "type": "boolean" }
+              }
             },
             "prometheusLabels": {
               "type": "array",

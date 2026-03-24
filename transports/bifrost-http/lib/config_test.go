@@ -12326,7 +12326,6 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		AllowDirectKeys:        true,
 		AllowedOrigins:         []string{"http://localhost:3000"},
 		MaxRequestBodySizeMB:   100,
-		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -12423,12 +12422,12 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		t.Error("Different MaxRequestBodySizeMB should produce different hash")
 	}
 
-	// Different EnableLiteLLMFallbacks should produce different hash
+	// Different Compat should produce different hash
 	cc13 := cc1
-	cc13.EnableLiteLLMFallbacks = true
+	cc13.Compat.ConvertTextToChat = true
 	hash13, _ := cc13.GenerateClientConfigHash()
 	if hash1 == hash13 {
-		t.Error("Different EnableLiteLLMFallbacks should produce different hash")
+		t.Error("Different Compat.ConvertTextToChat should produce different hash")
 	}
 
 	// PrometheusLabels order should not matter (sorted)
@@ -13374,7 +13373,6 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: false,
 			AllowDirectKeys:        true,
 			MaxRequestBodySizeMB:   100,
-			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
@@ -13388,7 +13386,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
 			AllowDirectKeys:        ccToSave.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
+			Compat:                 configstore.CompatConfig{ConvertTextToChat: ccToSave.CompatConvertTextToChat, ConvertChatToResponses: ccToSave.CompatConvertChatToResponses, ShouldDropParams: ccToSave.CompatShouldDropParams},
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13407,7 +13405,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
 			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
 			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
+			Compat:                 configstore.CompatConfig{ConvertTextToChat: ccFromDB.CompatConvertTextToChat, ConvertChatToResponses: ccFromDB.CompatConvertChatToResponses, ShouldDropParams: ccFromDB.CompatShouldDropParams},
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -16727,7 +16725,9 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
 	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
-	require.Equal(t, false, cc.EnableLiteLLMFallbacks, "EnableLiteLLMFallbacks should default to false")
+	require.Equal(t, false, cc.Compat.ConvertTextToChat, "Compat.ConvertTextToChat should default to false")
+	require.Equal(t, false, cc.Compat.ConvertChatToResponses, "Compat.ConvertChatToResponses should default to false")
+	require.Equal(t, false, cc.Compat.ShouldDropParams, "Compat.ShouldDropParams should default to false")
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 

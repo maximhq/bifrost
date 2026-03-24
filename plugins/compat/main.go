@@ -17,7 +17,14 @@ const PluginName = "compat"
 
 // Config defines the configuration for the compat plugin
 type Config struct {
-	Enabled bool `json:"enabled"`
+	ConvertTextToChat      bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ShouldDropParams       bool `json:"should_drop_params"`
+}
+
+// IsEnabled returns true if any compat feature is enabled
+func (c Config) IsEnabled() bool {
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -90,17 +97,21 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Text completion → chat conversion
-	if (req.RequestType == schemas.TextCompletionRequest || req.RequestType == schemas.TextCompletionStreamRequest) && req.TextCompletionRequest != nil {
-		p.markForConversion(ctx, req.TextCompletionRequest.Provider, req.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+	if p.config.ConvertTextToChat {
+		if (req.RequestType == schemas.TextCompletionRequest || req.RequestType == schemas.TextCompletionStreamRequest) && req.TextCompletionRequest != nil {
+			p.markForConversion(ctx, req.TextCompletionRequest.Provider, req.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+		}
 	}
 
 	// Chat completion → responses conversion
-	if (req.RequestType == schemas.ChatCompletionRequest || req.RequestType == schemas.ChatCompletionStreamRequest) && req.ChatRequest != nil {
-		p.markForConversion(ctx, req.ChatRequest.Provider, req.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+	if p.config.ConvertChatToResponses {
+		if (req.RequestType == schemas.ChatCompletionRequest || req.RequestType == schemas.ChatCompletionStreamRequest) && req.ChatRequest != nil {
+			p.markForConversion(ctx, req.ChatRequest.Provider, req.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+		}
 	}
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
-	if p.modelCatalog != nil {
+	if p.config.ShouldDropParams && p.modelCatalog != nil {
 		_, model, _ := req.GetRequestFields()
 		if model != "" {
 			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {

@@ -63,7 +63,10 @@ F --> G
 
 1. Open the Bifrost dashboard
 2. Navigate to **Settings** → **Client Configuration**
-3. Enable **LiteLLM Fallbacks**
+3. Expand **LiteLLM Compat** and enable the features you need:
+   - **Convert Text to Chat** — converts text completion requests to chat for models that only support chat
+   - **Convert Chat to Responses** — converts chat completion requests to responses for models that only support responses
+   - **Drop Unsupported Params** — drops unsupported parameters based on model catalog allowlist
 4. Save your configuration
 
 </Tab>
@@ -73,7 +76,11 @@ F --> G
 ```json
 {
   "client_config": {
-    "enable_litellm_fallbacks": true
+    "compat": {
+      "convert_text_to_chat": true,
+      "convert_chat_to_responses": true,
+      "should_drop_params": true
+    }
   }
 }
 ```

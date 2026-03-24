@@ -33,6 +33,13 @@ type EnvKeyInfo struct {
 	KeyID      string                // The key ID this env var belongs to (empty for non-key configs like bedrock_config, connection_string)
 }
 
+// CompatConfig holds the compat plugin feature flags.
+type CompatConfig struct {
+	ConvertTextToChat      bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
+	ShouldDropParams       bool `json:"should_drop_params"`
+}
+
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
@@ -50,7 +57,7 @@ type ClientConfig struct {
 	AllowedOrigins                  []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders                  []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
 	MaxRequestBodySizeMB            int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
-	EnableLiteLLMFallbacks          bool                             `json:"enable_litellm_fallbacks"`             // Enable litellm-specific fallbacks for text completion for Groq
+	Compat                          CompatConfig                     `json:"compat"`                               // Compat plugin configuration
 	MCPAgentDepth                   int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout         int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel         string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
@@ -106,10 +113,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("allowDirectKeys:false"))
 	}
 
-	if c.EnableLiteLLMFallbacks {
-		hash.Write([]byte("enableLiteLLMFallbacks:true"))
-	} else {
-		hash.Write([]byte("enableLiteLLMFallbacks:false"))
+	if c.Compat.ConvertTextToChat {
+		hash.Write([]byte("compatConvertTextToChat:true"))
+	}
+	if c.Compat.ConvertChatToResponses {
+		hash.Write([]byte("compatConvertChatToResponses:true"))
+	}
+	if c.Compat.ShouldDropParams {
+		hash.Write([]byte("compatShouldDropParams:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.

@@ -420,6 +420,12 @@ export interface BifrostConfig {
 	auth_token?: string;
 }
 
+export interface CompatConfig {
+	convert_text_to_chat: boolean;
+	convert_chat_to_responses: boolean;
+	should_drop_params: boolean;
+}
+
 // Core Bifrost configuration types
 export interface CoreConfig {
 	drop_excess_requests: boolean;
@@ -434,7 +440,7 @@ export interface CoreConfig {
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
-	enable_litellm_fallbacks: boolean;
+	compat: CompatConfig;
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
@@ -459,7 +465,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_direct_keys: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	enable_litellm_fallbacks: false,
+	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false },
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
