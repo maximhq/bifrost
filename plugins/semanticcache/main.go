@@ -38,9 +38,9 @@ type Config struct {
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
-	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
+	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
+	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -405,6 +405,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
+	// Clear any stale storage ID from a previously reused context.
+	ctx.ClearValue(requestStorageIDKey)
+
 	if plugin.isConversationHistoryThresholdExceeded(req) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for request with conversation history threshold exceeded")
 		return req, nil, nil
@@ -569,9 +572,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if !ok {
 		return res, nil, nil
 	}
-	storageID, ok := ctx.Value(requestStorageIDKey).(string)
-	if !ok || storageID == "" {
-		storageID = requestID
+	storageID := requestID
+	if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok && cacheTypeVal == CacheTypeDirect {
+		if v, ok := ctx.Value(requestStorageIDKey).(string); ok && v != "" {
+			storageID = v
+		}
 	}
 	// Check cache type to optimize embedding handling
 	var embedding []float32

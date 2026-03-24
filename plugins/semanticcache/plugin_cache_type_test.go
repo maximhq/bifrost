@@ -420,6 +420,32 @@ func TestDefaultDirectSearchDoesNotSetStorageID(t *testing.T) {
 	}
 }
 
+func TestPreLLMHookClearsStaleStorageIDOnReusedContext(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	ctx := CreateContextWithCacheKey("reused-context")
+	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
+
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+
+	if storageID := ctx.Value(requestStorageIDKey); storageID != nil {
+		t.Fatalf("expected PreLLMHook to clear stale requestStorageIDKey, got %v", storageID)
+	}
+}
+
 func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
@@ -478,6 +504,55 @@ func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 	}
 	if store.addIDs[0] == "request-uuid" {
 		t.Fatal("expected storage id to differ from request UUID")
+	}
+}
+
+func TestPostLLMHookIgnoresStaleStorageIDOutsideDirectMode(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	content := "stored response"
+	response := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: &content,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	response.ChatResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+
+	ctx := CreateContextWithCacheKey("default-mode-store")
+	ctx.SetValue(requestIDKey, "request-uuid")
+	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
+	ctx.SetValue(requestProviderKey, schemas.OpenAI)
+	ctx.SetValue(requestModelKey, "openai/gpt-4o-mini")
+	ctx.SetValue(requestHashKey, "request-hash")
+
+	if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+
+	plugin.WaitForPendingOperations()
+
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one store.Add call, got %d", len(store.addIDs))
+	}
+	if store.addIDs[0] != "request-uuid" {
+		t.Fatalf("expected PostLLMHook to ignore stale storage id outside direct mode, got %q", store.addIDs[0])
 	}
 }
 
