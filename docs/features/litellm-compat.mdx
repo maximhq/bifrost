@@ -9,8 +9,10 @@ icon: "train"
 The LiteLLM compatibility plugin provides two transformations:
 
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
+2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
+3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
 
-When either transformation is applied, responses include `extra_fields.litellm_compat: true`.
+When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
 ---
 
@@ -55,6 +57,36 @@ F --> G
 - `object: "chat.completion"` → `object: "text_completion"`
 - Usage statistics and metadata are preserved
 
+## 2. Chat-to-Responses Conversion
+
+Some AI models (like OpenAI o1-pro) only support the responses API and don't support native chat completion endpoints. LiteLLM compatibility mode automatically handles this by:
+
+1. Checking if the model supports chat completion natively (using the model catalog)
+2. If not supported, converting your chat message to responses API format
+3. Calling the responses endpoint internally
+4. Transforming the response back to chat completion format
+
+<Note>
+**Smart Conversion**: The conversion only happens when the model doesn't support chat completions natively. If a model has native chat completion support (like OpenAI's gpt-4 models), Bifrost uses the chat completion endpoint directly without any conversion.
+</Note>
+
+This allows you to use a unified chat completion interface across all providers, even those that only support responses API.
+
+## How It Works
+
+When LiteLLM compatibility is enabled and you make a chat completion request, Bifrost first checks if the model supports chat completion:
+
+```mermaid
+flowchart LR
+A[Chat Completion Request] --> B{Model Supports Chat Completion?}
+B -->|Yes| C[Call Chat Completion API]
+B -->|No| D[Convert to Responses Message]
+D --> E[Call Responses API]
+E --> F[Transform Response]
+C --> G[Chat Completion Response]
+F --> G
+```
+
 ## Enabling LiteLLM Compatibility
 
 <Tabs group="litellm-compat">
@@ -63,7 +95,10 @@ F --> G
 
 1. Open the Bifrost dashboard
 2. Navigate to **Settings** → **Client Configuration**
-3. Enable **LiteLLM Fallbacks**
+3. Expand **LiteLLM Compat** and enable the features you need:
+   - **Convert Text to Chat** — converts text completion requests to chat for models that only support chat
+   - **Convert Chat to Responses** — converts chat completion requests to responses for models that only support responses
+   - **Drop Unsupported Params** — drops unsupported parameters based on model catalog allowlist
 4. Save your configuration
 
 </Tab>
@@ -73,7 +108,11 @@ F --> G
 ```json
 {
   "client_config": {
-    "enable_litellm_fallbacks": true
+    "compat": {
+      "convert_text_to_chat": true,
+      "convert_chat_to_responses": true,
+      "should_drop_params": true
+    }
   }
 }
 ```
@@ -84,9 +123,9 @@ F --> G
 
 ## Supported Providers
 
-LiteLLM compatibility mode works with any provider that supports chat completions but lacks native text completion support:
+Text completion to chat completion conversion works with any provider that supports chat completions but lacks native text completion support:
 
-| Provider | Native Text Completion | LiteLLM Fallback |
+| Provider | Native Text Completion | With Fallback |
 |----------|----------------------|------------------|
 | OpenAI (GPT-4, GPT-3.5-turbo) | No | Yes |
 | Anthropic (Claude) | No | Yes |
@@ -94,6 +133,12 @@ LiteLLM compatibility mode works with any provider that supports chat completion
 | Gemini | No | Yes |
 | Mistral | No | Yes |
 | Bedrock | Varies by model | Yes |
+
+Chat completion to responses conversion works with any provider that supports responses but lacks native chat completion support:
+
+| Provider | Native Responses | With Fallback |
+|----------|----------------------|------------------|
+| OpenAI (o1-pro) | No | Yes |
 
 ## Behavior Details
 
@@ -117,21 +162,24 @@ LiteLLM compatibility mode works with any provider that supports chat completion
 | Response | `choices[0].message.content` | `choices[0].text` |
 | Response | `object: "chat.completion"` | `object: "text_completion"` |
 
+### Transformation 2: Chat-to-Responses Conversion
+
+**Applies to:** Chat completion requests on responses-only models
+
+| Phase | Original | Transformed |
+|-------|----------|-------------|
+| Request | Chat message with `role: "user"` | Responses input with `role: "user"` |
+| Request | `chat_completion` request type | `responses` request type |
 
 ### Metadata Set on Transformed Responses
 
 When either transformation is applied:
 
-- `extra_fields.litellm_compat`: Set to `true`
-- `extra_fields.provider`: The provider that handled the request
 - `extra_fields.request_type`: Reflects the original request type
+- `extra_fields.converted_request_type`: Set to type of request that was converted to (i.e., `chat_completion` or `responses`)
+- `extra_fields.provider`: The provider that handled the request
 - `extra_fields.model_requested`: The originally requested model
-
-### Error Handling
-
-When errors occur on transformed requests:
-- `extra_fields.litellm_compat` is set to `true`
-- Original request type and model are preserved in error metadata
+- `extra_fields.dropped_compat_plugin_params`: If any unsupported parameters were dropped, the keys are added here
 
 ## What's Preserved
 
@@ -144,7 +192,7 @@ When errors occur on transformed requests:
 
 **Good Use Cases:**
 - Migrating from LiteLLM to Bifrost without code changes
-- Maintaining backward compatibility with text completion interfaces
+- Maintaining backward compatibility with text completion interfaces or chat completion interfaces
 - Using a unified API across providers with different capabilities
 
 **Consider Alternatives When:**

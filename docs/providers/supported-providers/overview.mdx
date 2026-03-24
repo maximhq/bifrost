@@ -47,7 +47,7 @@ The following table summarizes which operations are supported by each provider v
 
 <Note>
 Some operations are not supported by the downstream provider, and their internal implementation in Bifrost is optional. 🟡
-Like Text completions are not supported by Groq, but Bifrost can emulate them internally using the Chat Completions API. This feature is disabled by default, but it can be enabled by setting the `enable_litellm_fallbacks` flag to `true` in the client configuration.
+Like Text completions are not supported by Groq, but Bifrost can emulate them internally using the Chat Completions API. This feature is disabled by default, but it can be enabled by setting `compat.convert_text_to_chat` to `true` in the client configuration.
 We do not promote using such fallbacks, since text completions and chat completions are fundamentally different. However, this option is available to help users migrating from LiteLLM (which does support these fallbacks).
 </Note>
 

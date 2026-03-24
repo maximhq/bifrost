@@ -281,7 +281,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
-
 		return err
 	}
 	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
@@ -342,6 +341,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationReplaceEnableLiteLLMWithCompatColumns(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -753,9 +755,10 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		ID: "add_enable_litellm_fallbacks_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
-				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			// Use raw SQL since the struct field was removed in a later migration.
+			// This column is subsequently dropped by migrationReplaceEnableLiteLLMWithCompatColumns.
+			if !tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client ADD COLUMN enable_litellm_fallbacks BOOLEAN DEFAULT FALSE").Error; err != nil {
 					return err
 				}
 			}
@@ -763,9 +766,7 @@ func migrationAddEnableLiteLLMFallbacksColumn(ctx context.Context, db *gorm.DB) 
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-
-			if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+			if err := tx.Exec("ALTER TABLE config_client DROP COLUMN IF EXISTS enable_litellm_fallbacks").Error; err != nil {
 				return err
 			}
 			return nil
@@ -2149,7 +2150,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
 							MaxRequestBodySizeMB:    cc.MaxRequestBodySizeMB,
-							EnableLiteLLMFallbacks:  cc.EnableLiteLLMFallbacks,
 						}
 						hash, err := clientConfig.GenerateClientConfigHash()
 						if err != nil {
@@ -5304,6 +5304,76 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationReplaceEnableLiteLLMWithCompatColumns replaces the single enable_litellm_fallbacks
+// boolean with three granular compat feature columns. If enable_litellm_fallbacks was true,
+// only convert_text_to_chat is set to true (preserving the original behavior).
+func migrationReplaceEnableLiteLLMWithCompatColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "replace_enable_litellm_with_compat_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+
+			// Add new columns
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_text_to_chat"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_convert_chat_to_responses"); err != nil {
+					return err
+				}
+			}
+			if !mig.HasColumn(&tables.TableClientConfig{}, "compat_should_drop_params") {
+				if err := mig.AddColumn(&tables.TableClientConfig{}, "compat_should_drop_params"); err != nil {
+					return err
+				}
+			}
+
+			// Migrate data: if enable_litellm_fallbacks was true, set convert_text_to_chat = true
+			if mig.HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("UPDATE config_client SET compat_convert_text_to_chat = enable_litellm_fallbacks").Error; err != nil {
+					return err
+				}
+				if err := mig.DropColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if tx.Migrator().HasColumn(&tables.TableClientConfig{}, "enable_litellm_fallbacks") {
+				if err := tx.Exec("ALTER TABLE config_client DROP COLUMN enable_litellm_fallbacks").Error; err != nil {
+					return err
+				}
+				if err := tx.Exec("UPDATE config_client SET enable_litellm_fallbacks = compat_convert_text_to_chat").Error; err != nil {
+					return err
+				}
+			}
+			for _, col := range []string{
+				"compat_convert_text_to_chat",
+				"compat_convert_chat_to_responses",
+				"compat_should_drop_params",
+			} {
+				if mig.HasColumn(&tables.TableClientConfig{}, col) {
+					if err := mig.DropColumn(&tables.TableClientConfig{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running replace_enable_litellm_with_compat_columns migration: %s", err.Error())
 	}
 	return nil
 }

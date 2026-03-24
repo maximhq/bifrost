@@ -6,13 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
+import { CompatConfig, CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
 import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/types/largePayload";
 import { Info, Plus, X } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -105,9 +106,13 @@ export default function ClientSettingsView() {
 
 	const hasCoreConfigChanges = useMemo(() => {
 		if (!config) return false;
+		const hasCompatConfigChanges =
+			(localConfig.compat?.convert_text_to_chat ?? false) !== (config.compat?.convert_text_to_chat ?? false) ||
+			(localConfig.compat?.convert_chat_to_responses ?? false) !== (config.compat?.convert_chat_to_responses ?? false) ||
+			(localConfig.compat?.should_drop_params ?? false) !== (config.compat?.should_drop_params ?? false);
 		return (
+			hasCompatConfigChanges ||
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
-			localConfig.enable_litellm_fallbacks !== config.enable_litellm_fallbacks ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
@@ -134,6 +139,10 @@ export default function ClientSettingsView() {
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[] | GlobalHeaderFilterConfig) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
+	}, []);
+
+	const handleCompatChange = useCallback((field: keyof CompatConfig, value: boolean) => {
+		setLocalConfig((prev) => ({ ...prev, compat: { ...prev.compat, [field]: value } }));
 	}, []);
 
 	const handleLargePayloadConfigChange = useCallback((newConfig: LargePayloadConfig) => {
@@ -320,33 +329,80 @@ export default function ClientSettingsView() {
 					/>
 				</div>
 
-				{/* Enable LiteLLM Fallbacks */}
-				<div className="flex items-center justify-between space-x-2">
-					<div className="space-y-0.5">
-						<label htmlFor="enable-litellm-fallbacks" className="text-sm font-medium">
-							Enable LiteLLM Fallbacks
-						</label>
-						<p className="text-muted-foreground text-sm">
-							Enable litellm-specific fallbacks.{" "}
-							<a
-								className="text-primary cursor-pointer underline"
-								href="https://docs.getbifrost.ai/features/litellm-compat"
-								target="_blank"
-								rel="noopener noreferrer"
-								data-testid="litellm-docs-link"
-							>
-								Learn more
-							</a>
-						</p>
-					</div>
-					<Switch
-						id="enable-litellm-fallbacks"
-						size="md"
-						checked={localConfig.enable_litellm_fallbacks}
-						onCheckedChange={(checked) => handleConfigChange("enable_litellm_fallbacks", checked)}
-						disabled={!hasSettingsUpdateAccess}
-					/>
-				</div>
+				{/* Compat Settings */}
+				<Accordion type="multiple" className="w-full">
+					<AccordionItem value="compat-settings" className="border-b-0">
+						<AccordionTrigger className="py-0 hover:no-underline">
+							<div className="space-y-0.5 text-left">
+								<span className="text-sm font-medium">LiteLLM Compat</span>
+								<p className="text-muted-foreground text-sm font-normal">
+									Request type conversion and parameter dropping.{" "}
+									<Link
+										className="text-primary cursor-pointer underline"
+										href="https://docs.getbifrost.ai/features/litellm-compat"
+										target="_blank"
+										rel="noopener noreferrer"
+										data-testid="litellm-docs-link"
+										onClick={(e) => e.stopPropagation()}
+									>
+										Learn more
+									</Link>
+								</p>
+							</div>
+						</AccordionTrigger>
+						<AccordionContent className="space-y-4 pt-4 pb-0">
+							<div className="flex items-center justify-between space-x-2">
+								<div className="space-y-0.5">
+									<label htmlFor="compat-convert-text-to-chat" className="text-sm font-medium">
+										Convert Text to Chat
+									</label>
+									<p className="text-muted-foreground text-sm">
+										Convert text completion requests to chat for models that only support chat.
+									</p>
+								</div>
+								<Switch
+									id="compat-convert-text-to-chat"
+									size="md"
+									checked={localConfig.compat?.convert_text_to_chat ?? false}
+									onCheckedChange={(checked) => handleCompatChange("convert_text_to_chat", checked)}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
+							<div className="flex items-center justify-between space-x-2">
+								<div className="space-y-0.5">
+									<label htmlFor="compat-convert-chat-to-responses" className="text-sm font-medium">
+										Convert Chat to Responses
+									</label>
+									<p className="text-muted-foreground text-sm">
+										Convert chat completion requests to responses for models that only support responses.
+									</p>
+								</div>
+								<Switch
+									id="compat-convert-chat-to-responses"
+									size="md"
+									checked={localConfig.compat?.convert_chat_to_responses ?? false}
+									onCheckedChange={(checked) => handleCompatChange("convert_chat_to_responses", checked)}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
+							<div className="flex items-center justify-between space-x-2">
+								<div className="space-y-0.5">
+									<label htmlFor="compat-should-drop-params" className="text-sm font-medium">
+										Drop Unsupported Params
+									</label>
+									<p className="text-muted-foreground text-sm">Drop unsupported parameters based on model catalog allowlist.</p>
+								</div>
+								<Switch
+									id="compat-should-drop-params"
+									size="md"
+									checked={localConfig.compat?.should_drop_params ?? false}
+									onCheckedChange={(checked) => handleCompatChange("should_drop_params", checked)}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
 
 				{/* Disable DB Pings in Health */}
 				<div className="flex items-center justify-between space-x-2">
@@ -438,9 +494,8 @@ export default function ClientSettingsView() {
 									</li>
 									<li>
 										<span className="font-medium">Wildcards:</span> Use{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match
-										prefixes (e.g.,{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match prefixes
+										(e.g., <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
 										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> alone to match all headers.
 									</li>

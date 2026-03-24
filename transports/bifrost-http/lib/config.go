@@ -304,7 +304,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
-	EnableLiteLLMFallbacks:          false,
+	Compat:                          configstore.CompatConfig{},
 	HideDeletedVirtualKeysInFilters: false,
 }
 

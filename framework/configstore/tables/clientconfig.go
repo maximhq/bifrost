@@ -35,8 +35,10 @@ type TableClientConfig struct {
 	LoggingHeadersJSON              string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	HideDeletedVirtualKeysInFilters bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys in logs filter dropdowns
 
-	// LiteLLM fallback flag
-	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`
+	// Compat plugin feature flags
+	CompatConvertTextToChat      bool `gorm:"column:compat_convert_text_to_chat;default:false" json:"-"`
+	CompatConvertChatToResponses bool `gorm:"column:compat_convert_chat_to_responses;default:false" json:"-"`
+	CompatShouldDropParams       bool `gorm:"column:compat_should_drop_params;default:false" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
