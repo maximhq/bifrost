@@ -98,5 +98,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.CustomProviderConfig != nil {
 		providerConfig.CustomProviderConfig = config.CustomProviderConfig
 	}
+	if config.OpenAIConfig != nil {
+		providerConfig.OpenAIConfig = config.OpenAIConfig
+	}
 	return providerConfig, nil
 }

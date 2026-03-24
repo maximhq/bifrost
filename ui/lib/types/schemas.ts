@@ -679,6 +679,13 @@ export const debuggingFormSchema = z.object({
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
 
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
+
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({

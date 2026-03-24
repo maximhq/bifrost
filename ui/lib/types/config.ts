@@ -302,6 +302,11 @@ export interface ProviderPricingOverride {
 	cache_read_input_image_token_cost?: number;
 }
 
+// OpenAIConfig holds OpenAI-specific provider configuration.
+export interface OpenAIConfig {
+	disable_store?: boolean;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	keys: ModelProviderKey[];
@@ -312,6 +317,7 @@ export interface ModelProviderConfig {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -341,6 +347,7 @@ export interface AddProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 
@@ -354,6 +361,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 

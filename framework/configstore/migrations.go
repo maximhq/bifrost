@@ -317,6 +317,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4764,6 +4767,37 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_plugin_order_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOpenAIConfigJSONColumn adds the open_ai_config_json column to the provider table
+func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_open_ai_config_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "OpenAIConfigJSON"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "open_ai_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
 	}
 	return nil
 }

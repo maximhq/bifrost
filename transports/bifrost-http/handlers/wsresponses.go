@@ -155,9 +155,26 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 // If native WS upstream fails mid-stream, falls back to HTTP bridge.
 func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *authHeaders, message []byte) {
 	var event schemas.WebSocketResponsesEvent
+
 	if err := sonic.Unmarshal(message, &event); err != nil {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse response.create event")
 		return
+	}
+
+	// Store override: default to store=true (Codex sends false by default but expects true).
+	// If DisableStore is set in provider config, force store=false.
+	// If client explicitly sets store, respect that value unless DisableStore overrides it.
+	provider, modelName := schemas.ParseModelString(event.Model, "")
+	if provider == "" || modelName == "" {
+		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
+		return
+	}
+
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(provider); cfgErr == nil &&
+		providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+		event.Store = schemas.Ptr(false)
+	} else if event.Store == nil {
+		event.Store = schemas.Ptr(true)
 	}
 
 	bifrostReq, err := h.convertEventToRequest(&event)
@@ -166,6 +183,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		return
 	}
 
+	
 	// Extract extra params (unknown fields) and forward them, matching the HTTP path behavior
 	extraParams, extractErr := extractExtraParams(message, wsResponsesKnownFields)
 	if extractErr == nil && len(extraParams) > 0 {
@@ -416,6 +434,7 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	if len(input) == 0 {
 		return nil, errInputRequired
 	}
+	
 
 	params := &schemas.ResponsesParameters{}
 	if event.Temperature != nil {
