@@ -390,8 +390,14 @@ func (plugin *Plugin) generateDirectCacheID(provider schemas.ModelProvider, mode
 	idJSON, err := schemas.MarshalDeeplySorted(idInput)
 	if err != nil {
 		// Fallback: derive deterministic UUID from concatenated inputs
-		fallbackData := []byte(cacheKey + requestHash + paramsHash + string(provider) + model)
-		return uuid.NewSHA1(directCacheNamespace, fallbackData).String()
+		fallbackStr := cacheKey + requestHash + paramsHash
+		if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
+			fallbackStr += string(provider)
+		}
+		if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
+			fallbackStr += model
+		}
+		return uuid.NewSHA1(directCacheNamespace, []byte(fallbackStr)).String()
 	}
 
 	return uuid.NewSHA1(directCacheNamespace, idJSON).String()
