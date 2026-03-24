@@ -27,12 +27,13 @@ func TestApplyRoutingRules_TargetModelTemplate(t *testing.T) {
 		logger: logger,
 	}
 
+	// Uses CEL string expression for model transformation
 	rule := &configstoreTables.TableRoutingRule{
-		ID:            "tmpl-apply-1",
-		Name:          "Template Apply Rule",
+		ID:            "cel-apply-1",
+		Name:          "CEL Model Transform Apply Rule",
 		CelExpression: "true",
 		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr(`"anthropic/" + model`), Weight: 1.0},
 		},
 		Enabled:  true,
 		Scope:    "global",

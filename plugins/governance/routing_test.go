@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,67 +267,161 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	assert.Equal(t, "Global Rule", decision.MatchedRuleName)
 }
 
-func TestResolveRoutingModelTemplate(t *testing.T) {
+func TestGetModelTransformProgram(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
 	tests := []struct {
-		name     string
-		input    string
-		ctx      *RoutingContext
-		expected string
-		err      string
+		name          string
+		modelExpr     string
+		model         string // input model for CEL evaluation
+		expected      string // expected resolved model
+		expectStatic  bool   // true = static string (nil program)
+		expectErr     bool
+		errContains   string
 	}{
 		{
-			name:     "multiple placeholders",
-			input:    "x/{{input.model}}/y/{{model}}",
-			ctx:      &RoutingContext{Model: "claude-sonnet-4-5"},
-			expected: "x/claude-sonnet-4-5/y/claude-sonnet-4-5",
+			name:         "static model value",
+			modelExpr:    "gpt-4-turbo",
+			expected:     "gpt-4-turbo",
+			expectStatic: true,
 		},
 		{
-			name:  "partial invalid template",
-			input: "anthropic/{{input.model}}-{{bad}}",
-			ctx:   &RoutingContext{Model: "claude-sonnet-4-5"},
-			err:   "unknown template variable",
+			name:         "static model with slashes",
+			modelExpr:    "claude-sonnet-4-5",
+			expected:     "claude-sonnet-4-5",
+			expectStatic: true,
 		},
 		{
-			name:     "static value",
-			input:    "claude-sonnet-4-5",
-			ctx:      &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
-			expected: "claude-sonnet-4-5",
+			name:      "CEL string concatenation",
+			modelExpr: `"anthropic/" + model`,
+			model:     "claude-sonnet-4-5",
+			expected:  "anthropic/claude-sonnet-4-5",
 		},
 		{
-			name:     "model template",
-			input:    "anthropic/{{input.model}}",
-			ctx:      &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
-			expected: "anthropic/claude-sonnet-4-5",
+			name:      "CEL model passthrough",
+			modelExpr: `model`,
+			model:     "gpt-4o",
+			expected:  "gpt-4o",
 		},
 		{
-			name:  "unknown variable",
-			input: "anthropic/{{input.unknown}}",
-			ctx:   &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
-			err:   "unknown template variable",
+			name:      "quoted string literal is treated as CEL not static",
+			modelExpr: `"gpt-4"`,
+			model:     "",
+			expected:  "gpt-4",
 		},
 		{
-			name:  "malformed template",
-			input: "anthropic/{{input.model}",
-			ctx:   &RoutingContext{Provider: schemas.OpenRouter, Model: "claude-sonnet-4-5", RequestType: "chat_completion"},
-			err:   "invalid template syntax in model target",
+			name:      "CEL prefix and suffix",
+			modelExpr: `"prefix/" + model + "/suffix"`,
+			model:     "claude-sonnet-4-5",
+			expected:  "prefix/claude-sonnet-4-5/suffix",
+		},
+		{
+			name:        "deprecated template syntax rejected",
+			modelExpr:   "anthropic/{{input.model}}",
+			expectErr:   true,
+			errContains: "no longer supported",
+		},
+		{
+			name:        "deprecated template with model variable rejected",
+			modelExpr:   "x/{{model}}/y",
+			expectErr:   true,
+			errContains: "no longer supported",
+		},
+		{
+			name:        "broken CEL syntax is error not silent static",
+			modelExpr:   `"anthropic/" +`,
+			expectErr:   true,
+			errContains: "invalid model target",
+		},
+		{
+			name:        "CEL non-string output type is error",
+			modelExpr:   `1 + 2`,
+			expectErr:   true,
+			errContains: "must evaluate to string",
+		},
+		{
+			name:        "boolean CEL expression is error for model target",
+			modelExpr:   `model == "gpt-4"`,
+			expectErr:   true,
+			errContains: "must evaluate to string",
+		},
+		{
+			name:         "static model with slashes and dots",
+			modelExpr:    "meta/llama-3.1-70b",
+			expected:     "meta/llama-3.1-70b",
+			expectStatic: true,
+		},
+		{
+			name:         "whitespace is trimmed",
+			modelExpr:    "  gpt-4-turbo  ",
+			expected:     "gpt-4-turbo",
+			expectStatic: true,
+		},
+		{
+			name:         "static model with plus sign (false-positive protection)",
+			modelExpr:    "gpt-4+turbo",
+			expected:     "gpt-4+turbo",
+			expectStatic: true,
+		},
+		{
+			name:         "static model with at-sign version",
+			modelExpr:    "claude-sonnet-4-5@20250514",
+			expected:     "claude-sonnet-4-5@20250514",
+			expectStatic: true,
+		},
+		{
+			name:         "static model with colon separator",
+			modelExpr:    "anthropic:claude-3",
+			expected:     "anthropic:claude-3",
+			expectStatic: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual, err := resolveRoutingModelTemplate(tt.input, tt.ctx)
-			if tt.err != "" {
+			prog, err := store.GetModelTransformProgram(tt.modelExpr)
+			if tt.expectErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.err)
+				assert.Contains(t, err.Error(), tt.errContains)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.expected, actual)
+
+			if tt.expectStatic {
+				assert.Nil(t, prog, "expected nil program for static string")
+				// For static strings, the caller uses the expression directly
+				// (after TrimSpace normalization by GetModelTransformProgram)
+				assert.Equal(t, tt.expected, strings.TrimSpace(tt.modelExpr))
+				return
+			}
+
+			// CEL expression — evaluate with routing variables
+			require.NotNil(t, prog, "expected non-nil program for CEL expression")
+			variables := map[string]interface{}{
+				"model":            tt.model,
+				"provider":         "openai",
+				"request_type":     "chat_completion",
+				"headers":          map[string]string{},
+				"params":           map[string]string{},
+				"virtual_key_id":   "",
+				"virtual_key_name": "",
+				"team_id":          "",
+				"team_name":        "",
+				"customer_id":      "",
+				"customer_name":    "",
+				"tokens_used":      0.0,
+				"request":          0.0,
+				"budget_used":      0.0,
+			}
+			result, evalErr := evaluateCELStringExpression(prog, variables)
+			require.NoError(t, evalErr)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
-func TestEvaluateRoutingRules_TargetTemplateModel(t *testing.T) {
+func TestEvaluateRoutingRules_TargetCELModelTransform(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
@@ -335,12 +430,13 @@ func TestEvaluateRoutingRules_TargetTemplateModel(t *testing.T) {
 
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
+	// Model target uses a CEL string expression instead of the old {{input.model}} template
 	rule := &configstoreTables.TableRoutingRule{
-		ID:            "tmpl-1",
-		Name:          "Template Rule",
+		ID:            "cel-1",
+		Name:          "CEL Model Transform Rule",
 		CelExpression: "true",
 		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr(`"anthropic/" + model`), Weight: 1.0},
 		},
 		Enabled:  true,
 		Scope:    "global",
@@ -362,7 +458,7 @@ func TestEvaluateRoutingRules_TargetTemplateModel(t *testing.T) {
 	assert.Equal(t, "anthropic/claude-sonnet-4-5", decision.Model)
 }
 
-func TestEvaluateRoutingRules_InvalidTemplateSkipsRule(t *testing.T) {
+func TestEvaluateRoutingRules_InvalidModelExprSkipsRule(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
@@ -371,23 +467,25 @@ func TestEvaluateRoutingRules_InvalidTemplateSkipsRule(t *testing.T) {
 
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
+	// Bad rule: uses deprecated {{}} template syntax — should be skipped with error
 	badRule := &configstoreTables.TableRoutingRule{
-		ID:            "tmpl-bad",
-		Name:          "Bad Template Rule",
+		ID:            "cel-bad",
+		Name:          "Bad Model Expr Rule",
 		CelExpression: "true",
 		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.unknown}}"), Weight: 1.0},
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
 		},
 		Enabled:  true,
 		Scope:    "global",
 		Priority: 0,
 	}
+	// Good rule: uses CEL expression — should be selected as fallback
 	goodRule := &configstoreTables.TableRoutingRule{
-		ID:            "tmpl-good",
-		Name:          "Fallback Rule",
+		ID:            "cel-good",
+		Name:          "Good CEL Rule",
 		CelExpression: "true",
 		Targets: []configstoreTables.TableRoutingTarget{
-			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr("anthropic/{{input.model}}"), Weight: 1.0},
+			{Provider: bifrost.Ptr("openrouter"), Model: bifrost.Ptr(`"anthropic/" + model`), Weight: 1.0},
 		},
 		Enabled:  true,
 		Scope:    "global",
@@ -406,7 +504,8 @@ func TestEvaluateRoutingRules_InvalidTemplateSkipsRule(t *testing.T) {
 	decision, err := engine.EvaluateRoutingRules(bgCtx, routingCtx)
 	require.NoError(t, err)
 	require.NotNil(t, decision)
-	assert.Equal(t, "tmpl-good", decision.MatchedRuleID)
+	// Bad rule skipped, good rule selected
+	assert.Equal(t, "cel-good", decision.MatchedRuleID)
 	assert.Equal(t, "anthropic/claude-sonnet-4-5", decision.Model)
 }
 
@@ -1727,5 +1826,122 @@ func getDefaultRouting(ctx *RoutingContext) *RoutingDecision {
 		Model:         ctx.Model,
 		Fallbacks:     ctx.Fallbacks,
 		MatchedRuleID: "0",
+	}
+}
+
+// BenchmarkModelTransform_CEL benchmarks the precompiled CEL model transformation path.
+// The program is compiled once during setup; the benchmark loop measures only the eval cost
+// (sync.Map lookup + CEL Eval), which is the per-request hot path.
+// NOTE: CEL evaluation has internal allocations (ref-counted values, activation structs).
+// The benchmark measures realistic per-request cost, not zero-allocation claims.
+func BenchmarkModelTransform_CEL(b *testing.B) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	expr := `"anthropic/" + model`
+	// Pre-compile so the benchmark measures only evaluation
+	prog, err := store.GetModelTransformProgram(expr)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if prog == nil {
+		b.Fatal("expected non-nil program for CEL expression")
+	}
+
+	variables := map[string]interface{}{
+		"model":            "claude-sonnet-4-5",
+		"provider":         "openai",
+		"request_type":     "chat_completion",
+		"headers":          map[string]string{},
+		"params":           map[string]string{},
+		"virtual_key_id":   "",
+		"virtual_key_name": "",
+		"team_id":          "",
+		"team_name":        "",
+		"customer_id":      "",
+		"customer_name":    "",
+		"tokens_used":      0.0,
+		"request":          0.0,
+		"budget_used":      0.0,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		result, err := evaluateCELStringExpression(prog, variables)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if result != "anthropic/claude-sonnet-4-5" {
+			b.Fatalf("unexpected result: %s", result)
+		}
+	}
+}
+
+// TestCELEnvironmentVariables asserts that the routing CEL environment declares all
+// expected variables. This catches accidental removals or renames that would silently
+// break rule evaluation at runtime.
+func TestCELEnvironmentVariables(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	// These are the variables that routing rules and model transform expressions rely on.
+	// If any are removed from createCELEnvironment, this test must be updated in tandem.
+	requiredVars := []string{
+		"model", "provider", "request_type",
+		"headers", "params",
+		"virtual_key_id", "virtual_key_name",
+		"team_id", "team_name",
+		"customer_id", "customer_name",
+		"tokens_used", "request", "budget_used",
+	}
+
+	for _, varName := range requiredVars {
+		// Compiling a simple expression that references the variable will fail
+		// if the variable is not declared in the environment.
+		expr := varName + ` == ""` // works for string vars; numeric vars will compile as type mismatch but still prove declaration
+		if varName == "tokens_used" || varName == "request" || varName == "budget_used" {
+			expr = varName + " >= 0.0"
+		} else if varName == "headers" || varName == "params" {
+			expr = `"key" in ` + varName
+		}
+		_, issues := store.routingCELEnv.Compile(expr)
+		if issues != nil && issues.Err() != nil {
+			t.Errorf("CEL environment missing required variable %q: compile error: %v", varName, issues.Err())
+		}
+	}
+}
+
+// BenchmarkModelTransform_Static benchmarks the static model path (sync.Map lookup only).
+func BenchmarkModelTransform_Static(b *testing.B) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	expr := "gpt-4-turbo"
+	// Pre-compile (will be cached as static)
+	prog, err := store.GetModelTransformProgram(expr)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if prog != nil {
+		b.Fatal("expected nil program for static string")
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		prog, err := store.GetModelTransformProgram(expr)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if prog != nil {
+			// Static string — use expr directly
+			b.Fatal("expected nil program")
+		}
+		_ = expr // simulate using the static string
 	}
 }

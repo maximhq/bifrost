@@ -40,7 +40,12 @@ type LocalGovernanceStore struct {
 
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
-	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
+	compiledModelPrograms   sync.Map // string -> *modelTransformEntry (key: model expression -> compiled CEL program or nil for static)
+	// NOTE: compiledModelPrograms is unbounded. In practice, the number of entries is
+	// limited by routing rule configuration (each target contributes at most one entry).
+	// If dynamic rule creation at high cardinality is introduced, an LRU or size-bounded
+	// cache should replace this.
+	routingCELEnv *cel.Env // Singleton CEL environment reused for all compilations
 
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
@@ -145,6 +150,9 @@ type GovernanceStore interface {
 	DeleteProviderInMemory(providerName string)
 	// Routing Rules CEL caching
 	GetRoutingProgram(rule *configstoreTables.TableRoutingRule) (cel.Program, error)
+	// Model transform CEL program: returns (program, nil) for CEL expressions,
+	// (nil, nil) for static strings, or (nil, error) for invalid expressions.
+	GetModelTransformProgram(modelExpr string) (cel.Program, error)
 	// Budget and rate limit status queries for routing with baseline support
 	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	// Routing Rules CRUD
@@ -3338,6 +3346,133 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableR
 	return program, nil
 }
 
+// modelTransformEntry caches the result of compiling a model target as a CEL string expression.
+// All outcomes are cached (success, static, and errors) so the hot path is always a single
+// sync.Map lookup with zero compilation overhead.
+type modelTransformEntry struct {
+	program cel.Program // non-nil for valid CEL string expressions
+	err     error       // non-nil for invalid expressions (cached to avoid recompilation)
+}
+
+// GetModelTransformProgram compiles a model target string as a CEL string expression and caches the result.
+// Returns (program, nil) if the expression is valid CEL producing a string — evaluate at runtime.
+// Returns (nil, nil) if the expression is a plain static model name (e.g., "gpt-4-turbo").
+// Returns (nil, error) for any invalid expression — deprecated templates, broken CEL syntax,
+// or CEL that produces a non-string type.
+//
+// All results (including errors) are cached by normalized expression string, so identical
+// expressions across rules share one entry. This ensures the hot path is a single sync.Map
+// lookup per request with zero compilation and zero allocations beyond the lookup itself.
+//
+// Detection strategy (deterministic, no heuristic guessing):
+//  1. Attempt CEL compilation.
+//  2a. If compilation succeeds and output type is string → CEL expression.
+//  2b. If compilation fails → check isValidStaticModel (character allowlist:
+//      alphanumerics, hyphens, underscores, dots, slashes, colons, @, +).
+//      All chars match → static model name. Otherwise → error (malformed CEL).
+//
+// This ensures model names like "gpt-4+turbo" or "meta/llama-3.1-70b" are never
+// misclassified as CEL, and broken CEL like '"anthropic/" +' always errors.
+//
+// The CEL environment exposes: model, provider, request_type, headers, params,
+// virtual_key_id/name, team_id/name, customer_id/name, tokens_used, request, budget_used.
+func (gs *LocalGovernanceStore) GetModelTransformProgram(modelExpr string) (cel.Program, error) {
+	modelExpr = strings.TrimSpace(modelExpr)
+
+	// Check cache first — single atomic load covers all previously seen expressions
+	// (valid programs, static strings, and errors). No allocations on the hot path.
+	if entry, ok := gs.compiledModelPrograms.Load(modelExpr); ok {
+		e := entry.(*modelTransformEntry)
+		return e.program, e.err
+	}
+
+	// Reject deprecated template syntax with a clear migration message
+	if strings.Contains(modelExpr, "{{") {
+		err := fmt.Errorf(
+			"invalid model expression '%s': template syntax {{}} is no longer supported; "+
+				"use a CEL string expression instead (e.g., '\"anthropic/\" + model' instead of 'anthropic/{{input.model}}')",
+			modelExpr,
+		)
+		gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{err: err})
+		return nil, err
+	}
+
+	// Try to compile as a CEL expression
+	ast, issues := gs.routingCELEnv.Compile(modelExpr)
+	if issues != nil && issues.Err() != nil {
+		// Compile failed — determine if this was intended as a static model name
+		// or a malformed CEL expression using a deterministic character allowlist.
+		if isValidStaticModel(modelExpr) {
+			// All characters are valid model-name characters → treat as static
+			gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{})
+			return nil, nil
+		}
+		// Contains characters outside the model-name allowlist → malformed CEL
+		err := fmt.Errorf(
+			"invalid model target '%s': %w; must be either: "+
+				"(1) a valid CEL string expression (e.g., '\"anthropic/\" + model'), or "+
+				"(2) a static model name using only alphanumerics, '-', '.', '/', ':', '@', '+'",
+			modelExpr, issues.Err(),
+		)
+		gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{err: err})
+		return nil, err
+	}
+
+	// Compiled successfully as valid CEL — treat as a dynamic expression.
+	// NOTE: This means that quoted string literals like '"gpt-4"' are treated as CEL
+	// (evaluated to "gpt-4") rather than as static model names. This is intentional:
+	// it keeps the system deterministic (compiles → CEL, doesn't compile → allowlist)
+	// and avoids a second layer of heuristic guessing about author intent.
+	//
+	// Enforce string output type — a CEL expression that produces int/bool/etc.
+	// is always an authoring mistake.
+	if ast.OutputType() != cel.StringType {
+		err := fmt.Errorf(
+			"model expression '%s' must evaluate to string, got %s",
+			modelExpr, ast.OutputType(),
+		)
+		gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{err: err})
+		return nil, err
+	}
+
+	// Create and cache the program
+	program, err := gs.routingCELEnv.Program(ast)
+	if err != nil {
+		err = fmt.Errorf("CEL model transform program error for '%s': %w", modelExpr, err)
+		gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{err: err})
+		return nil, err
+	}
+
+	gs.compiledModelPrograms.Store(modelExpr, &modelTransformEntry{program: program})
+	return program, nil
+}
+
+// isValidStaticModel reports whether s consists entirely of characters that are valid
+// in model names/identifiers: alphanumerics, hyphens, underscores, dots, slashes,
+// colons, at-signs, and plus signs (e.g., "gpt-4-turbo", "meta/llama-3.1-70b",
+// "gpt-4+turbo"). Empty strings return false.
+//
+// This is used as a deterministic allowlist to distinguish static model names from
+// malformed CEL expressions when CEL compilation fails. Any string that passes this
+// check is safe to use as a literal model name; anything that fails it and also fails
+// CEL compilation is treated as a syntax error.
+//
+// NOTE: The allowlist is based on observed model naming conventions across all major
+// providers (OpenAI, Anthropic, Google, Meta, Mistral, Cohere, etc.). If a new provider
+// introduces characters outside this set, the allowlist should be extended here.
+func isValidStaticModel(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '@' || c == '+') {
+			return false
+		}
+	}
+	return true
+}
+
 // GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
 // Accounts for baseline usage from remote nodes when calculating percentages
 func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
@@ -3647,6 +3782,16 @@ func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(rule *configstoreTable
 	// Recompile the program immediately to update cache with fresh compilation
 	if _, err := gs.GetRoutingProgram(rule); err != nil {
 		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.ID, err)
+	}
+
+	// Pre-compile model transform programs for all targets so the first request
+	// hitting this rule pays zero compilation cost.
+	for _, target := range rule.Targets {
+		if target.Model != nil && *target.Model != "" {
+			if _, err := gs.GetModelTransformProgram(*target.Model); err != nil {
+				gs.logger.Warn("Failed to pre-compile model transform for rule %s, model=%s: %v", rule.ID, *target.Model, err)
+			}
+		}
 	}
 
 	return nil
