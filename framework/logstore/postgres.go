@@ -96,22 +96,17 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 
-	// Ensure the metadata GIN index exists and is valid. This is done in a
-	// goroutine so that CREATE INDEX CONCURRENTLY (which can take minutes on
-	// large tables) does not block pod startup. The function is idempotent —
-	// it is a no-op when the index is already healthy.
+	// Run all index builds sequentially in a single goroutine to prevent
+	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
+	// Each function is idempotent and acquires its own advisory lock for
+	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
 	go func() {
 		if err := ensureMetadataGINIndex(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
-			return
+		} else {
+			logger.Info("logstore: metadata GIN index is ready")
 		}
-		logger.Info("logstore: metadata GIN index is ready")
-	}()
 
-	// Run dashboard enhancements first (backfill + covering index rebuild),
-	// then performance indexes second, in a single goroutine to avoid
-	// deadlocks from concurrent DDL on the same table.
-	go func() {
 		if err := ensureDashboardEnhancements(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
 		} else {
