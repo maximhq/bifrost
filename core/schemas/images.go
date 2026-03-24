@@ -151,10 +151,12 @@ func normalizeImageQuality(q string) string {
 }
 
 type ImageGenerationResponseParameters struct {
-	Background   string `json:"background,omitempty"`
-	OutputFormat string `json:"output_format,omitempty"`
-	Quality      string `json:"quality,omitempty"`
-	Size         string `json:"size,omitempty"`
+	Background    string    `json:"background,omitempty"`
+	OutputFormat  string    `json:"output_format,omitempty"`
+	Quality       string    `json:"quality,omitempty"`
+	Size          string    `json:"size,omitempty"`
+	FinishReasons []*string `json:"finish_reasons,omitempty"`
+	Seeds         []int     `json:"seeds,omitempty"`
 }
 
 type ImageData struct {
