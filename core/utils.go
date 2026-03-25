@@ -105,8 +105,14 @@ func isLocalBaseURL(baseURL string) bool {
 	if err != nil {
 		return false
 	}
-
-	return isLocalhost(parsed.Hostname())
+	hostname := parsed.Hostname()
+	if hostname == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
