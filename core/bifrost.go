@@ -5201,6 +5201,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		transcriptionResponse.BackfillParams(req.BifrostRequest.TranscriptionRequest)
 		response.TranscriptionResponse = transcriptionResponse
 	case schemas.ImageGenerationRequest:
 		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)

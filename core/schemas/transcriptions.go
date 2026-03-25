@@ -14,15 +14,37 @@ func (r *BifrostTranscriptionRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostTranscriptionResponse struct {
-	Duration    *float64                   `json:"duration,omitempty"` // Duration in seconds
-	Language    *string                    `json:"language,omitempty"` // e.g., "english"
-	LogProbs    []TranscriptionLogProb     `json:"logprobs,omitempty"`
-	Segments    []TranscriptionSegment     `json:"segments,omitempty"`
-	Task        *string                    `json:"task,omitempty"` // e.g., "transcribe"
-	Text        string                     `json:"text"`
-	Usage       *TranscriptionUsage        `json:"usage,omitempty"`
-	Words       []TranscriptionWord        `json:"words,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Duration       *float64                   `json:"duration,omitempty"` // Duration in seconds
+	Language       *string                    `json:"language,omitempty"` // e.g., "english"
+	LogProbs       []TranscriptionLogProb     `json:"logprobs,omitempty"`
+	Segments       []TranscriptionSegment     `json:"segments,omitempty"`
+	Task           *string                    `json:"task,omitempty"` // e.g., "transcribe"
+	Text           string                     `json:"text"`
+	Usage          *TranscriptionUsage        `json:"usage,omitempty"`
+	Words          []TranscriptionWord        `json:"words,omitempty"`
+	ResponseFormat *string                    `json:"-"` // Set by provider for non-JSON formats (text, srt, vtt); used by integration response converters
+	ExtraFields    BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+func (r *BifrostTranscriptionResponse) BackfillParams(req *BifrostTranscriptionRequest) {
+	if r == nil || req == nil || req.Params == nil || req.Params.ResponseFormat == nil {
+		return
+	}
+	r.ResponseFormat = req.Params.ResponseFormat
+}
+
+// IsPlainTextTranscriptionFormat returns true if the given response format
+// produces a plain-text response body (not JSON).
+func IsPlainTextTranscriptionFormat(format *string) bool {
+	if format == nil {
+		return false
+	}
+	switch *format {
+	case "text", "srt", "vtt":
+		return true
+	default:
+		return false
+	}
 }
 
 type TranscriptionInput struct {
