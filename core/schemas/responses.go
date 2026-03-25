@@ -3,6 +3,7 @@ package schemas
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1349,6 +1350,37 @@ const (
 	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
 )
 
+// normalizeResponsesToolType maps versioned/provider-specific tool type strings
+// to their canonical ResponsesToolType. For example, "web_search_20250305" → "web_search".
+// Returns the input unchanged if it's already canonical or unrecognized.
+func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
+	s := string(t)
+	switch {
+	// web_search_preview must be checked before web_search (prefix overlap)
+	case t == ResponsesToolTypeWebSearchPreview:
+		return t
+	case strings.HasPrefix(s, "web_search_preview"):
+		return ResponsesToolTypeWebSearchPreview
+	case t == ResponsesToolTypeWebSearch:
+		return t
+	case strings.HasPrefix(s, "web_search"):
+		return ResponsesToolTypeWebSearch
+	case t == ResponsesToolTypeWebFetch:
+		return t
+	case strings.HasPrefix(s, "web_fetch"):
+		return ResponsesToolTypeWebFetch
+	case strings.HasPrefix(s, "computer") && t != ResponsesToolTypeComputerUsePreview:
+		// Covers "computer_20250124", "computer_20251124", etc.
+		return ResponsesToolTypeComputerUsePreview
+	case strings.HasPrefix(s, "code_execution"):
+		return ResponsesToolTypeCodeInterpreter
+	case strings.HasPrefix(s, "memory") && t != ResponsesToolTypeMemory:
+		return ResponsesToolTypeMemory
+	default:
+		return t
+	}
+}
+
 // ResponsesTool represents a tool
 type ResponsesTool struct {
 	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
@@ -1498,7 +1530,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	if !ok {
 		return fmt.Errorf("'type' field must be a string")
 	}
-	t.Type = ResponsesToolType(typeStr)
+	t.Type = normalizeResponsesToolType(ResponsesToolType(typeStr))
 
 	// Unmarshal common fields
 	if name, ok := raw["name"].(string); ok {

@@ -1039,6 +1039,17 @@ append_dynamic_columns_postgres() {
   fi
 
   # -------------------------------------------------------------------------
+  # v1.4.15 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs.cached_read_tokens (added in migrationAddDashboardEnhancements)
+  if column_exists_postgres "logs" "cached_read_tokens"; then
+    echo "UPDATE logs SET cached_read_tokens = 128 WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.4.12 columns - governance_model_pricing new pricing columns
   # -------------------------------------------------------------------------
 
@@ -1618,6 +1629,15 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.4.15 columns - log store tables (emitted unconditionally; fail silently on config_db)
+  # -------------------------------------------------------------------------
+
+  # logs.cached_read_tokens (added in migrationAddDashboardEnhancements)
+  echo "UPDATE logs SET cached_read_tokens = 128 WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
 }
 
 # ============================================================================

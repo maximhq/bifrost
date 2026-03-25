@@ -341,9 +341,10 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 --data '{
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}],
-    "extra_params": {
-        "custom_param": "value",
-        "another_param": 123
+    "custom_param": "value",
+    "nested_param": {
+        "a": "value",
+        "b": 123
     }
 }'
 ```
@@ -360,7 +361,10 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
     Params: &schemas.ChatParameters{
         ExtraParams: map[string]interface{}{
             "custom_param":  "value",
-            "another_param": 123,
+            "nested_param": map[string]interface{}{
+                "a": "value",
+                "b": 123,
+            },
         },
     },
 })

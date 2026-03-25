@@ -1642,48 +1642,26 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddProviderHistogramIndex adds a composite index on (timestamp, provider, status)
-// to accelerate the provider-level histogram GROUP BY queries (cost, token, latency by provider).
-// The existing idx_logs_histogram_cover index has (status, timestamp, ..., provider, ...) which helps
-// but is suboptimal when provider is the primary grouping dimension. This dedicated index puts
-// timestamp first (for range scans), then provider (for grouping), then status (for filtering).
+// migrationAddProviderHistogramIndex records the migration version for the provider histogram
+// index. Actual index creation is deferred to ensurePerformanceIndexes (called post-startup
+// in a background goroutine) because CREATE INDEX CONCURRENTLY cannot run inside a
+// transaction and a regular CREATE INDEX takes an AccessExclusiveLock that blocks all
+// reads/writes on large tables.
 func migrationAddProviderHistogramIndex(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
+	opts.UseTransaction = false
 	m := migrator.New(db, &opts, []*migrator.Migration{{
 		ID: "logs_add_provider_histogram_index",
 		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			dbMigrator := tx.Migrator()
-
-			if !dbMigrator.HasIndex(&Log{}, "idx_logs_ts_provider_status") {
-				dialect := tx.Dialector.Name()
-
-				var createSQL string
-				switch dialect {
-				case "mysql":
-					createSQL = `CREATE INDEX idx_logs_ts_provider_status ON logs(timestamp, provider(50), status(50))`
-				default:
-					createSQL = `CREATE INDEX IF NOT EXISTS idx_logs_ts_provider_status ON logs(timestamp, provider, status)`
-				}
-
-				if err := tx.Exec(createSQL).Error; err != nil {
-					return fmt.Errorf("failed to create provider histogram index: %w", err)
-				}
-			}
-
+			// No-op: actual index creation is handled by ensurePerformanceIndexes
+			// to avoid blocking pod startup on large tables.
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			dbMigrator := tx.Migrator()
-
-			if dbMigrator.HasIndex(&Log{}, "idx_logs_ts_provider_status") {
-				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_ts_provider_status").Error; err != nil {
-					return fmt.Errorf("failed to drop index idx_logs_ts_provider_status: %w", err)
-				}
+			if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_ts_provider_status").Error; err != nil {
+				return fmt.Errorf("failed to drop index idx_logs_ts_provider_status: %w", err)
 			}
-
 			return nil
 		},
 	}})
@@ -2126,6 +2104,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_timestamp",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_timestamp ON mcp_tool_logs (timestamp)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_ts_provider_status",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_ts_provider_status ON logs(timestamp, provider, status)",
 	},
 }
 

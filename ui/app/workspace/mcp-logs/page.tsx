@@ -129,7 +129,13 @@ export default function MCPLogsPage() {
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
 		}),
-		[urlState],
+		// Only re-derive filters when filter-related URL params change (not pagination)
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[
+			urlState.tool_names, urlState.server_labels, urlState.status,
+			urlState.virtual_key_ids, urlState.content_search,
+			urlState.start_time, urlState.end_time,
+		],
 	);
 
 	const pagination: Pagination = useMemo(
@@ -139,7 +145,7 @@ export default function MCPLogsPage() {
 			sort_by: urlState.sort_by as "timestamp" | "latency",
 			order: urlState.order as "asc" | "desc",
 		}),
-		[urlState],
+		[urlState.limit, urlState.offset, urlState.sort_by, urlState.order],
 	);
 
 	const liveEnabled = urlState.live_enabled;

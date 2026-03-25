@@ -763,38 +763,53 @@ func (mc *ModelCatalog) UpsertUnfilteredModelDataForProvider(provider schemas.Mo
 // - When the provider is not handled or no refinement is needed, returns the original model unchanged
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
 	switch provider {
-	// These providers have {provider}/{model} format for models
 	case schemas.Groq:
 		if strings.Contains(model, "gpt-") {
 			return "openai/" + model, nil
 		}
-		// Check if the model without provider prefix is present in the provider's catalog
-		// Guard concurrent access to mc.modelPool with read lock
-		mc.mu.RLock()
-		models, ok := mc.modelPool[provider]
-		mc.mu.RUnlock()
-
-		if ok {
-			var candidateModels []string
-			for _, poolModel := range models {
-				providerPart, modelPart := schemas.ParseModelString(poolModel, "")
-				if model == modelPart {
-					candidateModels = append(candidateModels, string(providerPart)+"/"+modelPart)
-				}
-			}
-			// Handle candidateModels based on count
-			if len(candidateModels) == 1 {
-				return candidateModels[0], nil
-			} else if len(candidateModels) == 0 {
-				// No matches found, return original model to allow fallback
-				return model, nil
-			} else {
-				// Multiple matches found, return error
-				return "", fmt.Errorf("multiple compatible models found for model %s: %v", model, candidateModels)
-			}
-		}
+		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Replicate:
+		return mc.refineNestedProviderModel(provider, model)
 	}
 	return model, nil
+}
+
+// refineNestedProviderModel resolves provider-native model slugs such as
+// "openai/gpt-5-nano" from a base model request like "gpt-5-nano".
+// It only considers catalog entries whose leading segment is a known Bifrost provider,
+// so Replicate owner/model identifiers like "meta/llama-3-8b" are left untouched.
+func (mc *ModelCatalog) refineNestedProviderModel(provider schemas.ModelProvider, model string) (string, error) {
+	mc.mu.RLock()
+	models, ok := mc.modelPool[provider]
+	mc.mu.RUnlock()
+	if !ok {
+		return model, nil
+	}
+
+	candidateModels := make([]string, 0)
+	seenCandidates := make(map[string]struct{})
+	for _, poolModel := range models {
+		providerPart, modelPart := schemas.ParseModelString(poolModel, "")
+		if providerPart == "" || model != modelPart {
+			continue
+		}
+
+		candidate := string(providerPart) + "/" + modelPart
+		if _, seen := seenCandidates[candidate]; seen {
+			continue
+		}
+		seenCandidates[candidate] = struct{}{}
+		candidateModels = append(candidateModels, candidate)
+	}
+
+	switch len(candidateModels) {
+	case 0:
+		return model, nil
+	case 1:
+		return candidateModels[0], nil
+	default:
+		return "", fmt.Errorf("multiple compatible models found for model %s: %v", model, candidateModels)
+	}
 }
 
 // SetPricingOverrides replaces the full in-memory pricing override set.

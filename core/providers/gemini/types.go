@@ -21,6 +21,7 @@ const MinReasoningMaxTokens = 1         // Minimum max tokens for reasoning - us
 const DefaultCompletionMaxTokens = 8192 // Default max output tokens for Gemini - used for relative reasoning max token calculation
 const DefaultReasoningMinBudget = 1024  // Default minimum reasoning budget for Gemini
 const DynamicReasoningBudget = -1       // Special value for dynamic reasoning budget in Gemini
+const skipThoughtSignatureValidator = "skip_thought_signature_validator"
 
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
 const thoughtSignatureSeparator = "_ts_"
@@ -1185,6 +1186,46 @@ type Part struct {
 	Text string `json:"text,omitempty"`
 }
 
+// MarshalJSON implements custom JSON marshaling for Part.
+// This preserves raw thought-signature bytes for normal requests while also
+// allowing the official bypass sentinel to be emitted as a literal string.
+func (p Part) MarshalJSON() ([]byte, error) {
+	type PartAlias struct {
+		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
+		Thought             bool                 `json:"thought,omitempty"`
+		InlineData          *Blob                `json:"inlineData,omitempty"`
+		FileData            *FileData            `json:"fileData,omitempty"`
+		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
+		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
+		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
+		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
+		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
+		Text                string               `json:"text,omitempty"`
+	}
+
+	aux := PartAlias{
+		VideoMetadata:       p.VideoMetadata,
+		Thought:             p.Thought,
+		InlineData:          p.InlineData,
+		FileData:            p.FileData,
+		CodeExecutionResult: p.CodeExecutionResult,
+		ExecutableCode:      p.ExecutableCode,
+		FunctionCall:        p.FunctionCall,
+		FunctionResponse:    p.FunctionResponse,
+		Text:                p.Text,
+	}
+
+	if len(p.ThoughtSignature) > 0 {
+		if string(p.ThoughtSignature) == skipThoughtSignatureValidator {
+			aux.ThoughtSignature = skipThoughtSignatureValidator
+		} else {
+			aux.ThoughtSignature = base64.StdEncoding.EncodeToString(p.ThoughtSignature)
+		}
+	}
+
+	return sonic.Marshal(aux)
+}
+
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
 // This handles the thoughtSignature field which can be sent as a base64-encoded string from the Google GenAI SDK.
 func (p *Part) UnmarshalJSON(data []byte) error {
@@ -1217,20 +1258,24 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.Text = aux.Text
 
 	if aux.ThoughtSignature != "" {
-		// Convert URL-safe base64 to standard base64
-		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.ThoughtSignature, "_", "/"), "-", "+")
-		// Add padding if necessary
-		switch len(standardBase64) % 4 {
-		case 2:
-			standardBase64 += "=="
-		case 3:
-			standardBase64 += "="
+		if aux.ThoughtSignature == skipThoughtSignatureValidator {
+			p.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+		} else {
+			// Convert URL-safe base64 to standard base64
+			standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.ThoughtSignature, "_", "/"), "-", "+")
+			// Add padding if necessary
+			switch len(standardBase64) % 4 {
+			case 2:
+				standardBase64 += "=="
+			case 3:
+				standardBase64 += "="
+			}
+			decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+			if err != nil {
+				return fmt.Errorf("failed to decode base64 thoughtSignature: %v", err)
+			}
+			p.ThoughtSignature = decoded
 		}
-		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 thoughtSignature: %v", err)
-		}
-		p.ThoughtSignature = decoded
 	}
 
 	return nil

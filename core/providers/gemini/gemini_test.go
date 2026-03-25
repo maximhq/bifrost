@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"strings"
@@ -328,6 +329,87 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			assert.True(t, foundEncrypted, "Should have encrypted reasoning detail with signature")
 		})
 	}
+}
+
+func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
+	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr("call_1"),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: `{"location":"Boston"}`,
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":"10C"}`)},
+			},
+		},
+	})
+
+	require.Len(t, result.Contents, 3)
+	require.Len(t, result.Contents[1].Parts, 1)
+	assert.Equal(t, []byte("skip_thought_signature_validator"), result.Contents[1].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
+}
+
+func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
+	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
+	callID := "call_1_ts_" + thoughtSig
+
+	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:   schemas.Ptr(callID),
+					Type: schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      schemas.Ptr("get_weather"),
+						Arguments: `{"location":"Boston"}`,
+					},
+				}},
+			},
+		}},
+	})
+
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	assert.NotEqual(t, []byte("skip_thought_signature_validator"), result.Contents[0].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+}
+
+func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
+	part := gemini.Part{ThoughtSignature: []byte("skip_thought_signature_validator")}
+
+	encoded, err := json.Marshal(part)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+
+	var decoded gemini.Part
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, []byte("skip_thought_signature_validator"), decoded.ThoughtSignature)
 }
 
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format

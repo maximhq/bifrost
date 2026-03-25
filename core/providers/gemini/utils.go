@@ -1798,6 +1798,10 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					parts = append(parts, part)
 				}
 			}
