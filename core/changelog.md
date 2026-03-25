@@ -1,1 +1,2 @@
 - feat: added `blacklisted_models` on provider keys to exclude models from routing and filtered list-models
+- fix: handle global region url in vertex embedding method

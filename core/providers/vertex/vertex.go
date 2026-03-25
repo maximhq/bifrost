@@ -1552,9 +1552,14 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Remove google/ prefix from deployment
 	deployment = strings.TrimPrefix(deployment, "google/")
 
+	// For custom/fine-tuned models, validate projectNumber is set
+	projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
+	if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
+		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
+	}
+
 	// Build the native Vertex embedding API endpoint
-	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
-		region, projectID, region, deployment)
+	url := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":predict")
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
