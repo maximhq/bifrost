@@ -4,26 +4,42 @@ description: "Use context keys to configure request behavior, pass metadata, and
 icon: "key"
 ---
 
-Bifrost uses Go's `context.Context` to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
+Bifrost uses `BifrostContext` — a custom `context.Context` — to pass configuration and metadata through the request lifecycle. Context keys allow you to customize request behavior, pass request-specific settings, and read metadata set by Bifrost.
+
+The idiomatic pattern is to create a `BifrostContext` and call `SetValue` (or the chainable `WithValue`) directly on it:
+
+```go
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-001")
+
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{...})
+```
 
 ## Request Configuration Keys
 
 These keys can be set before making a request to customize behavior.
+
+### Virtual Key
+
+Pass a virtual key identifier to the governance plugin for budget and rate-limit enforcement.
+
+```go
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-my-team")
+```
 
 ### Extra Headers
 
 Pass custom headers with individual requests. Headers are automatically propagated to the provider.
 
 ```go
-ctx := context.Background()
-
-extraHeaders := map[string][]string{
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
     "user-id":    {"user-123"},
     "session-id": {"session-abc"},
-}
-ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+})
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -43,7 +59,7 @@ Bifrost supports selecting a specific key by **ID** or **name**. When both are p
 Explicitly select a key by its unique ID.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
 ```
 
 #### By Name
@@ -51,28 +67,27 @@ ctx := context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234"
 Explicitly select a named API key from your configured keys.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "premium-key")
+bfCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, "premium-key")
 ```
 
 ### Direct Key
 
-Bypass key selection and provide credentials directly. Useful for dynamic key scenarios.
+Provide credentials directly, bypassing Bifrost's key selection entirely. Useful for dynamic or per-request key scenarios.
 
 ```go
-directKey := schemas.Key{
+bfCtx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
     Value:  "sk-direct-api-key",
     Models: []string{"gpt-4o"},
     Weight: 1.0,
-}
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
+})
 ```
 
 ### Skip Key Selection
 
-Skip the key selection process entirely and pass an empty key to the provider. Useful for providers that don't require authentication or when using ambient credentials.
+Skip key selection entirely and pass an empty key to the provider. Useful for providers that don't require authentication or when using ambient credentials (e.g., IAM roles).
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeySkipKeySelection, true)
+bfCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 ```
 
 ### Session Stickiness (Session ID)
@@ -81,16 +96,20 @@ Bind a session to a specific API key so that requests with the same session ID c
 
 On the first request for a session ID, Bifrost selects a key (via weighted random) and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid. If the cached key is no longer in the supported set (disabled, removed, or model support changed), Bifrost re-selects and overwrites the cache.
 
+<Note>
+Session stickiness requires a `KVStore` to be configured in `BifrostConfig`.
+</Note>
+
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+bfCtx.SetValue(schemas.BifrostContextKeySessionID, "user-123-session-abc")
 ```
 
 ### Session TTL
 
-Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses `DefaultSessionStickyTTL` (1 hour). The TTL is refreshed on each request so active sessions do not expire.
+Controls how long the session-to-key binding is cached. If not set, Bifrost uses a default TTL of 1 hour. The TTL is refreshed on each request so active sessions do not expire.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
+bfCtx.SetValue(schemas.BifrostContextKeySessionTTL, 30*time.Minute)
 ```
 
 ### Request ID
@@ -98,7 +117,7 @@ ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minut
 Set a custom request ID for tracking and correlation.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-12345-abc")
+bfCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-12345-abc")
 ```
 
 ### Custom URL Path
@@ -106,52 +125,52 @@ ctx := context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-12345-abc
 Append a custom path to the provider's base URL. Useful for accessing provider-specific endpoints.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyURLPath, "/custom/endpoint")
+bfCtx.SetValue(schemas.BifrostContextKeyURLPath, "/custom/endpoint")
+```
+
+### Stream Idle Timeout
+
+Set a per-chunk idle timeout for streaming responses. If no chunk arrives within this duration, the stream is considered stalled and cancelled.
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 10*time.Second)
 ```
 
 ### Raw Request Body
 
-Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both enable the context key AND set the `RawRequestBody` field on your request.
+Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both set the context key AND populate `RawRequestBody` on the request.
 
 ```go
-// Prepare your raw JSON payload
 rawPayload := []byte(`{
     "model": "gpt-4o",
     "messages": [{"role": "user", "content": "Hello!"}],
     "custom_field": "provider-specific-value"
 }`)
 
-// Enable raw request body mode
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, true)
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 
-// Set the raw body on the request
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
     Provider:       schemas.OpenAI,
     Model:          "gpt-4o",
-    RawRequestBody: rawPayload,  // This will be sent directly to the provider
+    RawRequestBody: rawPayload,
 })
 ```
 
 <Note>
-When using raw request body, Bifrost bypasses its request conversion and sends your payload directly to the provider. You're responsible for ensuring the payload matches the provider's expected format.
+When using raw request body, Bifrost bypasses its request conversion and sends your payload directly to the provider. You are responsible for ensuring the payload matches the provider's expected format.
 </Note>
 
 ### Send Back Raw Request/Response
 
-Include the original request or response in the `ExtraFields` for debugging.
+Include the original request or response bytes in `ExtraFields` for debugging.
 
 ```go
-// Include raw request in response
-ctx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+bfCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 
-// Include raw provider response
-ctx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true)
-```
-
-Access in response:
-
-```go
-response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
+response, _ := client.ChatCompletionRequest(bfCtx, request)
 if response.ChatResponse != nil {
     rawReq := response.ChatResponse.ExtraFields.RawRequest
     rawResp := response.ChatResponse.ExtraFields.RawResponse
@@ -160,12 +179,13 @@ if response.ChatResponse != nil {
 
 ### Passthrough Extra Parameters
 
-Enable passthrough mode for extra parameters. When enabled, any parameters in `ExtraParams` will be merged directly into the request sent to the provider, bypassing Bifrost's parameter filtering.
+When enabled, any parameters in `ExtraParams` are merged directly into the JSON body sent to the provider, bypassing Bifrost's parameter filtering. Useful for provider-specific parameters that Bifrost doesn't natively support.
 
 ```go
-ctx := context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -181,27 +201,57 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 })
 ```
 
-When enabled, the extra parameters are merged into the JSON request body sent to the provider. This allows you to pass provider-specific parameters that Bifrost doesn't natively support.
-
 <Note>
 - This feature only works for JSON requests, not multipart/form-data requests
-- Parameters already handled by Bifrost (like `addWatermark`, `enhancePrompt`) are not duplicated - they appear in their proper location
-- Nested parameters (e.g., `parameters.custom_field`) are merged recursively with existing nested structures
+- Parameters already handled by Bifrost are not duplicated — they appear in their proper location
+- Nested parameters are merged recursively with existing nested structures
 </Note>
+
+## MCP Context Keys
+
+These keys control MCP tool execution behavior on a per-request basis. Request-level filtering takes priority over client-level configuration.
+
+### Include Clients
+
+Restrict which MCP clients can provide tools for this request. Pass `[]string{"*"}` to include all clients, or an empty slice to exclude all.
+
+```go
+bfCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{"github", "filesystem"})
+```
+
+### Include Tools
+
+Restrict which tools are available for this request. Use `"clientName-toolName"` format for individual tools or `"clientName-*"` as a wildcard for all tools from a client.
+
+```go
+// Allow only the search tool from the github client
+bfCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"github-search_repositories"})
+
+// Allow all tools from filesystem client
+bfCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"filesystem-*"})
+```
+
+### MCP Extra Headers
+
+Forward additional headers to MCP servers during tool execution. Only headers present in the MCP client's configured allowlist are forwarded.
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, map[string][]string{
+    "x-user-id":    {"user-123"},
+    "x-session-id": {"session-abc"},
+})
+```
 
 ## Response Metadata Keys
 
-These keys are set by Bifrost and can be read from the context after a request completes. They're particularly useful in plugins and hooks.
+These keys are set by Bifrost and can be read from the context after a request completes. They are particularly useful in plugins and post-hooks.
 
 ### Selected Key Information
 
 After Bifrost selects an API key, it stores the selection details in the context.
 
 ```go
-// Get the selected key's ID
 keyID := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
-
-// Get the selected key's name
 keyName := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string)
 ```
 
@@ -216,25 +266,25 @@ retries := ctx.Value(schemas.BifrostContextKeyNumberOfRetries).(int)
 // Fallback index (0 = primary, 1 = first fallback, etc.)
 fallbackIdx := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 
-// Fallback request ID (set when using a fallback provider)
+// Request ID used for the fallback attempt
 fallbackReqID := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 ```
 
 ### Stream End Indicator
 
-For streaming responses, indicates when the stream has completed.
+For streaming responses, indicates when the stream has completed. Set by Bifrost automatically.
 
 ```go
 isStreamEnd := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool)
 ```
 
 <Note>
-Plugin developers: When implementing custom streaming in PreLLMHook or PostLLMHook, make sure to mark `BifrostContextKeyStreamEndIndicator` as `true` at the end of the stream for proper cleanup.
+Plugin developers: When implementing a short-circuit streaming response in `PreLLMHook` or `PostLLMHook`, set `BifrostContextKeyStreamEndIndicator` to `true` on the last chunk to trigger proper cleanup.
 </Note>
 
 ### Integration Type
 
-Identifies which integration format is being used (useful in gateway scenarios).
+Identifies which SDK integration format is in use (useful in gateway plugins).
 
 ```go
 integrationType := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
@@ -243,8 +293,6 @@ integrationType := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
 
 ## Complete Example
 
-Here's a comprehensive example showing multiple context keys in use:
-
 ```go
 package main
 
@@ -252,52 +300,50 @@ import (
     "context"
     "fmt"
     "log"
+    "time"
 
     "github.com/maximhq/bifrost"
     "github.com/maximhq/bifrost/core/schemas"
 )
 
 func makeRequest(client *bifrost.Bifrost) {
-    // Start with background context
-    ctx := context.Background()
+    bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-    // Add request tracking
-    ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-001")
+    // Request tracking
+    bfCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-001")
 
-    // Add custom headers for the provider
-    extraHeaders := map[string][]string{
+    // Custom headers forwarded to the provider
+    bfCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
         "x-correlation-id": {"corr-12345"},
         "x-tenant-id":      {"tenant-abc"},
-    }
-    ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+    })
 
-    // Request raw response for debugging
-    ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true)
+    // Include raw provider response for debugging
+    bfCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 
-    // Make the request
+    // Restrict MCP tools to a specific client
+    bfCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{"filesystem"})
+
     messages := []schemas.BifrostMessage{
         {Role: "user", Content: &schemas.BifrostMessageContent{Text: bifrost.Ptr("Hello!")}},
     }
 
-    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    response, err := client.ChatCompletionRequest(bfCtx, &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input:    messages,
     })
-
     if err != nil {
         log.Printf("Request failed: %v", err)
         return
     }
 
-    // Access response metadata
     if response.ChatResponse != nil {
         extra := response.ChatResponse.ExtraFields
         fmt.Printf("Provider: %s\n", extra.Provider)
         fmt.Printf("Latency: %dms\n", extra.Latency)
-
         if extra.RawResponse != nil {
-            fmt.Printf("Raw response available for debugging\n")
+            fmt.Println("Raw response captured for debugging")
         }
     }
 }
@@ -307,28 +353,32 @@ func makeRequest(client *bifrost.Bifrost) {
 
 | Key | Type | Direction | Description |
 |-----|------|-----------|-------------|
-| `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier |
+| `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier for governance |
 | `BifrostContextKeyAPIKeyName` | `string` | Set | Explicit API key name selection |
 | `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
-| `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID when using fallback |
-| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Direct key credentials |
-| `BifrostContextKeySelectedKeyID` | `string` | Read | Selected key's ID |
-| `BifrostContextKeySelectedKeyName` | `string` | Read | Selected key's name |
-| `BifrostContextKeyNumberOfRetries` | `int` | Read | Number of retry attempts |
-| `BifrostContextKeyFallbackIndex` | `int` | Read | Current fallback index |
-| `BifrostContextKeyStreamEndIndicator` | `bool` | Read | Stream completion flag |
-| `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection |
+| `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
+| `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Provide credentials directly, bypassing key selection |
+| `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |
 | `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
 | `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |
-| `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom request headers |
-| `BifrostContextKeyURLPath` | `string` | Set | Custom URL path suffix |
-| `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Use raw request body |
-| `BifrostContextKeySendBackRawRequest` | `bool` | Set | Include raw request in response |
-| `BifrostContextKeySendBackRawResponse` | `bool` | Set | Include raw response |
-| `BifrostContextKeyPassthroughExtraParams` | `bool` | Set | Enable passthrough for extra parameters |
-| `BifrostContextKeyIntegrationType` | `string` | Read | Integration format type |
-| `BifrostContextKeyUserAgent` | `string` | Read | Request user agent |
+| `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom headers forwarded to the provider |
+| `BifrostContextKeyURLPath` | `string` | Set | Custom URL path appended to provider base URL |
+| `BifrostContextKeyStreamIdleTimeout` | `time.Duration` | Set | Per-chunk idle timeout for streaming responses |
+| `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Send raw request body directly to provider |
+| `BifrostContextKeySendBackRawRequest` | `bool` | Set | Include raw request in `ExtraFields` |
+| `BifrostContextKeySendBackRawResponse` | `bool` | Set | Include raw provider response in `ExtraFields` |
+| `BifrostContextKeyPassthroughExtraParams` | `bool` | Set | Merge `ExtraParams` directly into provider request |
+| `MCPContextKeyIncludeClients` | `[]string` | Set | Allowlist of MCP client names for this request |
+| `MCPContextKeyIncludeTools` | `[]string` | Set | Allowlist of MCP tools (`"client-tool"` or `"client-*"`) |
+| `BifrostContextKeyMCPExtraHeaders` | `map[string][]string` | Set | Extra headers forwarded to MCP servers during tool execution |
+| `BifrostContextKeySelectedKeyID` | `string` | Read | ID of the key selected by Bifrost |
+| `BifrostContextKeySelectedKeyName` | `string` | Read | Name of the key selected by Bifrost |
+| `BifrostContextKeyNumberOfRetries` | `int` | Read | Number of retry attempts made |
+| `BifrostContextKeyFallbackIndex` | `int` | Read | Current fallback index (0 = primary) |
+| `BifrostContextKeyStreamEndIndicator` | `bool` | Read | Whether the stream has completed |
+| `BifrostContextKeyIntegrationType` | `string` | Read | SDK integration format in use (e.g. `"openai"`) |
+| `BifrostContextKeyUserAgent` | `string` | Read | User agent of the incoming request |
 
 ## Next Steps
 

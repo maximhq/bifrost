@@ -514,11 +514,11 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 
 	// Run filtered and unfiltered model listing concurrently
 	var (
-		allModels         *schemas.BifrostListModelsResponse
-		bifrostErr        *schemas.BifrostError
-		unfilteredModels  *schemas.BifrostListModelsResponse
-		listModelsErr     *schemas.BifrostError
-		listWg            sync.WaitGroup
+		allModels        *schemas.BifrostListModelsResponse
+		bifrostErr       *schemas.BifrostError
+		unfilteredModels *schemas.BifrostListModelsResponse
+		listModelsErr    *schemas.BifrostError
+		listWg           sync.WaitGroup
 	)
 	listWg.Add(2)
 	go func() {
@@ -1038,7 +1038,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
-	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
+	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)

@@ -19,6 +19,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type MCPManager interface {
@@ -30,19 +31,21 @@ type MCPManager interface {
 
 // MCPHandler manages HTTP requests for MCP tool operations
 type MCPHandler struct {
-	client       *bifrost.Bifrost
-	store        *lib.Config
-	mcpManager   MCPManager
-	oauthHandler *OAuthHandler
+	client            *bifrost.Bifrost
+	store             *lib.Config
+	mcpManager        MCPManager
+	governanceManager GovernanceManager
+	oauthHandler      *OAuthHandler
 }
 
 // NewMCPHandler creates a new MCP handler instance
-func NewMCPHandler(mcpManager MCPManager, client *bifrost.Bifrost, store *lib.Config, oauthHandler *OAuthHandler) *MCPHandler {
+func NewMCPHandler(mcpManager MCPManager, governanceManager GovernanceManager, client *bifrost.Bifrost, store *lib.Config, oauthHandler *OAuthHandler) *MCPHandler {
 	return &MCPHandler{
-		client:       client,
-		store:        store,
-		mcpManager:   mcpManager,
-		oauthHandler: oauthHandler,
+		client:            client,
+		store:             store,
+		mcpManager:        mcpManager,
+		governanceManager: governanceManager,
+		oauthHandler:      oauthHandler,
 	}
 }
 
@@ -56,11 +59,19 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 }
 
+// MCPVKConfigResponse is a VK assignment enriched with the VK's display name.
+type MCPVKConfigResponse struct {
+	VirtualKeyID   string            `json:"virtual_key_id"`
+	VirtualKeyName string            `json:"virtual_key_name"`
+	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
+}
+
 // MCPClientResponse represents the response structure for MCP clients
 type MCPClientResponse struct {
-	Config *schemas.MCPClientConfig   `json:"config"`
-	Tools  []schemas.ChatToolFunction `json:"tools"`
-	State  schemas.MCPConnectionState `json:"state"`
+	Config    *schemas.MCPClientConfig   `json:"config"`
+	Tools     []schemas.ChatToolFunction `json:"tools"`
+	State     schemas.MCPConnectionState `json:"state"`
+	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
@@ -189,6 +200,30 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 		connectedClientsMap[client.Config.ID] = client
 	}
 
+	// Build VK id→name lookup from in-memory governance data (no extra DB queries)
+	vkNameByID := make(map[string]string)
+	if h.governanceManager != nil {
+		if gd := h.governanceManager.GetGovernanceData(); gd != nil {
+			for _, vk := range gd.VirtualKeys {
+				vkNameByID[vk.ID] = vk.Name
+			}
+		}
+	}
+
+	// Batch-fetch all VK assignments for this page in a single query, then group by client ID.
+	assignmentsByClientID := make(map[uint][]configstoreTables.TableVirtualKeyMCPConfig)
+	if h.store.ConfigStore != nil {
+		dbClientIDs := make([]uint, 0, len(dbClients))
+		for _, c := range dbClients {
+			dbClientIDs = append(dbClientIDs, c.ID)
+		}
+		if allAssignments, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientIDs(ctx, dbClientIDs); err == nil {
+			for _, a := range allAssignments {
+				assignmentsByClientID[a.MCPClientID] = append(assignmentsByClientID[a.MCPClientID], a)
+			}
+		}
+	}
+
 	// Convert DB rows to MCPClientConfig and merge with engine state
 	clients := make([]MCPClientResponse, 0, len(dbClients))
 	for _, dbClient := range dbClients {
@@ -212,6 +247,15 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
 			ToolPricing:        dbClient.ToolPricing,
 		}
+		// Enrich VK assignments using the pre-fetched batch result (no extra DB call per client)
+		vkConfigs := []MCPVKConfigResponse{}
+		for _, a := range assignmentsByClientID[dbClient.ID] {
+			vkConfigs = append(vkConfigs, MCPVKConfigResponse{
+				VirtualKeyID:   a.VirtualKeyID,
+				VirtualKeyName: vkNameByID[a.VirtualKeyID],
+				ToolsToExecute: a.ToolsToExecute,
+			})
+		}
 		redactedConfig := h.store.RedactMCPClientConfig(clientConfig)
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
@@ -220,15 +264,17 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, 
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
 			clients = append(clients, MCPClientResponse{
-				Config: redactedConfig,
-				Tools:  sortedTools,
-				State:  connectedClient.State,
+				Config:    redactedConfig,
+				Tools:     sortedTools,
+				State:     connectedClient.State,
+				VKConfigs: vkConfigs,
 			})
 		} else {
 			clients = append(clients, MCPClientResponse{
-				Config: redactedConfig,
-				Tools:  []schemas.ChatToolFunction{},
-				State:  schemas.MCPConnectionStateError,
+				Config:    redactedConfig,
+				Tools:     []schemas.ChatToolFunction{},
+				State:     schemas.MCPConnectionStateError,
+				VKConfigs: vkConfigs,
 			})
 		}
 	}
@@ -277,6 +323,18 @@ type OAuthConfigRequest struct {
 type MCPClientRequest struct {
 	configstoreTables.TableMCPClient
 	OauthConfig *OAuthConfigRequest `json:"oauth_config,omitempty"`
+}
+
+// MCPVKConfigRequest represents a per-VK tool access config for an MCP client
+type MCPVKConfigRequest struct {
+	VirtualKeyID   string            `json:"virtual_key_id"`
+	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
+}
+
+// MCPClientUpdateRequest wraps TableMCPClient and adds optional VK assignment management
+type MCPClientUpdateRequest struct {
+	configstoreTables.TableMCPClient
+	VKConfigs *[]MCPVKConfigRequest `json:"vk_configs,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -486,8 +544,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-	// Accept the full table client config to support tool_pricing
-	var req *configstoreTables.TableMCPClient
+	// Accept the full table client config to support tool_pricing, plus optional vk_configs
+	var req MCPClientUpdateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
@@ -533,7 +591,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Merge redacted values - preserve old values if incoming values are redacted and unchanged
-	req = mergeMCPRedactedValues(req, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
+	merged := mergeMCPRedactedValues(&req.TableMCPClient, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
+	req.TableMCPClient = *merged
 	// Save existing DB config before update so we can rollback if memory update fails
 	var oldDBConfig *configstoreTables.TableMCPClient
 	if h.store.ConfigStore != nil {
@@ -546,7 +605,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Persist changes to config store
 	if h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, req); err != nil {
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &req.TableMCPClient); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
 			return
 		}
@@ -593,6 +652,100 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
 		return
+	}
+
+	// Manage VK assignments if vk_configs was provided
+	if req.VKConfigs != nil && h.store.ConfigStore != nil {
+		current, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, oldDBConfig.ID)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get current VK MCP configs: %v", err))
+			return
+		}
+		// Index current assignments by VK ID for diffing
+		currentByVKID := make(map[string]*configstoreTables.TableVirtualKeyMCPConfig, len(current))
+		for i := range current {
+			currentByVKID[current[i].VirtualKeyID] = &current[i]
+		}
+		// Validate and reject empty/duplicate virtual_key_id entries
+		seen := make(map[string]struct{}, len(*req.VKConfigs))
+		for _, vc := range *req.VKConfigs {
+			if vc.VirtualKeyID == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, "virtual_key_id must not be empty")
+				return
+			}
+			if _, exists := seen[vc.VirtualKeyID]; exists {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("duplicate virtual_key_id in vk_configs: %s", vc.VirtualKeyID))
+				return
+			}
+			seen[vc.VirtualKeyID] = struct{}{}
+		}
+		// Validate tools_to_execute before entering the transaction so failures return 400
+		for _, vc := range *req.VKConfigs {
+			if err := vc.ToolsToExecute.Validate(); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid tools_to_execute for virtual key %s: %v", vc.VirtualKeyID, err))
+				return
+			}
+		}
+		// Index requested assignments by VK ID
+		requestedByVKID := make(map[string]MCPVKConfigRequest, len(*req.VKConfigs))
+		for _, vc := range *req.VKConfigs {
+			requestedByVKID[vc.VirtualKeyID] = vc
+		}
+		if err := h.store.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			// Create or update
+			for _, vc := range *req.VKConfigs {
+				if existing, ok := currentByVKID[vc.VirtualKeyID]; ok {
+					existing.ToolsToExecute = vc.ToolsToExecute
+					if err := h.store.ConfigStore.UpdateVirtualKeyMCPConfig(ctx, existing, tx); err != nil {
+						return fmt.Errorf("failed to update VK MCP config for %s: %w", vc.VirtualKeyID, err)
+					}
+				} else {
+					if err := h.store.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &configstoreTables.TableVirtualKeyMCPConfig{
+						VirtualKeyID:   vc.VirtualKeyID,
+						MCPClientID:    oldDBConfig.ID,
+						ToolsToExecute: vc.ToolsToExecute,
+					}, tx); err != nil {
+						return fmt.Errorf("failed to create VK MCP config for %s: %w", vc.VirtualKeyID, err)
+					}
+				}
+			}
+			// Delete removed assignments
+			for vkID, existing := range currentByVKID {
+				if _, ok := requestedByVKID[vkID]; !ok {
+					if err := h.store.ConfigStore.DeleteVirtualKeyMCPConfig(ctx, existing.ID, tx); err != nil {
+						return fmt.Errorf("failed to remove VK MCP config for %s: %w", vkID, err)
+					}
+				}
+			}
+			return nil
+		}); err != nil {
+			// NOTE: Partial success — the MCP client config was already updated in DB and memory above.
+			// Only the VK assignment changes failed. The VK assignments remain unchanged in DB.
+			// The MCP client update is idempotent, so retrying the full request is safe.
+			logger.Error(fmt.Sprintf(
+				"[PARTIAL SUCCESS] MCP client %s was updated successfully but VK assignment update failed: %v. "+
+					"VK assignments remain unchanged. Retry the request to apply VK changes.",
+				id, err,
+			))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP client was updated but VK assignment update failed: %v", err))
+			return
+		}
+		// Reload all affected VKs in memory so governance enforcement reflects the new MCP assignments.
+		// requestedByVKID and currentByVKID together cover the full affected set (no duplicates since both are maps).
+		if h.governanceManager != nil {
+			for vkID := range requestedByVKID {
+				if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
+					logger.Error(fmt.Sprintf("failed to reload virtual key %s in memory after MCP VK assignment update: %v", vkID, err))
+				}
+			}
+			for vkID := range currentByVKID {
+				if _, alreadyReloaded := requestedByVKID[vkID]; !alreadyReloaded {
+					if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
+						logger.Error(fmt.Sprintf("failed to reload virtual key %s in memory after MCP VK assignment update: %v", vkID, err))
+					}
+				}
+			}
+		}
 	}
 
 	SendJSON(ctx, map[string]any{
