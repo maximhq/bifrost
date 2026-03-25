@@ -575,14 +575,17 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		} else {
 			// Validate usage makes sense
 			if response.Usage.TotalTokens < response.Usage.PromptTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than prompt tokens (%d)", response.Usage.TotalTokens, response.Usage.PromptTokens))
 			}
 			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than completion tokens (%d)", response.Usage.TotalTokens, response.Usage.CompletionTokens))
 			}
 		}
 	}
@@ -590,14 +593,16 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 	// Check timestamps
 	if expectations.ShouldHaveTimestamps {
 		if response.Created == 0 {
-			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected created timestamp but not present (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
 	// Check model field
 	if expectations.ShouldHaveModel {
 		if strings.TrimSpace(response.Model) == "" {
-			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -766,28 +771,29 @@ func validateTextCompletionTechnicalFields(t *testing.T, response *schemas.Bifro
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		} else {
 			// Validate usage makes sense
 			if response.Usage.TotalTokens < response.Usage.PromptTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than prompt tokens (%d)", response.Usage.TotalTokens, response.Usage.PromptTokens))
 			}
 			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than completion tokens (%d)", response.Usage.TotalTokens, response.Usage.CompletionTokens))
 			}
 		}
 	}
 
-	// Check timestamps - Text completion responses don't have a Created field
-	if expectations.ShouldHaveTimestamps {
-		// Text completion responses don't have timestamps, so skip this check
-		result.Warnings = append(result.Warnings, "Text completion responses don't support timestamp validation")
-	}
+	// Check timestamps - Text completion responses don't have a Created field in the schema
+	// so we skip timestamp validation for text completions regardless of the expectation
 
 	// Check model field
 	if expectations.ShouldHaveModel {
 		if strings.TrimSpace(response.Model) == "" {
-			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -955,14 +961,25 @@ func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostRes
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
 	// Check timestamps
 	if expectations.ShouldHaveTimestamps {
 		if response.CreatedAt == 0 {
-			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected created timestamp but not present (provider: %s)", response.ExtraFields.Provider))
+		}
+	}
+
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" &&
+			strings.TrimSpace(response.ExtraFields.ModelDeployment) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -1187,6 +1204,14 @@ func validateImageGenerationFields(t *testing.T, response *schemas.BifrostImageG
 		// Note: Actual size validation would require downloading/decoding images
 	}
 
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
+		}
+	}
+
 	// Check latency field
 	if expectations.ShouldHaveLatency {
 		if response.ExtraFields.Latency <= 0 {
@@ -1229,6 +1254,49 @@ func collectImageGenerationResponseMetrics(response *schemas.BifrostImageGenerat
 // VALIDATION HELPER FUNCTIONS - EMBEDDING RESPONSE
 // =============================================================================
 
+// intFromProviderSpecific coerces provider-specific expectation values that may
+// be int, JSON float64, json.Number, or other numeric types into int.
+func intFromProviderSpecific(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			f, err2 := n.Float64()
+			if err2 != nil {
+				return 0, false
+			}
+			return int(f), true
+		}
+		return int(i), true
+	default:
+		return 0, false
+	}
+}
+
 // validateEmbeddingFields validates embedding responses
 func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingResponse, expectations ResponseExpectations, result *ValidationResult) {
 	// Check if response has embedding data
@@ -1236,6 +1304,39 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 		result.Passed = false
 		result.Errors = append(result.Errors, "Embedding response missing data")
 		return
+	}
+
+	// Check embedding count matches expected
+	if expectations.ProviderSpecific != nil {
+		if raw, exists := expectations.ProviderSpecific["expected_embedding_count"]; exists {
+			if expectedCount, ok := intFromProviderSpecific(raw); ok {
+				actualCount := len(response.Data)
+				// Also check for 2D arrays (some providers return single embedding with 2D array)
+				if actualCount == 1 && response.Data[0].Embedding.Embedding2DArray != nil {
+					actualCount = len(response.Data[0].Embedding.Embedding2DArray)
+				}
+				if actualCount != expectedCount {
+					result.Passed = false
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("Expected %d embeddings, got %d", expectedCount, actualCount))
+				}
+			}
+		}
+	}
+
+	// Validate each embedding has non-empty vector data
+	for i, embedding := range response.Data {
+		hasData := false
+		if embedding.Embedding.EmbeddingArray != nil && len(embedding.Embedding.EmbeddingArray) > 0 {
+			hasData = true
+		}
+		if embedding.Embedding.Embedding2DArray != nil && len(embedding.Embedding.Embedding2DArray) > 0 {
+			hasData = true
+		}
+		if !hasData {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Embedding %d has no vector data", i))
+		}
 	}
 
 	// Check embedding dimensions
@@ -1254,6 +1355,14 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 				result.Errors = append(result.Errors,
 					fmt.Sprintf("Embedding %d has %d dimensions, expected %d", i, actualDimensions, expectedDimensions))
 			}
+		}
+	}
+
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 

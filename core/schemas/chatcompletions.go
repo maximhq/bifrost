@@ -1042,7 +1042,7 @@ const (
 	BifrostReasoningDetailsTypeSummary       BifrostReasoningDetailsType = "reasoning.summary"
 	BifrostReasoningDetailsTypeEncrypted     BifrostReasoningDetailsType = "reasoning.encrypted"
 	BifrostReasoningDetailsTypeText          BifrostReasoningDetailsType = "reasoning.text"
-	BifrostReasoningDetailsTypeContentBlocks BifrostReasoningDetailsType = "bifrost.content_blocks"
+	BifrostReasoningDetailsTypeContentBlocks BifrostReasoningDetailsType = "reasoning.content_blocks"
 )
 
 // Not in OpenAI's spec, but needed to support inter provider reasoning capabilities.
