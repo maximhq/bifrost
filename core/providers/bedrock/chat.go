@@ -179,7 +179,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 	}
 
-	if len(contentBlocks) > 0 {
+	// We do merging of text blocks for Anthropic models while using /openai integration
+	if len(contentBlocks) > 0 && schemas.IsAnthropicModel(model) && ctx.Value(schemas.BifrostContextKeyIntegrationType) == "openai" {
 		allText := true
 		for _, block := range contentBlocks {
 			if block.Type != schemas.ChatContentBlockTypeText {

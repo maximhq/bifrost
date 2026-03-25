@@ -590,7 +590,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
-	if len(contentBlocks) > 0 {
+	if len(contentBlocks) > 0 && ctx.Value(schemas.BifrostContextKeyIntegrationType) == "openai" {
 		allText := true
 		for _, block := range contentBlocks {
 			if block.Type != schemas.ChatContentBlockTypeText {
