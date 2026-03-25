@@ -312,7 +312,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		payloadLogging := *payload.ClientConfig.EnableLogging
 		currentLogging := currentConfig.EnableLogging == nil || *currentConfig.EnableLogging
 		if payloadLogging != currentLogging {
-			restartReasons = append(restartReasons, "Logging enabled")
+			restartReasons = append(restartReasons, "Logging changed")
 		}
 		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
