@@ -120,6 +120,13 @@ MCPClientCreateRequestBase:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are available to all virtual keys by default,
+        without requiring an explicit virtual key assignment.
+        An explicit virtual key config always overrides this setting for that key.
 MCPClientCreateRequestHTTP:
   allOf:
     - $ref: '#/MCPClientCreateRequestBase'
@@ -227,6 +234,13 @@ MCPClientUpdateRequest:
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
         Note: Only available when updating an existing client after tools have been fetched.
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
     vk_configs:
       type: array
       items:
@@ -320,6 +334,13 @@ MCPClientConfig:
         Per-tool cost in USD for execution.
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
 
 ChatToolFunction:
   type: object

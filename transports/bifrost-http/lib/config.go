@@ -2371,6 +2371,24 @@ func (c *Config) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return allowlist
 }
 
+// GetAllowOnAllVirtualKeysClients returns a map of clientID -> clientName for all MCP clients
+// that have AllowOnAllVirtualKeys enabled. The returned map is a copy, safe for concurrent use.
+func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client != nil && client.AllowOnAllVirtualKeys {
+			result[client.ID] = client.Name
+		}
+	}
+	return result
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
@@ -3257,6 +3275,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
+	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	return nil
 }
 

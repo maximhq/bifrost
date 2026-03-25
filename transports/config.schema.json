@@ -2241,6 +2241,11 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "allow_on_all_virtual_keys": {
+          "type": "boolean",
+          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
+          "default": false
         }
       },
       "required": [

@@ -706,6 +706,10 @@ func (m *MockConfigStore) GetVirtualKeyByValue(ctx context.Context, value string
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
 // Virtual key provider config
 func (m *MockConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error) {
 	return nil, nil

@@ -243,14 +243,15 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
 		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
 		// Updatable fields - copy from updated config with proper cloning
-		Name:                updatedConfig.Name,
-		IsCodeModeClient:    updatedConfig.IsCodeModeClient,
-		Headers:             maps.Clone(updatedConfig.Headers),
-		ToolsToExecute:      slices.Clone(updatedConfig.ToolsToExecute),
-		ToolsToAutoExecute:  slices.Clone(updatedConfig.ToolsToAutoExecute),
-		AllowedExtraHeaders: slices.Clone(updatedConfig.AllowedExtraHeaders),
-		IsPingAvailable:     updatedConfig.IsPingAvailable,
-		ToolSyncInterval:    updatedConfig.ToolSyncInterval,
+		Name:                  updatedConfig.Name,
+		IsCodeModeClient:      updatedConfig.IsCodeModeClient,
+		Headers:               maps.Clone(updatedConfig.Headers),
+		ToolsToExecute:        slices.Clone(updatedConfig.ToolsToExecute),
+		ToolsToAutoExecute:    slices.Clone(updatedConfig.ToolsToAutoExecute),
+		AllowedExtraHeaders:   slices.Clone(updatedConfig.AllowedExtraHeaders),
+		IsPingAvailable:       updatedConfig.IsPingAvailable,
+		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
 	}
 
 	// Atomically replace the config pointer

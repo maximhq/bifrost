@@ -33,6 +33,8 @@ type TableMCPClient struct {
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
+	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
