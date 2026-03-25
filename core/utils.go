@@ -83,14 +83,15 @@ func Ptr[T any](v T) *T {
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 // Some providers like SGL, and vLLM are keyless and don't require API keys.
 // Ollama is keyless when targeting a local instance, but requires a key for remote instances.
-func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig, baseURL string) bool {
+func providerRequiresKey(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
+	customConfig := config.CustomProviderConfig
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
 
 	if providerKey == schemas.Ollama {
-		return !isLocalBaseURL(baseURL)
+		return !isLocalBaseURL(config.NetworkConfig.BaseURL)
 	}
 	return !IsKeylessProvider(providerKey)
 }
