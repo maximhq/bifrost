@@ -85,6 +85,30 @@ This is useful for:
 
 ---
 
+## Raw Request/Response in Traces
+
+When raw request/response capture is enabled on a provider (via `send_back_raw_request` or `send_back_raw_response`), the raw payloads are automatically included as OTEL span attributes. This lets you see exactly what was sent to and received from the provider in your OTEL backend (Langfuse, Datadog, Grafana, etc.) without cross-referencing HTTP logs.
+
+### Span Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `gen_ai.raw_request` | `string` | JSON-serialized raw request body sent to the provider |
+| `gen_ai.raw_response` | `string` | JSON-serialized raw response body received from the provider |
+
+### Interaction with Capture Flags
+
+| Flag | Client Response | Logging Plugin | OTEL Spans |
+|------|----------------|----------------|------------|
+| `send_back_raw_request` / `send_back_raw_response` | Yes | Yes | Yes |
+| `store_raw_request_response` | No | Yes | No |
+
+<Note>
+Raw payloads can be large (avg ~95KB per request). Enable capture selectively for debugging or when your observability pipeline can handle the additional data volume.
+</Note>
+
+---
+
 ## Setup
 
 <Tabs group="setup-method">
