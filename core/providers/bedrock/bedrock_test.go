@@ -3598,3 +3598,57 @@ func TestBedrockToolInputKeyOrderPreservation(t *testing.T) {
 	assert.True(t, cmdIdx2 < descIdx2,
 		"block 2: key order not preserved, expected command < description in: %s", s2)
 }
+
+// TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop verifies that
+// ContentPartDone does not emit a content_block_stop event (only OutputItemDone does),
+// preventing duplicate content_block_stop events in the stream. (Issue #2293)
+func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	contentIdx := 0
+	model := "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+	// Simulate the sequence FinalizeBedrockStream emits for a text block:
+	// 1. OutputTextDone  — should be skipped
+	// 2. ContentPartDone — should be skipped (was previously emitting content_block_stop)
+	// 3. OutputItemDone  — should emit content_block_stop
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputTextDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeContentPartDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+		},
+		{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: &contentIdx,
+			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+		},
+	}
+
+	type bedrockChunk struct {
+		InvokeModelRawChunk []byte `json:"invokeModelRawChunk"`
+	}
+
+	var stopCount int
+	for _, ev := range events {
+		_, result, err := bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, ev)
+		require.NoError(t, err)
+		if result == nil {
+			continue
+		}
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		var chunk bedrockChunk
+		require.NoError(t, json.Unmarshal(raw, &chunk))
+		if len(chunk.InvokeModelRawChunk) > 0 &&
+			strings.Contains(string(chunk.InvokeModelRawChunk), "content_block_stop") {
+			stopCount++
+		}
+	}
+
+	assert.Equal(t, 1, stopCount, "expected exactly one content_block_stop event, got %d", stopCount)
+}
