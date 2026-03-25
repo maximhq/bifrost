@@ -26,7 +26,7 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { Input } from "@/components/ui/input";
-import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -237,13 +237,16 @@ export default function ScopedPricingOverridesView() {
 	}
 
 	return (
-		<div className="mt-6 space-y-4">
-			<div className="flex items-start justify-between gap-4">
+		<div className="space-y-4">
+			<div className="flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 					<p className="text-muted-foreground text-sm">Set custom rates for any model across global or virtual key scopes, optionally narrowed to a specific provider or key</p>
 				</div>
-				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer}>Create Override</Button>
+				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer} className="gap-2">
+					<Plus className="h-4 w-4" />
+					<span className="hidden sm:inline">New Override</span>
+				</Button>
 			</div>
 
 			{/* Search */}
