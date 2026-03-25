@@ -505,16 +505,21 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 
-	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
-	defer bfCtx.Cancel()
+	// Read current key count from in-memory store (providerInfo.Keys is not preloaded from DB)
+	inMemoryKeys, _ := s.Config.GetProviderKeysRaw(provider)
+	isKeylessProvider := bifrost.IsKeylessProvider(provider) || (providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess)
+	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
 	// Getting allowed models from all provider keys (needed before model listing)
 	providerKeys, err := s.Config.ConfigStore.GetKeysByProvider(ctx, string(provider))
 	if err != nil {
 		return nil, fmt.Errorf("failed to update provider model catalog: failed to get keys by provider: %s", err)
 	}
+
+	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
+	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
+	defer bfCtx.Cancel()
 
 	// Run filtered and unfiltered model listing concurrently
 	var (
@@ -548,7 +553,11 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			s.updateKeyStatus(ctx, bifrostErr.ExtraFields.KeyStatuses)
 		}
 
-		logger.Warn("failed to update provider model catalog: failed to list all models: %s. We are falling back onto the static datasheet", bifrost.GetErrorMessage(bifrostErr))
+		if hasNoKeys {
+			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
+		} else {
+			logger.Warn("failed to update provider model catalog: failed to list all models: %s. We are falling back onto the static datasheet", bifrost.GetErrorMessage(bifrostErr))
+		}
 		// In case of error, we return an empty list of models, and fallback onto the static datasheet
 		allModels = &schemas.BifrostListModelsResponse{
 			Data: make([]schemas.Model, 0),
@@ -568,7 +577,11 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
 	if listModelsErr != nil {
-		logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+		if hasNoKeys {
+			logger.Warn("unfiltered model discovery skipped for provider %s: no keys configured", provider)
+		} else {
+			logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+		}
 	} else {
 		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModels)
 	}
