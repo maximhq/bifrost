@@ -422,7 +422,6 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	ctx.SetValue(requestProviderKey, provider)
 
 	performDirectSearch, performSemanticSearch := true, true
-	useDirectChunkLookup := false
 	if ctx.Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
 		if !ok {
@@ -430,19 +429,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		} else {
 			performDirectSearch = cacheTypeVal == CacheTypeDirect
 			performSemanticSearch = cacheTypeVal == CacheTypeSemantic
-			useDirectChunkLookup = cacheTypeVal == CacheTypeDirect
 		}
 	}
 
 	if performDirectSearch {
-		directSearchFn := plugin.performDirectSearch
-		if useDirectChunkLookup {
-			directSearchFn = plugin.performDirectChunkLookup
-		}
-
-		shortCircuit, err := directSearchFn(ctx, req, cacheKey)
+		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
 		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
+			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			// Don't return - continue to semantic search fallback
 			shortCircuit = nil // Ensure we don't use an invalid shortCircuit
 		}
@@ -468,6 +461,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		// Try semantic search as fallback
 		shortCircuit, err := plugin.performSemanticSearch(ctx, req, cacheKey)
 		if err != nil {
+			plugin.logger.Debug(PluginLoggerPrefix + " Semantic search skipped: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			return req, nil, nil
 		}
 
@@ -573,10 +567,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, nil, nil
 	}
 	storageID := requestID
-	if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok && cacheTypeVal == CacheTypeDirect {
-		if v, ok := ctx.Value(requestStorageIDKey).(string); ok && v != "" {
-			storageID = v
-		}
+	// When direct lookup prepared a deterministic storage ID, reuse it here so
+	// default-mode traffic warms the GetChunk fast path instead of only the
+	// legacy search path.
+	if v, ok := ctx.Value(requestStorageIDKey).(string); ok && v != "" {
+		storageID = v
 	}
 	// Check cache type to optimize embedding handling
 	var embedding []float32

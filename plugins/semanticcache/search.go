@@ -22,9 +22,9 @@ func (plugin *Plugin) prepareDirectCacheLookup(ctx *schemas.BifrostContext, req 
 
 	plugin.logger.Debug(PluginLoggerPrefix + " Generated Hash for Request: " + hash)
 
-	_, paramsHash, err := plugin.extractTextForEmbedding(req)
+	paramsHash, err := plugin.computeRequestParamsHash(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to extract metadata for filtering: %w", err)
+		return "", fmt.Errorf("failed to compute direct lookup params hash: %w", err)
 	}
 
 	ctx.SetValue(requestHashKey, hash)
@@ -34,6 +34,55 @@ func (plugin *Plugin) prepareDirectCacheLookup(ctx *schemas.BifrostContext, req 
 	directCacheID := plugin.generateDirectCacheID(provider, model, cacheKey, hash, paramsHash)
 
 	return directCacheID, nil
+}
+
+func (plugin *Plugin) performLegacyDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	hash, _ := ctx.Value(requestHashKey).(string)
+	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
+
+	provider, model, _ := req.GetRequestFields()
+
+	filters := []vectorstore.Query{
+		{Field: "request_hash", Operator: vectorstore.QueryOperatorEqual, Value: hash},
+		{Field: "cache_key", Operator: vectorstore.QueryOperatorEqual, Value: cacheKey},
+		{Field: "params_hash", Operator: vectorstore.QueryOperatorEqual, Value: paramsHash},
+		{Field: "from_bifrost_semantic_cache_plugin", Operator: vectorstore.QueryOperatorEqual, Value: true},
+	}
+
+	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
+		filters = append(filters, vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: string(provider)})
+	}
+	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
+		filters = append(filters, vectorstore.Query{Field: "model", Operator: vectorstore.QueryOperatorEqual, Value: model})
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Searching for legacy direct hash match with %d filters", PluginLoggerPrefix, len(filters)))
+
+	selectFields := append([]string(nil), SelectFields...)
+	if bifrost.IsStreamRequestType(req.RequestType) {
+		selectFields = removeField(selectFields, "response")
+	} else {
+		selectFields = removeField(selectFields, "stream_chunks")
+	}
+
+	searchCtx := vectorstore.WithDisableScanFallback(ctx)
+	var cursor *string
+	results, _, err := plugin.store.GetAll(searchCtx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
+	if err != nil {
+		if errors.Is(err, vectorstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to search for legacy direct hash match: %w", err)
+	}
+
+	if len(results) == 0 {
+		plugin.logger.Debug(PluginLoggerPrefix + " No legacy direct hash match found")
+		return nil, nil
+	}
+
+	result := results[0]
+	plugin.logger.Debug(fmt.Sprintf("%s Found legacy direct hash match with ID: %s", PluginLoggerPrefix, result.ID))
+	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0, 0)
 }
 
 func (plugin *Plugin) performDirectChunkLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
@@ -61,62 +110,15 @@ func (plugin *Plugin) performDirectChunkLookup(ctx *schemas.BifrostContext, req 
 }
 
 func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
-	_, err := plugin.prepareDirectCacheLookup(ctx, req, cacheKey)
+	shortCircuit, err := plugin.performDirectChunkLookup(ctx, req, cacheKey)
 	if err != nil {
 		return nil, err
 	}
-
-	hash, _ := ctx.Value(requestHashKey).(string)
-	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
-
-	provider, model, _ := req.GetRequestFields()
-
-	// Build strict filters for direct hash search
-	filters := []vectorstore.Query{
-		{Field: "request_hash", Operator: vectorstore.QueryOperatorEqual, Value: hash},
-		{Field: "cache_key", Operator: vectorstore.QueryOperatorEqual, Value: cacheKey},
-		{Field: "params_hash", Operator: vectorstore.QueryOperatorEqual, Value: paramsHash},
-		{Field: "from_bifrost_semantic_cache_plugin", Operator: vectorstore.QueryOperatorEqual, Value: true},
+	if shortCircuit != nil {
+		return shortCircuit, nil
 	}
 
-	if plugin.config.CacheByProvider != nil && *plugin.config.CacheByProvider {
-		filters = append(filters, vectorstore.Query{Field: "provider", Operator: vectorstore.QueryOperatorEqual, Value: string(provider)})
-	}
-	if plugin.config.CacheByModel != nil && *plugin.config.CacheByModel {
-		filters = append(filters, vectorstore.Query{Field: "model", Operator: vectorstore.QueryOperatorEqual, Value: model})
-	}
-
-	plugin.logger.Debug(fmt.Sprintf("%s Searching for direct hash match with %d filters", PluginLoggerPrefix, len(filters)))
-
-	// Make a full copy so we don't mutate the original backing array
-	selectFields := append([]string(nil), SelectFields...)
-	if bifrost.IsStreamRequestType(req.RequestType) {
-		selectFields = removeField(selectFields, "response")
-	} else {
-		selectFields = removeField(selectFields, "stream_chunks")
-	}
-
-	// Search for entries with matching hash and all params
-	var cursor *string
-	results, _, err := plugin.store.GetAll(ctx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
-	if err != nil {
-		if errors.Is(err, vectorstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to search for direct hash match: %w", err)
-	}
-
-	if len(results) == 0 {
-		plugin.logger.Debug(PluginLoggerPrefix + " No direct hash match found")
-		return nil, nil
-	}
-
-	// Found a matching entry - extract the response
-	result := results[0]
-	plugin.logger.Debug(fmt.Sprintf("%s Found direct hash match with ID: %s", PluginLoggerPrefix, result.ID))
-
-	// Build response from cached result
-	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0, 0)
+	return plugin.performLegacyDirectSearch(ctx, req, cacheKey)
 }
 
 // generateEmbeddingsForStorage generates embeddings and stores them in context for PostHook storage.

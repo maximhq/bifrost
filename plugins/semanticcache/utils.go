@@ -131,6 +131,102 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 	return fmt.Sprintf("%x", hash), nil
 }
 
+func (plugin *Plugin) buildRequestMetadataForCaching(req *schemas.BifrostRequest) (map[string]interface{}, error) {
+	metadata := map[string]interface{}{
+		"stream": bifrost.IsStreamRequestType(req.RequestType),
+	}
+
+	switch req.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		if req.TextCompletionRequest == nil {
+			return nil, fmt.Errorf("text completion payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
+			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
+		}
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		if req.ChatRequest == nil {
+			return nil, fmt.Errorf("chat payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
+			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		if req.ResponsesRequest == nil {
+			return nil, fmt.Errorf("responses payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
+		}
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		if req.SpeechRequest == nil {
+			return nil, fmt.Errorf("speech payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
+			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
+		}
+	case schemas.EmbeddingRequest:
+		if req.EmbeddingRequest == nil {
+			return nil, fmt.Errorf("embedding payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
+			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
+		}
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		if req.TranscriptionRequest == nil {
+			return nil, fmt.Errorf("transcription payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
+			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest == nil {
+			return nil, fmt.Errorf("image generation payload is nil (%s)", describeRequestShape(req))
+		}
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
+			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported request type for semantic caching (%s)", describeRequestShape(req))
+	}
+
+	return metadata, nil
+}
+
+func (plugin *Plugin) computeRequestParamsHash(req *schemas.BifrostRequest) (string, error) {
+	metadata, err := plugin.buildRequestMetadataForCaching(req)
+	if err != nil {
+		return "", err
+	}
+
+	hash, err := getMetadataHash(metadata)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute params hash (%s): %w", describeRequestShape(req), err)
+	}
+	return hash, nil
+}
+
+// describeRequestShape summarizes the request families relevant to semantic
+// cache lookups and diagnostics. It is intentionally scoped to request types
+// that can participate in semantic cache behavior.
+func describeRequestShape(req *schemas.BifrostRequest) string {
+	if req == nil {
+		return "request=nil"
+	}
+
+	return fmt.Sprintf(
+		"request_type=%s text=%t chat=%t responses=%t embedding=%t speech=%t transcription=%t image=%t",
+		req.RequestType,
+		req.TextCompletionRequest != nil,
+		req.ChatRequest != nil,
+		req.ResponsesRequest != nil,
+		req.EmbeddingRequest != nil,
+		req.SpeechRequest != nil,
+		req.TranscriptionRequest != nil,
+		req.ImageGenerationRequest != nil,
+	)
+}
+
 // extractTextForEmbedding extracts meaningful text from different input types for embedding generation.
 // Returns the text to embed and metadata for storage.
 //
@@ -140,44 +236,11 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 //
 // Note: Format updated to conditionally include msgType to avoid double colons and maintain consistency.
 func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (string, string, error) {
-	metadata := map[string]interface{}{}
-
-	attachments := []string{}
-
-	// Add parameters as metadata if present - handle segregated parameters
-	metadata["stream"] = bifrost.IsStreamRequestType(req.RequestType)
-
-	// Extract parameters based on request type
-	switch req.RequestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
-			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
-		}
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
-			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
-		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
-			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
-		}
-	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
-			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
-		}
-	case schemas.EmbeddingRequest:
-		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
-			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
-		}
-	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
-		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
-			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
-		}
-	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
-		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
-			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
-		}
+	metadata, err := plugin.buildRequestMetadataForCaching(req)
+	if err != nil {
+		return "", "", err
 	}
+	attachments := []string{}
 
 	switch {
 	case req.TextCompletionRequest != nil:
@@ -355,7 +418,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		return normalizeText(req.ImageGenerationRequest.Input.Prompt), metadataHash, nil
 
 	default:
-		return "", "", fmt.Errorf("unsupported input type for semantic caching")
+		return "", "", fmt.Errorf("unsupported input type for semantic caching (%s)", describeRequestShape(req))
 	}
 }
 

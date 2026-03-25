@@ -1,13 +1,21 @@
 package vectorstore
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
+	"net"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -229,6 +237,196 @@ func TestRedisConfig_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakeRedisSearchServer struct {
+	listener      net.Listener
+	searchErrors  int
+	mu            sync.Mutex
+	ftSearchCalls int
+	sawScan       bool
+}
+
+func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	server := &fakeRedisSearchServer{
+		listener:     listener,
+		searchErrors: searchErrors,
+	}
+
+	go server.serve(t)
+	return server
+}
+
+func (s *fakeRedisSearchServer) serve(t *testing.T) {
+	t.Helper()
+
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				continue
+			}
+			return
+		}
+
+		go s.handleConn(t, conn)
+	}
+}
+
+func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+
+	for {
+		command, err := readRESPCommand(reader)
+		if err != nil {
+			if err == io.EOF || strings.Contains(strings.ToLower(err.Error()), "use of closed network connection") {
+				return
+			}
+			return
+		}
+		if len(command) == 0 {
+			continue
+		}
+
+		switch strings.ToUpper(command[0]) {
+		case "HELLO":
+			_, _ = writer.WriteString("%2\r\n+server\r\n+redis\r\n+version\r\n+7.0.0\r\n")
+		case "CLIENT":
+			_, _ = writer.WriteString("+OK\r\n")
+		case "SELECT":
+			_, _ = writer.WriteString("+OK\r\n")
+		case "PING":
+			_, _ = writer.WriteString("+PONG\r\n")
+		case "FT.SEARCH":
+			s.mu.Lock()
+			s.ftSearchCalls++
+			shouldError := s.ftSearchCalls <= s.searchErrors
+			s.mu.Unlock()
+
+			if shouldError {
+				_, _ = writer.WriteString("-Invalid query\r\n")
+			} else {
+				_, _ = writer.WriteString("*1\r\n:0\r\n")
+			}
+		case "SCAN":
+			s.mu.Lock()
+			s.sawScan = true
+			s.mu.Unlock()
+			_, _ = writer.WriteString("*2\r\n$1\r\n0\r\n*0\r\n")
+		case "HGETALL":
+			_, _ = writer.WriteString("*0\r\n")
+		default:
+			_, _ = writer.WriteString("+OK\r\n")
+		}
+
+		if err := writer.Flush(); err != nil {
+			return
+		}
+	}
+}
+
+func (s *fakeRedisSearchServer) close() error {
+	return s.listener.Close()
+}
+
+func (s *fakeRedisSearchServer) addr() string {
+	return s.listener.Addr().String()
+}
+
+func (s *fakeRedisSearchServer) stats() (ftSearchCalls int, sawScan bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ftSearchCalls, s.sawScan
+}
+
+func readRESPCommand(reader *bufio.Reader) ([]string, error) {
+	header, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return nil, nil
+	}
+	if header[0] != '*' {
+		return nil, fmt.Errorf("unexpected RESP header %q", header)
+	}
+
+	count, err := strconv.Atoi(header[1:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid RESP array length %q: %w", header, err)
+	}
+
+	command := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		bulkHeader, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		bulkHeader = strings.TrimSpace(bulkHeader)
+		if bulkHeader == "" || bulkHeader[0] != '$' {
+			return nil, fmt.Errorf("unexpected RESP bulk header %q", bulkHeader)
+		}
+
+		size, err := strconv.Atoi(bulkHeader[1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid RESP bulk length %q: %w", bulkHeader, err)
+		}
+
+		payload := make([]byte, size+2)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return nil, err
+		}
+		command = append(command, string(payload[:size]))
+	}
+
+	return command, nil
+}
+
+func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 2)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: time.Second,
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := store.executeSearch(WithDisableScanFallback(ctx), TestNamespace, "*", nil, nil, 0, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to search without scan fallback")
+
+	ftSearchCalls, sawScan := server.stats()
+	assert.Equal(t, 2, ftSearchCalls)
+	assert.False(t, sawScan, "expected executeSearch to return before scan fallback")
 }
 
 func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {

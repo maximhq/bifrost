@@ -265,6 +265,7 @@ type directFastPathStore struct {
 	getChunkCalls  int
 	getAllCalls    int
 	lastGetChunkID string
+	lastGetAllCtx  context.Context
 }
 
 func newDirectFastPathStore() *directFastPathStore {
@@ -299,6 +300,7 @@ func (s *directFastPathStore) GetChunks(ctx context.Context, namespace string, i
 
 func (s *directFastPathStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
 	s.getAllCalls++
+	s.lastGetAllCtx = ctx
 	return nil, nil, vectorstore.ErrNotSupported
 }
 
@@ -395,7 +397,7 @@ func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
 	}
 }
 
-func TestDefaultDirectSearchDoesNotSetStorageID(t *testing.T) {
+func TestDefaultDirectSearchSetsStorageIDForDeterministicWrites(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
 	plugin := &Plugin{
@@ -415,17 +417,23 @@ func TestDefaultDirectSearchDoesNotSetStorageID(t *testing.T) {
 		t.Fatalf("performDirectSearch failed: %v", err)
 	}
 
-	if storageID := ctx.Value(requestStorageIDKey); storageID != nil {
-		t.Fatalf("expected default direct search not to set requestStorageIDKey, got %v", storageID)
+	storageID, _ := ctx.Value(requestStorageIDKey).(string)
+	if storageID == "" {
+		t.Fatal("expected default direct search to set requestStorageIDKey")
+	}
+	if store.getChunkCalls != 1 {
+		t.Fatalf("expected one GetChunk call, got %d", store.getChunkCalls)
 	}
 }
 
 func TestPreLLMHookClearsStaleStorageIDOnReusedContext(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
+	config := getDefaultTestConfig()
+	config.ConversationHistoryThreshold = 3
 	plugin := &Plugin{
 		store:  store,
-		config: getDefaultTestConfig(),
+		config: config,
 		logger: logger,
 	}
 
@@ -441,8 +449,12 @@ func TestPreLLMHookClearsStaleStorageIDOnReusedContext(t *testing.T) {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
-	if storageID := ctx.Value(requestStorageIDKey); storageID != nil {
-		t.Fatalf("expected PreLLMHook to clear stale requestStorageIDKey, got %v", storageID)
+	storageID, _ := ctx.Value(requestStorageIDKey).(string)
+	if storageID == "" {
+		t.Fatal("expected PreLLMHook to replace stale requestStorageIDKey with a deterministic id")
+	}
+	if storageID == "stale-storage-id" {
+		t.Fatal("expected PreLLMHook to clear stale requestStorageIDKey before setting a deterministic id")
 	}
 }
 
@@ -507,7 +519,7 @@ func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 	}
 }
 
-func TestPostLLMHookIgnoresStaleStorageIDOutsideDirectMode(t *testing.T) {
+func TestPostLLMHookUsesDeterministicStorageIDOutsideDirectMode(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()
 	plugin := &Plugin{
@@ -537,10 +549,13 @@ func TestPostLLMHookIgnoresStaleStorageIDOutsideDirectMode(t *testing.T) {
 
 	ctx := CreateContextWithCacheKey("default-mode-store")
 	ctx.SetValue(requestIDKey, "request-uuid")
-	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
 	ctx.SetValue(requestProviderKey, schemas.OpenAI)
 	ctx.SetValue(requestModelKey, "openai/gpt-4o-mini")
 	ctx.SetValue(requestHashKey, "request-hash")
+	ctx.SetValue(requestParamsHashKey, "params-hash")
+
+	directID := plugin.generateDirectCacheID(schemas.OpenAI, "openai/gpt-4o-mini", "default-mode-store", "request-hash", "params-hash")
+	ctx.SetValue(requestStorageIDKey, directID)
 
 	if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
 		t.Fatalf("PostLLMHook failed: %v", err)
@@ -551,8 +566,36 @@ func TestPostLLMHookIgnoresStaleStorageIDOutsideDirectMode(t *testing.T) {
 	if len(store.addIDs) != 1 {
 		t.Fatalf("expected one store.Add call, got %d", len(store.addIDs))
 	}
-	if store.addIDs[0] != "request-uuid" {
-		t.Fatalf("expected PostLLMHook to ignore stale storage id outside direct mode, got %q", store.addIDs[0])
+	if store.addIDs[0] != directID {
+		t.Fatalf("expected PostLLMHook to use deterministic storage id outside direct mode, got %q", store.addIDs[0])
+	}
+}
+
+func TestPerformDirectSearchDisablesScanFallbackForLegacyLookup(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	ctx := CreateContextWithCacheKey("legacy-no-scan")
+	_, err := plugin.performDirectSearch(ctx, req, "legacy-no-scan")
+	if err != nil && !errors.Is(err, vectorstore.ErrNotSupported) {
+		t.Fatalf("performDirectSearch failed: %v", err)
+	}
+
+	if store.getAllCalls != 1 {
+		t.Fatalf("expected one legacy GetAll call, got %d", store.getAllCalls)
+	}
+	if !vectorstore.IsScanFallbackDisabled(store.lastGetAllCtx) {
+		t.Fatal("expected legacy direct lookup to disable scan fallback")
 	}
 }
 

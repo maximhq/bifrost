@@ -95,6 +95,68 @@ func TestExtractTextForEmbedding_NilContent(t *testing.T) {
 	}
 }
 
+func TestPrepareDirectCacheLookup_ResponsesStreamRequest(t *testing.T) {
+	plugin := &Plugin{
+		config: getDefaultTestConfig(),
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesStreamRequest,
+		ResponsesRequest: CreateStreamingResponsesRequest("Explain cache invalidation", 0.2, 200),
+	}
+
+	ctx := CreateContextWithCacheKey("responses-stream-direct")
+	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "responses-stream-direct")
+	if err != nil {
+		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	}
+	if directID == "" {
+		t.Fatal("expected deterministic direct cache id")
+	}
+	if got, _ := ctx.Value(requestHashKey).(string); got == "" {
+		t.Fatal("expected request hash to be stored in context")
+	}
+	if got, _ := ctx.Value(requestParamsHashKey).(string); got == "" {
+		t.Fatal("expected params hash to be stored in context")
+	}
+}
+
+func TestPrepareDirectCacheLookup_UnsupportedRequestTypeFailsClosed(t *testing.T) {
+	plugin := &Plugin{
+		config: getDefaultTestConfig(),
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Method:   "GET",
+			Path:     "/v1/models",
+		},
+	}
+
+	ctx := CreateContextWithCacheKey("unsupported-direct")
+	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "unsupported-direct")
+	if err == nil {
+		t.Fatal("expected prepareDirectCacheLookup to reject unsupported request type")
+	}
+	if directID != "" {
+		t.Fatalf("expected no direct cache id, got %q", directID)
+	}
+	if got, _ := ctx.Value(requestHashKey).(string); got != "" {
+		t.Fatalf("expected request hash to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestParamsHashKey).(string); got != "" {
+		t.Fatalf("expected params hash to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestStorageIDKey).(string); got != "" {
+		t.Fatalf("expected storage id to remain unset, got %q", got)
+	}
+}
+
 // TestGetNormalizedInputForCaching_NilContent verifies that getNormalizedInputForCaching
 // does not panic when chat messages have nil Content.
 func TestGetNormalizedInputForCaching_NilContent(t *testing.T) {
