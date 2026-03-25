@@ -1315,6 +1315,11 @@
                     "insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
+                    },
+                    "llm_spans_only": {
+                      "type": "boolean",
+                      "description": "When true, only export LLM operation spans (llm.call, retry, fallback, embedding, speech, transcription) and filter out infrastructure spans.",
+                      "default": false
                     }
                   },
                   "required": [
