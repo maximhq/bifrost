@@ -197,6 +197,7 @@ export const modelProviderKeySchema = z
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {

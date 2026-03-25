@@ -17,6 +17,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
@@ -98,8 +99,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			return;
 		}
 		// Create updated provider configuration
-		const updatedProvider: ModelProvider = {
-			...provider,
+		const updatedProvider = buildProviderUpdatePayload(provider, {
 			network_config: {
 				...provider.network_config,
 				base_url: data.network_config?.base_url || undefined,
@@ -116,7 +116,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 					data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
-		};
+		});
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {

@@ -437,7 +437,7 @@ export interface PricingOverride {
 	provider_key_id?: string;
 	match_type: PricingOverrideMatchType;
 	pattern: string;
-	request_types?: string[];
+	request_types?: RequestType[];
 	pricing_patch: string;
 	config_hash?: string;
 	created_at: string;

@@ -8,12 +8,12 @@ interface Props {
 	show: boolean;
 	onCancel: () => void;
 	provider: ModelProvider;
-	keyIndex: number;
+	keyId: string | null;
 	providerName?: string;
 }
 
-export default function AddNewKeySheet({ show, onCancel, provider, keyIndex, providerName }: Props) {
-	const isEditing = keyIndex < provider.keys.length;
+export default function AddNewKeySheet({ show, onCancel, provider, keyId, providerName }: Props) {
+	const isEditing = keyId !== null;
 	const resolvedProviderName = (providerName ?? provider.name).toLowerCase();
 	const isVLLM = resolvedProviderName === "vllm";
 	const entityLabel = isVLLM ? "model" : "key";
@@ -47,7 +47,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyIndex, pro
 				<div>
 					<ProviderKeyForm
 						provider={provider}
-						keyIndex={keyIndex}
+						keyId={keyId}
 						onCancel={onCancel}
 						onSave={() => {
 							toast.success(successMessage);
