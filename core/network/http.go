@@ -262,10 +262,12 @@ func StaleConnectionRetryIfErr(_ *fasthttp.Request, attempts int, err error) (re
 	// io.EOF — server closed the connection (fasthttp converts this to
 	//   ErrConnectionClosed AFTER the retry loop, so RetryIfErr sees raw EOF)
 	// "cannot find whitespace in the first line of response" — stale chunked data in buffer
-	// "connection reset by peer" — server RST'd the idle connection
+	// "connection reset by peer" — server RST'd the idle connection (read-side)
+	// "broken pipe" — server closed the idle connection (write-side EPIPE)
 	if err == io.EOF ||
 		strings.Contains(errStr, "cannot find whitespace") ||
-		strings.Contains(errStr, "connection reset by peer") {
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") {
 		return true, true
 	}
 	return false, false
