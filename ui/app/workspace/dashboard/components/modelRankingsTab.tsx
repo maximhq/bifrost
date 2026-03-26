@@ -187,7 +187,7 @@ function TopModelsChart({
 	}, [rankingsData, displayModels]);
 
 	return (
-		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" height="100%">
+		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" height="100%" className="z-[1]">
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
