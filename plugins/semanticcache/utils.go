@@ -195,6 +195,9 @@ func (plugin *Plugin) buildRequestMetadataForCaching(req *schemas.BifrostRequest
 
 // isSemanticCacheSupportedRequestType reports whether semantic cache supports
 // this request type for cache lookup and storage. Unsupported types are skipped.
+//
+// IMPORTANT: this list must stay in sync with the switch in buildRequestMetadataForCaching.
+// When adding a new case there, add it here too.
 func isSemanticCacheSupportedRequestType(requestType schemas.RequestType) bool {
 	switch requestType {
 	case schemas.TextCompletionRequest,
