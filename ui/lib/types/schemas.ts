@@ -1011,6 +1011,7 @@ export const routingRuleSchema = z
 		scope_id: z.string().optional(),
 		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
 		enabled: z.boolean().default(true),
+		chain_rule: z.boolean().default(false),
 	})
 	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
 		message: "Scope ID is required when scope is not global",

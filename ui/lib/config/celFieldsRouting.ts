@@ -44,7 +44,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 		inputType: "select",
 		valueEditorType: (operator: string) =>
 			operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
-		operators: ["=", "!=", "in", "notIn", "matches"],
+		operators: ["=", "!=", "in", "notIn", "matches", "null", "notNull"],
 		defaultOperator: "=",
 	},
 	{
