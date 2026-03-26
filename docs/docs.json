@@ -100,7 +100,7 @@
             ]
           },
           {
-            "group": "Integrations",
+            "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
               "integrations/what-is-an-integration"
@@ -606,6 +606,9 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.3.13",
+              "changelogs/ent-v1.3.12",
+              "changelogs/ent-v1.3.11",
               "changelogs/ent-v1.3.10",
               "changelogs/ent-v1.3.9",
               "changelogs/ent-v1.3.8"

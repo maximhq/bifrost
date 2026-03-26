@@ -76,7 +76,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
-			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout"}
+			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
 			if len(config.ClientConfig.AllowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
 				for _, header := range config.ClientConfig.AllowedHeaders {
@@ -90,15 +90,15 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-			// Set Allow-Credentials for credentialed requests. Only skip when wildcard
-			// is configured AND the origin was matched by the wildcard (not by localhost rule
-			// or explicit listing). Localhost origins and explicitly listed origins always
-			// get credentials support since we return the specific origin.
-			if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
-				isLocalhostOrigin(origin) ||
-				slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
-				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-			}
+				// Set Allow-Credentials for credentialed requests. Only skip when wildcard
+				// is configured AND the origin was matched by the wildcard (not by localhost rule
+				// or explicit listing). Localhost origins and explicitly listed origins always
+				// get credentials support since we return the specific origin.
+				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+					isLocalhostOrigin(origin) ||
+					slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
+					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+				}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
 				// Vary: Origin tells caches that the response varies based on the Origin
 				// request header, preventing incorrect CORS headers from being served.

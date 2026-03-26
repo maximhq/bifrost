@@ -2433,22 +2433,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools := []AnthropicTool{}
-			mcpServers := []AnthropicMCPServer{}
-			for _, tool := range bifrostReq.Params.Tools {
-				// handle mcp tool differently
-				if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
-					mcpServer := convertBifrostMCPToolToAnthropicServer(&tool)
-					if mcpServer != nil {
-						mcpServers = append(mcpServers, *mcpServer)
-					}
-					continue // Skip converting MCP tools to anthropicTools since they're handled separately
-				}
-				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool, bifrostReq.Provider)
-				if anthropicTool != nil {
-					anthropicTools = append(anthropicTools, *anthropicTool)
-				}
-			}
+			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(bifrostReq.Model, bifrostReq.Params.Tools, bifrostReq.Provider)
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
 					anthropicReq.Tools = anthropicTools
@@ -4581,7 +4566,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 			}
 			return bifrostTool
 
-		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution20260120:
+		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution, AnthropicToolTypeCodeExecution20260120:
 			return &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeCodeInterpreter,
 			}
@@ -4737,13 +4722,57 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 	return nil
 }
 
+// convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
+// It handles context-dependent conversions like code_interpreter, which must be skipped when
+// web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
+func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServer) {
+	// Check if web search or web fetch is present — when they are, Anthropic
+	// auto-injects code_execution so we must skip it to avoid conflicts.
+	hasWebSearchOrFetch := false
+	for _, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
+			hasWebSearchOrFetch = true
+			break
+		}
+	}
+
+	anthropicTools := []AnthropicTool{}
+	mcpServers := []AnthropicMCPServer{}
+	for _, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
+			mcpServer := convertBifrostMCPToolToAnthropicServer(&tool)
+			if mcpServer != nil {
+				mcpServers = append(mcpServers, *mcpServer)
+			}
+			continue
+		}
+		anthropicTool := convertBifrostToolToAnthropic(model, &tool, provider, hasWebSearchOrFetch)
+		if anthropicTool != nil {
+			anthropicTools = append(anthropicTools, *anthropicTool)
+		}
+	}
+	return anthropicTools, mcpServers
+}
+
 // Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider) *AnthropicTool {
+func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
 
 	switch tool.Type {
+	case schemas.ResponsesToolTypeCodeInterpreter:
+		if hasWebSearchOrFetch {
+			// Skip code execution tools when web search/fetch is present —
+			// the Anthropic API auto-injects code_execution in that case.
+			// Including it explicitly causes "Auto-injecting tools would conflict" errors.
+			return nil
+		}
+		// When no web search/fetch, explicitly include code_execution
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeCodeExecution),
+			Name: string(AnthropicToolNameCodeExecution),
+		}
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124

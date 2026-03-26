@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 )
 
@@ -153,6 +154,10 @@ type Model struct {
 
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`
+
+	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
+	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.
+	ProviderExtra json.RawMessage `json:"-"`
 }
 
 type Architecture struct {

@@ -45,9 +45,12 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:      string(providerKey) + "/" + modelID,
-			Name:    schemas.Ptr(model.DisplayName),
-			Created: schemas.Ptr(model.CreatedAt.Unix()),
+			ID:              string(providerKey) + "/" + modelID,
+			Name:            schemas.Ptr(model.DisplayName),
+			Created:         schemas.Ptr(model.CreatedAt.Unix()),
+			MaxInputTokens:  model.MaxInputTokens,
+			MaxOutputTokens: model.MaxTokens,
+			ProviderExtra:   model.Capabilities,
 		})
 		includedModels[modelID] = true
 	}
@@ -84,10 +87,18 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 	if response.LastID != nil {
 		anthropicResponse.LastID = response.LastID
 	}
+	if response.HasMore != nil {
+		anthropicResponse.HasMore = *response.HasMore
+	}
 
 	for _, model := range response.Data {
+		_, modelID := schemas.ParseModelString(model.ID, schemas.Anthropic)
 		anthropicModel := AnthropicModel{
-			ID: model.ID,
+			ID:             modelID,
+			Type:           "model",
+			MaxInputTokens: model.MaxInputTokens,
+			MaxTokens:      model.MaxOutputTokens,
+			Capabilities:   model.ProviderExtra,
 		}
 		if model.Name != nil {
 			anthropicModel.DisplayName = *model.Name
