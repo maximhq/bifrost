@@ -44,18 +44,13 @@ RUN go build \
   -o /app/main \
   ./bifrost-http
 
-# Verify build succeeded
+# Verify build succeeded and prepare entrypoint
 RUN test -f /app/main || (echo "Build failed" && exit 1)
+RUN chmod +x /build/transports/docker-entrypoint.sh
 
 # --- Runtime Stage: Minimal runtime image ---
-FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+FROM bifrosthq/dhi-alpine-base:3.22-fips_bifrost-v27032026
 WORKDIR /app
-
-# Install runtime dependencies for CGO-enabled binary
-# musl: C standard library (required for CGO binaries)
-# libgcc: GCC runtime library
-# ca-certificates: For HTTPS connections
-RUN apk add --no-cache musl libgcc ca-certificates wget
 
 # Create data directory and set up user
 COPY --from=builder /app/main .
@@ -86,20 +81,13 @@ ENV GOGC="" \
   GOMEMLIMIT=""
 
 
-RUN mkdir -p $APP_DIR/logs && \
-  adduser -D -s /bin/sh appuser && \
-  chown -R appuser:appuser /app && \
-  chmod +x /app/docker-entrypoint.sh
+RUN mkdir -p $APP_DIR/logs
 USER appuser
 
 
 # Declare volume for data persistence
 VOLUME ["/app/data"]
 EXPOSE $APP_PORT
-
-# Health check for container status monitoring
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
 
 # Use entrypoint script that handles volume permissions and argument processing
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

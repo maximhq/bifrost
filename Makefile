@@ -265,15 +265,25 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
-docker-image: build-ui ## Build Docker image
+docker-image: build-ui ## Build Docker image (LOCAL=1 to use Dockerfile.local)
 	@echo "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))
-	@docker build -f transports/Dockerfile -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
-	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest$(NC)"
+	$(eval DOCKERFILE=$(if $(LOCAL),transports/Dockerfile.local,transports/Dockerfile))
+	@docker build -f $(DOCKERFILE) -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
+	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest (using $(DOCKERFILE))$(NC)"
 
-docker-run: ## Run Docker container
+docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/config.json or path/to/dir/])
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data  bifrost
+	@CONFIG_PATH="$(abspath $(CONFIG))"; \
+	if [ -n "$(CONFIG)" ]; then \
+		if [ -d "$$CONFIG_PATH" ]; then \
+			CONFIG_PATH="$$CONFIG_PATH/config.json"; \
+		fi; \
+		CONFIG_MOUNT="-v $$CONFIG_PATH:/app/data/config.json"; \
+	else \
+		CONFIG_MOUNT=""; \
+	fi; \
+	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"

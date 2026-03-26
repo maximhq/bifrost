@@ -452,6 +452,13 @@
         ]
       },
       {
+        "tab": "Security",
+        "icon": "shield",
+        "pages": [
+          "security"
+        ]
+      },
+      {
         "tab": "Benchmarks",
         "icon": "chart-line",
         "pages": [
