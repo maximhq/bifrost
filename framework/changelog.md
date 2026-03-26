@@ -1,0 +1,7 @@
+- fix: fixed response capture in OTEL tracing for streaming calls
+- fix: fixed cache token capture for streaming calls
+- feat: added blacklisted_models migration and config store support
+- fix: kept logging enabled by default
+- fix: fixed store parameter config for Codex conversations
+- fix: moved all gin migrations to Go to avoid deadlocks
+- fix: refined replicate model slug resolution in model catalog (thanks [@brianphillips](https://github.com/brianphillips)!)

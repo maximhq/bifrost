@@ -1,1 +1,1 @@
-- [changelog]: upgraded maxim-go dependency to latest version
+- chore: upgraded maxim-go dependency to latest version

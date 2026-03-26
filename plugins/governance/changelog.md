@@ -1,0 +1,2 @@
+- feat: added blacklisted_models support for denylist filtering
+- fix: refined replicate model slug resolution (thanks [@brianphillips](https://github.com/brianphillips)!)
