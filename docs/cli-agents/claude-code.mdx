@@ -61,6 +61,7 @@ For users with Anthropic Console API keys or Bifrost virtual keys:
 1. **Configure environment variables**
    ```bash
    export ANTHROPIC_API_KEY=your-api-key  # Anthropic Console key or Bifrost virtual key
+   export ANTHROPIC_AUTH_TOKEN=your-api-key  # Same value — ensures bearer token auth works too
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -68,6 +69,10 @@ For users with Anthropic Console API keys or Bifrost virtual keys:
    ```bash
    claude
    ```
+
+<Tip>
+When launching Claude Code through the [Bifrost CLI](/quickstart/cli/getting-started), both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are set automatically from your virtual key — no manual export needed.
+</Tip>
 
 ### Custom authentication
 
