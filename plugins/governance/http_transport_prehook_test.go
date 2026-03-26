@@ -23,7 +23,7 @@ func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T
 		Data: []schemas.Model{
 			{ID: "replicate/openai/gpt-5-nano"},
 		},
-	}, nil)
+	}, nil, nil)
 
 	virtualKey := buildVirtualKeyWithProviders(
 		"vk1",

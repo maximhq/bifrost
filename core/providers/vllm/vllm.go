@@ -35,7 +35,7 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 60 * time.Second,
+		MaxIdleConnDuration: 30 * time.Second,
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,

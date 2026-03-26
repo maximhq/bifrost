@@ -44,6 +44,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				id: uuid(),
 				name: "",
 				models: ["*"],
+				blacklisted_models: [],
 				weight: 1.0,
 				enabled: true,
 			},
@@ -78,14 +79,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (isEditing && !currentKey) return;
 		const mutation = isEditing
 			? updateProviderKey({
-					provider: provider.name,
-					keyId: currentKey!.id,
-					key: value.key,
-				})
+				provider: provider.name,
+				keyId: currentKey!.id,
+				key: value.key,
+			})
 			: createProviderKey({
-					provider: provider.name,
-					key: value.key,
-				});
+				provider: provider.name,
+				key: value.key,
+			});
 
 		mutation
 			.unwrap()

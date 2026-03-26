@@ -236,13 +236,14 @@ func (t *Tracer) AddStreamingChunk(traceID string, response *schemas.BifrostResp
 	t.store.AppendStreamingChunk(traceID, response)
 }
 
-// GetAccumulatedChunks returns TTFT and chunk count for the deferred span.
-// The response is always nil — span attributes are populated from the final chunk
-// in completeDeferredSpan. Full content accumulation for plugins is handled by
-// the embedded streaming.Accumulator via ProcessStreamingChunk.
+// GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for the deferred span.
+// The response is built from the streaming accumulator during the final ProcessStreamingChunk call
+// and stored on the DeferredSpanInfo. Returns nil response if no accumulated data is available
+// (e.g., when no plugin calls ProcessStreamingChunk).
 func (t *Tracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
 	ttftNs, chunkCount := t.store.GetAccumulatedData(traceID)
-	return nil, ttftNs, chunkCount
+	resp := t.store.GetAccumulatedResponse(traceID)
+	return resp, ttftNs, chunkCount
 }
 
 // CreateStreamAccumulator creates a new stream accumulator for the given trace ID.
@@ -287,6 +288,20 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
 	if processErr != nil || processedResp == nil {
 		return nil
+	}
+
+	// On final chunk, store the accumulated BifrostResponse on the deferred span
+	// so that completeDeferredSpan can populate span attributes (e.g., gen_ai.output.messages)
+	if isFinalChunk {
+		if bifrostResp := processedResp.ToBifrostResponse(); bifrostResp != nil &&
+			(bifrostResp.ChatResponse != nil ||
+				bifrostResp.TextCompletionResponse != nil ||
+				bifrostResp.SpeechResponse != nil ||
+				bifrostResp.TranscriptionResponse != nil ||
+				bifrostResp.ImageGenerationResponse != nil ||
+				bifrostResp.ResponsesResponse != nil) {
+			t.store.SetAccumulatedResponse(traceID, bifrostResp)
+		}
 	}
 
 	// Convert ProcessedStreamResponse to StreamAccumulatorResult

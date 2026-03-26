@@ -47,6 +47,13 @@ func TestStaleConnectionRetryIfErr(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			name:      "retries on broken pipe (write to closed connection)",
+			err:       fmt.Errorf("write tcp 10.0.0.1:53374->10.0.0.2:30000: write: broken pipe"),
+			attempts:  1,
+			wantReset: true,
+			wantRetry: true,
+		},
+		{
 			name:      "does not retry on second attempt",
 			err:       io.EOF,
 			attempts:  2,

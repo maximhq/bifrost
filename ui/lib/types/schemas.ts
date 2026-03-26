@@ -171,6 +171,7 @@ export const modelProviderKeySchema = z
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
 		models: z.array(z.string()).optional().default(["*"]),
+		blacklisted_models: z.array(z.string()).default([]).optional(),
 		weight: z.union([
 			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
 			z
@@ -597,6 +598,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z

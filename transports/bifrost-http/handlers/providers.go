@@ -58,18 +58,19 @@ const (
 
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
-	Name                     schemas.ModelProvider             `json:"name"`
-	NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                   // Network-related settings
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`      // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config"`                     // Proxy configuration
-	SendBackRawRequest       bool                              `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
-	SendBackRawResponse      bool                              `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
-	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
-	ProviderStatus           ProviderStatus                    `json:"provider_status"`                  // Health/initialization status of the provider
-	Status                   string                            `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
-	Description              string                            `json:"description,omitempty"`            // Error/status description
-	ConfigHash               string                            `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	Name                     schemas.ModelProvider            `json:"name"`
+	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
+	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
+	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
+	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
+	Description              string                           `json:"description,omitempty"`            // Error/status description
+	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -93,16 +94,18 @@ type providerCreatePayload struct {
 	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
 
 type providerUpdatePayload struct {
-	NetworkConfig            schemas.NetworkConfig             `json:"network_config"`
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
-	SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`
-	SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`
-	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`
+	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`
+	SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`
+	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
+	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
+	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
 }
 
 // RegisterRoutes registers all provider management routes
@@ -286,6 +289,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
+		OpenAIConfig:             payload.OpenAIConfig,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
@@ -347,7 +351,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var payload providerUpdatePayload
+	var payload = struct {
+		Keys []schemas.Key `json:"keys"` // API keys for the provider
+		providerUpdatePayload
+	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
@@ -375,6 +382,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
+		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -428,6 +436,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
+	config.OpenAIConfig = payload.OpenAIConfig
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -692,6 +701,17 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	ctx.SetBodyString(params.Data)
 }
 
+// keyAllowsModelForList reports whether a provider key permits model for catalog listing.
+func keyAllowsModelForList(key schemas.Key, model string) bool {
+	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+		return false
+	}
+	if len(key.Models) > 0 {
+		return slices.Contains(key.Models, model)
+	}
+	return true
+}
+
 // filterModelsByKeys filters models based on key-level model restrictions
 func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
 	// Get provider config to access keys
@@ -846,6 +866,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		SendBackRawResponse:      config.SendBackRawResponse,
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
+		OpenAIConfig:             config.OpenAIConfig,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

@@ -12,13 +12,14 @@ import (
 
 // DeferredSpanInfo stores information about a deferred span for streaming requests
 type DeferredSpanInfo struct {
-	SpanID         string
-	StartTime      time.Time
-	Tracer         schemas.Tracer // Reference to tracer for completing the span
-	RequestID      string         // Request ID for accumulator lookup
-	FirstChunkTime time.Time      // Timestamp of first chunk (for TTFT calculation)
-	ChunkCount     int            // Count of received streaming chunks (for AttrTotalChunks)
-	mu             sync.Mutex     // Mutex for thread-safe chunk accumulation
+	SpanID              string
+	StartTime           time.Time
+	Tracer              schemas.Tracer          // Reference to tracer for completing the span
+	RequestID           string                  // Request ID for accumulator lookup
+	FirstChunkTime      time.Time               // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount          int                     // Count of received streaming chunks (for AttrTotalChunks)
+	AccumulatedResponse *schemas.BifrostResponse // Full accumulated response from streaming chunks
+	mu                  sync.Mutex              // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling
@@ -199,6 +200,34 @@ func (s *TraceStore) GetAccumulatedData(traceID string) (ttftNs int64, chunkCoun
 	}
 
 	return ttftNs, info.ChunkCount
+}
+
+// SetAccumulatedResponse stores the accumulated BifrostResponse on the deferred span info.
+// Called during the final ProcessStreamingChunk to make the full response
+// available for span attribute population in completeDeferredSpan.
+func (s *TraceStore) SetAccumulatedResponse(traceID string, resp *schemas.BifrostResponse) {
+	info := s.GetDeferredSpan(traceID)
+	if info == nil {
+		return
+	}
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	if info.AccumulatedResponse != nil {
+		return // already set; do not overwrite
+	}
+	info.AccumulatedResponse = resp
+}
+
+// GetAccumulatedResponse returns the accumulated BifrostResponse for a deferred span.
+// Returns nil if no accumulated response has been stored.
+func (s *TraceStore) GetAccumulatedResponse(traceID string) *schemas.BifrostResponse {
+	info := s.GetDeferredSpan(traceID)
+	if info == nil {
+		return nil
+	}
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	return info.AccumulatedResponse
 }
 
 // ReleaseTrace returns the trace and its spans to the pools for reuse

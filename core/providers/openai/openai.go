@@ -30,6 +30,7 @@ type OpenAIProvider struct {
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+	disableStore         bool                          // Whether to force store=false on outgoing requests
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -71,6 +72,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
+		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 	}
 }
 
@@ -746,6 +748,13 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
+	if provider.disableStore {
+		if request.Params == nil {
+			request.Params = &schemas.ChatParameters{}
+		}
+		request.Params.Store = schemas.Ptr(false)
+	}
+
 	return HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -911,6 +920,13 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
+	if provider.disableStore {
+		if request.Params == nil {
+			request.Params = &schemas.ChatParameters{}
+		}
+		request.Params.Store = schemas.Ptr(false)
+	}
+
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(
 		ctx,
@@ -1363,6 +1379,13 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	if provider.disableStore {
+		if request.Params == nil {
+			request.Params = &schemas.ResponsesParameters{}
+		}
+		request.Params.Store = schemas.Ptr(false)
+	}
+
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -1526,6 +1549,13 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
+	if provider.disableStore {
+		if request.Params == nil {
+			request.Params = &schemas.ResponsesParameters{}
+		}
+		request.Params.Store = schemas.Ptr(false)
+	}
+
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,

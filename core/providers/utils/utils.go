@@ -2672,3 +2672,26 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 	}
 	return defaultProvider
 }
+
+// ModelMatchesDenylist reports whether any of the candidate model IDs matches
+// an entry in denylist, using both exact and base-model (SameBaseModel) matching.
+// Empty candidates are skipped. Returns false immediately if denylist is empty.
+func ModelMatchesDenylist(denylist []string, candidates ...string) bool {
+	if len(denylist) == 0 {
+		return false
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if slices.Contains(denylist, c) {
+			return true
+		}
+		for _, d := range denylist {
+			if schemas.SameBaseModel(d, c) {
+				return true
+			}
+		}
+	}
+	return false
+}

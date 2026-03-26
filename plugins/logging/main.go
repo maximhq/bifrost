@@ -136,6 +136,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		tempEntry := &logstore.Log{TokenUsageParsed: deferredUsage}
 		if serErr := tempEntry.SerializeFields(); serErr == nil {
 			usageUpdates["token_usage"] = tempEntry.TokenUsage
+			usageUpdates["cached_read_tokens"] = tempEntry.CachedReadTokens
 		}
 
 		// Check if log entry present in the store

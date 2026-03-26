@@ -847,6 +847,62 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	}
 }
 
+func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("all keys blacklist model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+		})
+		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err == nil {
+			t.Fatal("expected error when model is only blacklisted")
+		}
+		if !strings.Contains(err.Error(), "no keys found that support model") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("blacklist wins over models allow list", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{
+				ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1,
+				Models:            []string{"gpt-4"},
+				BlacklistedModels: []string{"gpt-4"},
+			},
+		})
+		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err == nil {
+			t.Fatal("expected error when model is both allowed and blacklisted")
+		}
+	})
+
+	t.Run("second key used when first blacklists", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1},
+		})
+		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key.ID != "k2" {
+			t.Fatalf("expected k2, got %s", key.ID)
+		}
+	})
+}
+
 // Test UpdateProvider functionality
 func TestUpdateProvider(t *testing.T) {
 	t.Run("SuccessfulUpdate", func(t *testing.T) {

@@ -6187,7 +6187,8 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		// Model filtering logic:
 		// - If model is nil or empty → include all keys (no model filter)
 		// - If model is specified:
-		//   - If key.Models is ["*"] → include key (supports all models)
+		//   - If model is in key.BlacklistedModels → exclude (wins over Models allow list)
+		//   - If key.Models is ["*"] → include key (supports all non-blacklisted models)
 		//   - If key.Models is empty → exclude key (deny-by-default)
 		//   - If key.Models is non-empty → only include if model is in list
 		if model != nil && *model != "" {
@@ -6261,7 +6262,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		keys = batchEnabledKeys
 	}
 
-	// filter out keys which don't support the model, if the key has no models, it is supported for all models
+	// Filter out keys that don't support the model: blacklisted_models wins over models allow list;
+	// if the key has no models list, it supports all models except those blacklisted.
 	var supportedKeys []schemas.Key
 
 	// Skip model check conditions

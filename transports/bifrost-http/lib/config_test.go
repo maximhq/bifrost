@@ -1247,7 +1247,7 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 func makeClientConfig(initialPoolSize int, enableLogging bool) *configstore.ClientConfig {
 	return &configstore.ClientConfig{
 		InitialPoolSize:      initialPoolSize,
-		EnableLogging:        enableLogging,
+		EnableLogging:        schemas.Ptr(enableLogging),
 		MaxRequestBodySizeMB: 10,
 		PrometheusLabels:     []string{"label1"},
 		AllowedOrigins:       []string{"http://localhost:3000"},
@@ -1332,7 +1332,7 @@ func makeConfigDataWithProvidersAndDir(providers map[string]configstore.Provider
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		},
@@ -1358,7 +1358,7 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		},
@@ -1386,7 +1386,7 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 	if client == nil {
 		client = &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		}
@@ -1552,7 +1552,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	// Create config file with client config
 	fileClientConfig := &configstore.ClientConfig{
 		InitialPoolSize:       20,
-		EnableLogging:         true,
+		EnableLogging:         new(true),
 		PrometheusLabels:      []string{"file-label"},
 		AllowedOrigins:        []string{"http://file-origin.com"},
 		MaxRequestBodySizeMB:  15,
@@ -1568,7 +1568,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	mockStore := NewMockConfigStore()
 	mockStore.clientConfig = &configstore.ClientConfig{
 		InitialPoolSize:      10,
-		EnableLogging:        false,
+		EnableLogging:        new(false),
 		PrometheusLabels:     []string{"db-label"},
 		MaxRequestBodySizeMB: 5,
 		// AllowedOrigins is empty in DB
@@ -1604,7 +1604,9 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	}
 
 	// Boolean fields: file true overrides DB false
-	if !mergedConfig.EnableLogging && fileClientConfig.EnableLogging {
+	mergedLogging := mergedConfig.EnableLogging == nil || *mergedConfig.EnableLogging
+	fileLogging := fileClientConfig.EnableLogging != nil && *fileClientConfig.EnableLogging
+	if !mergedLogging && fileLogging {
 		mergedConfig.EnableLogging = fileClientConfig.EnableLogging
 	}
 	if !mergedConfig.DisableContentLogging && fileClientConfig.DisableContentLogging {
@@ -1628,7 +1630,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 		t.Errorf("Expected MaxRequestBodySizeMB to be 5 (from DB), got %d", mergedConfig.MaxRequestBodySizeMB)
 	}
 
-	if !mergedConfig.EnableLogging {
+	if mergedConfig.EnableLogging == nil || !*mergedConfig.EnableLogging {
 		t.Error("Expected EnableLogging to be true (file true overrides DB false)")
 	}
 
@@ -12389,7 +12391,7 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		DropExcessRequests:     true,
 		InitialPoolSize:        300,
 		PrometheusLabels:       []string{"label1", "label2"},
-		EnableLogging:          true,
+		EnableLogging:          new(true),
 		DisableContentLogging:  false,
 		LogRetentionDays:       30,
 		EnforceAuthOnInference: false,
@@ -12439,7 +12441,7 @@ func TestGenerateClientConfigHash(t *testing.T) {
 
 	// Different EnableLogging should produce different hash
 	cc5 := cc1
-	cc5.EnableLogging = false
+	cc5.EnableLogging = new(false)
 	hash5, _ := cc5.GenerateClientConfigHash()
 	if hash1 == hash5 {
 		t.Error("Different EnableLogging should produce different hash")
@@ -13438,7 +13440,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DropExcessRequests:     true,
 			InitialPoolSize:        300,
 			PrometheusLabels:       labels,
-			EnableLogging:          true,
+			EnableLogging:          new(true),
 			DisableContentLogging:  false,
 			LogRetentionDays:       30,
 			EnforceAuthOnInference: false,
@@ -13499,7 +13501,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DropExcessRequests:   true,
 			InitialPoolSize:      300,
 			AllowedOrigins:       origins,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			LogRetentionDays:     30,
 			MaxRequestBodySizeMB: 100,
 		}
@@ -16789,7 +16791,8 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	t.Helper()
 	require.Equal(t, false, cc.DropExcessRequests, "DropExcessRequests should default to false")
 	require.Equal(t, schemas.DefaultInitialPoolSize, cc.InitialPoolSize, "InitialPoolSize should match default")
-	require.Equal(t, true, cc.EnableLogging, "EnableLogging should default to true")
+	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
 	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
 	require.Equal(t, false, cc.AllowDirectKeys, "AllowDirectKeys should default to false")
@@ -16994,7 +16997,7 @@ func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
 	configData := makeMinimalConfigData(tempDir)
 	configData.Client = &configstore.ClientConfig{
 		InitialPoolSize:      50,
-		EnableLogging:        false,
+		EnableLogging:        new(false),
 		MaxRequestBodySizeMB: 200,
 		AllowedOrigins:       []string{"http://example.com"},
 	}
@@ -17008,7 +17011,8 @@ func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
 
 	// Verify client config from file
 	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
-	require.Equal(t, false, config.ClientConfig.EnableLogging, "EnableLogging from file")
+	require.NotNil(t, config.ClientConfig.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, false, *config.ClientConfig.EnableLogging, "EnableLogging from file")
 	require.Equal(t, 200, config.ClientConfig.MaxRequestBodySizeMB, "MaxRequestBodySizeMB from file")
 
 	// Verify providers auto-detected (no providers in file)
@@ -17110,7 +17114,7 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 	configData := makeMinimalConfigData(tempDir)
 	configData.Client = &configstore.ClientConfig{
 		InitialPoolSize:      100,
-		EnableLogging:        true,
+		EnableLogging:        new(true),
 		MaxRequestBodySizeMB: 50,
 		AllowedOrigins:       []string{"*"},
 	}
@@ -17337,7 +17341,7 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 	// Only set InitialPoolSize, leave MaxRequestBodySizeMB as 0 (should get default)
 	configData.Client = &configstore.ClientConfig{
 		InitialPoolSize: 50,
-		EnableLogging:   true,
+		EnableLogging:   new(true),
 		AllowedOrigins:  []string{"http://myapp.com"},
 		// MaxRequestBodySizeMB is 0 -> should get default 100
 	}
@@ -17351,7 +17355,8 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 
 	// Verify explicit values from file
 	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
-	require.Equal(t, true, config.ClientConfig.EnableLogging, "EnableLogging from file")
+	require.NotNil(t, config.ClientConfig.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, true, *config.ClientConfig.EnableLogging, "EnableLogging from file")
 
 	// Verify zero-value fields get defaults
 	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,

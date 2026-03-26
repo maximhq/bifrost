@@ -184,6 +184,8 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	transport, ok := provider.client.Transport.(*http.Transport)
 	require.True(t, ok)
 	assert.True(t, transport.ForceAttemptHTTP2)
+	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
+	assert.Nil(t, transport.TLSNextProto)
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -201,4 +203,7 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	transport, ok := provider.client.Transport.(*http.Transport)
 	require.True(t, ok)
 	assert.False(t, transport.ForceAttemptHTTP2)
+	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
+	assert.NotNil(t, transport.TLSNextProto)
+	assert.Empty(t, transport.TLSNextProto)
 }

@@ -813,8 +813,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			return nil, nil
 		}
 
-	case schemas.ResponsesStreamResponseTypeOutputItemDone,
-		schemas.ResponsesStreamResponseTypeContentPartDone:
+	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		idx := 0
 		if resp.ContentIndex != nil {
 			idx = *resp.ContentIndex
@@ -824,7 +823,8 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			"index": idx,
 		}
 
-	case schemas.ResponsesStreamResponseTypeOutputTextDone,
+	case schemas.ResponsesStreamResponseTypeContentPartDone,
+		schemas.ResponsesStreamResponseTypeOutputTextDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
 		// Skip — the content_block_stop is emitted on OutputItemDone
 		return nil, nil

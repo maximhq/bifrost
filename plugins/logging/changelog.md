@@ -1,0 +1,1 @@
+- fix: fixed cache token capture for streaming calls

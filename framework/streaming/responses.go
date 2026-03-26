@@ -908,12 +908,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {
-			chunk.TokenUsage = &schemas.BifrostLLMUsage{
-				PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
-				CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-				TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
-				Cost:             result.ResponsesStreamResponse.Response.Usage.Cost,
-			}
+			chunk.TokenUsage = result.ResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {

@@ -96,7 +96,7 @@ func isOpenAIReasoningModel(model string) bool {
 	return false
 }
 
-// OpenAI enforces a 64 character maximum on the user field
+// MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
 const MaxUserFieldLength = 64
 
 // SanitizeUserField returns nil if user exceeds MaxUserFieldLength, otherwise returns the original value

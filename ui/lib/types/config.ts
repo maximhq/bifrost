@@ -118,6 +118,7 @@ export interface ModelProviderKey {
 	name: string;
 	value?: EnvVar;
 	models?: string[];
+	blacklisted_models?: string[];
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
@@ -141,6 +142,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 		from_env: false,
 	},
 	models: [],
+	blacklisted_models: [],
 	weight: 1.0,
 	enabled: true,
 };
@@ -268,6 +270,11 @@ export interface CustomProviderConfig {
 	request_path_overrides?: Record<string, string>;
 }
 
+// OpenAIConfig holds OpenAI-specific provider configuration.
+export interface OpenAIConfig {
+	disable_store?: boolean;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -277,6 +284,7 @@ export interface ModelProviderConfig {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -304,6 +312,7 @@ export interface AddProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -315,6 +324,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

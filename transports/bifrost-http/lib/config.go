@@ -294,7 +294,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	DropExcessRequests:              false,
 	PrometheusLabels:                []string{},
 	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
-	EnableLogging:                   true,
+	EnableLogging:                   new(true),
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
 	AllowDirectKeys:                 false,
@@ -574,6 +574,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.AllowedOrigins == nil {
 		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
 	}
+	if cc.EnableLogging == nil {
+		cc.EnableLogging = new(true)
+	}
 }
 
 // loadClientConfig loads and merges client config from file with store using hash-based reconciliation
@@ -778,13 +781,18 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					BlacklistedModels:  dbKey.BlacklistedModels,
+					Weight:             dbKey.Weight,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -851,13 +859,18 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					BlacklistedModels:  dbKey.BlacklistedModels,
+					Weight:             dbKey.Weight,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -3329,14 +3342,19 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 			if models == nil {
 				models = []string{}
 			}
+			blacklisted := key.BlacklistedModels
+			if blacklisted == nil {
+				blacklisted = []string{}
+			}
 			keys = append(keys, configstoreTables.TableKey{
-				KeyID:      key.ID,
-				Name:       key.Name,
-				Value:      *schemas.NewEnvVar(""),
-				Models:     models,
-				Weight:     bifrost.Ptr(key.Weight),
-				Provider:   string(providerKey),
-				ConfigHash: key.ConfigHash,
+				KeyID:             key.ID,
+				Name:              key.Name,
+				Value:             *schemas.NewEnvVar(""),
+				Models:            models,
+				BlacklistedModels: blacklisted,
+				Weight:            bifrost.Ptr(key.Weight),
+				Provider:          string(providerKey),
+				ConfigHash:        key.ConfigHash,
 			})
 		}
 	}

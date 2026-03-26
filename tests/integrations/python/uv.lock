@@ -312,7 +312,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=0.1.0" },
     { name = "langchain-tests", specifier = ">=1.0.2" },
     { name = "langgraph", specifier = ">=0.1.0" },
-    { name = "litellm", specifier = ">=1.80.5" },
+    { name = "litellm", specifier = "==1.80.5" },
     { name = "mistralai", specifier = ">=0.4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "openai", specifier = ">=1.30.0" },

@@ -337,6 +337,11 @@ func TestStaleConnectionRetryIfErr_WrappedErrors(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			name:      "wrapped broken pipe",
+			err:       fmt.Errorf("during POST: %w", fmt.Errorf("write tcp 10.0.0.1:53374->10.0.0.2:30000: write: broken pipe")),
+			wantRetry: true,
+		},
+		{
 			name:      "ErrConnectionClosed from fasthttp",
 			err:       fasthttp.ErrConnectionClosed,
 			wantRetry: false, // Not matched - this error appears AFTER the retry loop

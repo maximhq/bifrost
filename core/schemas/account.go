@@ -80,6 +80,7 @@ type Key struct {
 	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
 	Value                EnvVar                `json:"value"`                            // The actual API key value
 	Models               WhiteList             `json:"models"`                           // List of models this key can access
+	BlacklistedModels    WhiteList             `json:"blacklisted_models"`               // List of models this key cannot access
 	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
 	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
 	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration

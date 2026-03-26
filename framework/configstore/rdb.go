@@ -41,6 +41,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Name:               dbKey.Name,
 		Value:              dbKey.Value,
 		Models:             dbKey.Models,
+		BlacklistedModels:  dbKey.BlacklistedModels,
 		Weight:             getWeight(dbKey.Weight),
 		Enabled:            dbKey.Enabled,
 		UseForBatchAPI:     dbKey.UseForBatchAPI,
@@ -327,6 +328,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
+			OpenAIConfig:             providerConfig.OpenAIConfig,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -363,6 +365,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Name:               key.Name,
 				Value:              key.Value,
 				Models:             key.Models,
+				BlacklistedModels:  key.BlacklistedModels,
 				Weight:             &key.Weight,
 				Enabled:            key.Enabled,
 				UseForBatchAPI:     key.UseForBatchAPI,
@@ -499,6 +502,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
+	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -532,6 +536,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Name:               key.Name,
 			Value:              key.Value,
 			Models:             key.Models,
+			BlacklistedModels:  key.BlacklistedModels,
 			Weight:             &key.Weight,
 			Enabled:            key.Enabled,
 			UseForBatchAPI:     key.UseForBatchAPI,
@@ -638,6 +643,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
+		OpenAIConfig:             configCopy.OpenAIConfig,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -653,6 +659,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Name:               key.Name,
 			Value:              key.Value,
 			Models:             key.Models,
+			BlacklistedModels:  key.BlacklistedModels,
 			Weight:             &key.Weight,
 			Enabled:            key.Enabled,
 			UseForBatchAPI:     key.UseForBatchAPI,
@@ -780,6 +787,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
+			OpenAIConfig:             dbProvider.OpenAIConfig,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -812,6 +820,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
+		OpenAIConfig:             dbProvider.OpenAIConfig,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -2041,12 +2050,12 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
 	var keys []tables.TableKey
 	if len(ids) > 0 {
-		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Find(&keys).Error
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -2057,11 +2066,16 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 		if models == nil {
 			models = []string{} // Ensure models is never nil in JSON response
 		}
+		blacklisted := key.BlacklistedModels
+		if blacklisted == nil {
+			blacklisted = []string{}
+		}
 		redactedKeys[i] = schemas.Key{
-			ID:     key.KeyID,
-			Name:   key.Name,
-			Models: models,
-			Weight: getWeight(key.Weight),
+			ID:                key.KeyID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklisted,
+			Weight:            getWeight(key.Weight),
 		}
 	}
 	return redactedKeys, nil

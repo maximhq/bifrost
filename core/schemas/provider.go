@@ -422,6 +422,12 @@ type ProviderConfig struct {
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+}
+
+// OpenAIConfig holds OpenAI-specific provider configuration.
+type OpenAIConfig struct {
+	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
