@@ -157,6 +157,54 @@ func TestPrepareDirectCacheLookup_UnsupportedRequestTypeFailsClosed(t *testing.T
 	}
 }
 
+func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
+	plugin := &Plugin{
+		config: getDefaultTestConfig(),
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.CountTokensRequest,
+		CountTokensRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-4-5",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: bifrost.Ptr("How many tokens is this message?"),
+					},
+				},
+			},
+		},
+	}
+
+	ctx := CreateContextWithCacheKey("count-tokens-test")
+
+	modifiedReq, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	if modifiedReq != req {
+		t.Fatal("expected original request to be returned unchanged")
+	}
+	if shortCircuit != nil {
+		t.Fatal("expected no short-circuit for unsupported count tokens request")
+	}
+	if got, _ := ctx.Value(requestIDKey).(string); got != "" {
+		t.Fatalf("expected requestIDKey to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestHashKey).(string); got != "" {
+		t.Fatalf("expected requestHashKey to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestParamsHashKey).(string); got != "" {
+		t.Fatalf("expected requestParamsHashKey to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestStorageIDKey).(string); got != "" {
+		t.Fatalf("expected requestStorageIDKey to remain unset, got %q", got)
+	}
+}
+
 // TestGetNormalizedInputForCaching_NilContent verifies that getNormalizedInputForCaching
 // does not panic when chat messages have nil Content.
 func TestGetNormalizedInputForCaching_NilContent(t *testing.T) {

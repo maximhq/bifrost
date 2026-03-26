@@ -405,6 +405,11 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
+	if !isSemanticCacheSupportedRequestType(req.RequestType) {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for unsupported request type: " + string(req.RequestType))
+		return req, nil, nil
+	}
+
 	// Clear any stale storage ID from a previously reused context.
 	ctx.ClearValue(requestStorageIDKey)
 

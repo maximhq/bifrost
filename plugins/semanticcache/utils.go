@@ -193,6 +193,30 @@ func (plugin *Plugin) buildRequestMetadataForCaching(req *schemas.BifrostRequest
 	return metadata, nil
 }
 
+// isSemanticCacheSupportedRequestType reports whether semantic cache supports
+// this request type for cache lookup and storage. Unsupported types are skipped.
+func isSemanticCacheSupportedRequestType(requestType schemas.RequestType) bool {
+	switch requestType {
+	case schemas.TextCompletionRequest,
+		schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest,
+		schemas.ResponsesStreamRequest,
+		schemas.WebSocketResponsesRequest,
+		schemas.SpeechRequest,
+		schemas.SpeechStreamRequest,
+		schemas.EmbeddingRequest,
+		schemas.TranscriptionRequest,
+		schemas.TranscriptionStreamRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageGenerationStreamRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 func (plugin *Plugin) computeRequestParamsHash(req *schemas.BifrostRequest) (string, error) {
 	metadata, err := plugin.buildRequestMetadataForCaching(req)
 	if err != nil {
