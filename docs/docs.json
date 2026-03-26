@@ -100,20 +100,10 @@
             ]
           },
           {
-            "group": "CLI Agents & Editors",
-            "icon": "command",
+            "group": "Integrations",
+            "icon": "plug",
             "pages": [
-              "cli-agents/overview",
-              "cli-agents/cursor",
-              "cli-agents/librechat",
-              "cli-agents/claude-code",
-              "cli-agents/codex-cli",
-              "cli-agents/gemini-cli",
-              "cli-agents/qwen-code",
-              "cli-agents/opencode",
-              "cli-agents/zed-editor",
-              "cli-agents/roo-code",
-              "cli-agents/open-webui"
+              "integrations/what-is-an-integration"
             ]
           },
           {
@@ -155,48 +145,6 @@
               "providers/performance",
               "providers/custom-providers",
               "providers/request-options"
-            ]
-          },
-          {
-            "group": "SDK Integrations",
-            "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration",
-              {
-                "group": "OpenAI SDK",
-                "icon": "openai",
-                "pages": [
-                  "integrations/openai-sdk/overview",
-                  "integrations/openai-sdk/files-and-batch"
-                ]
-              },
-              {
-                "group": "Anthropic SDK",
-                "icon": "asterisk",
-                "pages": [
-                  "integrations/anthropic-sdk/overview",
-                  "integrations/anthropic-sdk/files-and-batch"
-                ]
-              },
-              {
-                "group": "Bedrock SDK",
-                "icon": "aws",
-                "pages": [
-                  "integrations/bedrock-sdk/overview",
-                  "integrations/bedrock-sdk/files-and-batch"
-                ]
-              },
-              {
-                "group": "GenAI SDK",
-                "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
-              },
-              "integrations/litellm-sdk",
-              "integrations/langchain-sdk",
-              "integrations/pydanticai-sdk",
-              "integrations/passthrough"
             ]
           },
           {
@@ -252,21 +200,6 @@
                   "features/governance/required-headers"
                 ]
               },
-              {
-                "group": "Observability",
-                "icon": "binoculars",
-                "pages": [
-                  "features/observability/default",
-                  {
-                    "group": "Connectors",
-                    "icon": "arrows-left-right-to-line",
-                    "pages": [
-                      "features/observability/maxim",
-                      "features/observability/otel"
-                    ]
-                  }
-                ]
-              },
               "features/telemetry",
               "features/semantic-caching",
               {
@@ -298,22 +231,7 @@
                 "icon": "shield-check",
                 "pages": [
                   "enterprise/advanced-governance",
-                  "enterprise/rbac",
-                  {
-                    "group": "Identity Providers",
-                    "icon": "id-card",
-                    "pages": [
-                      "enterprise/setting-up-okta",
-                      "enterprise/setting-up-entra"
-                    ]
-                  }
-                ]
-              },
-              {
-                "group": "Enterprise Observability",
-                "icon": "binoculars",
-                "pages": [
-                  "enterprise/datadog-connector"
+                  "enterprise/rbac"
                 ]
               },
               "enterprise/mcp-with-fa",
@@ -322,6 +240,119 @@
               "enterprise/custom-plugins",
               "enterprise/audit-logs",
               "enterprise/log-exports"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "icon": "plug",
+        "groups": [
+          {
+            "group": "CLI Agents & Editors",
+            "icon": "command",
+            "pages": [
+              "cli-agents/overview",
+              "cli-agents/cursor",
+              "cli-agents/librechat",
+              "cli-agents/claude-code",
+              "cli-agents/codex-cli",
+              "cli-agents/gemini-cli",
+              "cli-agents/qwen-code",
+              "cli-agents/opencode",
+              "cli-agents/zed-editor",
+              "cli-agents/roo-code",
+              "cli-agents/open-webui"
+            ]
+          },
+          {
+            "group": "SDKs & Frameworks",
+            "icon": "code",
+            "pages": [
+              {
+                "group": "OpenAI SDK",
+                "icon": "openai",
+                "pages": [
+                  "integrations/openai-sdk/overview",
+                  "integrations/openai-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Anthropic SDK",
+                "icon": "asterisk",
+                "pages": [
+                  "integrations/anthropic-sdk/overview",
+                  "integrations/anthropic-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Bedrock SDK",
+                "icon": "aws",
+                "pages": [
+                  "integrations/bedrock-sdk/overview",
+                  "integrations/bedrock-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "GenAI SDK",
+                "icon": "diamond",
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
+              },
+              "integrations/litellm-sdk",
+              "integrations/langchain-sdk",
+              "integrations/pydanticai-sdk",
+              "integrations/passthrough"
+            ]
+          },
+          {
+            "group": "Identity Providers (SSO)",
+            "icon": "id-card",
+            "pages": [
+              "enterprise/setting-up-okta",
+              "enterprise/setting-up-entra"
+            ]
+          },
+          {
+            "group": "Content Safety (Guardrails)",
+            "icon": "road-barrier",
+            "pages": [
+              "integrations/guardrails/aws-bedrock",
+              "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/grayswan",
+              "integrations/guardrails/patronus-ai"
+            ]
+          },
+          {
+            "group": "Secret Management (Vaults)",
+            "icon": "vault",
+            "pages": [
+              "integrations/vaults/hashicorp-vault",
+              "integrations/vaults/aws-secrets-manager",
+              "integrations/vaults/google-secret-manager",
+              "integrations/vaults/azure-key-vault"
+            ]
+          },
+          {
+            "group": "Observability",
+            "icon": "binoculars",
+            "pages": [
+              "features/observability/default",
+              "features/observability/maxim",
+              "features/observability/otel",
+              "features/observability/prometheus",
+              "enterprise/datadog-connector"
+            ]
+          },
+          {
+            "group": "Vector Databases",
+            "icon": "database",
+            "pages": [
+              "integrations/vector-databases/weaviate",
+              "integrations/vector-databases/redis",
+              "integrations/vector-databases/qdrant",
+              "integrations/vector-databases/pinecone"
             ]
           }
         ]

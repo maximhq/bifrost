@@ -1,0 +1,47 @@
+---
+title: "v1.3.11"
+description: "v1.3.11 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.11">
+
+## Changelog
+
+This release upgrades the base OSS version from v1.4.14 to v1.4.15, bringing a custom SSE stream reader for smoother streaming, MCP config validation, configurable max open connections, and major dashboard improvements. On the enterprise side, this release adds new customer onboarding, Mantel authentication migration to username/password, and license management updates.
+
+## ✨ Features
+
+- **Custom SSE Stream Reader** — Replaced fasthttp's default stream reader with a custom implementation to reduce bursts in SSE streaming
+- **MCP Config Validation** — Added validation for MCP tool configurations in config.json
+- **Max Open Connections** — Exposed max-open-connections for provider domains as a configurable field
+- **Dashboard Improvements** — Added new tabs and graphs to the dashboard including Model Ranking, Cache usage, and MCP usage
+- **Dashboard & Logs Performance** — Improved LLM logs and Dashboard UI performance (~1400x faster) for large numbers of logs
+- **Anthropic Compaction** — Added compaction support for Anthropic provider
+
+## 🐞 Fixed
+
+- **Passthrough Streaming** — Fixed passthrough streaming responses being buffered instead of streamed
+- **MCP Notifications** — Fixed MCP notifications returning incorrect status code
+- **Streaming Function Calls** — Fixed function_call items not included in streaming response.completed output
+- **Bedrock API Key Auth** — Fixed Bedrock API key authentication without requiring bedrock_key_config
+- **Bedrock Token Count Fallback** — Added fallback to estimated token count when count-tokens API is unsupported
+- **Anthropic Thinking Fixes** — Fixed OpenAI-to-Anthropic-to-OpenAI thinking content conversion
+- **Anthropic Header Selection** — Fixed Anthropic header selection across providers
+- **Gemini OpenAI Integration** — Fixed Gemini flow for OpenAI-compatible integration
+- **Semantic Cache Hashing** — Fixed deterministic tools_hash and params_hash in semantic cache
+
+## 📀 Base OSS version
+
+`transports/v1.4.15`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+github.com/maximhq/bifrost/core v1.4.12
+github.com/maximhq/bifrost/framework v1.2.31
+github.com/maximhq/bifrost/plugins/governance v1.4.31
+github.com/maximhq/bifrost/plugins/logging v1.4.31
+github.com/maximhq/bifrost/transports v1.4.15
+```
+
+</Update>
