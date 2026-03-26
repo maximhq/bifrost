@@ -712,7 +712,11 @@ func keyAllowsModelForList(key schemas.Key, model string) bool {
 	return true
 }
 
-// filterModelsByKeys filters models based on key-level model restrictions
+// filterModelsByKeys filters models based on key-level model restrictions.
+// A model is included in the result if at least one of the specified keys grants access to it.
+// A key grants access to a model when: the model is not blacklisted by that key AND
+// the key's allowlist is unrestricted (wildcard) or explicitly contains the model.
+// Empty allowlist (no wildcard) = deny-all for that key.
 func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
 	// Get provider config to access keys
 	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
@@ -720,50 +724,40 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
 		return models
 	}
-	// Build a set of allowed models from the specified keys
-	// Track whether we have any unrestricted keys (which grant access to all models)
-	// and whether we have any restricted keys (which limit to specific models)
-	allowedModels := make(map[string]bool)
-	hasRestrictedKey := false
-	hasUnrestrictedKey := false
-	hasDenyAllKey := false
+
+	// Index keys by ID for fast lookup
+	keyMap := make(map[string]schemas.Key, len(config.Keys))
+	for _, key := range config.Keys {
+		keyMap[key.ID] = key
+	}
+
+	// Collect only the keys referenced by keyIDs
+	matchedKeys := make([]schemas.Key, 0, len(keyIDs))
 	for _, keyID := range keyIDs {
-		for _, key := range config.Keys {
-			if key.ID == keyID {
-				if key.Models.IsUnrestricted() {
-					// Key allows all models (wildcard)
-					hasUnrestrictedKey = true
-				} else if !key.Models.IsEmpty() {
-					// Key has specific model restrictions - add them to allowedModels
-					hasRestrictedKey = true
-					for _, model := range key.Models {
-						allowedModels[model] = true
-					}
-				} else {
-					// Empty Models = explicit deny-all for this key
-					hasDenyAllKey = true
-				}
-				break
-			}
+		if key, ok := keyMap[keyID]; ok {
+			matchedKeys = append(matchedKeys, key)
 		}
 	}
-	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
-	if hasUnrestrictedKey {
+
+	// If none of the requested key IDs exist in config, fall back to returning all models
+	if len(matchedKeys) == 0 {
 		return models
 	}
-	// If no keys were matched or restricted, but at least one key explicitly denies all, return nothing
-	if !hasRestrictedKey && hasDenyAllKey {
-		return []string{}
-	}
-	// If no keys have model restrictions (e.g., unknown key IDs), return all models
-	if !hasRestrictedKey {
-		return models
-	}
-	// Filter models based on restrictions from restricted keys only
-	filtered := []string{}
+
+	// For each model, include it if at least one matched key grants access
+	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if allowedModels[model] {
-			filtered = append(filtered, model)
+		for _, key := range matchedKeys {
+			// Blacklist wins over allowlist
+			if key.BlacklistedModels.IsBlocked(model) {
+				continue
+			}
+			// Unrestricted (wildcard) key grants access to all non-blacklisted models;
+			// restricted key grants access only if the model is explicitly listed
+			if key.Models.IsUnrestricted() || key.Models.Contains(model) {
+				filtered = append(filtered, model)
+				break
+			}
 		}
 	}
 	return filtered

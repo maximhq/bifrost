@@ -6191,10 +6191,9 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		//   - If key.Models is ["*"] → include key (supports all non-blacklisted models)
 		//   - If key.Models is empty → exclude key (deny-by-default)
 		//   - If key.Models is non-empty → only include if model is in list
+		// Blacklist wins over allowlist
 		if model != nil && *model != "" {
-			if k.Models.IsUnrestricted() {
-				// wildcard: allow all models
-			} else if !k.Models.IsAllowed(*model) {
+			if k.BlacklistedModels.IsBlocked(*model) || !k.Models.IsAllowed(*model) {
 				continue
 			}
 		}
@@ -6289,7 +6288,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
 			// ["*"] = allow all models; [] = deny all; specific list = allow only listed
-			modelSupported := hasValue && key.Models.IsAllowed(model)
+			modelSupported := hasValue && key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

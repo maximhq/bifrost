@@ -361,6 +361,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 		deploymentsResponse,
 		providerName,
 		key.Models,
+		key.BlacklistedModels,
 		request.Unfiltered,
 	)
 

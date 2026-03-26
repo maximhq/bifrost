@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -24,7 +24,7 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		bifrostResponse.NextPageToken = *response.LastID
 	}
 
-	if !unfiltered && allowedModels.IsEmpty() {
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
 		return bifrostResponse
 	}
 
@@ -44,6 +44,9 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 				continue
 			}
 		}
+		if !unfiltered && blacklistedModels.IsBlocked(modelID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:      string(providerKey) + "/" + modelID,
 			Name:    schemas.Ptr(model.DisplayName),
@@ -55,6 +58,9 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 	// Backfill allowed models that were not in the response
 	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
+			if blacklistedModels.IsBlocked(allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

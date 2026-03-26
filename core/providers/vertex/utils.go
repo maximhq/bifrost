@@ -185,9 +185,13 @@ func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
-func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(deployments map[string]string, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
+	}
+
+	if blacklistedModels.IsBlockAll() {
+		return response
 	}
 
 	addedModelIDs := make(map[string]bool)
@@ -197,6 +201,9 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 	// First add models from deployments (filtered by allowedModels when set)
 	for alias, deploymentValue := range deployments {
 		if restrictAllowed && !allowedModels.Contains(alias) {
+			continue
+		}
+		if blacklistedModels.IsBlocked(alias) {
 			continue
 		}
 		modelID := string(schemas.Vertex) + "/" + alias
@@ -222,6 +229,9 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 	for _, allowedModel := range allowedModels {
 		modelID := string(schemas.Vertex) + "/" + allowedModel
 		if addedModelIDs[modelID] {
+			continue
+		}
+		if blacklistedModels.IsBlocked(allowedModel) {
 			continue
 		}
 

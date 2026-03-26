@@ -53,7 +53,7 @@ interface ModelOption {
 	provider?: string;
 }
 
-const ALL_MODELS_OPTION: ModelOption = { label: "Allow All Models", value: "*" };
+const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
 
 export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
@@ -114,7 +114,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	const loadOptions = useCallback(
 		(query: string, callback: (options: ModelOption[]) => void) => {
 			// Prepend "Allow All Models" when allowAllOption is enabled and query matches (or is empty)
-			const prefix: ModelOption[] = allowAllOption && (!query || "allow all models".includes(query.toLowerCase()))
+			const prefix: ModelOption[] = allowAllOption && (!query || "all models".includes(query.toLowerCase()))
 				? [ALL_MODELS_OPTION]
 				: [];
 

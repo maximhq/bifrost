@@ -98,6 +98,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := key.BlacklistedModels.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
+		return
+	}
+
 	if key.ID == "" {
 		key.ID = uuid.NewString()
 	}
@@ -188,6 +193,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	updateKey.ID = keyID
 	mergedKey := h.mergeUpdatedKey(*oldRawKey, *oldRedactedKey, updateKey)
+
+	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
+		return
+	}
 
 	if err := h.inMemoryStore.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)

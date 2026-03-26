@@ -186,9 +186,10 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 
 	// Filter by key.Models
 	allowedModels := key.Models
+	blacklistedModels := key.BlacklistedModels
 	providerPrefix := string(schemas.OpenRouter) + "/"
 
-	if !request.Unfiltered && allowedModels.IsEmpty() {
+	if !request.Unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
 		openrouterResponse.Data = make([]schemas.Model, 0)
 	} else if !request.Unfiltered && allowedModels.IsRestricted() {
 		filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
@@ -196,6 +197,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		for i := range openrouterResponse.Data {
 			rawID := openrouterResponse.Data[i].ID
 			if !(allowedModels.Contains(rawID) || allowedModels.Contains(providerPrefix+rawID)) {
+				continue
+			}
+			if blacklistedModels.IsBlocked(rawID) || blacklistedModels.IsBlocked(providerPrefix+rawID) {
 				continue
 			}
 			openrouterResponse.Data[i].ID = providerPrefix + rawID
@@ -208,6 +212,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			rawID := allowedModel
 			if strings.HasPrefix(strings.ToLower(allowedModel), strings.ToLower(providerPrefix)) {
 				rawID = allowedModel[len(providerPrefix):]
+			}
+			if blacklistedModels.IsBlocked(rawID) || blacklistedModels.IsBlocked(providerPrefix+rawID) {
+				continue
 			}
 			if !includedModels[strings.ToLower(rawID)] {
 				filteredData = append(filteredData, schemas.Model{

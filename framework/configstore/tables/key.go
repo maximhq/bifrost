@@ -74,7 +74,7 @@ type TableKey struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	Models             schemas.WhiteList           `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	BlacklistedModels  schemas.WhiteList           `gorm:"-" json:"blacklisted_models"`
+	BlacklistedModels  schemas.BlackList           `gorm:"-" json:"blacklisted_models"`
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
 	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
@@ -91,20 +91,22 @@ func (TableKey) TableName() string { return "config_keys" }
 // batch S3 config) before writing to the database. Encryption runs last to ensure it
 // operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
+	if err := k.Models.Validate(); err != nil {
+		return err
+	}
 	data, err := json.Marshal(k.Models)
 	if err != nil {
 		return err
 	}
 	k.ModelsJSON = string(data)
-	if k.BlacklistedModels != nil {
-		data, err := json.Marshal(k.BlacklistedModels)
-		if err != nil {
-			return err
-		}
-		k.BlacklistedModelsJSON = string(data)
-	} else {
-		k.BlacklistedModelsJSON = "[]"
+	if err := k.BlacklistedModels.Validate(); err != nil {
+		return err
 	}
+	data, err = json.Marshal(k.BlacklistedModels)
+	if err != nil {
+		return err
+	}
+	k.BlacklistedModelsJSON = string(data)
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
@@ -496,8 +498,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(k.BlacklistedModelsJSON), &k.BlacklistedModels); err != nil {
 			return err
 		}
-	} else {
-		k.BlacklistedModels = []string{}
 	}
 	if k.Enabled == nil {
 		enabled := true // DB default
