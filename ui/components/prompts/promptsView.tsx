@@ -17,7 +17,7 @@ export default function PromptsView() {
 	if (foldersLoading || promptsLoading) {
 		return <FullPageLoader />;
 	}
-	
+
 	if (foldersError || promptsError) {
 		return (
 			<div className="no-padding-parent no-border-parent p-4">
