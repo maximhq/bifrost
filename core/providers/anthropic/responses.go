@@ -253,6 +253,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				if state.Model != nil {
 					response.Model = *state.Model
 				}
+				// Forward input usage from message_start so clients see cache metrics early
+				if chunk.Message.Usage != nil {
+					response.Usage = &schemas.ResponsesResponseUsage{
+						InputTokens:  chunk.Message.Usage.InputTokens,
+						OutputTokens: chunk.Message.Usage.OutputTokens,
+						TotalTokens:  chunk.Message.Usage.InputTokens + chunk.Message.Usage.OutputTokens,
+					}
+					if chunk.Message.Usage.CacheReadInputTokens > 0 || chunk.Message.Usage.CacheCreationInputTokens > 0 {
+						response.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+							CachedReadTokens:  chunk.Message.Usage.CacheReadInputTokens,
+							CachedWriteTokens: chunk.Message.Usage.CacheCreationInputTokens,
+						}
+						// Bifrost convention: InputTokens includes cached tokens
+						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+					}
+				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeCreated,
 					SequenceNumber: sequenceNumber,
@@ -1379,11 +1396,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
 		if bifrostResp.Response != nil {
-			streamMessage := &AnthropicMessageResponse{
-				Type:    "message",
-				Role:    "assistant",
-				Content: []AnthropicContentBlock{}, // Always empty array in message_start
-				Usage: &AnthropicUsage{
+			// Use actual usage if available (forwarded from upstream message_start),
+			// otherwise fall back to zeros for non-Anthropic providers
+			var messageUsage *AnthropicUsage
+			if bifrostResp.Response.Usage != nil {
+				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			} else {
+				messageUsage = &AnthropicUsage{
 					InputTokens:              0,
 					OutputTokens:             0,
 					CacheReadInputTokens:     0,
@@ -1392,7 +1411,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						Ephemeral5mInputTokens: 0,
 						Ephemeral1hInputTokens: 0,
 					},
-				},
+				}
+			}
+			streamMessage := &AnthropicMessageResponse{
+				Type:    "message",
+				Role:    "assistant",
+				Content: []AnthropicContentBlock{}, // Always empty array in message_start
+				Usage:   messageUsage,
 			}
 			if bifrostResp.Response.ID != nil {
 				streamMessage.ID = *bifrostResp.Response.ID

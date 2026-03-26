@@ -427,23 +427,6 @@ func TestToBifrostChatResponse_MultipleTextBlocksWithThinking(t *testing.T) {
 	if lastRD.Text == nil {
 		t.Fatal("expected content blocks metadata to be non-nil")
 	}
-
-	var meta []contentBlockMeta
-	if err := json.Unmarshal([]byte(*lastRD.Text), &meta); err != nil {
-		t.Fatalf("failed to unmarshal block metadata: %v", err)
-	}
-	if len(meta) != 3 {
-		t.Fatalf("expected 3 block metadata entries, got %d", len(meta))
-	}
-	if meta[0].T != "thinking" || meta[0].L != len(thinkingText) {
-		t.Errorf("block 0: expected thinking/%d, got %s/%d", len(thinkingText), meta[0].T, meta[0].L)
-	}
-	if meta[1].T != "text" || meta[1].L != len(textBlock1) {
-		t.Errorf("block 1: expected text/%d, got %s/%d", len(textBlock1), meta[1].T, meta[1].L)
-	}
-	if meta[2].T != "text" || meta[2].L != len(textBlock2) {
-		t.Errorf("block 2: expected text/%d, got %s/%d", len(textBlock2), meta[2].T, meta[2].L)
-	}
 }
 
 func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {
@@ -488,13 +471,6 @@ func TestToAnthropicChatRequest_ReconstructsFromBoundaries(t *testing.T) {
 	combined := thinkingText + "\n\n" + textBlock1 + "\n\n" + textBlock2
 
 	// Build block metadata
-	meta := []contentBlockMeta{
-		{T: "thinking", L: len(thinkingText)},
-		{T: "text", L: len(textBlock1)},
-		{T: "text", L: len(textBlock2)},
-	}
-	metaJSON, _ := json.Marshal(meta)
-	metaStr := string(metaJSON)
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -514,11 +490,6 @@ func TestToAnthropicChatRequest_ReconstructsFromBoundaries(t *testing.T) {
 							Type:      schemas.BifrostReasoningDetailsTypeText,
 							Signature: &signature,
 							// Text is nil — was cleared during response conversion
-						},
-						{
-							Index: 1,
-							Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
-							Text:  &metaStr,
 						},
 					},
 				},
@@ -588,13 +559,6 @@ func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 	signature := "sig_fallback"
 	modifiedContent := "The user edited this content"
 
-	meta := []contentBlockMeta{
-		{T: "thinking", L: 100}, // Original was 100 chars, but content is now different
-		{T: "text", L: 50},
-	}
-	metaJSON, _ := json.Marshal(meta)
-	metaStr := string(metaJSON)
-
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-6-20250514",
@@ -608,8 +572,7 @@ func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 				Content: &schemas.ChatMessageContent{ContentStr: &modifiedContent},
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
 					ReasoningDetails: []schemas.ChatReasoningDetails{
-						{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Signature: &signature},
-						{Index: 1, Type: schemas.BifrostReasoningDetailsTypeContentBlocks, Text: &metaStr},
+						{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: &modifiedContent, Signature: &signature},
 					},
 				},
 			},
