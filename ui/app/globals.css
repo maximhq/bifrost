@@ -226,19 +226,62 @@ body {
 }
 
 div.content-container:has(.no-padding-parent) {
-	@apply !p-0;
+	@apply p-0!;
 }
 
 div.content-container main.content-container-inner:has(.no-padding-parent) {
-	@apply !p-0;
+	@apply p-0!;
 }
 
 div.content-container:has(.no-border-parent) {
-	@apply !border-0;
+	@apply border-0!;
+}
+
+/* ReactFlow Controls — follow Bifrost colour schema */
+
+.react-flow__controls {
+	background-color: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+}
+
+.react-flow__controls-button {
+	background-color: var(--card);
+	border-bottom: 1px solid var(--border);
+	fill: var(--foreground);
+}
+
+.react-flow__controls-button:hover {
+	background-color: var(--muted);
+}
+
+.react-flow__controls-button svg {
+	fill: var(--foreground);
+}
+
+/* Dark mode — needs !important to beat ReactFlow's bundled specificity */
+.dark .react-flow__controls {
+	background-color: var(--card) !important;
+	border-color: var(--border) !important;
+}
+
+.dark .react-flow__controls-button {
+	background-color: var(--card) !important;
+	border-bottom-color: var(--border) !important;
+	fill: var(--foreground) !important;
+}
+
+.dark .react-flow__controls-button:hover {
+	background-color: var(--muted) !important;
+}
+
+.dark .react-flow__controls-button svg {
+	fill: var(--foreground) !important;
 }
 
 /* // Custom styling for streamdown */
 
 [data-streamdown="code-block"], [data-streamdown="code-block-body"]{
-	@apply !rounded-sm;
+	@apply rounded-sm!;
 }
