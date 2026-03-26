@@ -344,7 +344,13 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddChainRuleColumnToRoutingRules(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingChainMaxDepthColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -5311,6 +5317,57 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
+// migrationAddChainRuleColumnToRoutingRules adds chain_rule to routing_rules.
+// When true, the routing engine re-evaluates the full rule set after this rule matches,
+// using the resolved provider/model as the new context input.
+func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_chain_rule_column_to_routing_rules",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				if err := mg.AddColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
+					return fmt.Errorf("failed to add chain_rule column: %w", err)
+				}
+			}
+
+			// Backfill config_hash for all existing routing rules.
+			// GenerateRoutingRuleHash now includes chain_rule, so existing hashes
+			// (computed without it) are stale and must be recomputed to avoid
+			// every rule appearing as changed after this upgrade.
+			var rules []tables.TableRoutingRule
+			if err := tx.Preload("Targets").Find(&rules).Error; err != nil {
+				return fmt.Errorf("failed to load routing rules for config_hash backfill: %w", err)
+			}
+			for _, rule := range rules {
+				hash, err := GenerateRoutingRuleHash(rule)
+				if err != nil {
+					return fmt.Errorf("failed to generate config_hash for routing rule %s: %w", rule.ID, err)
+				}
+				if err := tx.Model(&tables.TableRoutingRule{}).Where("id = ?", rule.ID).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for routing rule %s: %w", rule.ID, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableRoutingRule{}, "chain_rule") {
+				if err := mg.DropColumn(&tables.TableRoutingRule{}, "chain_rule"); err != nil {
+					return fmt.Errorf("failed to drop chain_rule column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_chain_rule_column_to_routing_rules migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddBudgetCalendarAlignedColumn adds the calendar_aligned column to the governance_budgets table.
 func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -5338,6 +5395,38 @@ func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_budget_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingChainMaxDepthColumn adds routing_chain_max_depth to the client config table.
+// Defaults to 10, which is the built-in default for routing rule chain evaluation depth.
+func migrationAddRoutingChainMaxDepthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_chain_max_depth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
+					return fmt.Errorf("failed to add routing_chain_max_depth column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "routing_chain_max_depth") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "routing_chain_max_depth"); err != nil {
+					return fmt.Errorf("failed to drop routing_chain_max_depth column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_routing_chain_max_depth_column migration: %s", err.Error())
 	}
 	return nil
 }

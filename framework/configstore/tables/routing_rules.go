@@ -31,6 +31,9 @@ type TableRoutingRule struct {
 	Scope   string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_routing_rule_scope_name" json:"scope"` // "global" | "team" | "customer" | "virtual_key"
 	ScopeID *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_rule_scope_name" json:"scope_id"`      // nil for global, otherwise entity ID
 
+	// Chaining
+	ChainRule bool `gorm:"not null;default:false" json:"chain_rule"` // If true, re-evaluates routing chain after this rule matches
+
 	// Execution
 	Priority int `gorm:"type:int;not null;default:0;index" json:"priority"` // Lower = evaluated first within scope
 

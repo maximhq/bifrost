@@ -460,6 +460,7 @@ export interface CoreConfig {
 	required_headers: string[];
 	logging_headers: string[];
 	hide_deleted_virtual_keys_in_filters: boolean;
+	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -486,6 +487,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	required_headers: [],
 	logging_headers: [],
 	hide_deleted_virtual_keys_in_filters: false,
+	routing_chain_max_depth: 10,
 };
 
 // Semantic cache configuration types

@@ -35,9 +35,11 @@ Global Scope (Lowest Priority, applies to all)
 **How it works:**
 1. When a request arrives with a Virtual Key, Bifrost builds a scope chain
 2. Rules are evaluated in scope order (highest to lowest)
-3. The **first matching rule** wins - no further rules are evaluated
+3. The **first matching rule** wins — no further rules are evaluated in that iteration
 4. Within each scope, rules are sorted by **priority** (ascending: 0 evaluates before 10)
-5. If no rule matches, the incoming provider/model is used unchanged
+5. If the matched rule has `chain_rule: true`, the resolved provider/model becomes the new context and the full scope chain is re-evaluated from the top
+6. If no rule matches (or the matched rule is terminal), the current decision is applied
+7. If no rule ever matches, the incoming provider/model is used unchanged
 
 **Example:**
 ```
@@ -233,6 +235,7 @@ Access routing rules from the dashboard:
 - **Name** (required): Unique rule identifier
 - **Description** (optional): Internal notes
 - **Enabled**: Toggle rule on/off
+- **Chain Rule**: When enabled, the routing engine re-evaluates all rules after this one matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
 - **CEL Expression**: Visual or manual expression builder
 - **Targets** (required): One or more weighted routing targets — each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
 - **Fallbacks** (optional): Array of fallback providers
@@ -271,6 +274,7 @@ GET /api/governance/routing-rules
       "name": "Premium Tier Route",
       "description": "Route premium users to fast provider",
       "enabled": true,
+      "chain_rule": false,
       "cel_expression": "headers[\"x-tier\"] == \"premium\"",
       "targets": [
         { "provider": "openai", "model": "gpt-4o", "weight": 0.7 },
@@ -404,6 +408,7 @@ Define routing rules in your `config.json` file under the governance configurati
 - **name** (string, required): Rule name (must be unique within scope)
 - **description** (string, optional): Internal documentation
 - **enabled** (boolean): Whether rule is active
+- **chain_rule** (boolean, default: `false`): When `true`, re-evaluates the full routing chain after this rule matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
 - **cel_expression** (string): CEL expression for rule matching
 - **targets** (array, required): One or more routing targets. Each target has:
   - `provider` (string, optional): Target provider — omit to use the incoming request provider
@@ -583,6 +588,96 @@ Route based on region headers:
   "priority": 0
 }
 ```
+
+---
+
+## Rule Chaining
+
+Rule chaining allows routing rules to be composed together. When a rule has `chain_rule: true`, the routing engine does not stop after it matches — instead, it updates the request context with the resolved provider/model and re-evaluates the full rule set from the top.
+
+### How Chaining Works
+
+```
+Request arrives (provider=openai, model=gpt-4)
+    ↓
+Rule 1 matches (chain_rule=true) → resolves model to gpt-4-turbo
+    ↓
+Re-evaluate all rules with (provider=openai, model=gpt-4-turbo)
+    ↓
+Rule 2 matches (chain_rule=false) → resolves provider to azure
+    ↓
+Final decision: azure / gpt-4-turbo
+```
+
+### Termination Conditions
+
+The chain stops when any of the following occurs:
+
+| Condition | Description |
+|---|---|
+| **No match** | Current iteration finds no matching rule |
+| **Terminal rule** | Matched rule has `chain_rule: false` (the default) |
+| **Convergence** | Provider and model are unchanged after a chain step — continuing would loop forever |
+
+### Decision Accumulation
+
+Each chain step overwrites the previous decision — the last matched rule wins for all fields:
+
+| Field | Strategy |
+|---|---|
+| Provider | Last matched rule's target |
+| Model | Last matched rule's target |
+| API Key | Last matched rule's target (empty = use pool) |
+| Fallbacks | Last matched rule's fallbacks |
+
+Every chain step is logged in the routing engine audit trail for full observability.
+
+### Configuration Example
+
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "normalize-alias",
+        "name": "Normalize gpt-4 Alias",
+        "enabled": true,
+        "chain_rule": true,
+        "cel_expression": "model == \"gpt-4\"",
+        "targets": [{ "model": "gpt-4-turbo", "weight": 1 }],
+        "scope": "global",
+        "priority": 0
+      },
+      {
+        "id": "route-gpt4-turbo",
+        "name": "Route gpt-4-turbo to Azure",
+        "enabled": true,
+        "chain_rule": false,
+        "cel_expression": "model == \"gpt-4-turbo\"",
+        "targets": [{ "provider": "azure", "model": "gpt-4-turbo", "weight": 1 }],
+        "scope": "global",
+        "priority": 1
+      }
+    ]
+  }
+}
+```
+
+**Result:** A request with `model=gpt-4` is normalized to `gpt-4-turbo` by Rule 1 (chain continues), then routed to Azure by Rule 2 (chain stops).
+
+### Use Cases
+
+- **Model alias normalization**: Rewrite short aliases to canonical model names before routing
+- **Tiered policy application**: Apply a team-level override first, then a global key-pinning rule
+- **Feature flag injection**: A chain rule sets the target to an experimental model; a downstream rule routes that model to the right provider
+- **Budget-aware escalation**: A chain rule downgrades the model when budget is high; the next rule routes the downgraded model appropriately
+
+### Best Practices
+
+- Keep chains short (2–3 steps) — long chains are harder to reason about
+- Ensure the last rule in every intended chain path is terminal (`chain_rule: false`) to prevent unintended continuation
+- Use convergence detection as a safety net, not a primary termination strategy — if you rely on it, your rules likely have a logic gap
+- Name chain rules clearly to reflect their role: "Normalize X", "Enrich context", etc.
 
 ---
 

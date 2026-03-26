@@ -194,7 +194,7 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	_, err = engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), nil)
@@ -207,7 +207,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	ctx := &RoutingContext{
@@ -228,7 +228,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create a global routing rule
@@ -279,7 +279,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -348,7 +348,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create global rule
@@ -412,7 +412,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Low precedence rule (evaluated second): higher priority number
@@ -485,7 +485,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(bgCtx, ctx, engine)
@@ -508,7 +508,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(schemas.NewBifrostContext(context.Background(), time.Now()), ctx, engine)
@@ -527,7 +527,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create disabled rule
@@ -579,7 +579,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -623,7 +623,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -659,7 +659,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create a rule that checks for a header that may not be present
