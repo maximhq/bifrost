@@ -180,6 +180,14 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	}
 
 	ctx := CreateContextWithCacheKey("count-tokens-test")
+	ctx.SetValue(requestIDKey, "stale-request-id")
+	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
+	ctx.SetValue(requestHashKey, "stale-request-hash")
+	ctx.SetValue(requestParamsHashKey, "stale-params-hash")
+	ctx.SetValue(requestModelKey, "stale-model")
+	ctx.SetValue(requestProviderKey, schemas.OpenAI)
+	ctx.SetValue(requestEmbeddingKey, []float32{1, 2, 3})
+	ctx.SetValue(requestEmbeddingTokensKey, 99)
 
 	modifiedReq, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 	if err != nil {
@@ -202,6 +210,18 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	}
 	if got, _ := ctx.Value(requestStorageIDKey).(string); got != "" {
 		t.Fatalf("expected requestStorageIDKey to remain unset, got %q", got)
+	}
+	if got, _ := ctx.Value(requestModelKey).(string); got != "" {
+		t.Fatalf("expected requestModelKey to remain unset, got %q", got)
+	}
+	if got, ok := ctx.Value(requestProviderKey).(schemas.ModelProvider); ok && got != "" {
+		t.Fatalf("expected requestProviderKey to remain unset, got %q", got)
+	}
+	if got := ctx.Value(requestEmbeddingKey); got != nil {
+		t.Fatalf("expected requestEmbeddingKey to remain unset, got %#v", got)
+	}
+	if got, ok := ctx.Value(requestEmbeddingTokensKey).(int); ok && got != 0 {
+		t.Fatalf("expected requestEmbeddingTokensKey to remain unset, got %d", got)
 	}
 }
 

@@ -376,6 +376,17 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
+func (plugin *Plugin) clearRequestScopedContext(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(requestIDKey)
+	ctx.ClearValue(requestStorageIDKey)
+	ctx.ClearValue(requestHashKey)
+	ctx.ClearValue(requestParamsHashKey)
+	ctx.ClearValue(requestModelKey)
+	ctx.ClearValue(requestProviderKey)
+	ctx.ClearValue(requestEmbeddingKey)
+	ctx.ClearValue(requestEmbeddingTokensKey)
+}
+
 // PreLLMHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.
@@ -405,13 +416,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
+	// Clear request-scoped semantic cache state up front in case the context is reused.
+	plugin.clearRequestScopedContext(ctx)
+
 	if !isSemanticCacheSupportedRequestType(req.RequestType) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for unsupported request type: " + string(req.RequestType))
 		return req, nil, nil
 	}
-
-	// Clear any stale storage ID from a previously reused context.
-	ctx.ClearValue(requestStorageIDKey)
 
 	if plugin.isConversationHistoryThresholdExceeded(req) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for request with conversation history threshold exceeded")
