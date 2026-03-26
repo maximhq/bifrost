@@ -385,6 +385,8 @@ func (plugin *Plugin) clearRequestScopedContext(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(requestProviderKey)
 	ctx.ClearValue(requestEmbeddingKey)
 	ctx.ClearValue(requestEmbeddingTokensKey)
+	ctx.ClearValue(isCacheHitKey)
+	ctx.ClearValue(cacheHitTypeKey)
 }
 
 // PreLLMHook is called before a request is processed by Bifrost.

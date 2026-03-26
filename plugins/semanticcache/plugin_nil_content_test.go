@@ -188,6 +188,8 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	ctx.SetValue(requestProviderKey, schemas.OpenAI)
 	ctx.SetValue(requestEmbeddingKey, []float32{1, 2, 3})
 	ctx.SetValue(requestEmbeddingTokensKey, 99)
+	ctx.SetValue(isCacheHitKey, true)
+	ctx.SetValue(cacheHitTypeKey, CacheTypeDirect)
 
 	modifiedReq, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 	if err != nil {
@@ -222,6 +224,12 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	}
 	if got, ok := ctx.Value(requestEmbeddingTokensKey).(int); ok && got != 0 {
 		t.Fatalf("expected requestEmbeddingTokensKey to remain unset, got %d", got)
+	}
+	if got, ok := ctx.Value(isCacheHitKey).(bool); ok && got {
+		t.Fatal("expected isCacheHitKey to remain unset")
+	}
+	if got, ok := ctx.Value(cacheHitTypeKey).(CacheType); ok && got != "" {
+		t.Fatalf("expected cacheHitTypeKey to remain unset, got %q", got)
 	}
 }
 
