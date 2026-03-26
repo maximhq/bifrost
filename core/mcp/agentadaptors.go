@@ -147,11 +147,31 @@ func (c *chatAPIAdapter) createNewRequest(conversation []interface{}) interface{
 		}
 	}
 
+	params := c.originalReq.Params
+	if params != nil && params.ToolChoice != nil {
+		// If tool_choice forces a tool call (required/any/specific function), reset to auto
+		// so the final LLM turn can respond freely without being forced into another tool call.
+		tc := params.ToolChoice
+		shouldReset := false
+		if tc.ChatToolChoiceStr != nil {
+			v := *tc.ChatToolChoiceStr
+			shouldReset = v == string(schemas.ChatToolChoiceTypeRequired) || v == string(schemas.ChatToolChoiceTypeAny)
+		} else if tc.ChatToolChoiceStruct != nil {
+			shouldReset = true
+		}
+		if shouldReset {
+			paramsCopy := *params
+			autoStr := string(schemas.ChatToolChoiceTypeAuto)
+			paramsCopy.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: &autoStr}
+			params = &paramsCopy
+		}
+	}
+
 	return &schemas.BifrostChatRequest{
 		Provider:  c.originalReq.Provider,
 		Model:     c.originalReq.Model,
 		Fallbacks: c.originalReq.Fallbacks,
-		Params:    c.originalReq.Params,
+		Params:    params,
 		Input:     chatMessages,
 	}
 }
@@ -360,11 +380,31 @@ func (r *responsesAPIAdapter) createNewRequest(conversation []interface{}) inter
 		responsesMessages = append(responsesMessages, msg.(schemas.ResponsesMessage))
 	}
 
+	params := r.originalReq.Params
+	if params != nil && params.ToolChoice != nil {
+		// If tool_choice forces a tool call (required/any/specific tool), reset to auto
+		// so the final LLM turn can respond freely without being forced into another tool call.
+		tc := params.ToolChoice
+		shouldReset := false
+		if tc.ResponsesToolChoiceStr != nil {
+			v := *tc.ResponsesToolChoiceStr
+			shouldReset = v == string(schemas.ResponsesToolChoiceTypeRequired) || v == string(schemas.ResponsesToolChoiceTypeAny)
+		} else if tc.ResponsesToolChoiceStruct != nil {
+			shouldReset = true
+		}
+		if shouldReset {
+			paramsCopy := *params
+			autoStr := string(schemas.ResponsesToolChoiceTypeAuto)
+			paramsCopy.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &autoStr}
+			params = &paramsCopy
+		}
+	}
+
 	return &schemas.BifrostResponsesRequest{
 		Provider:  r.originalReq.Provider,
 		Model:     r.originalReq.Model,
 		Fallbacks: r.originalReq.Fallbacks,
-		Params:    r.originalReq.Params,
+		Params:    params,
 		Input:     responsesMessages,
 	}
 }

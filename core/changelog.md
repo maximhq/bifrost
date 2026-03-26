@@ -1,13 +1,1 @@
-- fix: fixed duplicate content_block_stop events in Bedrock streaming responses
-- fix: fixed reasoning_content JSON tag in OpenAI response types
-- fix: fixed response capture in OTEL tracing for streaming calls
-- fix: added broken pipe detection to connection pool error handler
-- fix: fixed cache token capture for streaming calls across Anthropic and Bedrock providers
-- fix: fixed global region URL in Vertex embedding method
-- feat: added blacklisted_models on provider keys to exclude models from routing and filtered list-models
-- fix: fixed reasoning content merge logic for Bedrock provider
-- fix: kept logging enabled by default
-- fix: fixed store parameter handling for Codex conversations
-- fix: fixed enforce HTTP/2 toggle for Bedrock provider
-- fix: skipped OutputTextDone to prevent duplicate text in Gemini GenAI streaming (thanks [@ava-grace-zoe](https://github.com/ava-grace-zoe)!)
-- fix: handled missing thought signatures in Gemini provider (thanks [@mrcfps](https://github.com/mrcfps)!)
+- fix: reset tool choice to auto in agent mode.
