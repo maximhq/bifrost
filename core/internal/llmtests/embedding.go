@@ -13,7 +13,7 @@ import (
 )
 
 // cosineSimilarity computes the cosine similarity between two vectors
-func cosineSimilarity(a, b []float32) float64 {
+func cosineSimilarity(a, b []float64) float64 {
 	if len(a) != len(b) {
 		panic(fmt.Errorf("cosineSimilarity: vectors must have same length, got %d and %d", len(a), len(b)))
 	}
@@ -23,9 +23,9 @@ func cosineSimilarity(a, b []float32) float64 {
 	var normB float64
 
 	for i := 0; i < len(a); i++ {
-		dotProduct += float64(a[i] * b[i])
-		normA += float64(a[i] * a[i])
-		normB += float64(b[i] * b[i])
+		dotProduct += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
 	}
 
 	if normA == 0 || normB == 0 {
@@ -120,7 +120,7 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 	}
 
 	// Extract and validate embeddings
-	embeddings := make([][]float32, len(testTexts))
+	embeddings := make([][]float64, len(testTexts))
 	responseDataLength := len(response.Data)
 	if responseDataLength != len(testTexts) {
 		if responseDataLength > 0 && response.Data[0].Embedding.Embedding2DArray != nil {

@@ -85,7 +85,7 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 
 	// Convert each embedding from Bifrost format to Gemini format
 	for i, embedding := range bifrostResp.Data {
-		var values []float32
+		var values []float64
 
 		// Extract embedding values from BifrostEmbeddingResponse
 		if embedding.Embedding.EmbeddingArray != nil {

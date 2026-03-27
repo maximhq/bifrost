@@ -24,6 +24,38 @@ func normalizeText(text string) string {
 	return strings.ToLower(strings.TrimSpace(text))
 }
 
+// Semantic cache keeps vector-store/search payloads as float32 even though
+// normalized embedding API responses now preserve provider precision as float64.
+func toFloat32Embedding(values []float64) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+
+	embedding := make([]float32, len(values))
+	for i, value := range values {
+		embedding[i] = float32(value)
+	}
+
+	return embedding
+}
+
+func flattenToFloat32Embedding(values [][]float64) []float32 {
+	total := 0
+	for _, arr := range values {
+		total += len(arr)
+	}
+	if total == 0 {
+		return nil
+	}
+
+	embedding := make([]float32, 0, total)
+	for _, arr := range values {
+		embedding = append(embedding, toFloat32Embedding(arr)...)
+	}
+
+	return embedding
+}
+
 // generateEmbedding generates an embedding for the given text using the configured provider.
 func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string) ([]float32, int, error) {
 	// Create embedding request
@@ -61,14 +93,9 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 		}
 		return vals, inputTokens, nil
 	} else if embedding.EmbeddingArray != nil {
-		return embedding.EmbeddingArray, inputTokens, nil
+		return toFloat32Embedding(embedding.EmbeddingArray), inputTokens, nil
 	} else if len(embedding.Embedding2DArray) > 0 {
-		// Flatten 2D array into single embedding
-		var flattened []float32
-		for _, arr := range embedding.Embedding2DArray {
-			flattened = append(flattened, arr...)
-		}
-		return flattened, inputTokens, nil
+		return flattenToFloat32Embedding(embedding.Embedding2DArray), inputTokens, nil
 	}
 
 	return nil, 0, fmt.Errorf("embedding data is not in expected format")

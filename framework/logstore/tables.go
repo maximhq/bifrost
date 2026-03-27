@@ -97,7 +97,7 @@ type Log struct {
 	ResponsesInputHistory  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
 	ResponsesOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput        string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	EmbeddingOutput        string    `gorm:"type:text" json:"-"` // JSON serialized embedding response data
 	RerankOutput           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
 	Params                 string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools                  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool

@@ -239,8 +239,8 @@ type BedrockDocumentSourceData struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string      `json:"toolUseId"` // Required: Unique identifier for this tool use
-	Name      string      `json:"name"`      // Required: Name of the tool to use
+	ToolUseID string          `json:"toolUseId"` // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`      // Required: Name of the tool to use
 	Input     json.RawMessage `json:"input"`     // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
 }
 
@@ -658,7 +658,7 @@ func (req *BedrockTitanEmbeddingRequest) GetExtraParams() map[string]interface{}
 
 // BedrockTitanEmbeddingResponse represents a Bedrock Titan embedding response
 type BedrockTitanEmbeddingResponse struct {
-	Embedding           []float32 `json:"embedding"`           // The embedding vector
+	Embedding           []float64 `json:"embedding"`           // The embedding vector
 	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
 }
 
