@@ -23,7 +23,6 @@ import {
 	Network,
 	PanelLeftClose,
 	Puzzle,
-	Router,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -32,7 +31,6 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
-	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -406,7 +404,6 @@ export default function AppSidebar() {
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
-	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
@@ -646,24 +643,8 @@ export default function AppSidebar() {
 							url: "/workspace/prompt-repo",
 							icon: FolderGit,
 							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: hasPromptRepositoryAccess,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: hasPromptDeploymentStrategyAccess,
-								},
-							],
+							hasAccess: hasPromptRepositoryAccess,
+							tag: "Beta",
 						},
 					]
 				: []),
@@ -752,7 +733,6 @@ export default function AppSidebar() {
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
-			hasPromptDeploymentStrategyAccess,
 			isDbConnected,
 		],
 	);
