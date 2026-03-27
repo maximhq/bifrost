@@ -3735,9 +3735,10 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 	return bifrost.getProviderByKey(providerKey)
 }
 
-// SelectKeyForProvider selects an API key for the given provider and model.
-// Used by WebSocket handlers that need a key for upstream connections.
-func (bifrost *Bifrost) SelectKeyForProvider(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+// SelectKeyForProviderRequestType selects an API key for the given provider, request type, and model.
+// Used by WebSocket handlers that need a key for upstream connections while honoring request-specific
+// AllowedRequests gates such as realtime-only support.
+func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
@@ -3746,7 +3747,7 @@ func (bifrost *Bifrost) SelectKeyForProvider(ctx *schemas.BifrostContext, provid
 		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = config.CustomProviderConfig.BaseProviderType
 	}
-	return bifrost.selectKeyFromProviderForModel(ctx, schemas.WebSocketResponsesRequest, providerKey, model, baseProvider)
+	return bifrost.selectKeyFromProviderForModel(ctx, requestType, providerKey, model, baseProvider)
 }
 
 // WSStreamHooks holds the post-hook runner and cleanup function returned by RunStreamPreHooks.
@@ -3758,6 +3759,13 @@ type WSStreamHooks struct {
 	PostHookRunner       schemas.PostHookRunner
 	Cleanup              func()
 	ShortCircuitResponse *schemas.BifrostResponse
+}
+
+// RealtimeTurnHooks mirrors RunStreamPreHooks but is explicitly scoped to a
+// single realtime turn rather than one long-lived transport connection.
+type RealtimeTurnHooks struct {
+	PostHookRunner schemas.PostHookRunner
+	Cleanup        func()
 }
 
 // RunStreamPreHooks acquires a plugin pipeline, sets up tracing context, runs PreLLMHooks,
@@ -3836,6 +3844,53 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	return &WSStreamHooks{
 		PostHookRunner: postHookRunner,
 		Cleanup:        cleanup,
+	}, nil
+}
+
+// RunRealtimeTurnPreHooks acquires a plugin pipeline and runs LLM pre-hooks for
+// a single realtime turn. Unlike generic stream hooks, realtime turns do not
+// support short-circuit responses in v1 because the transports cannot yet emit a
+// fully synthetic assistant turn without an upstream generation.
+func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*RealtimeTurnHooks, *schemas.BifrostError) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+	}
+
+	pipeline := bifrost.getPluginPipeline()
+	cleanup := func() {
+		bifrost.releasePluginPipeline(pipeline)
+	}
+
+	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
+	if preReq == nil && shortCircuit == nil {
+		cleanup()
+		return nil, newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
+	}
+	if shortCircuit != nil {
+		if shortCircuit.Error != nil {
+			shortCircuit.Error.ExtraFields.RequestType = schemas.RealtimeRequest
+			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			cleanup()
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			return nil, shortCircuit.Error
+		}
+		if shortCircuit.Response != nil {
+			cleanup()
+			return nil, newBifrostErrorFromMsg("realtime turn short-circuit responses are not supported")
+		}
+	}
+
+	return &RealtimeTurnHooks{
+		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+		},
+		Cleanup: cleanup,
 	}, nil
 }
 
@@ -5657,8 +5712,10 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 	if runFrom > len(p.llmPlugins) {
 		runFrom = len(p.llmPlugins)
 	}
-	// Detect streaming mode - if StreamStartTime is set, we're in a streaming context
-	isStreaming := ctx.Value(schemas.BifrostContextKeyStreamStartTime) != nil
+	requestType, _, _ := GetResponseFields(resp, bifrostErr)
+	// Realtime turns carry StreamStartTime for plugin latency/final-chunk context,
+	// but they are finalized as one completed turn, not chunk-by-chunk stream output.
+	isStreaming := ctx.Value(schemas.BifrostContextKeyStreamStartTime) != nil && requestType != schemas.RealtimeRequest
 	ctx.BlockRestrictedWrites()
 	defer ctx.UnblockRestrictedWrites()
 	var err error
