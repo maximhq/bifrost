@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -26,6 +27,9 @@ type LogManager interface {
 
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
+
+	// GetSessionLogs returns paginated logs for a single parent_request_id session.
+	GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error)
 
 	// GetStats calculates statistics for logs matching the given filters
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
@@ -130,6 +134,16 @@ func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchF
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
 	}
 	return p.plugin.SearchLogs(ctx, *filters, *pagination)
+}
+
+func (p *PluginLogManager) GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
+	if pagination == nil {
+		return nil, fmt.Errorf("pagination cannot be nil")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+	return p.plugin.GetSessionLogs(ctx, sessionID, *pagination)
 }
 
 func (p *PluginLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
@@ -378,6 +392,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	if request.ChatRequest != nil {
 		return request.ChatRequest.Input, []schemas.ResponsesMessage{}
 	}
+	if request.RequestType == schemas.RealtimeRequest && request.ResponsesRequest != nil {
+		return extractRealtimeInputHistory(request.ResponsesRequest.Input), []schemas.ResponsesMessage{}
+	}
 	if request.ResponsesRequest != nil && len(request.ResponsesRequest.Input) > 0 {
 		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
 	}
@@ -451,6 +468,96 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }
 
+func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
+	messages := make([]schemas.ChatMessage, 0, len(input))
+	for _, item := range input {
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeMessage:
+			if item.Role == nil || item.Content == nil {
+				continue
+			}
+			content := extractRealtimeResponsesContent(item.Content)
+			if content == "" {
+				continue
+			}
+			messages = append(messages, schemas.ChatMessage{
+				Role: mapRealtimeResponsesRole(*item.Role),
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr(content),
+				},
+			})
+		case schemas.ResponsesMessageTypeFunctionCallOutput,
+			schemas.ResponsesMessageTypeCustomToolCallOutput,
+			schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeComputerCallOutput:
+			content := extractRealtimeToolOutputContent(item.ResponsesToolMessage)
+			if content == "" {
+				continue
+			}
+			messages = append(messages, schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleTool,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr(content),
+				},
+				ChatToolMessage: &schemas.ChatToolMessage{},
+			})
+		}
+	}
+	return messages
+}
+
+func mapRealtimeResponsesRole(role schemas.ResponsesMessageRoleType) schemas.ChatMessageRole {
+	switch role {
+	case schemas.ResponsesInputMessageRoleAssistant:
+		return schemas.ChatMessageRoleAssistant
+	case schemas.ResponsesInputMessageRoleSystem:
+		return schemas.ChatMessageRoleSystem
+	case schemas.ResponsesInputMessageRoleDeveloper:
+		return schemas.ChatMessageRoleDeveloper
+	default:
+		return schemas.ChatMessageRoleUser
+	}
+}
+
+func extractRealtimeResponsesContent(content *schemas.ResponsesMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return strings.TrimSpace(*content.ContentStr)
+	}
+	parts := make([]string, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		switch {
+		case block.Text != nil && strings.TrimSpace(*block.Text) != "":
+			parts = append(parts, strings.TrimSpace(*block.Text))
+		case block.ResponsesOutputMessageContentText != nil && block.Text != nil && strings.TrimSpace(*block.Text) != "":
+			parts = append(parts, strings.TrimSpace(*block.Text))
+		case block.ResponsesOutputMessageContentRefusal != nil && strings.TrimSpace(block.Refusal) != "":
+			parts = append(parts, strings.TrimSpace(block.Refusal))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func extractRealtimeToolOutputContent(toolMessage *schemas.ResponsesToolMessage) string {
+	if toolMessage == nil || toolMessage.Output == nil {
+		return ""
+	}
+	switch {
+	case toolMessage.Output.ResponsesToolCallOutputStr != nil:
+		return strings.TrimSpace(*toolMessage.Output.ResponsesToolCallOutputStr)
+	case len(toolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0:
+		content := &schemas.ResponsesMessageContent{ContentBlocks: toolMessage.Output.ResponsesFunctionToolCallOutputBlocks}
+		return extractRealtimeResponsesContent(content)
+	default:
+		return ""
+	}
+}
+
 // convertToProcessedStreamResponse converts a StreamAccumulatorResult to ProcessedStreamResponse
 // for use with the logging plugin's streaming log update functionality.
 func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, requestType schemas.RequestType) *streaming.ProcessedStreamResponse {
@@ -516,6 +623,32 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	}
 
 	return resp
+}
+
+func mergeRealtimeMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	set := func(key string, ctxKey schemas.BifrostContextKey) {
+		if value := bifrost.GetStringFromContext(ctx, ctxKey); value != "" {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			metadata[key] = value
+		}
+	}
+
+	set("realtime_session_id", schemas.BifrostContextKeyRealtimeSessionID)
+	set("provider_session_id", schemas.BifrostContextKeyRealtimeProviderSessionID)
+	set("realtime_source", schemas.BifrostContextKeyRealtimeSource)
+	set("realtime_event_type", schemas.BifrostContextKeyRealtimeEventType)
+	if bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID) != "" {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["realtime"] = true
+	}
+	return metadata
 }
 
 // formatRoutingEngineLogs formats routing engine logs into a human-readable string.

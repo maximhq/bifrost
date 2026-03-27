@@ -311,3 +311,92 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 		t.Fatal("expected pendingLogsToInject to be cleaned up after Inject")
 	}
 }
+
+func TestApplyRealtimeOutputToEntryBackfillsUserTranscriptFromRawRequest(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Hello!"
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest:  `{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello."}`,
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 1 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 1", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Role != schemas.ChatMessageRoleUser {
+		t.Fatalf("InputHistoryParsed[0].Role = %q, want user", entry.InputHistoryParsed[0].Role)
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != "Hello." {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want transcript", entry.InputHistoryParsed[0])
+	}
+	if entry.OutputMessageParsed == nil || entry.OutputMessageParsed.Content == nil || entry.OutputMessageParsed.Content.ContentStr == nil || *entry.OutputMessageParsed.Content.ContentStr != assistantText {
+		t.Fatalf("OutputMessageParsed = %+v, want assistant text", entry.OutputMessageParsed)
+	}
+	if !strings.Contains(entry.ContentSummary, "Hello.") {
+		t.Fatalf("ContentSummary = %q, want user transcript", entry.ContentSummary)
+	}
+	if !strings.Contains(entry.ContentSummary, "Hello!") {
+		t.Fatalf("ContentSummary = %q, want assistant text", entry.ContentSummary)
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsMissingTranscriptPlaceholder(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Hi there!"
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest:  `{"type":"conversation.item.input_audio_transcription.completed","transcript":""}`,
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 1 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 1", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != realtimeMissingTranscriptText {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want missing transcript placeholder", entry.InputHistoryParsed[0])
+	}
+	if !strings.Contains(entry.ContentSummary, realtimeMissingTranscriptText) {
+		t.Fatalf("ContentSummary = %q, want missing transcript placeholder", entry.ContentSummary)
+	}
+}
