@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 )
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	tests := []struct {
 		name                     string
 		model                    string
@@ -184,7 +186,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -227,6 +229,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 }
 
 func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	tests := []struct {
 		name              string
 		model             string
@@ -316,7 +319,7 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 				Input: []schemas.ResponsesMessage{tt.message},
 			}
 
-			result := ToOpenAIResponsesRequest(bifrostReq)
+			result := ToOpenAIResponsesRequest(ctx, bifrostReq)
 
 			if result == nil {
 				t.Fatal("ToOpenAIResponsesRequest returned nil")
@@ -1413,6 +1416,7 @@ func TestResponsesTool_EdgeCases(t *testing.T) {
 }
 
 func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	// Create function tool with unsorted properties
 	unsortedParams := &schemas.ToolFunctionParameters{
 		Type: "object",
@@ -1444,14 +1448,14 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 					},
 				},
 				{
-					Type: schemas.ResponsesToolTypeWebSearch,
+					Type:                   schemas.ResponsesToolTypeWebSearch,
 					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
 				},
 			},
 		},
 	}
 
-	result := ToOpenAIResponsesRequest(bifrostReq)
+	result := ToOpenAIResponsesRequest(ctx, bifrostReq)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}

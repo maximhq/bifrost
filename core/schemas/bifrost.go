@@ -221,7 +221,7 @@ const (
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
-	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"              // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
+	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -255,6 +255,7 @@ const (
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                  // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
+	BifrostContextKeyDroppedParams                       BifrostContextKey = "bifrost-dropped-params"                     // []string (params dropped during provider conversion)
 )
 
 const (
@@ -821,6 +822,7 @@ type BifrostResponseExtraFields struct {
 	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
 	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	DroppedParams           []string           `json:"dropped_params,omitempty"`            // params dropped during provider conversion
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -985,4 +987,5 @@ type BifrostErrorExtraFields struct {
 	RawResponse    interface{}   `json:"raw_response,omitempty"`
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
 	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+	DroppedParams  []string      `json:"dropped_params,omitempty"`
 }

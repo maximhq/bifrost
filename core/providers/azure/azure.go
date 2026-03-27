@@ -768,7 +768,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := openai.ToOpenAIResponsesRequest(request)
+				reqBody := openai.ToOpenAIResponsesRequest(ctx, request)
 				if reqBody != nil {
 					reqBody.Model = deployment
 				}
