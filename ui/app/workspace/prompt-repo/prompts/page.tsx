@@ -1,10 +1,9 @@
-import { PromptProvider } from "@/components/prompts/context";
-import PromptsView from "@/components/prompts/promptsView";
+"use client";
+
+import { redirect, useSearchParams } from "next/navigation";
 
 export default function PromptsPage() {
-	return (
-		<PromptProvider>
-			<PromptsView />
-		</PromptProvider>
-	);
+	const searchParams = useSearchParams();
+	const queryString = searchParams.toString();
+	redirect(`/workspace/prompt-repo${queryString ? `?${queryString}` : ""}`);
 }
