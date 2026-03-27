@@ -628,9 +628,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							/>
 						)}
 
-						{(displayLog.image_generation_input || displayLog.image_generation_output) && (
+						{(displayLog.image_generation_input || displayLog.image_edit_input || displayLog.image_variation_input || displayLog.image_generation_output) && (
 							<ImageView
 								imageInput={displayLog.image_generation_input}
+								imageEditInput={displayLog.image_edit_input}
+								imageVariationInput={displayLog.image_variation_input}
 								imageOutput={displayLog.image_generation_output}
 								requestType={displayLog.object}
 							/>

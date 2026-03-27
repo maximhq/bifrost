@@ -429,6 +429,16 @@ export interface PluginLogEntry {
 	timestamp: number;
 }
 
+export interface ImageEditInput {
+	images?: Array<{ image: string | null }> | null; // null when stripped by large-payload threshold
+	prompt: string;
+}
+
+export interface ImageVariationInput {
+	image: { image: string | null }; // image bytes null when stripped by large-payload threshold
+}
+
+
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
@@ -463,6 +473,8 @@ export interface LogEntry {
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
 	image_generation_input?: { prompt: string };
+	image_edit_input?: ImageEditInput;
+	image_variation_input?: ImageVariationInput;
 	video_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
