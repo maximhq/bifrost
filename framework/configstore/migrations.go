@@ -323,6 +323,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4836,6 +4839,37 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetCalendarAlignedColumn adds the calendar_aligned column to the governance_budgets table.
+func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_budget_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_budget_calendar_aligned_column migration: %s", err.Error())
 	}
 	return nil
 }

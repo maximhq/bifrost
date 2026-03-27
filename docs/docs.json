@@ -100,7 +100,7 @@
             ]
           },
           {
-            "group": "Integrations",
+            "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
               "integrations/what-is-an-integration"
@@ -256,6 +256,7 @@
               "cli-agents/cursor",
               "cli-agents/librechat",
               "cli-agents/claude-code",
+              "cli-agents/claude-for-office",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
@@ -606,6 +607,9 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.3.13",
+              "changelogs/ent-v1.3.12",
+              "changelogs/ent-v1.3.11",
               "changelogs/ent-v1.3.10",
               "changelogs/ent-v1.3.9",
               "changelogs/ent-v1.3.8"
@@ -615,6 +619,7 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
+              "changelogs/cli-v0.10.3",
               "changelogs/cli-v0.10.2",
               "changelogs/cli-v0.10.1",
               "changelogs/cli-v0.10.0"

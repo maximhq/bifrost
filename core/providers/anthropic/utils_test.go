@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -857,6 +858,164 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 		if len(result) != len(allHeaders) {
 			t.Errorf("expected all headers for unknown provider, got %v", result)
+		}
+	})
+}
+
+func TestStripAutoInjectableTools(t *testing.T) {
+	t.Run("code_execution_without_web_search_preserved", func(t *testing.T) {
+		// code_execution alone should NOT be stripped (no web_search/web_fetch to trigger auto-injection)
+		input := []byte(`{"model":"claude-opus-4-6","tools":[{"type":"custom","name":"my_tool"},{"type":"code_execution_20250825","name":"code_execution"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("code_execution_with_web_search_stripped", func(t *testing.T) {
+		// code_execution should be stripped when web_search is present (auto-injection conflict)
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20260209","name":"web_search"},{"type":"custom","name":"my_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_search" {
+			t.Errorf("expected first tool to be 'web_search', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "my_tool" {
+			t.Errorf("expected second tool to be 'my_tool', got '%s'", arr[1].Get("name").String())
+		}
+	})
+
+	t.Run("code_execution_with_web_fetch_stripped", func(t *testing.T) {
+		// code_execution should be stripped when web_fetch is present
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_fetch_20250305","name":"web_fetch"},{"type":"custom","name":"my_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_fetch" {
+			t.Errorf("expected first tool to be 'web_fetch', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "my_tool" {
+			t.Errorf("expected second tool to be 'my_tool', got '%s'", arr[1].Get("name").String())
+		}
+	})
+
+	t.Run("web_search_alone_preserved", func(t *testing.T) {
+		// web_search without code_execution should be preserved entirely
+		input := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"},{"type":"custom","name":"search"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("web_fetch_alone_preserved", func(t *testing.T) {
+		// web_fetch without code_execution should be preserved entirely
+		input := []byte(`{"tools":[{"type":"web_fetch_20250305","name":"web_fetch"},{"type":"custom","name":"fetch"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("preserves_custom_tools_only", func(t *testing.T) {
+		input := []byte(`{"tools":[{"type":"custom","name":"tool_a"},{"type":"custom","name":"tool_b"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+	})
+
+	t.Run("no_tools_key", func(t *testing.T) {
+		input := []byte(`{"model":"claude-opus-4-6","messages":[]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != string(input) {
+			t.Errorf("expected body unchanged, got %s", string(result))
+		}
+	})
+
+	t.Run("empty_tools_array", func(t *testing.T) {
+		input := []byte(`{"tools":[]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != string(input) {
+			t.Errorf("expected body unchanged, got %s", string(result))
+		}
+	})
+
+	t.Run("code_execution_and_web_search_only_strips_code_execution", func(t *testing.T) {
+		// When only code_execution + web_search, strip code_execution, keep web_search
+		input := []byte(`{"model":"test","tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20250305","name":"web_search"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 1 {
+			t.Fatalf("expected 1 tool, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_search" {
+			t.Errorf("expected remaining tool to be 'web_search', got '%s'", arr[0].Get("name").String())
+		}
+	})
+
+	t.Run("strips_code_execution_keeps_web_search_and_custom", func(t *testing.T) {
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"custom","name":"my_tool"},{"type":"web_search_20260209","name":"web_search"},{"type":"custom","name":"other_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 3 {
+			t.Fatalf("expected 3 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "my_tool" {
+			t.Errorf("expected first tool to be 'my_tool', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "web_search" {
+			t.Errorf("expected second tool to be 'web_search', got '%s'", arr[1].Get("name").String())
+		}
+		if arr[2].Get("name").String() != "other_tool" {
+			t.Errorf("expected third tool to be 'other_tool', got '%s'", arr[2].Get("name").String())
 		}
 	})
 }

@@ -7,10 +7,11 @@ set -e
 
 # Run from script directory so paths to collection and provider-capabilities.json work
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$API_DIR"
 
 # Configuration
-COLLECTION="bifrost-v1-complete.postman_collection.json"
+COLLECTION="collections/bifrost-v1-complete.postman_collection.json"
 REPORT_DIR="newman-reports/v1"
 PROVIDER_CONFIG_DIR="provider_config"
 PROVIDER_CAPABILITIES_JSON="provider-capabilities.json"

@@ -173,6 +173,11 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}
 		}
+		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
+		jsonBody, err = StripAutoInjectableTools(jsonBody)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
 		// Remove excluded fields
 		for _, field := range excludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
@@ -384,6 +389,69 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 		"web_fetch_",     // No web fetch on Bedrock
 		"code_execution", // No code execution on Bedrock
 	},
+}
+
+// StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
+// when web_search or web_fetch tools are also present. The Anthropic API auto-injects
+// code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
+// and returns an error if code_execution is also explicitly included.
+// This function strips code_execution only in that case to prevent the
+// "Auto-injecting tools would conflict" error.
+func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
+	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return jsonBody, nil
+	}
+
+	tools := toolsResult.Array()
+	if len(tools) == 0 {
+		return jsonBody, nil
+	}
+
+	// Check if web_search or web_fetch is present — only then does Anthropic
+	// auto-inject code_execution, causing a conflict if it's also explicit.
+	hasWebSearchOrFetch := false
+	for _, tool := range tools {
+		toolType := tool.Get("type").String()
+		if strings.HasPrefix(toolType, "web_search_") || strings.HasPrefix(toolType, "web_fetch_") {
+			hasWebSearchOrFetch = true
+			break
+		}
+	}
+
+	if !hasWebSearchOrFetch {
+		return jsonBody, nil
+	}
+
+	// Collect indices of code_execution tools to strip
+	var indicesToStrip []int
+	for i, tool := range tools {
+		toolType := tool.Get("type").String()
+		if strings.HasPrefix(toolType, "code_execution") {
+			indicesToStrip = append(indicesToStrip, i)
+		}
+	}
+
+	if len(indicesToStrip) == 0 {
+		return jsonBody, nil
+	}
+
+	// If all tools would be stripped, remove the tools key entirely
+	if len(indicesToStrip) == len(tools) {
+		return providerUtils.DeleteJSONField(jsonBody, "tools")
+	}
+
+	// Delete in reverse order to preserve indices
+	var err error
+	for i := len(indicesToStrip) - 1; i >= 0; i-- {
+		path := fmt.Sprintf("tools.%d", indicesToStrip[i])
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to strip auto-injectable tool at index %d: %w", indicesToStrip[i], err)
+		}
+	}
+
+	return jsonBody, nil
 }
 
 // RemapRawToolVersionsForProvider inspects tools in a raw JSON body and remaps

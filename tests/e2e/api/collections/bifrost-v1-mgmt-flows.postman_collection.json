@@ -1,0 +1,757 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Management E2E Flows",
+    "description": "Full lifecycle flows: Provider+Key+Inference, Customer+Team+VK+Inference, VK lifecycle (create, use, update, deactivate, delete).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "customer_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "team_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Flow A - List Providers",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('List Providers returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/providers",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow A - List Keys",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('List Keys returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow A - Chat Completion",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat Completion returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Create Customer",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = { name: 'Mgmt Flow Customer ' + Date.now(), email: 'mgmt@example.com' };",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create Customer returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  pm.test('Response contains customer object', function() { pm.expect(json.customer || json).to.be.an('object'); });",
+              "  var c = json.customer || json;",
+              "  pm.test('Customer has non-empty id', function() { pm.expect(c.id).to.be.a('string').and.not.be.empty; });",
+              "  if (c.id) pm.collectionVariables.set('customer_id', c.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/customers",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "customers"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Create Team",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var cid = pm.collectionVariables.get('customer_id');",
+              "var body = { name: 'Mgmt Flow Team ' + Date.now() };",
+              "if (cid) body.customer_id = cid;",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create Team returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  pm.test('Response contains team object', function() { pm.expect(json.team || json).to.be.an('object'); });",
+              "  var t = json.team || json;",
+              "  pm.test('Team has non-empty id', function() { pm.expect(t.id).to.be.a('string').and.not.be.empty; });",
+              "  if (t.id) pm.collectionVariables.set('team_id', t.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/teams",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "teams"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Create VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var tid = pm.collectionVariables.get('team_id');",
+              "var body = { name: 'Mgmt Flow VK ' + Date.now() };",
+              "if (tid) body.team_id = tid;",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var vk = json.virtual_key || json;",
+              "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+              "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+              "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+              "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+              "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Chat Completion with VK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Delete VK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Delete Team",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Delete Team returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "teams",
+            "{{team_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow B - Delete Customer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Delete Customer returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "customers",
+            "{{customer_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Create VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = { name: 'Lifecycle VK ' + Date.now() };",
+              "pm.request.body.raw = JSON.stringify(body);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Create VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });",
+              "if (code >= 200 && code <= 299) {",
+              "  var json = pm.response.json();",
+              "  var vk = json.virtual_key || json;",
+              "  pm.test('Response contains VK object', function() { pm.expect(vk).to.be.an('object'); });",
+              "  pm.test('VK has non-empty id', function() { pm.expect(vk.id).to.be.a('string').and.not.be.empty; });",
+              "  pm.test('VK value has sk-bf- prefix', function() { pm.expect(vk.value).to.match(/^sk-bf-/); });",
+              "  if (vk.id) pm.collectionVariables.set('vk_id', vk.id);",
+              "  if (vk.value) pm.collectionVariables.set('vk_value', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Chat Completion with VK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat with VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Update VK (rename)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.request.body.raw = JSON.stringify({ name: 'Lifecycle VK Renamed ' + Date.now() });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Update VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Chat Completion after rename",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Chat after rename returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Deactivate VK",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.request.body.raw = JSON.stringify({ is_active: false });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Deactivate VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Chat with deactivated VK (expect 403)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var code = pm.response.code;",
+              "pm.test('Deactivated VK returns 403', function() { pm.expect(code).to.equal(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{vk_value}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}],\n  \"max_completion_tokens\": 5,\n  \"stream\": false\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/v1/chat/completions",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Flow C - Delete VK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Delete VK returns 2xx', function() { pm.expect(pm.response.code).to.be.within(200, 299); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{vk_id}}"
+          ]
+        }
+      }
+    }
+  ]
+}

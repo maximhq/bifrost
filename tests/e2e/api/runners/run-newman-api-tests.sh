@@ -7,10 +7,11 @@ set -e
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+API_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Configuration
-COLLECTION="$SCRIPT_DIR/bifrost-api-management.postman_collection.json"
-REPORT_DIR="$SCRIPT_DIR/newman-reports/api-management"
+COLLECTION="$API_DIR/collections/bifrost-api-management.postman_collection.json"
+REPORT_DIR="$API_DIR/newman-reports/api-management"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -62,11 +63,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --html)
-            REPORTERS="cli,html"
+            REPORTERS="${REPORTERS},html"
             shift
             ;;
         --json)
-            REPORTERS="cli,json"
+            REPORTERS="${REPORTERS},json"
             shift
             ;;
         --all-reports)
@@ -143,7 +144,7 @@ else
     echo -e "  DB Verify:  ${YELLOW}disabled${NC}"
 fi
 # Repo root (tests/e2e/api -> ../../..)
-BIFROST_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+BIFROST_ROOT="$(cd "$API_DIR/../../.." && pwd)"
 PLUGIN_DIR="$BIFROST_ROOT/examples/plugins/hello-world"
 PLUGIN_SO="$PLUGIN_DIR/build/hello-world.so"
 
@@ -224,14 +225,14 @@ echo ""
 if [ -n "$DB_VERIFY" ]; then
     REPORTERS="$REPORTERS,dbverify"
     # Install dependencies for the dbverify reporter if not already present
-    if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+    if [ ! -d "$API_DIR/node_modules" ]; then
         echo "Installing DB verify reporter dependencies..."
-        (cd "$SCRIPT_DIR" && npm install --silent)
+        (cd "$API_DIR" && npm install --silent)
     fi
     # Newman (global) resolves reporters via Node's module search. Prepend the
     # local node_modules so it can find newman-reporter-dbverify without a
     # global install.
-    export NODE_PATH="$SCRIPT_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
+    export NODE_PATH="$API_DIR/node_modules${NODE_PATH:+:$NODE_PATH}"
 fi
 
 # Build Newman command

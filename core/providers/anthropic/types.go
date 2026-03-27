@@ -1049,10 +1049,13 @@ type AnthropicStreamDelta struct {
 // ==================== MODEL TYPES ====================
 
 type AnthropicModel struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"display_name"`
-	CreatedAt   time.Time `json:"created_at"`
-	Type        string    `json:"type"`
+	ID             string          `json:"id"`
+	Type           string          `json:"type"`
+	DisplayName    string          `json:"display_name"`
+	CreatedAt      time.Time       `json:"created_at"`
+	MaxInputTokens *int            `json:"max_input_tokens,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	Capabilities   json.RawMessage `json:"capabilities,omitempty"`
 }
 
 type AnthropicListModelsResponse struct {

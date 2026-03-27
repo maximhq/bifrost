@@ -621,6 +621,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.AllowedOrigins == nil {
 		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
 	}
+	if cc.AllowedHeaders == nil {
+		cc.AllowedHeaders = DefaultClientConfig.AllowedHeaders
+	}
 	if cc.EnableLogging == nil {
 		cc.EnableLogging = new(true)
 	}
