@@ -162,8 +162,8 @@ func RunImageVariationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			t.Error("❌ ExtraFields.Provider is empty")
 		}
 
-		if imageVariationResponse.ExtraFields.ModelRequested == "" {
-			t.Error("❌ ExtraFields.ModelRequested is empty")
+		if imageVariationResponse.ExtraFields.OriginalModelRequested == "" {
+			t.Error("❌ ExtraFields.OriginalModelRequested is empty")
 		}
 
 		// Validate RequestType is ImageVariationRequest
@@ -172,7 +172,7 @@ func RunImageVariationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		}
 
 		t.Logf("✅ Image variation successful: ID=%s, Provider=%s, Model=%s, Images=%d",
-			imageVariationResponse.ID, imageVariationResponse.ExtraFields.Provider, imageVariationResponse.ExtraFields.ModelRequested, len(imageVariationResponse.Data))
+			imageVariationResponse.ID, imageVariationResponse.ExtraFields.Provider, imageVariationResponse.ExtraFields.OriginalModelRequested, len(imageVariationResponse.Data))
 	})
 }
 

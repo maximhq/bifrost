@@ -271,7 +271,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		resp.TextCompletionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.TextCompletionRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {
@@ -316,7 +316,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		resp.ChatResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ChatCompletionRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {
@@ -340,7 +340,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {
@@ -362,7 +362,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		resp.SpeechResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.SpeechRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {
@@ -383,7 +383,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		resp.TranscriptionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.TranscriptionRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {
@@ -410,7 +410,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ImageGenerationRequest,
 			Provider:       p.Provider,
-			ModelRequested: p.Model,
+			OriginalModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
 		if p.RawRequest != nil {

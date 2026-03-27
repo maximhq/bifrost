@@ -22,7 +22,6 @@ func uploadToS3(
 	region string,
 	bucket, key string,
 	content []byte,
-	providerName schemas.ModelProvider,
 ) *schemas.BifrostError {
 	// Create AWS config with credentials
 	var cfg aws.Config
@@ -47,7 +46,7 @@ func uploadToS3(
 	}
 
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load AWS config for S3", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to load AWS config for S3", err)
 	}
 
 	// Create S3 client
@@ -62,7 +61,7 @@ func uploadToS3(
 	})
 
 	if err != nil {
-		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to upload to S3: %s/%s", bucket, key), err, providerName)
+		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to upload to S3: %s/%s", bucket, key), err)
 	}
 
 	return nil

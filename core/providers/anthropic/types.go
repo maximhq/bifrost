@@ -100,7 +100,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
 	},
 	schemas.Vertex: {
-		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
+		WebSearch:   true, // only web_search_20250305 (basic), NOT dynamic filtering
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		Compaction: true, ContextEditing: true,
 		InterleavedThinking: true, Context1M: true,
@@ -151,7 +151,7 @@ func (req *AnthropicTextRequest) IsStreamingRequested() bool {
 // and the effort parameter (output_config.effort) for controlling token spending.
 type AnthropicOutputConfig struct {
 	Format json.RawMessage `json:"format,omitempty"`
-	Effort *string     `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
+	Effort *string         `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -856,24 +856,24 @@ const (
 	AnthropicToolTypeMemory20250818 AnthropicToolType = "memory_20250818"
 
 	// Tool search (client-side, for defer_loading)
-	AnthropicToolTypeToolSearchBM25            AnthropicToolType = "tool_search_tool_bm25"
-	AnthropicToolTypeToolSearchBM2520251119    AnthropicToolType = "tool_search_tool_bm25_20251119"
-	AnthropicToolTypeToolSearchRegex           AnthropicToolType = "tool_search_tool_regex"
-	AnthropicToolTypeToolSearchRegex20251119   AnthropicToolType = "tool_search_tool_regex_20251119"
+	AnthropicToolTypeToolSearchBM25          AnthropicToolType = "tool_search_tool_bm25"
+	AnthropicToolTypeToolSearchBM2520251119  AnthropicToolType = "tool_search_tool_bm25_20251119"
+	AnthropicToolTypeToolSearchRegex         AnthropicToolType = "tool_search_tool_regex"
+	AnthropicToolTypeToolSearchRegex20251119 AnthropicToolType = "tool_search_tool_regex_20251119"
 )
 
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer            AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch           AnthropicToolName = "web_search"
-	AnthropicToolNameWebFetch            AnthropicToolName = "web_fetch"
-	AnthropicToolNameBash                AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor          AnthropicToolName = "str_replace_based_edit_tool"
-	AnthropicToolNameCodeExecution       AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory              AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25      AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex     AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameComputer        AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch       AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash            AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory          AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex AnthropicToolName = "tool_search_tool_regex"
 )
 
 type AnthropicToolComputerUse struct {
@@ -908,7 +908,7 @@ type AnthropicToolWebFetch struct {
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
 	Input       json.RawMessage `json:"input"`
-	Description *string `json:"description,omitempty"`
+	Description *string         `json:"description,omitempty"`
 }
 
 // AnthropicTool represents a tool in Anthropic format
@@ -1239,7 +1239,7 @@ type AnthropicFileDeleteResponse struct {
 }
 
 // ToBifrostFileUploadResponse converts an Anthropic file response to Bifrost file upload response.
-func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
+func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
 	resp := &schemas.BifrostFileUploadResponse{
 		ID:             r.ID,
 		Object:         r.Type,
@@ -1250,9 +1250,7 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -1268,7 +1266,7 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas
 }
 
 // ToBifrostFileRetrieveResponse converts an Anthropic file response to Bifrost file retrieve response.
-func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
+func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
 	resp := &schemas.BifrostFileRetrieveResponse{
 		ID:             r.ID,
 		Object:         r.Type,
@@ -1279,9 +1277,7 @@ func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schem
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 

@@ -124,11 +124,8 @@ func (response *HuggingFaceSpeechResponse) ToBifrostSpeechResponse(requestedMode
 
 	// Create the base Bifrost response with the downloaded audio data
 	bifrostResponse := &schemas.BifrostSpeechResponse{
-		Audio: audioData,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:       schemas.HuggingFace,
-			ModelRequested: requestedModel,
-		},
+		Audio:       audioData,
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	// Note: HuggingFace TTS API typically doesn't return usage information

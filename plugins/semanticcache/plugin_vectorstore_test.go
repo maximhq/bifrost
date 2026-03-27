@@ -132,9 +132,9 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider:       schemas.OpenAI,
-						ModelRequested: "gpt-4o-mini",
-						RequestType:    schemas.ChatCompletionRequest,
+						Provider:               schemas.OpenAI,
+						OriginalModelRequested: "gpt-4o-mini",
+						RequestType:            schemas.ChatCompletionRequest,
 					},
 				},
 			}
@@ -331,9 +331,9 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider:       schemas.OpenAI,
-						ModelRequested: "gpt-4o-mini",
-						RequestType:    schemas.ChatCompletionRequest,
+						Provider:               schemas.OpenAI,
+						OriginalModelRequested: "gpt-4o-mini",
+						RequestType:            schemas.ChatCompletionRequest,
 					},
 				},
 			}

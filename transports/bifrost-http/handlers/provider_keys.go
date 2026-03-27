@@ -400,6 +400,11 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		}
 	}
 
+	// ReplicateKeyConfig has no sensitive fields — pass through as-is
+	if updateKey.ReplicateKeyConfig == nil && oldRawKey.ReplicateKeyConfig != nil {
+		mergedKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 

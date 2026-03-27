@@ -72,7 +72,7 @@ func (provider *OllamaProvider) GetProviderKey() schemas.ModelProvider {
 // ListModels performs a list models request to Ollama's API.
 func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if provider.networkConfig.BaseURL == "" {
-		return nil, providerUtils.NewConfigurationError("base_url is not set", provider.GetProviderKey())
+		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
@@ -179,9 +179,6 @@ func (provider *OllamaProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	response := chatResponse.ToBifrostResponsesResponse()
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
 
 	return response, nil
 }

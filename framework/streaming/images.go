@@ -20,7 +20,7 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 			finalResponse := &schemas.BifrostImageGenerationResponse{
 				ID:      chunks[i].Delta.ID,
 				Created: chunks[i].Delta.CreatedAt,
-				Model:   chunks[i].Delta.ExtraFields.ModelRequested,
+				Model:   chunks[i].Delta.ExtraFields.OriginalModelRequested,
 				Data: []schemas.ImageData{
 					{
 						B64JSON:       chunks[i].Delta.B64JSON,
@@ -53,8 +53,8 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 		}
 
 		// Extract metadata
-		if model == "" && chunk.Delta.ExtraFields.ModelRequested != "" {
-			model = chunk.Delta.ExtraFields.ModelRequested
+		if model == "" && chunk.Delta.ExtraFields.OriginalModelRequested != "" {
+			model = chunk.Delta.ExtraFields.OriginalModelRequested
 		}
 
 		// Store revised prompt if present (usually in first chunk)

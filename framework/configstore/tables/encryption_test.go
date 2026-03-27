@@ -175,12 +175,12 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 		Provider:   "bedrock",
 		KeyID:      "bedrock-uuid-1",
 		Value:      *schemas.NewEnvVar("bedrock-val"),
+		Aliases:    schemas.KeyAliases{"model-a": "profile-a"},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
-			AccessKey:   *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
-			SecretKey:   *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-			Region:      schemas.NewEnvVar("us-west-2"),
-			ARN:         schemas.NewEnvVar("arn:aws:iam::123456789:role/test"),
-			Deployments: map[string]string{"model-a": "profile-a"},
+			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+			Region:    schemas.NewEnvVar("us-west-2"),
+			ARN:       schemas.NewEnvVar("arn:aws:iam::123456789:role/test"),
 			BatchS3Config: &schemas.BatchS3Config{
 				Buckets: []schemas.S3BucketConfig{
 					{BucketName: "my-batch-bucket", Prefix: "jobs/", IsDefault: true},
@@ -197,8 +197,8 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", raw["bedrock_secret_key"])
 	assert.NotEqual(t, "us-west-2", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:iam::123456789:role/test", raw["bedrock_arn"])
-	if rawDeploy, ok := raw["bedrock_deployments_json"].(string); ok {
-		assert.NotContains(t, rawDeploy, "profile-a")
+	if rawAliases, ok := raw["aliases_json"].(string); ok {
+		assert.NotContains(t, rawAliases, "profile-a")
 	}
 	if rawBatch, ok := raw["bedrock_batch_s3_config_json"].(string); ok {
 		assert.NotContains(t, rawBatch, "my-batch-bucket")
@@ -213,7 +213,7 @@ func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/test", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-a", found.BedrockKeyConfig.Deployments["model-a"])
+	assert.Equal(t, "profile-a", found.Aliases["model-a"])
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
 	assert.Equal(t, "my-batch-bucket", found.BedrockKeyConfig.BatchS3Config.Buckets[0].BucketName)
@@ -1144,6 +1144,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 		Provider:   "custom",
 		KeyID:      "multi-uuid",
 		Value:      *schemas.NewEnvVar("multi-api-key"),
+		Aliases:    schemas.KeyAliases{"claude-3": "profile-claude"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:     *schemas.NewEnvVar("https://azure.endpoint.com"),
 			ClientID:     schemas.NewEnvVar("multi-azure-cid"),
@@ -1163,7 +1164,6 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 			SessionToken: sessionToken,
 			Region:       schemas.NewEnvVar("eu-west-1"),
 			ARN:          schemas.NewEnvVar("arn:aws:bedrock:eu-west-1:123:role"),
-			Deployments:  map[string]string{"claude-3": "profile-claude"},
 		},
 	}
 
@@ -1180,8 +1180,8 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.NotEqual(t, "us-central1", raw["vertex_region"])
 	assert.NotEqual(t, "eu-west-1", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:bedrock:eu-west-1:123:role", raw["bedrock_arn"])
-	if rawDeploy, ok := raw["bedrock_deployments_json"].(string); ok {
-		assert.NotContains(t, rawDeploy, "profile-claude")
+	if rawAliases, ok := raw["aliases_json"].(string); ok {
+		assert.NotContains(t, rawAliases, "profile-claude")
 	}
 
 	var found TableKey
@@ -1214,7 +1214,7 @@ func TestTableKey_AllProviderConfigs_EncryptDecrypt(t *testing.T) {
 	assert.Equal(t, "eu-west-1", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:bedrock:eu-west-1:123:role", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-claude", found.BedrockKeyConfig.Deployments["claude-3"])
+	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
 }
 
 // ============================================================================
@@ -1268,9 +1268,9 @@ func TestTableMCPClient_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	db := setupTestDB(t)
 
 	client := &TableMCPClient{
-		ClientID:       "mcp-dis-1",
-		Name:           "disabled-mcp",
-		ConnectionType: "sse",
+		ClientID:         "mcp-dis-1",
+		Name:             "disabled-mcp",
+		ConnectionType:   "sse",
 		ConnectionString: schemas.NewEnvVar("https://mcp.example.com"),
 		Headers: map[string]schemas.EnvVar{
 			"Authorization": *schemas.NewEnvVar("Bearer secret-token"),

@@ -1265,43 +1265,43 @@ When using AWS Bedrock inference profiles or application inference profiles, you
 | Field | Purpose |
 |-------|---------|
 | **`arn`** | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles. |
-| **`deployments`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. |
+| **`aliases`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. Set at the key level, not inside `bedrock_key_config`. |
 
 <Warning>
-**Do not** put the full ARN in the deployments mapping. The resource ID (e.g., `abc12xyz`) goes in `deployments`; the ARN prefix goes in the dedicated `arn` field. Putting the full ARN in `deployments` causes malformed URLs and `UnknownOperationException`.
+**Do not** put the full ARN in the aliases mapping. The resource ID (e.g., `abc12xyz`) goes in `aliases`; the ARN prefix goes in the dedicated `arn` field inside `bedrock_key_config`. Putting the full ARN in `aliases` causes malformed URLs and `UnknownOperationException`.
 </Warning>
 
-**Application inference profiles** — use the resource ID (short alphanumeric suffix) in deployments:
+**Application inference profiles** — use the resource ID (short alphanumeric suffix) in aliases:
 
 ```json
 {
+  "aliases": {
+    "claude-opus-4-6": "ghi56rst",
+    "claude-sonnet-4-5": "jkl78mno"
+  },
   "bedrock_key_config": {
     "access_key": "your-aws-access-key",
     "secret_key": "your-aws-secret-key",
     "session_token": "optional-session-token",
     "region": "eu-west-1",
-    "arn": "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile",
-    "deployments": {
-      "claude-opus-4-6": "ghi56rst",
-      "claude-sonnet-4-5": "jkl78mno"
-    }
+    "arn": "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile"
   }
 }
 ```
 
-**Cross-region inference profiles** — use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in deployments:
+**Cross-region inference profiles** — use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in aliases:
 
 ```json
 {
+  "aliases": {
+    "claude-sonnet": "us.anthropic.claude-3-5-sonnet-v1:0"
+  },
   "bedrock_key_config": {
     "access_key": "your-aws-access-key",
     "secret_key": "your-aws-secret-key",
     "session_token": "optional-session-token",
     "region": "us-east-1",
-    "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile",
-    "deployments": {
-      "claude-sonnet": "us.anthropic.claude-3-5-sonnet-v1:0"
-    }
+    "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
   }
 }
 ```

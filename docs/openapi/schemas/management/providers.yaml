@@ -71,10 +71,6 @@ AzureKeyConfig:
   properties:
     endpoint:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
     api_version:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     client_id:
@@ -101,10 +97,6 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
 
 BedrockKeyConfig:
   type: object
@@ -120,10 +112,6 @@ BedrockKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     arn:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
     batch_s3_config:
       type: object
       properties:
@@ -138,15 +126,6 @@ BedrockKeyConfig:
                 type: string
               is_default:
                 type: boolean
-
-HuggingFaceKeyConfig:
-  type: object
-  description: Hugging Face-specific key configuration
-  properties:
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
 
 Key:
   type: object
@@ -169,14 +148,17 @@ Key:
     weight:
       type: number
       description: Weight for load balancing
+    aliases:
+      type: object
+      additionalProperties:
+        type: string
+      description: Model alias mappings — maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)
     azure_key_config:
       $ref: '#/AzureKeyConfig'
     vertex_key_config:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
-    huggingface_key_config:
-      $ref: '#/HuggingFaceKeyConfig'
     enabled:
       type: boolean
     use_for_batch_api:

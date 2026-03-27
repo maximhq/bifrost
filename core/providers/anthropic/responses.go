@@ -1430,11 +1430,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				streamMessage.ID = *bifrostResp.Response.ID
 			}
 			// Preserve model from Response if available, otherwise use ExtraFields
-			if bifrostResp.ExtraFields.ModelRequested != "" {
+			if bifrostResp.ExtraFields.OriginalModelRequested != "" {
 				if bifrostResp.Response != nil && bifrostResp.Response.Model != "" {
 					streamMessage.Model = bifrostResp.Response.Model
 				} else {
-					streamMessage.Model = bifrostResp.ExtraFields.ModelRequested
+					streamMessage.Model = bifrostResp.ExtraFields.OriginalModelRequested
 				}
 			}
 			streamResp.Message = streamMessage

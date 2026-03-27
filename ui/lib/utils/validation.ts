@@ -230,11 +230,11 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 }
 
 /**
- * Validates deployments configuration
- * @param value - The deployments value (object or string)
+ * Validates aliases configuration
+ * @param value - The aliases value (object or string)
  * @returns true if valid (redacted, or valid JSON object)
  */
-export function isValidDeployments(value: Record<string, string> | string | undefined): boolean {
+export function isValidAliases(value: Record<string, string> | string | undefined): boolean {
 	if (!value) {
 		return false;
 	}

@@ -508,14 +508,14 @@ To provide a complete model listing experience, Bifrost performs **multi-pass mo
    - Custom models are identified by having deployment values that contain only digits
    - Example: `"deployment": "1234567890"`
 
-2. **Second Pass - Non-Custom Models from Deployments**
-   - Adds standard foundation models from your `deployments` configuration
+2. **Second Pass - Non-Custom Models from Aliases**
+   - Adds standard foundation models from your `aliases` configuration
    - Non-custom models have alphanumeric deployment values (e.g., `gemini-pro`, `claude-3-5-sonnet`)
    - Filters by `allowedModels` if specified
    - Example: `"deployment": "gemini-2.0-flash"`
 
-3. **Third Pass - Allowed Models Not in Deployments**
-   - Adds models specified in `allowedModels` that weren't in the `deployments` map
+3. **Third Pass - Allowed Models Not in Aliases**
+   - Adds models specified in `allowedModels` that weren't in the `aliases` map
    - Ensures all explicitly allowed models appear in the list
    - Uses the model name itself as the deployment value
    - Skips digit-only model IDs (reserved for custom models)
@@ -523,12 +523,12 @@ To provide a complete model listing experience, Bifrost performs **multi-pass mo
 ### Model Filtering Logic
 
 - **If `allowedModels` is empty**: All models from all three passes are included
-- **If `allowedModels` is non-empty**: Only models/deployments with keys in `allowedModels` are included
+- **If `allowedModels` is non-empty**: Only models/aliases with keys in `allowedModels` are included
 - **Duplicate Prevention**: Each model ID is tracked to prevent duplicates across passes
 
 ### Model Name Formatting
 
-Non-custom models from deployments and allowed models are automatically formatted for display:
+Non-custom models from aliases and allowed models are automatically formatted for display:
 
 - `gemini-pro` → "Gemini Pro"
 - `claude-3-5-sonnet` → "Claude 3 5 Sonnet"
@@ -543,13 +543,13 @@ Formatting uses title case and converts hyphens/underscores to spaces.
 
 ```json
 {
+  "aliases": {
+    "my-gemini-ft": "1234567890",
+    "my-claude-ft": "9876543210"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1",
-    "deployments": {
-      "my-gemini-ft": "1234567890",
-      "my-claude-ft": "9876543210"
-    }
+    "region": "us-central1"
   }
 }
 ```
@@ -561,32 +561,32 @@ This returns only your custom fine-tuned models from the API.
 
 ```json
 {
+  "aliases": {
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1",
-    "deployments": {
-      "gemini-2.0-flash": "gemini-2.0-flash",
-      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
-    }
+    "region": "us-central1"
   }
 }
 ```
 
-This returns both custom models AND foundation models from deployments.
+This returns both custom models AND foundation models from aliases.
 
 </Tab>
 <Tab title="With Allowed Models Filter">
 
 ```json
 {
+  "aliases": {
+    "gemini-2.0-flash": "gemini-2.0-flash",
+    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
+    "gemini-1.5-pro": "gemini-1.5-pro"
+  },
   "vertex_key_config": {
     "project_id": "my-project",
     "region": "us-central1",
-    "deployments": {
-      "gemini-2.0-flash": "gemini-2.0-flash",
-      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
-      "gemini-1.5-pro": "gemini-1.5-pro"
-    },
     "allowedModels": ["gemini-2.0-flash", "claude-3-5-sonnet"]
   }
 }
@@ -650,7 +650,7 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 <Accordion title="List Models API Returns Only Custom Models">
 **Severity**: High
 **Behavior**: Vertex AI's List Models API only returns custom fine-tuned models, NOT foundation models
-**Impact**: Bifrost performs three-pass discovery to include foundation models from deployments and allowedModels configuration
+**Impact**: Bifrost performs three-pass discovery to include foundation models from aliases and allowedModels configuration
 **Why**: This is a Vertex AI API limitation - foundation models must be explicitly configured
 **Code**: `models.go:76-217`
 </Accordion>

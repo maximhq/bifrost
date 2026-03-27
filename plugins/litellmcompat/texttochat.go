@@ -83,7 +83,7 @@ func transformTextToChatResponse(_ *schemas.BifrostContext, resp *schemas.Bifros
 
 	// Restore original request type metadata
 	textCompletionResponse.ExtraFields.RequestType = tc.OriginalRequestType
-	textCompletionResponse.ExtraFields.ModelRequested = tc.OriginalModel
+	textCompletionResponse.ExtraFields.OriginalModelRequested = tc.OriginalModel
 	textCompletionResponse.ExtraFields.LiteLLMCompat = true
 
 	if logger != nil {
@@ -110,7 +110,7 @@ func transformTextToChatError(_ *schemas.BifrostContext, err *schemas.BifrostErr
 
 	// Restore original request type in error metadata
 	err.ExtraFields.RequestType = tc.OriginalRequestType
-	err.ExtraFields.ModelRequested = tc.OriginalModel
+	err.ExtraFields.OriginalModelRequested = tc.OriginalModel
 	err.ExtraFields.LiteLLMCompat = true
 
 	return err
@@ -141,7 +141,7 @@ func TransformTextToChatStreamResponse(ctx *schemas.BifrostContext, stream *sche
 
 	// Restore original request type metadata
 	textCompletionResponse.ExtraFields.RequestType = tc.OriginalRequestType
-	textCompletionResponse.ExtraFields.ModelRequested = tc.OriginalModel
+	textCompletionResponse.ExtraFields.OriginalModelRequested = tc.OriginalModel
 	textCompletionResponse.ExtraFields.LiteLLMCompat = true
 
 	// Return a new stream with the text completion response

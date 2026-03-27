@@ -1,12 +1,14 @@
 package anthropic
 
 import (
+	"strings"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -18,60 +20,48 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		HasMore: schemas.Ptr(response.HasMore),
 	}
 
-	// Map Anthropic's cursor-based pagination to Bifrost's token-based pagination
-	// If there are more results, set next_page_token to last_id so it can be used in the next request
+	// Map Anthropic's cursor-based pagination to Bifrost's token-based pagination.
+	// If there are more results, set next_page_token to last_id for the next request.
 	if response.HasMore && response.LastID != nil {
 		bifrostResponse.NextPageToken = *response.LastID
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	includedModels := make(map[string]bool)
+	included := make(map[string]bool)
+
 	for _, model := range response.Data {
-		modelID := model.ID
-		if !unfiltered && allowedModels.IsRestricted() {
-			allowed := false
-			for _, allowedModel := range allowedModels {
-				if schemas.SameBaseModel(model.ID, allowedModel) {
-					modelID = allowedModel
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
-		}
-		if !unfiltered && blacklistedModels.IsBlocked(modelID) {
+		result := pipeline.FilterModel(model.ID)
+		if !result.Include {
 			continue
 		}
-		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:              string(providerKey) + "/" + modelID,
+		entry := schemas.Model{
+			ID:              string(providerKey) + "/" + result.ResolvedID,
 			Name:            schemas.Ptr(model.DisplayName),
 			Created:         schemas.Ptr(model.CreatedAt.Unix()),
 			MaxInputTokens:  model.MaxInputTokens,
 			MaxOutputTokens: model.MaxTokens,
 			ProviderExtra:   model.Capabilities,
-		})
-		includedModels[modelID] = true
+		}
+		if result.AliasValue != "" {
+			entry.Alias = schemas.Ptr(result.AliasValue)
+		}
+		bifrostResponse.Data = append(bifrostResponse.Data, entry)
+		included[strings.ToLower(result.ResolvedID)] = true
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && allowedModels.IsRestricted() {
-		for _, allowedModel := range allowedModels {
-			if blacklistedModels.IsBlocked(allowedModel) {
-				continue
-			}
-			if !includedModels[allowedModel] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
-			}
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }

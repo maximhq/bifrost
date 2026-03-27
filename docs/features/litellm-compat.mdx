@@ -125,7 +125,8 @@ When either transformation is applied:
 - `extra_fields.litellm_compat`: Set to `true`
 - `extra_fields.provider`: The provider that handled the request
 - `extra_fields.request_type`: Reflects the original request type
-- `extra_fields.model_requested`: The originally requested model
+- `extra_fields.original_model_requested`: The originally requested model
+- `extra_fields.resolved_model_used`: The actual provider API identifier used (equals original_model_requested when no alias mapping exists)
 
 ### Error Handling
 

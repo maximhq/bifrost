@@ -64,10 +64,10 @@ func TestChatStreamingFinalChunkNoDeadlock(t *testing.T) {
 				TotalTokens:      150,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionStreamRequest,
-				Provider:       schemas.Anthropic,
-				ModelRequested: "claude-opus-4",
-				ChunkIndex:     9,
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.Anthropic,
+				OriginalModelRequested: "claude-opus-4",
+				ChunkIndex:             9,
 			},
 		},
 	}
@@ -140,10 +140,10 @@ func TestResponsesStreamingFinalChunkNoDeadlock(t *testing.T) {
 				OutputTokens: 50,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       schemas.Anthropic,
-				ModelRequested: "claude-opus-4",
-				ChunkIndex:     4,
+				RequestType:            schemas.ResponsesStreamRequest,
+				Provider:               schemas.Anthropic,
+				OriginalModelRequested: "claude-opus-4",
+				ChunkIndex:             4,
 			},
 		},
 	}
@@ -488,10 +488,10 @@ func TestAudioStreamingFinalChunkNoDeadlock(t *testing.T) {
 				TotalTokens:  150,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.SpeechStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "tts-1",
-				ChunkIndex:     7,
+				RequestType:            schemas.SpeechStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "tts-1",
+				ChunkIndex:             7,
 			},
 		},
 	}
@@ -559,10 +559,10 @@ func TestTranscriptionStreamingFinalChunkNoDeadlock(t *testing.T) {
 		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
 			Text: "Complete transcription",
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.TranscriptionStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "whisper-1",
-				ChunkIndex:     5,
+				RequestType:            schemas.TranscriptionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "whisper-1",
+				ChunkIndex:             5,
 			},
 		},
 	}

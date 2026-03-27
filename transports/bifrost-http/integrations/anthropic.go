@@ -43,7 +43,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
+			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -85,7 +85,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if isClaudeModel(resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment, string(resp.ExtraFields.Provider)) {
+				if isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -113,7 +113,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
+					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						if resp.ExtraFields.RawResponse != nil {
 							raw, ok := resp.ExtraFields.RawResponse.(string)
 							if !ok {

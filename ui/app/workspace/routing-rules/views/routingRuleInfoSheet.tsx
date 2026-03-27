@@ -53,7 +53,7 @@ function useScopeName(scope: string, scopeId?: string): string | undefined {
 
 // ─── copy button ─────────────────────────────────────────────────────────────
 
-function CopyButton({ value, label }: { value: string; label?: string }) {
+function CopyButton({ value, label, testId }: { value: string; label?: string; testId: string }) {
 	const [copied, setCopied] = useState(false);
 
 	const handleCopy = async () => {
@@ -69,7 +69,15 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={handleCopy}>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					className="h-6 w-6 shrink-0"
+					onClick={handleCopy}
+					aria-label={copied ? `${label ?? "value"} copied` : `Copy ${label ?? "value"}`}
+					data-testid={testId}
+				>
 					{copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
 				</Button>
 			</TooltipTrigger>
@@ -196,7 +204,7 @@ function TargetCard({ target, index, total }: { target: RoutingRule["targets"][0
 					<Key className="h-3 w-3 text-muted-foreground shrink-0" />
 					<span className="text-muted-foreground text-xs">Pinned key:</span>
 					<code className="font-mono text-xs truncate">{target.key_id}</code>
-					<CopyButton value={target.key_id} label="key ID" />
+					<CopyButton value={target.key_id} label="key ID" testId="routing-rule-copy-key-id-btn" />
 				</div>
 			)}
 		</div>
@@ -303,7 +311,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 								<div className="space-y-1.5">
 									<div className="flex items-center justify-between">
 										<span className="font-semibold text-sm">CEL Expression</span>
-										<CopyButton value={rule.cel_expression} label="expression" />
+										<CopyButton value={rule.cel_expression} label="expression" testId="routing-rule-copy-expression-btn" />
 									</div>
 									<code className="block w-full rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs break-all">
 										{rule.cel_expression || <span className="text-muted-foreground italic">true</span>}
