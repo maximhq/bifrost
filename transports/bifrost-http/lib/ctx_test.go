@@ -10,6 +10,29 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestParseSessionIDFromBaggage(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "single member", header: "session-id=abc", want: "abc"},
+		{name: "multiple members", header: "foo=bar, session-id=abc, baz=qux", want: "abc"},
+		{name: "member with properties", header: "session-id=abc;ttl=60", want: "abc"},
+		{name: "spaces preserved around parsing", header: " foo=bar , session-id = abc123 ;ttl=60 ", want: "abc123"},
+		{name: "missing member", header: "foo=bar", want: ""},
+		{name: "malformed ignored", header: "session-id, foo=bar", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseSessionIDFromBaggage(tt.header); got != tt.want {
+				t.Fatalf("ParseSessionIDFromBaggage(%q) = %q, want %q", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	base := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -224,5 +247,35 @@ func TestConvertToBifrostContext_NilMatcher(t *testing.T) {
 
 	if _, ok := extraHeaders["custom-header"]; !ok {
 		t.Error("expected custom-header to be forwarded with nil matcher")
+	}
+}
+
+func TestConvertToBifrostContext_BaggageSessionIDSetsGrouping(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("baggage", "foo=bar, session-id=rt-123, baz=qux")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil)
+	defer cancel()
+
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-123" {
+		t.Fatalf("parent request id = %q, want %q", got, "rt-123")
+	}
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRealtimeSessionID).(string); got != "rt-123" {
+		t.Fatalf("realtime session id = %q, want %q", got, "rt-123")
+	}
+}
+
+func TestConvertToBifrostContext_EmptyBaggageSessionIDIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("baggage", "session-id=   ")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil)
+	defer cancel()
+
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "" {
+		t.Fatalf("parent request id = %q, want empty", got)
+	}
+	if got, _ := bifrostCtx.Value(schemas.BifrostContextKeyRealtimeSessionID).(string); got != "" {
+		t.Fatalf("realtime session id = %q, want empty", got)
 	}
 }
