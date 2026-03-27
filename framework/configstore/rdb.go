@@ -64,6 +64,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Name:               key.Name,
 		Value:              key.Value,
 		Models:             key.Models,
+		BlacklistedModels:  key.BlacklistedModels,
 		Weight:             &key.Weight,
 		Enabled:            key.Enabled,
 		UseForBatchAPI:     key.UseForBatchAPI,
