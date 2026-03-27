@@ -245,6 +245,10 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 //   - *schemas.BifrostRequest: The original request, unmodified
 //   - error: Any error that occurred during trace/generation creation
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req != nil && req.RequestType == schemas.RealtimeRequest {
+		return req, nil, nil
+	}
+
 	var traceID string
 	var traceName string
 	var sessionID string
@@ -491,6 +495,11 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	requestType, _, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+	if requestType == schemas.RealtimeRequest {
+		return result, bifrostErr, nil
+	}
+
 	// Get effective log repo ID for this request
 	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
 	if effectiveLogRepoID == "" {
