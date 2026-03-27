@@ -21,7 +21,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
+var loggingSkipPaths = []string{"/health", "/metrics", "/_next", "/api/dev"}
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
@@ -554,6 +554,7 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/metrics",
 	}
 	whitelistedPrefixes := []string{
 		"/api/oauth/callback",
