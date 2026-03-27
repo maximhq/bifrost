@@ -51,6 +51,7 @@ type AnthropicResponsesStreamState struct {
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
+	HasEmittedMessageDelta    bool                              // Whether we've emitted message_delta (avoids duplicate from response.completed)
 	StructuredOutputToolName  string                            // Name of the structured output tool (if using tool-based SO for Vertex)
 	StructuredOutputIndex     *int                              // Output index of the structured output tool call
 }
@@ -154,6 +155,7 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 	return state
@@ -194,6 +196,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 }
@@ -1310,6 +1313,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				response.Usage = bifrostUsage
 			}
 
+			// Mark that we already emitted a message_delta so response.completed
+			// doesn't synthesize a duplicate one.
+			state.HasEmittedMessageDelta = true
+
 			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           "message_delta",
 				SequenceNumber: sequenceNumber,
@@ -1978,6 +1985,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
+		// If a message_delta was already emitted from the upstream event, only emit message_stop
+		// to avoid sending a duplicate message_delta to the client.
+		if alreadyEmitted, ok := ctx.Value(schemas.BifrostContextKeyHasEmittedMessageDelta).(bool); ok && alreadyEmitted {
+			return []*AnthropicStreamEvent{streamResp}
+		}
 		anthropicContentDeltaEvent := &AnthropicStreamEvent{
 			Type: AnthropicStreamEventTypeMessageDelta,
 			Delta: &AnthropicStreamDelta{
@@ -2558,6 +2570,11 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		if bifrostUsage.InputTokensDetails.CachedWriteTokens > 0 {
 			anthropicUsage.CacheCreationInputTokens = bifrostUsage.InputTokensDetails.CachedWriteTokens
 			anthropicUsage.InputTokens = anthropicUsage.InputTokens - bifrostUsage.InputTokensDetails.CachedWriteTokens
+			// Populate the cache_creation breakdown — default to ephemeral (5m) since
+			// the Bifrost internal format doesn't distinguish TTL variants.
+			anthropicUsage.CacheCreation = AnthropicUsageCacheCreation{
+				Ephemeral5mInputTokens: bifrostUsage.InputTokensDetails.CachedWriteTokens,
+			}
 		}
 	}
 
