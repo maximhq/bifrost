@@ -39,6 +39,44 @@ func (provider *ElevenlabsProvider) RealtimeHeaders(key schemas.Key) map[string]
 	return headers
 }
 
+// SupportsRealtimeWebRTC returns false — ElevenLabs WebRTC SDP exchange is not yet implemented.
+func (provider *ElevenlabsProvider) SupportsRealtimeWebRTC() bool {
+	return false
+}
+
+// ExchangeRealtimeWebRTCSDP is not yet implemented for ElevenLabs.
+func (provider *ElevenlabsProvider) ExchangeRealtimeWebRTCSDP(_ *schemas.BifrostContext, _ schemas.Key, _ string, _ string, _ json.RawMessage) (string, *schemas.BifrostError) {
+	return "", &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(400),
+		Error:          &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Message: "WebRTC SDP exchange is not yet implemented for ElevenLabs"},
+	}
+}
+
+func (provider *ElevenlabsProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
+	return false
+}
+
+func (provider *ElevenlabsProvider) RealtimeTurnFinalEvent() schemas.RealtimeEventType {
+	return schemas.RTEventResponseDone
+}
+
+func (provider *ElevenlabsProvider) RealtimeWebRTCDataChannelLabel() string {
+	return ""
+}
+
+func (provider *ElevenlabsProvider) RealtimeWebSocketSubprotocol() string {
+	return ""
+}
+
+func (provider *ElevenlabsProvider) ShouldForwardRealtimeEvent(event *schemas.BifrostRealtimeEvent) bool {
+	return true
+}
+
+func (provider *ElevenlabsProvider) ShouldAccumulateRealtimeOutput(eventType schemas.RealtimeEventType) bool {
+	return eventType == schemas.RTEventResponseDone
+}
+
 // ElevenLabs Conversational AI WebSocket event types
 const (
 	elConversationInitMetadata = "conversation_initiation_metadata"
@@ -50,8 +88,8 @@ const (
 	elInterruption             = "interruption"
 	elClientToolCall           = "client_tool_call"
 
-	elUserAudioChunk  = "user_audio_chunk"
-	elPong            = "pong"
+	elUserAudioChunk   = "user_audio_chunk"
+	elPong             = "pong"
 	elClientToolResult = "client_tool_result"
 	elContextualUpdate = "contextual_update"
 )
@@ -134,7 +172,7 @@ func (provider *ElevenlabsProvider) ToBifrostRealtimeEvent(providerEvent json.Ra
 		}
 
 	case elAgentResponse:
-		event.Type = schemas.RTEventResponseTextDone
+		event.Type = schemas.RTEventResponseDone
 		if raw.AgentResponse != nil {
 			var agentResp elevenlabsTranscriptEvent
 			if err := json.Unmarshal(raw.AgentResponse, &agentResp); err == nil {
@@ -194,10 +232,6 @@ func (provider *ElevenlabsProvider) ToBifrostRealtimeEvent(providerEvent json.Ra
 
 // ToProviderRealtimeEvent converts a unified Bifrost Realtime event to ElevenLabs' native JSON.
 func (provider *ElevenlabsProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.BifrostRealtimeEvent) (json.RawMessage, error) {
-	if bifrostEvent.RawData != nil {
-		return bifrostEvent.RawData, nil
-	}
-
 	switch bifrostEvent.Type {
 	case schemas.RTEventInputAudioAppend:
 		if bifrostEvent.Delta == nil {
