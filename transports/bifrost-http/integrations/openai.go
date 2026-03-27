@@ -2802,6 +2802,35 @@ func OpenAIRealtimePaths(pathPrefix string) []string {
 	return paths
 }
 
+// OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls
+// WebRTC SDP exchange endpoint (multipart sdp + session format).
+func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimeClientSecretPaths returns HTTP POST paths for OpenAI-compatible
+// realtime client secret creation aliases.
+func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)

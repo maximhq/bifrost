@@ -18,11 +18,13 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
+var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
@@ -83,7 +85,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				isLocalhostOrigin(origin) ||
 				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
 
-			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK"}
 			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
@@ -554,7 +556,41 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
 // standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
 func isInferenceWSEndpoint(path string) bool {
-	return path == "/v1/responses" || path == "/v1/realtime"
+	for strings.HasPrefix(path, "/openai/") {
+		path = strings.TrimPrefix(path, "/openai")
+	}
+
+	switch path {
+	case "/v1/responses",
+		"/responses",
+		"/v1/realtime",
+		"/realtime":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildRealtimeTransportPathSet() map[string]struct{} {
+	paths := map[string]struct{}{}
+	for _, path := range integrations.OpenAIRealtimePaths("") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
+		paths[path] = struct{}{}
+	}
+	return paths
+}
+
+func isRealtimeTransportEndpoint(path string) bool {
+	_, ok := realtimeTransportPaths[path]
+	return ok
 }
 
 // AuthMiddleware is a middleware that handles authentication for the API.
@@ -636,6 +672,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			url := string(ctx.Request.URI().RequestURI())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
+				next(ctx)
+				return
+			}
+			if isRealtimeTransportEndpoint(string(ctx.Path())) {
 				next(ctx)
 				return
 			}
@@ -798,24 +838,23 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 //
 // This middleware should be placed early in the middleware chain to capture the full request lifecycle.
 type TracingMiddleware struct {
-	tracer     atomic.Pointer[tracing.Tracer]
-	obsPlugins atomic.Pointer[[]schemas.ObservabilityPlugin]
+	tracer atomic.Pointer[tracing.Tracer]
 }
 
 // NewTracingMiddleware creates a new tracing middleware
-func NewTracingMiddleware(tracer *tracing.Tracer, obsPlugins []schemas.ObservabilityPlugin) *TracingMiddleware {
+func NewTracingMiddleware(tracer *tracing.Tracer) *TracingMiddleware {
 	tm := &TracingMiddleware{
-		tracer:     atomic.Pointer[tracing.Tracer]{},
-		obsPlugins: atomic.Pointer[[]schemas.ObservabilityPlugin]{},
+		tracer: atomic.Pointer[tracing.Tracer]{},
 	}
 	tm.tracer.Store(tracer)
-	tm.obsPlugins.Store(&obsPlugins)
 	return tm
 }
 
 // SetObservabilityPlugins sets the observability plugins for the tracing middleware
 func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
-	m.obsPlugins.Store(&obsPlugins)
+	if tracer := m.tracer.Load(); tracer != nil {
+		tracer.SetObservabilityPlugins(obsPlugins)
+	}
 }
 
 // SetTracer sets the tracer for the tracing middleware
@@ -863,7 +902,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
 					m.tracer.Load().AttachPluginLogs(traceID, transportLogs)
 				}
-				m.completeAndFlushTrace(traceID)
+				m.tracer.Load().CompleteAndFlushTrace(traceID)
 			})
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := m.tracer.Load().StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
@@ -896,38 +935,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					m.tracer.Load().AttachPluginLogs(traceID, transportLogs)
 				}
 				// After response written - async flush
-				m.completeAndFlushTrace(traceID)
+				m.tracer.Load().CompleteAndFlushTrace(traceID)
 			}()
 
 			next(ctx)
 		}
 	}
-}
-
-// completeAndFlushTrace completes the trace and forwards it to observability plugins.
-// This is called either by the middleware defer (for non-streaming) or by streaming handlers.
-func (m *TracingMiddleware) completeAndFlushTrace(traceID string) {
-	go func() {
-		// Clean up the stream accumulator for this trace
-
-		// Get completed trace from store
-		completedTrace := m.tracer.Load().EndTrace(traceID)
-		if completedTrace == nil {
-			return
-		}
-		// Forward to all observability plugins
-		for _, plugin := range *m.obsPlugins.Load() {
-			if plugin == nil {
-				continue
-			}
-			// Call inject with a background context (request context is done)
-			if err := plugin.Inject(context.Background(), completedTrace); err != nil {
-				logger.Warn("observability plugin %s failed to inject trace: %v", plugin.GetName(), err)
-			}
-		}
-		// Return trace to pool for reuse
-		m.tracer.Load().ReleaseTrace(completedTrace)
-	}()
 }
 
 // GetTracer returns the tracer instance for use by streaming handlers
