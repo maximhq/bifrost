@@ -311,3 +311,264 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 		t.Fatal("expected pendingLogsToInject to be cleaned up after Inject")
 	}
 }
+
+func TestApplyRealtimeOutputToEntryBackfillsUserTranscriptFromRawRequest(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Hello!"
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest:  `{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello."}`,
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 1 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 1", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Role != schemas.ChatMessageRoleUser {
+		t.Fatalf("InputHistoryParsed[0].Role = %q, want user", entry.InputHistoryParsed[0].Role)
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != "Hello." {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want transcript", entry.InputHistoryParsed[0])
+	}
+	if entry.OutputMessageParsed == nil || entry.OutputMessageParsed.Content == nil || entry.OutputMessageParsed.Content.ContentStr == nil || *entry.OutputMessageParsed.Content.ContentStr != assistantText {
+		t.Fatalf("OutputMessageParsed = %+v, want assistant text", entry.OutputMessageParsed)
+	}
+	if !strings.Contains(entry.ContentSummary, "Hello.") {
+		t.Fatalf("ContentSummary = %q, want user transcript", entry.ContentSummary)
+	}
+	if !strings.Contains(entry.ContentSummary, "Hello!") {
+		t.Fatalf("ContentSummary = %q, want assistant text", entry.ContentSummary)
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsMissingTranscriptPlaceholder(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Hi there!"
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest:  `{"type":"conversation.item.input_audio_transcription.completed","transcript":""}`,
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 1 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 1", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != realtimeMissingTranscriptText {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want missing transcript placeholder", entry.InputHistoryParsed[0])
+	}
+	if !strings.Contains(entry.ContentSummary, realtimeMissingTranscriptText) {
+		t.Fatalf("ContentSummary = %q, want missing transcript placeholder", entry.ContentSummary)
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsDoneMissingTranscriptPlaceholder(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Hi there!"
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest:  `{"type":"conversation.item.done","item":{"id":"item_user","type":"message","role":"user","status":"completed","content":[{"type":"input_audio","transcript":null}]}}`,
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 1 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 1", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != realtimeMissingTranscriptText {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want missing transcript placeholder", entry.InputHistoryParsed[0])
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsRetrievedUserAndToolHistory(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "I checked that for you."
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest: strings.Join([]string{
+					`{"type":"conversation.item.retrieved","item":{"id":"item_user","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"Where is my order?"}]}}`,
+					`{"type":"conversation.item.retrieved","item":{"id":"item_tool","type":"function_call_output","call_id":"call_123","status":"completed","output":"{\"status\":\"delivered\"}"}}`,
+				}, "\n\n"),
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 2 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 2", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Role != schemas.ChatMessageRoleUser {
+		t.Fatalf("InputHistoryParsed[0].Role = %q, want user", entry.InputHistoryParsed[0].Role)
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != "Where is my order?" {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want user content", entry.InputHistoryParsed[0])
+	}
+	if entry.InputHistoryParsed[1].Role != schemas.ChatMessageRoleTool {
+		t.Fatalf("InputHistoryParsed[1].Role = %q, want tool", entry.InputHistoryParsed[1].Role)
+	}
+	if entry.InputHistoryParsed[1].Content == nil || entry.InputHistoryParsed[1].Content.ContentStr == nil || *entry.InputHistoryParsed[1].Content.ContentStr != `{"status":"delivered"}` {
+		t.Fatalf("InputHistoryParsed[1] = %+v, want tool content", entry.InputHistoryParsed[1])
+	}
+	if entry.InputHistoryParsed[1].ChatToolMessage == nil || entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID == nil || *entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID != "call_123" {
+		t.Fatalf("InputHistoryParsed[1].ChatToolMessage = %+v, want tool call id", entry.InputHistoryParsed[1].ChatToolMessage)
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsCreatedUserAndToolHistory(t *testing.T) {
+	t.Parallel()
+
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RawRequest: strings.Join([]string{
+					`{"type":"conversation.item.created","item":{"id":"item_user","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"I need help"}]}}`,
+					`{"type":"conversation.item.created","item":{"id":"item_tool","type":"function_call_output","call_id":"call_456","status":"completed","output":"{\"status\":\"ok\"}"}}`,
+				}, "\n\n"),
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+
+	if len(entry.InputHistoryParsed) != 2 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 2", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Role != schemas.ChatMessageRoleUser {
+		t.Fatalf("InputHistoryParsed[0].Role = %q, want user", entry.InputHistoryParsed[0].Role)
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != "I need help" {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want user content", entry.InputHistoryParsed[0])
+	}
+	if entry.InputHistoryParsed[1].Role != schemas.ChatMessageRoleTool {
+		t.Fatalf("InputHistoryParsed[1].Role = %q, want tool", entry.InputHistoryParsed[1].Role)
+	}
+	if entry.InputHistoryParsed[1].Content == nil || entry.InputHistoryParsed[1].Content.ContentStr == nil || *entry.InputHistoryParsed[1].Content.ContentStr != `{"status":"ok"}` {
+		t.Fatalf("InputHistoryParsed[1] = %+v, want tool content", entry.InputHistoryParsed[1])
+	}
+	if entry.InputHistoryParsed[1].ChatToolMessage == nil || entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID == nil || *entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID != "call_456" {
+		t.Fatalf("InputHistoryParsed[1].ChatToolMessage = %+v, want tool call id", entry.InputHistoryParsed[1].ChatToolMessage)
+	}
+}
+
+func TestApplyRealtimeOutputToEntryBackfillsAddedUserAndToolHistory(t *testing.T) {
+	t.Parallel()
+
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	assistantText := "Done."
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistantRole := schemas.ResponsesInputMessageRoleAssistant
+	result := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type: &messageType,
+				Role: &assistantRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: &assistantText,
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.RealtimeRequest,
+				RawRequest: strings.Join([]string{
+					`{"type":"conversation.item.added","item":{"id":"item_user","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"hello from added item"}]}}`,
+					`{"type":"conversation.item.added","item":{"id":"item_tool","type":"function_call_output","call_id":"call_added","status":"completed","output":"{\"status\":\"ok\"}"}}`,
+				}, "\n\n"),
+				RawResponse: `{"type":"response.done"}`,
+			},
+		},
+	}
+
+	plugin.applyRealtimeOutputToEntry(entry, result)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error = %v", err)
+	}
+
+	if len(entry.InputHistoryParsed) != 2 {
+		t.Fatalf("len(InputHistoryParsed) = %d, want 2", len(entry.InputHistoryParsed))
+	}
+	if entry.InputHistoryParsed[0].Content == nil || entry.InputHistoryParsed[0].Content.ContentStr == nil || *entry.InputHistoryParsed[0].Content.ContentStr != "hello from added item" {
+		t.Fatalf("InputHistoryParsed[0] = %+v, want added user content", entry.InputHistoryParsed[0])
+	}
+	if entry.InputHistoryParsed[1].ChatToolMessage == nil || entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID == nil || *entry.InputHistoryParsed[1].ChatToolMessage.ToolCallID != "call_added" {
+		t.Fatalf("InputHistoryParsed[1].ChatToolMessage = %+v, want added tool call id", entry.InputHistoryParsed[1].ChatToolMessage)
+	}
+}
