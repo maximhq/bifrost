@@ -30,6 +30,7 @@ type LogStore interface {
 	FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error)
 	HasLogs(ctx context.Context) (bool, error)
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
+	GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
 	GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error)
 	GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error)

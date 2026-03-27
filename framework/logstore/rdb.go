@@ -29,6 +29,7 @@ func isValidMetadataKey(key string) bool {
 }
 
 const bulkUpdateCostChunkSize = 500
+const sessionLogPageLimit = 50
 
 const (
 	// defaultMaxQueryLimit is a safety cap for unbounded queries (FindAll, FindAllDistinct).
@@ -84,6 +85,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if len(filters.Objects) > 0 {
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
+	}
+	if filters.ParentRequestID != "" {
+		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
@@ -441,9 +445,153 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	}, nil
 }
 
+// GetSessionLogs returns paginated logs for a single parent_request_id session.
+func (s *RDBLogStore) GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("sessionID cannot be empty")
+	}
+
+	limit := pagination.Limit
+	if limit <= 0 || limit > sessionLogPageLimit {
+		limit = sessionLogPageLimit
+	}
+	pagination.Limit = limit
+	if pagination.Offset < 0 {
+		pagination.Offset = 0
+	}
+
+	orderDir := "ASC"
+	if pagination.Order == "desc" {
+		orderDir = "DESC"
+	}
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{}).Where("parent_request_id = ?", sessionID)
+
+	var (
+		totalCount  int64
+		logs        []Log
+		totalCost   float64
+		totalTokens int64
+		startedAt   string
+		latestAt    string
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return s.db.WithContext(gCtx).Model(&Log{}).Where("parent_request_id = ?", sessionID).Count(&totalCount).Error
+	})
+
+	g.Go(func() error {
+		var (
+			startedRaw any
+			latestRaw  any
+		)
+
+		row := s.db.WithContext(gCtx).
+			Model(&Log{}).
+			Where("parent_request_id = ?", sessionID).
+			Select("COALESCE(SUM(cost), 0) AS total_cost, COALESCE(SUM(total_tokens), 0) AS total_tokens, MIN(timestamp) AS started_at, MAX(timestamp) AS latest_at").
+			Row()
+
+		if err := row.Scan(&totalCost, &totalTokens, &startedRaw, &latestRaw); err != nil {
+			return err
+		}
+
+		startedAt = normalizeAggregateTimestamp(startedRaw)
+		latestAt = normalizeAggregateTimestamp(latestRaw)
+		return nil
+	})
+
+	g.Go(func() error {
+		dataQuery := baseQuery.Session(&gorm.Session{}).
+			WithContext(gCtx).
+			Order("timestamp " + orderDir).
+			Select(s.listSelectColumns()).
+			Limit(limit)
+		if pagination.Offset > 0 {
+			dataQuery = dataQuery.Offset(pagination.Offset)
+		}
+		err := dataQuery.Find(&logs).Error
+		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	pagination.TotalCount = totalCount
+	returnedCount := len(logs)
+	durationMs := int64(0)
+	if startedAt != "" && latestAt != "" {
+		if startedTime, err := time.Parse(time.RFC3339, startedAt); err == nil {
+			if latestTime, err := time.Parse(time.RFC3339, latestAt); err == nil {
+				durationMs = latestTime.Sub(startedTime).Milliseconds()
+				if durationMs < 0 {
+					durationMs = 0
+				}
+			}
+		}
+	}
+	return &SessionDetailResult{
+		SessionID:     sessionID,
+		Logs:          logs,
+		Pagination:    pagination,
+		Count:         totalCount,
+		ReturnedCount: returnedCount,
+		HasMore:       int64(pagination.Offset+returnedCount) < totalCount,
+		TotalCost:     totalCost,
+		TotalTokens:   totalTokens,
+		StartedAt:     startedAt,
+		LatestAt:      latestAt,
+		DurationMs:    durationMs,
+	}, nil
+}
+
+func normalizeAggregateTimestamp(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case time.Time:
+		return v.UTC().Format(time.RFC3339)
+	case []byte:
+		return normalizeAggregateTimestamp(string(v))
+	case string:
+		raw := strings.TrimSpace(v)
+		if raw == "" {
+			return ""
+		}
+		layouts := []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.999999999Z07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05.999999999",
+			"2006-01-02T15:04:05",
+		}
+		for _, layout := range layouts {
+			if parsed, err := time.Parse(layout, raw); err == nil {
+				return parsed.UTC().Format(time.RFC3339)
+			}
+		}
+		return raw
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 // listSelectColumns returns a SELECT clause for list queries that omits large
 // output/detail TEXT columns and uses SQL JSON functions to extract only the
 // last element from input_history and responses_input_history arrays.
+//
+// Realtime turn rows are kept intact because the logs table renders them as a
+// combined Tool/User/Assistant summary and needs the full turn context.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model",
@@ -459,25 +607,35 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"created_at",
 	}, ", ")
 
-	var inputHistoryExpr, responsesInputExpr string
+	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {
 	case "postgres":
-		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
 			THEN jsonb_build_array(input_history::jsonb->-1)::text
 			ELSE input_history END AS input_history`
-		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
 			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
 			ELSE responses_input_history END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	default: // sqlite
-		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
+		inputHistoryExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN input_history
+			WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
 			THEN json_array(json_extract(input_history, '$[' || (json_array_length(input_history) - 1) || ']'))
 			ELSE input_history END AS input_history`
-		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
+		responsesInputExpr = `CASE
+			WHEN object_type = 'realtime.turn' THEN responses_input_history
+			WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
 			THEN json_array(json_extract(responses_input_history, '$[' || (json_array_length(responses_input_history) - 1) || ']'))
 			ELSE responses_input_history END AS responses_input_history`
+		outputMessageExpr = `CASE WHEN object_type = 'realtime.turn' THEN output_message ELSE NULL END AS output_message`
 	}
 
-	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr
+	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr + ", " + outputMessageExpr
 }
 
 // GetStats calculates statistics for logs matching the given filters.
