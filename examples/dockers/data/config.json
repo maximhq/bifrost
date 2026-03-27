@@ -26,8 +26,7 @@
     "allowed_origins": [
       "*"
     ],
-    "max_request_body_size_mb": 100,
-    "enable_litellm_fallbacks": false
+    "max_request_body_size_mb": 100
   },
   "framework": {
     "pricing": {

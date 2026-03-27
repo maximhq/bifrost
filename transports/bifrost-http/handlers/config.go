@@ -343,21 +343,31 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Handle compat plugin toggle
-	if payload.ClientConfig.EnableLiteLLMFallbacks != currentConfig.EnableLiteLLMFallbacks {
-		if payload.ClientConfig.EnableLiteLLMFallbacks {
-			// Load and register the compat plugin
-			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, &compat.Config{Enabled: true}, nil, nil); err != nil {
+	newCompat := payload.ClientConfig.Compat
+	oldCompat := currentConfig.Compat
+	if newCompat != oldCompat {
+		newEnabled := newCompat.ConvertTextToChat || newCompat.ConvertChatToResponses || newCompat.ShouldDropParams
+		if newEnabled {
+			compatCfg := &compat.Config{
+				ConvertTextToChat:      newCompat.ConvertTextToChat,
+				ConvertChatToResponses: newCompat.ConvertChatToResponses,
+				ShouldDropParams:       newCompat.ShouldDropParams,
+			}
+			if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
 				logger.Warn("failed to load compat plugin: %v", err)
+				SendError(ctx, 400, "Failed to load compat plugin")
+				return
 			}
 		} else {
-			// Remove the compat plugin
 			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
 			if err := h.configManager.RemovePlugin(disabledCtx, compat.PluginName); err != nil {
 				logger.Warn("failed to remove compat plugin: %v", err)
+				SendError(ctx, 400, "Failed to remove compat plugin")
+				return
 			}
 		}
 	}
-	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
+	updatedConfig.Compat = newCompat
 	// Only update MCP fields if explicitly provided (non-zero) to avoid clearing stored values
 	if payload.ClientConfig.MCPAgentDepth > 0 {
 		updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth

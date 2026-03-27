@@ -164,7 +164,10 @@ bifrost:
     enforceGovernanceHeader: true
     allowDirectKeys: true
     maxRequestBodySizeMb: 50
-    enableLitellmFallbacks: true
+    compat:
+      convertTextToChat: true
+      convertChatToResponses: true
+      shouldDropParams: true
     prometheusLabels:
       - "team"
       - "env"
@@ -200,7 +203,9 @@ assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
 assert_field_value 'client.allow_direct_keys' '.client.allow_direct_keys' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
-assert_field_value 'client.enable_litellm_fallbacks' '.client.enable_litellm_fallbacks' 'true'
+assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
+assert_field_value 'client.compat.convert_chat_to_responses' '.client.compat.convert_chat_to_responses' 'true'
+assert_field_value 'client.compat.should_drop_params' '.client.compat.should_drop_params' 'true'
 assert_field 'client.prometheus_labels' '.client.prometheus_labels'
 assert_field 'client.header_filter_config.allowlist' '.client.header_filter_config.allowlist'
 assert_field 'client.header_filter_config.denylist' '.client.header_filter_config.denylist'

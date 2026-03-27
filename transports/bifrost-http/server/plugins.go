@@ -202,10 +202,15 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 6. Compat (if configured in PluginConfigs)
-	compatConfig := s.getPluginConfig(compat.PluginName)
-	if compatConfig != nil && compatConfig.Enabled {
-		s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatConfig.Config, false)
+	// 6. Compat (if any compat feature is enabled in ClientConfig)
+	cc := s.Config.ClientConfig.Compat
+	if cc.ConvertTextToChat || cc.ConvertChatToResponses || cc.ShouldDropParams {
+		compatCfg := &compat.Config{
+			ConvertTextToChat:      cc.ConvertTextToChat,
+			ConvertChatToResponses: cc.ConvertChatToResponses,
+			ShouldDropParams:       cc.ShouldDropParams,
+		}
+		s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	} else {
 		s.markPluginDisabled(compat.PluginName)
 	}

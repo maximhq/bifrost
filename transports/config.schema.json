@@ -94,9 +94,24 @@
           "minimum": 1,
           "description": "Maximum request body size in MB"
         },
-        "enable_litellm_fallbacks": {
-          "type": "boolean",
-          "description": "Enable litellm-specific fallbacks for text completion for Groq"
+        "compat": {
+          "type": "object",
+          "description": "Compat plugin configuration for request type conversion and parameter dropping",
+          "properties": {
+            "convert_text_to_chat": {
+              "type": "boolean",
+              "description": "Convert text completion requests to chat for models that only support chat"
+            },
+            "convert_chat_to_responses": {
+              "type": "boolean",
+              "description": "Convert chat completion requests to responses for models that only support responses"
+            },
+            "should_drop_params": {
+              "type": "boolean",
+              "description": "Drop unsupported parameters based on model catalog allowlist"
+            }
+          },
+          "additionalProperties": false
         },
         "header_filter_config": {
           "type": "object",

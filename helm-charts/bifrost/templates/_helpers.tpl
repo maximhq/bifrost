@@ -227,8 +227,18 @@ false
 {{- if .Values.bifrost.client.maxRequestBodySizeMb }}
 {{- $_ := set $client "max_request_body_size_mb" .Values.bifrost.client.maxRequestBodySizeMb }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "enableLitellmFallbacks" }}
-{{- $_ := set $client "enable_litellm_fallbacks" .Values.bifrost.client.enableLitellmFallbacks }}
+{{- if .Values.bifrost.client.compat }}
+{{- $compat := dict }}
+{{- if hasKey .Values.bifrost.client.compat "convertTextToChat" }}
+{{- $_ := set $compat "convert_text_to_chat" .Values.bifrost.client.compat.convertTextToChat }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client.compat "convertChatToResponses" }}
+{{- $_ := set $compat "convert_chat_to_responses" .Values.bifrost.client.compat.convertChatToResponses }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client.compat "shouldDropParams" }}
+{{- $_ := set $compat "should_drop_params" .Values.bifrost.client.compat.shouldDropParams }}
+{{- end }}
+{{- $_ := set $client "compat" $compat }}
 {{- end }}
 {{- if .Values.bifrost.client.prometheusLabels }}
 {{- $_ := set $client "prometheus_labels" .Values.bifrost.client.prometheusLabels }}
