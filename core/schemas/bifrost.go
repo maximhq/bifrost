@@ -192,6 +192,7 @@ const (
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                // map[string][]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"               // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
@@ -255,6 +256,7 @@ const (
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                  // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
+	BifrostContextKeyCompatPluginDroppedParams           BifrostContextKey = "bifrost-dropped-params"                     // []string (set by compat plugin - parameter names to drop from the provider request body)
 )
 
 const (
@@ -809,18 +811,19 @@ type BifrostMCPResponse struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType             RequestType        `json:"request_type"`
-	Provider                ModelProvider      `json:"provider,omitempty"`
-	ModelRequested          string             `json:"model_requested,omitempty"`
-	ModelDeployment         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
-	Latency                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawRequest              interface{}        `json:"raw_request,omitempty"`
-	RawResponse             interface{}        `json:"raw_response,omitempty"`
-	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
-	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
-	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
-	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	RequestType               RequestType        `json:"request_type"`
+	Provider                  ModelProvider      `json:"provider,omitempty"`
+	ModelRequested            string             `json:"model_requested,omitempty"`
+	ModelDeployment           string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
+	Latency                   int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex                int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest                interface{}        `json:"raw_request,omitempty"`
+	RawResponse               interface{}        `json:"raw_response,omitempty"`
+	CacheDebug                *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors               []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
+	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -978,11 +981,11 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider,omitempty"`
-	ModelRequested string        `json:"model_requested,omitempty"`
-	RequestType    RequestType   `json:"request_type,omitempty"`
-	RawRequest     interface{}   `json:"raw_request,omitempty"`
-	RawResponse    interface{}   `json:"raw_response,omitempty"`
-	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
-	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+	Provider                  ModelProvider `json:"provider,omitempty"`
+	ModelRequested            string        `json:"model_requested,omitempty"`
+	RequestType               RequestType   `json:"request_type,omitempty"`
+	RawRequest                interface{}   `json:"raw_request,omitempty"`
+	RawResponse               interface{}   `json:"raw_response,omitempty"`
+	DroppedCompatPluginParams []string      `json:"dropped_compat_plugin_params,omitempty"`
+	KeyStatuses               []KeyStatus   `json:"key_statuses,omitempty"`
 }

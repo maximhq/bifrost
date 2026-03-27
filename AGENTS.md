@@ -103,7 +103,7 @@ bifrost/
 │   ├── mocker/                    # Mock responses for testing
 │   ├── jsonparser/                # JSON extraction utilities
 │   ├── maxim/                     # Maxim observability
-│   └── litellmcompat/             # LiteLLM SDK compatibility (HTTP transport)
+│   └── compat/                    # LiteLLM SDK compatibility (HTTP transport)
 │
 ├── ui/                            # Next.js web interface
 │   ├── app/workspace/             # Feature pages (20+ workspace sections)

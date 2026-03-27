@@ -30,6 +30,22 @@ func (req *ReplicatePredictionRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
 
+// GetParameterMappings maps OpenAI-compatible parameter names to Replicate JSON paths.
+func (req *ReplicatePredictionRequest) GetParameterMappings() map[string]string {
+	return map[string]string{
+		"temperature":           "input.temperature",
+		"top_p":                 "input.top_p",
+		"max_tokens":            "input.max_tokens",
+		"max_completion_tokens": "input.max_completion_tokens",
+		"max_output_tokens":     "input.max_output_tokens",
+		"presence_penalty":      "input.presence_penalty",
+		"frequency_penalty":     "input.frequency_penalty",
+		"seed":                  "input.seed",
+		"reasoning":             "input.reasoning_effort",
+		"tools":                 "input.tools",
+	}
+}
+
 // ReplicatePredictionRequestInput represents the input parameters for a model prediction
 // This is flexible to support different model types - exact fields depend on the model
 type ReplicatePredictionRequestInput struct {
@@ -313,28 +329,28 @@ type ReplicatePredictionListResponse struct {
 
 // ReplicateModelResponse represents a model response
 type ReplicateModelResponse struct {
-	URL             string                  `json:"url"`                        // Model API URL
-	Owner           string                  `json:"owner"`                      // Owner username or org name
-	Name            string                  `json:"name"`                       // Model name
-	Description     *string                 `json:"description,omitempty"`      // Model description
-	Visibility      string                  `json:"visibility"`                 // "public" or "private"
-	GithubURL       *string                 `json:"github_url,omitempty"`       // GitHub repository URL
-	PaperURL        *string                 `json:"paper_url,omitempty"`        // Research paper URL
-	LicenseURL      *string                 `json:"license_url,omitempty"`      // License URL
-	RunCount        *int                    `json:"run_count,omitempty"`        // Number of times run
-	CoverImageURL   *string                 `json:"cover_image_url,omitempty"`  // Cover image URL
-	DefaultExample  *json.RawMessage        `json:"default_example,omitempty"`  // Default example prediction (json.RawMessage preserves key ordering)
-	LatestVersion   *ReplicateModelVersion  `json:"latest_version,omitempty"`   // Latest version details
-	FeaturedVersion *ReplicateModelVersion  `json:"featured_version,omitempty"` // Featured version details
+	URL             string                 `json:"url"`                        // Model API URL
+	Owner           string                 `json:"owner"`                      // Owner username or org name
+	Name            string                 `json:"name"`                       // Model name
+	Description     *string                `json:"description,omitempty"`      // Model description
+	Visibility      string                 `json:"visibility"`                 // "public" or "private"
+	GithubURL       *string                `json:"github_url,omitempty"`       // GitHub repository URL
+	PaperURL        *string                `json:"paper_url,omitempty"`        // Research paper URL
+	LicenseURL      *string                `json:"license_url,omitempty"`      // License URL
+	RunCount        *int                   `json:"run_count,omitempty"`        // Number of times run
+	CoverImageURL   *string                `json:"cover_image_url,omitempty"`  // Cover image URL
+	DefaultExample  *json.RawMessage       `json:"default_example,omitempty"`  // Default example prediction (json.RawMessage preserves key ordering)
+	LatestVersion   *ReplicateModelVersion `json:"latest_version,omitempty"`   // Latest version details
+	FeaturedVersion *ReplicateModelVersion `json:"featured_version,omitempty"` // Featured version details
 }
 
 // ReplicateModelVersion represents a model version
 type ReplicateModelVersion struct {
-	ID            string                 `json:"id"`                        // Version ID
-	CreatedAt     string                 `json:"created_at"`                // ISO 8601 timestamp
-	CogVersion    *string                `json:"cog_version,omitempty"`     // Cog version used
-	OpenAPISchema json.RawMessage        `json:"openapi_schema,omitempty"`  // OpenAPI schema for the model (json.RawMessage preserves key ordering)
-	DockerImageID *string                `json:"docker_image_id,omitempty"` // Docker image ID
+	ID            string          `json:"id"`                        // Version ID
+	CreatedAt     string          `json:"created_at"`                // ISO 8601 timestamp
+	CogVersion    *string         `json:"cog_version,omitempty"`     // Cog version used
+	OpenAPISchema json.RawMessage `json:"openapi_schema,omitempty"`  // OpenAPI schema for the model (json.RawMessage preserves key ordering)
+	DockerImageID *string         `json:"docker_image_id,omitempty"` // Docker image ID
 }
 
 // ReplicateModelListResponse represents a paginated list of models

@@ -9,6 +9,7 @@ require (
 	github.com/qdrant/go-client v1.16.2
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/stretchr/testify v1.11.1
+	github.com/tidwall/gjson v1.18.0
 	github.com/weaviate/weaviate v1.36.5
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1
 	golang.org/x/crypto v0.49.0
@@ -54,7 +55,6 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

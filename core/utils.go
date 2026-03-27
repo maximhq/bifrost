@@ -195,6 +195,9 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+
+	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	ctx.ClearValue(schemas.BifrostContextKeyCompatPluginDroppedParams)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
@@ -522,4 +525,31 @@ func isPromptOptionalImageEditType(t *string) bool {
 		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
 		normalized,
 	)
+}
+
+// wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
+// responses produced by a type-converted request are converted back to the
+// caller's original type before the post-hook runs.
+func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil {
+			switch targetType {
+			case schemas.ChatCompletionRequest:
+				// text→chat: convert chat stream chunk back to text completion
+				if result.ChatResponse != nil {
+					if converted := result.ChatResponse.ToBifrostTextCompletionResponse(); converted != nil {
+						result = &schemas.BifrostResponse{TextCompletionResponse: converted}
+					}
+				}
+			case schemas.ResponsesRequest:
+				// chat→responses: convert responses stream chunk back to chat
+				if result.ResponsesStreamResponse != nil {
+					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+						result = &schemas.BifrostResponse{ChatResponse: converted}
+					}
+				}
+			}
+		}
+		return postHookRunner(ctx, result, bifrostErr)
+	}
 }

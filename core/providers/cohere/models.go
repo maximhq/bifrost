@@ -23,6 +23,8 @@ func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *CohereRerankRequest) GetParameterMappings() map[string]string { return nil }
+
 // CohereRerankResult represents a single result from Cohere rerank.
 type CohereRerankResult struct {
 	Index          int             `json:"index"`

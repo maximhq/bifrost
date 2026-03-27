@@ -9,8 +9,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const MinimumReasoningMaxTokens = 1
-const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+const (
+	MinimumReasoningMaxTokens  = 1
+	DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+)
+
 // Limits for tokenize input api call https://docs.cohere.com/reference/tokenize#request
 const (
 	cohereTokenizeMinTextLength = 1
@@ -48,6 +51,17 @@ func (r *CohereChatRequest) IsStreamingRequested() bool {
 
 func (r *CohereChatRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GetParameterMappings maps OpenAI-compatible parameter names to Cohere JSON paths.
+func (r *CohereChatRequest) GetParameterMappings() map[string]string {
+	return map[string]string{
+		"max_completion_tokens": "max_tokens",
+		"stop":                  "stop_sequences",
+		"top_p":                 "p",
+		"reasoning":             "thinking",
+		"logprobs":              "log_probs",
+	}
 }
 
 type CohereChatRequestTool struct {
@@ -258,6 +272,8 @@ func (r *CohereCountTokensRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *CohereCountTokensRequest) GetParameterMappings() map[string]string { return nil }
+
 // CohereEmbeddingRequest represents a Cohere embedding request
 type CohereEmbeddingRequest struct {
 	Model           string                 `json:"model"`                      // Required: ID of embedding model
@@ -275,6 +291,8 @@ type CohereEmbeddingRequest struct {
 func (r *CohereEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
+
+func (r *CohereEmbeddingRequest) GetParameterMappings() map[string]string { return nil }
 
 // CohereEmbeddingInput represents a mixed text/image input
 type CohereEmbeddingInput struct {
@@ -421,8 +439,8 @@ type CohereCitation struct {
 type CohereSource struct {
 	Type       CohereSourceType `json:"type"`                  // Source type ("tool" or "document")
 	ID         *string          `json:"id,omitempty"`          // Source ID (nullable)
-	ToolOutput *json.RawMessage  `json:"tool_output,omitempty"` // Tool output (for tool sources, json.RawMessage preserves key ordering)
-	Document   *json.RawMessage  `json:"document,omitempty"`    // Document data (for document sources, json.RawMessage preserves key ordering)
+	ToolOutput *json.RawMessage `json:"tool_output,omitempty"` // Tool output (for tool sources, json.RawMessage preserves key ordering)
+	Document   *json.RawMessage `json:"document,omitempty"`    // Document data (for document sources, json.RawMessage preserves key ordering)
 }
 
 // ==================== STREAMING TYPES ====================

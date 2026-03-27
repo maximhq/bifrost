@@ -98,6 +98,8 @@ func (req *HuggingFaceChatRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceChatRequest) GetParameterMappings() map[string]string { return nil }
+
 // HuggingFaceToolChoice represents the flexible `tool_choice` field which
 // can be either one of the enum strings: "auto", "none", "required",
 // or an object with a `function` sub-object containing a required `name`.
@@ -189,6 +191,8 @@ func (req *HuggingFaceEmbeddingRequest) GetExtraParams() map[string]interface{} 
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceEmbeddingRequest) GetParameterMappings() map[string]string { return nil }
+
 type InputsCustomType struct {
 	Texts []string `json:"texts,omitempty"`
 	Text  *string  `json:"text,omitempty"`
@@ -256,6 +260,8 @@ func (req *HuggingFaceSpeechRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceSpeechRequest) GetParameterMappings() map[string]string { return nil }
+
 // Speech parameters are additional inference parameters for Text To Speech
 type HuggingFaceSpeechParameters struct {
 	GenerationParameters *HuggingFaceTranscriptionGenerationParameters `json:"generation_parameters,omitempty"`
@@ -289,6 +295,8 @@ type HuggingFaceTranscriptionRequest struct {
 func (req *HuggingFaceTranscriptionRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
 }
+
+func (req *HuggingFaceTranscriptionRequest) GetParameterMappings() map[string]string { return nil }
 
 // HuggingFaceTranscriptionRequestParameters contains additional inference parameters for Automatic Speech Recognition
 type HuggingFaceTranscriptionRequestParameters struct {
@@ -380,6 +388,10 @@ func (req *HuggingFaceHFInferenceImageGenerationRequest) GetExtraParams() map[st
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceHFInferenceImageGenerationRequest) GetParameterMappings() map[string]string {
+	return nil
+}
+
 // HuggingFaceFalAIImageGenerationRequest for fal-ai image generation
 type HuggingFaceFalAIImageGenerationRequest struct {
 	Prompt                string                `json:"prompt"`
@@ -400,6 +412,10 @@ type HuggingFaceFalAIImageGenerationRequest struct {
 
 func (req *HuggingFaceFalAIImageGenerationRequest) GetExtraParams() map[string]any {
 	return req.ExtraParams
+}
+
+func (req *HuggingFaceFalAIImageGenerationRequest) GetParameterMappings() map[string]string {
+	return nil
 }
 
 type HuggingFaceFalAISize struct {
@@ -460,6 +476,10 @@ func (req *HuggingFaceTogetherImageGenerationRequest) GetExtraParams() map[strin
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceTogetherImageGenerationRequest) GetParameterMappings() map[string]string {
+	return nil
+}
+
 // HuggingFaceTogetherImageGenerationResponse for together image generation
 type HuggingFaceTogetherImageGenerationResponse struct {
 	ID     string                         `json:"id"`
@@ -500,6 +520,8 @@ func (req *HuggingFaceFalAIImageStreamRequest) GetExtraParams() map[string]any {
 	return req.ExtraParams
 }
 
+func (req *HuggingFaceFalAIImageStreamRequest) GetParameterMappings() map[string]string { return nil }
+
 // HuggingFaceFalAIImageStreamResponse for fal-ai SSE events
 type HuggingFaceFalAIImageStreamResponse struct {
 	Data   *FalAIImageData `json:"data,omitempty"`
@@ -526,3 +548,5 @@ type HuggingFaceFalAIImageEditRequest struct {
 func (req *HuggingFaceFalAIImageEditRequest) GetExtraParams() map[string]any {
 	return req.ExtraParams
 }
+
+func (req *HuggingFaceFalAIImageEditRequest) GetParameterMappings() map[string]string { return nil }
