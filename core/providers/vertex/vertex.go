@@ -190,14 +190,14 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	deployments := key.VertexKeyConfig.Deployments
 	allowedModels := key.Models
 
-	if !request.Unfiltered && allowedModels.IsEmpty() && len(deployments) == 0 {
+	if !request.Unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || key.BlacklistedModels.IsBlockAll()) {
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
 	// If deployments or allowedModels are configured, return those directly without API call
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
 	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
-		return buildResponseFromConfig(deployments, allowedModels), nil
+		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
 	// No deployments configured - fetch from Model Garden API
@@ -326,7 +326,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(nil, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests

@@ -16,7 +16,7 @@ func toGeminiModelResourceName(modelID string) string {
 	return "models/" + modelID
 }
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -25,7 +25,7 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	if !unfiltered && allowedModels.IsEmpty() {
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
 		return bifrostResponse
 	}
 
@@ -36,6 +36,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		// Remove prefix models/ from model.Name
 		modelName := strings.TrimPrefix(model.Name, "models/")
 		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(modelName) {
+			continue
+		}
+		if !unfiltered && blacklistedModels.IsBlocked(modelName) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -53,6 +56,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 	// Backfill allowed models that were not in the response
 	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
+			if blacklistedModels.IsBlocked(allowedModel) {
+				continue
+			}
 			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

@@ -73,6 +73,50 @@ func (wl WhiteList) Validate() error {
 	return nil
 }
 
+// BlackList is a list of values that are denied.
+// Semantics:
+//   - "*" (alone) means all values are blocked.
+//   - Empty list means nothing is blocked.
+//   - Non-empty list (without "*") means only the listed values are blocked.
+type BlackList []string
+
+func (bl BlackList) Contains(value string) bool {
+	return slices.ContainsFunc(bl, func(s string) bool {
+		return strings.EqualFold(s, value)
+	})
+}
+
+// IsBlocked reports whether value is blocked.
+func (bl BlackList) IsBlocked(value string) bool {
+	return bl.IsBlockAll() || bl.Contains(value)
+}
+
+// IsEmpty reports whether the blacklist has no entries (nothing is blocked).
+func (bl BlackList) IsEmpty() bool {
+	return len(bl) == 0
+}
+
+// IsBlockAll reports whether the blacklist contains "*", meaning all values are blocked.
+func (bl BlackList) IsBlockAll() bool {
+	return len(bl) == 1 && bl[0] == "*"
+}
+
+// Validate checks that the blacklist is well-formed.
+func (bl BlackList) Validate() error {
+	if bl.Contains("*") && len(bl) > 1 {
+		return fmt.Errorf("wildcard '*' cannot be used with other values in the blacklist")
+	}
+	seen := make(map[string]struct{}, len(bl))
+	for _, v := range bl {
+		normalized := strings.ToLower(v)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate value '%s' in blacklist", v)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
@@ -80,7 +124,7 @@ type Key struct {
 	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
 	Value                EnvVar                `json:"value"`                            // The actual API key value
 	Models               WhiteList             `json:"models"`                           // List of models this key can access
-	BlacklistedModels    WhiteList             `json:"blacklisted_models"`               // List of models this key cannot access
+	BlacklistedModels    BlackList             `json:"blacklisted_models"`               // List of models this key cannot access
 	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
 	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
 	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration

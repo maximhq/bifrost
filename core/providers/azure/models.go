@@ -58,7 +58,24 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+// matchesBlacklist reports whether modelID matches any entry in the blacklist,
+// using the same matching logic as findMatchingAllowedModel (exact and base-model).
+func matchesBlacklist(bl schemas.BlackList, modelID string) bool {
+	if bl.IsEmpty() {
+		return false
+	}
+	if bl.Contains(modelID) {
+		return true
+	}
+	for _, item := range bl {
+		if schemas.SameBaseModel(item, modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -67,7 +84,7 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		Data: make([]schemas.Model, 0, len(response.Data)),
 	}
 
-	if !unfiltered && allowedModels.IsEmpty() && len(deployments) == 0 {
+	if !unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || blacklistedModels.IsBlockAll()) {
 		return bifrostResponse
 	}
 
@@ -113,6 +130,10 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		if shouldFilter {
 			continue
 		}
+		if !unfiltered && (matchesBlacklist(blacklistedModels, model.ID) ||
+			(deploymentAlias != "" && matchesBlacklist(blacklistedModels, deploymentAlias))) {
+			continue
+		}
 
 		// Use the matched name from allowedModels or deployments (like Anthropic)
 		// Priority: deployment value > matched allowedModel > original model.ID
@@ -148,6 +169,9 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 			if restrictAllowed && !allowedModels.Contains(alias) {
 				continue
 			}
+			if !unfiltered && matchesBlacklist(blacklistedModels, alias) {
+				continue
+			}
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 				ID:         string(schemas.Azure) + "/" + alias,
 				Name:       schemas.Ptr(alias),
@@ -160,6 +184,9 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 	// Backfill allowed models that were not in the response
 	if restrictAllowed {
 		for _, allowedModel := range allowedModels {
+			if matchesBlacklist(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(schemas.Azure) + "/" + allowedModel,

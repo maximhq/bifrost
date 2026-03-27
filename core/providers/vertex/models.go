@@ -113,7 +113,7 @@ func findDeploymentMatch(deployments map[string]string, customModelID string) (d
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -122,7 +122,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	if !unfiltered && allowedModels.IsEmpty() && len(deployments) == 0 {
+	if !unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || blacklistedModels.IsBlockAll()) {
 		return bifrostResponse
 	}
 
@@ -176,6 +176,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			if shouldFilter {
 				continue
 			}
+			if !unfiltered && blacklistedModels.IsBlocked(customModelID) {
+				continue
+			}
 
 			modelID := customModelID
 
@@ -209,6 +212,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			if restrictAllowed && !allowedModels.Contains(alias) {
 				continue
 			}
+			if blacklistedModels.IsBlocked(alias) {
+				continue
+			}
 
 			modelName := formatDeploymentName(alias)
 			modelEntry := schemas.Model{
@@ -230,6 +236,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			if addedModelIDs[modelID] {
 				continue
 			}
+			if blacklistedModels.IsBlocked(allowedModel) {
+				continue
+			}
 
 			modelName := formatDeploymentName(allowedModel)
 			modelEntry := schemas.Model{
@@ -249,7 +258,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 // ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
 // This is for foundation models from the Model Garden (publishers.models.list endpoint).
-func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -258,7 +267,7 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 		Data: make([]schemas.Model, 0, len(response.PublisherModels)),
 	}
 
-	if !unfiltered && allowedModels.IsEmpty() {
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
 		return bifrostResponse
 	}
 
@@ -274,6 +283,9 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 
 		// Filter based on allowedModels if specified
 		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(modelID) {
+			continue
+		}
+		if !unfiltered && blacklistedModels.IsBlocked(modelID) {
 			continue
 		}
 

@@ -647,7 +647,7 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 }
 
 // UpsertModelDataForProvider upserts model data for a given provider
-func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model, deniedModels []schemas.Model) {
+func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model) {
 	if modelData == nil {
 		return
 	}
@@ -676,7 +676,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 		}
 	}
 	// If modelData is empty, then we allow all models
-	if len(modelData.Data) == 0 && len(allowedModels) == 0 && len(deniedModels) == 0 {
+	if len(modelData.Data) == 0 && len(allowedModels) == 0 {
 		mc.modelPool[provider] = providerModels
 		return
 	}
@@ -709,15 +709,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 	}
 
 	if len(allowedModels) == 0 {
-		deniedSet := make(map[string]struct{}, len(deniedModels))
-		for _, d := range deniedModels {
-			_, modelName := schemas.ParseModelString(d.ID, "")
-			deniedSet[modelName] = struct{}{}
-		}
 		for _, model := range providerModels {
-			if _, denied := deniedSet[model]; denied {
-				continue
-			}
 			if !seenModels[model] {
 				seenModels[model] = true
 				finalModelList = append(finalModelList, model)

@@ -574,7 +574,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			})
 		}
 	}
-	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys, nil)
+	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
 	if listModelsErr != nil {
 		if hasNoKeys {
 			logger.Warn("unfiltered model discovery skipped for provider %s: no keys configured", provider)
@@ -807,7 +807,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 						})
 					}
 				}
-				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels, nil)
+				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
 				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 					Provider:   provider,
 					Unfiltered: true,
@@ -1322,7 +1322,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 						})
 					}
 				}
-				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels, nil)
+				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
 				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 					Provider:   provider,
 					Unfiltered: true,
