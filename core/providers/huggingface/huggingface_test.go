@@ -92,6 +92,34 @@ func TestUnmarshalHuggingFaceEmbeddingResponsePreservesPrecision(t *testing.T) {
 	if resp == nil || len(resp.Data) != 1 {
 		t.Fatalf("expected single embedding response, got %#v", resp)
 	}
+	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	}
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	if got != want {
+		t.Fatalf("expected %0.18f, got %0.18f", want, got)
+	}
+
+	if got == float64(float32(want)) {
+		t.Fatalf("expected preserved precision, got float32-rounded value %0.18f", got)
+	}
+}
+
+func TestUnmarshalHuggingFaceEmbeddingResponse1DPreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp, err := huggingface.UnmarshalHuggingFaceEmbeddingResponse([]byte(`[0.12345678901234568]`), "test-model")
+	if err != nil {
+		t.Fatalf("UnmarshalHuggingFaceEmbeddingResponse failed: %v", err)
+	}
+
+	if resp == nil || len(resp.Data) != 1 {
+		t.Fatalf("expected single embedding response, got %#v", resp)
+	}
+	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	}
 
 	got := resp.Data[0].Embedding.EmbeddingArray[0]
 	if got != want {
