@@ -85,7 +85,7 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
-	deployment?: string;
+	alias?: string;
 	created?: number;
 	context_length?: number;
 	max_input_tokens?: number;
@@ -448,6 +448,7 @@ export interface LogEntry {
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
+	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
 	number_of_retries: number;
 	fallback_index: number;
 	selected_key_id: string;
@@ -503,6 +504,7 @@ export interface LogEntry {
 export interface LogFilters {
 	providers?: string[];
 	models?: string[];
+	aliases?: string[];
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];

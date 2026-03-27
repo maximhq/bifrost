@@ -293,6 +293,9 @@ export function LogDetailSheet({
 										}
 									/>
 									{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={displayLog.model} />}
+									{!isContainer && displayLog.alias && (
+										<LogEntryDetailsView className="w-full" label="Alias" value={displayLog.alias} />
+									)}
 									<LogEntryDetailsView
 										className="w-full"
 										label="Type"

@@ -666,7 +666,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
-	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -706,12 +706,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry := &logstore.Log{
 				ID:        requestID,
 				Provider:  string(bifrostErr.ExtraFields.Provider),
-				Model:     bifrostErr.ExtraFields.ModelRequested,
 				Status:    "error",
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
 			}
+			applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
 			if data, err := sonic.Marshal(bifrostErr); err == nil {
 				entry.ErrorDetails = string(data)
 			}
@@ -742,6 +742,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
 		entry.Status = "error"
+		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true
 		}
@@ -786,6 +787,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if bifrostErr != nil {
 			entry.Status = "error"
 			entry.Stream = true
+			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			if data, err := sonic.Marshal(bifrostErr); err == nil {
 				entry.ErrorDetails = string(data)
 			}
@@ -794,6 +796,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = "success"
 			entry.Stream = true
+			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
@@ -823,6 +826,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path C: Non-streaming response
 	if bifrostErr != nil {
 		entry.Status = "error"
+		applyModelAlias(entry, bifrostErr.ExtraFields.OriginalModelRequested, bifrostErr.ExtraFields.ResolvedModelUsed)
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).
@@ -832,6 +836,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		entry.ErrorDetailsParsed = bifrostErr
 	} else if result != nil {
 		entry.Status = "success"
+		extraFields := result.GetExtraFields()
+		applyModelAlias(entry, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed)
 		p.applyNonStreamingOutputToEntry(entry, result)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {

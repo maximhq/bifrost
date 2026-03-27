@@ -80,6 +80,7 @@ export default function LogsPage() {
 		{
 			providers: parseAsArrayOf(parseAsString).withDefault([]),
 			models: parseAsArrayOf(parseAsString).withDefault([]),
+			aliases: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			objects: parseAsArrayOf(parseAsString).withDefault([]),
 			selected_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
@@ -188,6 +189,7 @@ export default function LogsPage() {
 		() => ({
 			providers: urlState.providers,
 			models: urlState.models,
+			aliases: urlState.aliases,
 			status: urlState.status,
 			objects: urlState.objects,
 			selected_key_ids: urlState.selected_key_ids,
@@ -208,7 +210,7 @@ export default function LogsPage() {
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
-			urlState.providers, urlState.models, urlState.status, urlState.objects,
+			urlState.providers, urlState.models, urlState.aliases, urlState.status, urlState.objects,
 			urlState.selected_key_ids, urlState.virtual_key_ids, urlState.routing_rule_ids,
 			urlState.routing_engine_used, urlState.content_search,
 			urlState.start_time, urlState.end_time,
@@ -239,6 +241,7 @@ export default function LogsPage() {
 			setUrlState({
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
+				aliases: newFilters.aliases || [],
 				status: newFilters.status || [],
 				objects: newFilters.objects || [],
 				selected_key_ids: newFilters.selected_key_ids || [],
@@ -661,6 +664,9 @@ export default function LogsPage() {
 			return false;
 		}
 		if (filters.providers?.length && !filters.providers.includes(log.provider)) {
+			return false;
+		}
+		if (filters.aliases?.length && !filters.aliases.includes(log.alias ?? "")) {
 			return false;
 		}
 		if (filters.models?.length && !filters.models.includes(log.model)) {

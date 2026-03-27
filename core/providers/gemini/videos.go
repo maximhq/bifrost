@@ -217,7 +217,7 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 // ToBifrostVideoGenerationResponse converts Gemini operation response to Bifrost format
 func ToBifrostVideoGenerationResponse(operation *GenerateVideosOperation, model string) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if operation == nil {
-		return nil, providerUtils.NewBifrostOperationError("operation is nil", nil, schemas.Gemini)
+		return nil, providerUtils.NewBifrostOperationError("operation is nil",  nil)
 	}
 
 	response := &schemas.BifrostVideoGenerationResponse{

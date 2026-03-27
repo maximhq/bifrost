@@ -48,8 +48,8 @@ func RunVideoGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		if resp.ExtraFields.Provider == "" {
 			t.Fatal("❌ Video generation extra_fields.provider is empty")
 		}
-		if resp.ExtraFields.ModelRequested == "" {
-			t.Fatal("❌ Video generation extra_fields.model_requested is empty")
+		if resp.ExtraFields.OriginalModelRequested == "" {
+			t.Fatal("❌ Video generation extra_fields.original_model_requested is empty")
 		}
 
 		t.Logf("✅ Video generation created job: id=%s status=%s", resp.ID, resp.Status)

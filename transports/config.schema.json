@@ -238,7 +238,7 @@
           "$ref": "#/$defs/provider"
         },
         "replicate": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_replicate_config"
         },
         "elevenlabs": {
           "$ref": "#/$defs/provider"
@@ -1835,6 +1835,17 @@
           "type": "boolean",
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Model alias mappings: maps a model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
         }
       },
       "required": [
@@ -1864,13 +1875,6 @@
                 "session_token": {
                   "type": "string",
                   "description": "AWS session token (can use env. prefix)"
-                },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
                 },
                 "arn": {
                   "type": "string",
@@ -1925,6 +1929,28 @@
           "required": [
             "vllm_key_config"
           ]
+        }
+      ]
+    },
+    "replicate_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "replicate_key_config": {
+              "type": "object",
+              "properties": {
+                "use_deployments_endpoint": {
+                  "type": "boolean",
+                  "description": "Whether to use the deployments endpoint instead of the models endpoint (default: false)"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
         }
       ]
     },
@@ -2001,13 +2027,6 @@
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
                 },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
-                },
                 "api_version": {
                   "type": "string",
                   "description": "Azure API version"
@@ -2052,13 +2071,6 @@
                 "auth_credentials": {
                   "type": "string",
                   "description": "Authentication credentials (can use env. prefix)"
-                },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
                 }
               },
               "required": [
@@ -2169,6 +2181,88 @@
         },
         "network_config": {
           "$ref": "#/$defs/network_config_without_base_url"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_replicate_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/replicate_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config_without_base_url"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_replicate_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/replicate_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_config"

@@ -464,7 +464,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
-	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, model, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	streamType := StreamTypeChat
 	if requestType == schemas.TextCompletionStreamRequest {
@@ -496,6 +496,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.TokenUsage = result.TextCompletionResponse.Usage
 		}
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
+		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawResponse))
+		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
@@ -561,7 +564,8 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			RequestID:  requestID,
 			StreamType: streamType,
 			Provider:   provider,
-			Model:      model,
+			RequestedModel: model,
+			ResolvedModel:  resolvedModel,
 			Data:       data,
 			RawRequest: &rawRequest,
 		}, nil
@@ -569,10 +573,11 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
 	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: streamType,
-		Provider:   provider,
-		Model:      model,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     streamType,
+		Provider:       provider,
+		RequestedModel: model,
+		ResolvedModel:  resolvedModel,
+		Data:           nil,
 	}, nil
 }

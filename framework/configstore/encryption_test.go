@@ -725,7 +725,7 @@ func TestEncryptPlaintextKeys_BedrockFields_EncryptsAndDecryptsCorrectly(t *test
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 
 	insertPlaintextRow(t, db,
-		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, encryption_status, created_at, updated_at)
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, aliases_json, bedrock_batch_s3_config_json, encryption_status, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
 		"bedrock-key", 1, "bedrock", "br-1", "sk-bedrock-key-value",
 		"AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "FwoGZXIvYXdzEBYaDH7sampleSessionToken",
@@ -747,9 +747,15 @@ func TestEncryptPlaintextKeys_BedrockFields_EncryptsAndDecryptsCorrectly(t *test
 	assert.NotEqual(t, "FwoGZXIvYXdzEBYaDH7sampleSessionToken", raw["bedrock_session_token"])
 	assert.NotEqual(t, "us-west-2", raw["bedrock_region"])
 	assert.NotEqual(t, "arn:aws:iam::123456789:role/bedrock", raw["bedrock_arn"])
-	if rawDeploy, ok := raw["bedrock_deployments_json"].(string); ok {
-		assert.NotContains(t, rawDeploy, "profile-claude")
+	rawAliasesVal := raw["aliases_json"]
+	var rawAliasesStr string
+	switch v := rawAliasesVal.(type) {
+	case string:
+		rawAliasesStr = v
+	case []byte:
+		rawAliasesStr = string(v)
 	}
+	assert.NotContains(t, rawAliasesStr, "profile-claude")
 	if rawBatch, ok := raw["bedrock_batch_s3_config_json"].(string); ok {
 		assert.NotContains(t, rawBatch, "my-bucket")
 	}
@@ -767,7 +773,7 @@ func TestEncryptPlaintextKeys_BedrockFields_EncryptsAndDecryptsCorrectly(t *test
 	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
 	require.NotNil(t, found.BedrockKeyConfig.ARN)
 	assert.Equal(t, "arn:aws:iam::123456789:role/bedrock", found.BedrockKeyConfig.ARN.GetValue())
-	assert.Equal(t, "profile-claude", found.BedrockKeyConfig.Deployments["claude-3"])
+	assert.Equal(t, "profile-claude", found.Aliases["claude-3"])
 	require.NotNil(t, found.BedrockKeyConfig.BatchS3Config)
 	require.Len(t, found.BedrockKeyConfig.BatchS3Config.Buckets, 1)
 	assert.Equal(t, "my-bucket", found.BedrockKeyConfig.BatchS3Config.Buckets[0].BucketName)

@@ -79,6 +79,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.Models) > 0 {
 		baseQuery = baseQuery.Where("model IN ?", filters.Models)
 	}
+	if len(filters.Aliases) > 0 {
+		baseQuery = baseQuery.Where("alias IN ?", filters.Aliases)
+	}
 	if len(filters.Status) > 0 {
 		baseQuery = baseQuery.Where("status IN ?", filters.Status)
 	}
@@ -446,7 +449,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 // last element from input_history and responses_input_history arrays.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
-		"id", "parent_request_id", "timestamp", "object_type", "provider", "model",
+		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
@@ -2016,6 +2019,20 @@ func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to get distinct models: %w", err)
 	}
 	return models, nil
+}
+
+// GetDistinctAliases returns all unique non-empty alias values using SELECT DISTINCT.
+// Scoped to recent data to avoid full table scans.
+func (s *RDBLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var aliases []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("alias IS NOT NULL AND alias != '' AND timestamp >= ?", cutoff).
+		Distinct("alias").Limit(defaultFilterDataLimit).Pluck("alias", &aliases).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct aliases: %w", err)
+	}
+	return aliases, nil
 }
 
 // allowedKeyPairColumns is a whitelist of column names that can be used in GetDistinctKeyPairs

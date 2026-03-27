@@ -594,9 +594,10 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 				Message: "prompt not provided for text completion request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.TextCompletionRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.TextCompletionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -633,9 +634,10 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx *schemas.BifrostContext,
 				Message: "text not provided for text completion stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.TextCompletionStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.TextCompletionStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -664,9 +666,10 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 				Message: "chats not provided for chat completion request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -729,9 +732,10 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 				Message: "chats not provided for chat completion request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ChatCompletionStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -765,9 +769,10 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 					Message: "responses not provided for responses request",
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
+					RequestType:            schemas.ResponsesRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
 				},
 			}
 		}
@@ -833,9 +838,10 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 					Message: "responses not provided for responses stream request",
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
+					RequestType:            schemas.ResponsesStreamRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
 				},
 			}
 		}
@@ -868,9 +874,10 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 				Message: "input not provided for count tokens request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.CountTokensRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.CountTokensRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -907,9 +914,10 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 				Message: "embedding input not provided for embedding request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.EmbeddingRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.EmbeddingRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -946,9 +954,10 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 				Message: "query not provided for rerank request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.RerankRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.RerankRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -959,9 +968,10 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 				Message: "documents not provided for rerank request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.RerankRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.RerankRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -973,9 +983,10 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 					Message: fmt.Sprintf("document text is empty at index %d", i),
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.RerankRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
+					RequestType:            schemas.RerankRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
 				},
 			}
 		}
@@ -1011,9 +1022,10 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 				Message: "speech input not provided for speech request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.SpeechRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.SpeechRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1050,9 +1062,10 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx *schemas.BifrostContext, req *sc
 				Message: "speech input not provided for speech stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.SpeechStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.SpeechStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1084,9 +1097,10 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 				Message: "transcription input not provided for transcription request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.TranscriptionRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.TranscriptionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1123,9 +1137,10 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 				Message: "transcription input not provided for transcription stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.TranscriptionStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.TranscriptionStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1158,9 +1173,10 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 				Message: "prompt not provided for image generation request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1180,9 +1196,10 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 				Message: "received nil response from provider",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1211,9 +1228,10 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 				Message: "prompt not provided for image generation stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageGenerationStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageGenerationStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1245,9 +1263,10 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 				Message: "images not provided for image edit request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1264,9 +1283,10 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 				Message: "prompt not provided for image edit request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1287,9 +1307,10 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 				Message: "received nil response from provider",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1317,9 +1338,10 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 				Message: "images not provided for image edit stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageEditStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1336,9 +1358,10 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 				Message: "prompt not provided for image edit stream request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageEditStreamRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1370,9 +1393,10 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 				Message: "image not provided for image variation request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageVariationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageVariationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1393,9 +1417,10 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 				Message: "received nil response from provider",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageVariationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.ImageVariationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1424,9 +1449,10 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 				Message: "prompt not provided for video generation request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.VideoGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.VideoGenerationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1446,9 +1472,10 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 				Message: "received nil response from provider",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.VideoGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.VideoGenerationRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -3203,9 +3230,10 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 								Message: "request failed during provider concurrency update",
 							},
 							ExtraFields: schemas.BifrostErrorExtraFields{
-								RequestType:    m.RequestType,
-								Provider:       provider,
-								ModelRequested: model,
+								RequestType:            m.RequestType,
+								Provider:               provider,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
 							},
 						}:
 						case <-time.After(1 * time.Second):
@@ -3845,7 +3873,16 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
+	wsProvider, wsModel, _ := preReq.GetRequestFields()
 	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
+		// can read requestType/provider/model from the chunk or error.
+		if result != nil {
+			result.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+		}
+		if err != nil {
+			err.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
+		}
 		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 		if IsFinalChunk(ctx) {
 			drainAndAttachPluginLogs(ctx)
@@ -4055,11 +4092,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer bifrost.releaseBifrostRequest(req)
 	provider, model, fallbacks := req.GetRequestFields()
 	if err := validateRequest(req); err != nil {
-		err.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		err.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, err
 	}
 
@@ -4092,16 +4125,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
-		if primaryErr != nil {
-			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-				RawRequest:     primaryErr.ExtraFields.RawRequest,
-				RawResponse:    primaryErr.ExtraFields.RawResponse,
-				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
-			}
-		}
 		return primaryResult, primaryErr
 	}
 
@@ -4144,26 +4167,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
-			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       fallback.Provider,
-				ModelRequested: fallback.Model,
-				RawRequest:     fallbackErr.ExtraFields.RawRequest,
-				RawResponse:    fallbackErr.ExtraFields.RawResponse,
-				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
-			}
 			return nil, fallbackErr
-		}
-	}
-
-	if primaryErr != nil {
-		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-			RawRequest:     primaryErr.ExtraFields.RawRequest,
-			RawResponse:    primaryErr.ExtraFields.RawResponse,
-			KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 		}
 	}
 
@@ -4181,11 +4185,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	provider, model, fallbacks := req.GetRequestFields()
 
 	if err := validateRequest(req); err != nil {
-		err.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		err.PopulateExtraFields(req.RequestType, provider, model, model)
 		err.StatusCode = schemas.Ptr(fasthttp.StatusBadRequest)
 		return nil, err
 	}
@@ -4207,16 +4207,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
-		if primaryErr != nil {
-			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-				RawRequest:     primaryErr.ExtraFields.RawRequest,
-				RawResponse:    primaryErr.ExtraFields.RawResponse,
-				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
-			}
-		}
 		return primaryResult, primaryErr
 	}
 
@@ -4257,26 +4247,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
-			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       fallback.Provider,
-				ModelRequested: fallback.Model,
-				RawRequest:     fallbackErr.ExtraFields.RawRequest,
-				RawResponse:    fallbackErr.ExtraFields.RawResponse,
-				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
-			}
 			return nil, fallbackErr
-		}
-	}
-
-	if primaryErr != nil {
-		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-			RawRequest:     primaryErr.ExtraFields.RawRequest,
-			RawResponse:    primaryErr.ExtraFields.RawResponse,
-			KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 		}
 	}
 
@@ -4291,11 +4262,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4306,7 +4273,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 
 	tracer := bifrost.getTracer()
 	if tracer == nil {
-		return nil, newBifrostErrorFromMsg("tracer not found in context")
+		bifrostErr := newBifrostErrorFromMsg("tracer not found in context")
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, bifrostErr
 	}
 
 	// Store tracer in context BEFORE calling requestHandler, so streaming goroutines
@@ -4325,6 +4294,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 				return nil, bifrostErr
 			}
 			return resp, nil
@@ -4334,6 +4304,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 				return nil, bifrostErr
 			}
 			return resp, nil
@@ -4341,11 +4312,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4357,11 +4324,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if pq.isClosing() {
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4372,36 +4335,26 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case <-pq.done:
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
-		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
+		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, bifrostErr
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
 		select {
@@ -4410,15 +4363,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		case <-pq.done:
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
-			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
+			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, bifrostErr
 		}
 	}
 
@@ -4466,7 +4417,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
 		provider, model, _ := req.GetRequestFields()
-		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "waiting for provider response")
+		bifrostErr := newBifrostCtxDoneError(ctx, "waiting for provider response")
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, bifrostErr
 	}
 }
 
@@ -4477,11 +4430,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4492,7 +4441,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	tracer := bifrost.getTracer()
 	if tracer == nil {
-		return nil, newBifrostErrorFromMsg("tracer not found in context")
+		bifrostErr := newBifrostErrorFromMsg("tracer not found in context")
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, bifrostErr
 	}
 
 	// Store tracer in context BEFORE calling RunLLMPreHooks, so plugins and streaming goroutines
@@ -4527,6 +4478,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4600,6 +4552,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
+				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4607,11 +4560,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4623,11 +4572,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if pq.isClosing() {
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4638,36 +4583,26 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	case <-pq.done:
 		bifrost.releaseChannelMessage(msg)
 		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
-		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
+		bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
+		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, bifrostErr
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
 			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
 		select {
@@ -4676,15 +4611,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		case <-pq.done:
 			bifrost.releaseChannelMessage(msg)
 			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
-			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
+			bifrostErr := newBifrostCtxDoneError(ctx, "while waiting for queue space")
+			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+			return nil, bifrostErr
 		}
 	}
 
@@ -4980,9 +4913,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							Error:   err,
 						},
 						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: model,
-							RequestType:    req.RequestType,
+							Provider:               provider.GetProviderKey(),
+							RequestType:            req.RequestType,
+							OriginalModelRequested: model,
+							ResolvedModelUsed:      model,
 						},
 					}
 					continue
@@ -5009,9 +4943,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 								Error:   err,
 							},
 							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:       provider.GetProviderKey(),
-								ModelRequested: model,
-								RequestType:    req.RequestType,
+								Provider:               provider.GetProviderKey(),
+								RequestType:            req.RequestType,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
 							},
 						}
 						continue
@@ -5036,9 +4971,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 								Error:   err,
 							},
 							ExtraFields: schemas.BifrostErrorExtraFields{
-								Provider:       provider.GetProviderKey(),
-								ModelRequested: model,
-								RequestType:    req.RequestType,
+								Provider:               provider.GetProviderKey(),
+								RequestType:            req.RequestType,
+								OriginalModelRequested: model,
+								ResolvedModelUsed:      model,
 							},
 						}
 						continue
@@ -5053,18 +4989,38 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 			}
 		}
+
+		originalModelRequested := model
+		resolvedModel := key.Aliases.Resolve(model)
+
+		// Note: This mutates only the worker's local copy (ChannelMessage.BifrostRequest).
+		// Key selection already used the original alias. We also record both original and
+		// resolved values in ExtraFields.
+		req.SetModel(resolvedModel)
+
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
 		var pipeline *PluginPipeline
 		if IsStreamRequestType(req.RequestType) {
 			pipeline = bifrost.getPluginPipeline()
 			postHookRunner = func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
+				// can read requestType/provider/model from the chunk or error.
+				if result != nil {
+					result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+				}
+				if err != nil {
+					err.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 				if IsFinalChunk(ctx) {
 					drainAndAttachPluginLogs(ctx)
 				}
 				if bifrostErr != nil {
+					bifrostErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 					return nil, bifrostErr
+				} else if resp != nil {
+					resp.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 				}
 				return resp, nil
 			}
@@ -5097,14 +5053,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		if bifrostError != nil {
-			bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       provider.GetProviderKey(),
-				ModelRequested: model,
-				RequestType:    req.RequestType,
-				RawRequest:     bifrostError.ExtraFields.RawRequest,
-				RawResponse:    bifrostError.ExtraFields.RawResponse,
-				KeyStatuses:    bifrostError.ExtraFields.KeyStatuses,
-			}
+			bifrostError.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
 
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -5118,6 +5067,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
 			}
 		} else {
+			if result != nil {
+				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
+			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
 				select {
@@ -5402,9 +5354,10 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 				Message: fmt.Sprintf("unsupported request type: %s", req.RequestType),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider.GetProviderKey(),
-				ModelRequested: model,
+				RequestType:            req.RequestType,
+				Provider:               provider.GetProviderKey(),
+				OriginalModelRequested: model,
+				ResolvedModelUsed:      model,
 			},
 		}
 	}
@@ -5438,9 +5391,10 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 				Message: fmt.Sprintf("unsupported request type: %s", req.RequestType),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider.GetProviderKey(),
-				ModelRequested: model,
+				RequestType:            req.RequestType,
+				Provider:               provider.GetProviderKey(),
+				OriginalModelRequested: model,
+				ResolvedModelUsed:      model,
 			},
 		}
 	}
@@ -6277,62 +6231,53 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
-		for _, k := range keys {
-			// Skip disabled keys
-			if k.Enabled != nil && !*k.Enabled {
-				continue
-			}
-			if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
-				supportedKeys = append(supportedKeys, k)
-			}
-		}
-	} else {
-		// When NOT skipping model check: do full model/deployment filtering
 		for _, key := range keys {
 			// Skip disabled keys
 			if key.Enabled != nil && !*key.Enabled {
 				continue
 			}
+			isKeyValid := validateKey(providerKey, &key)
+			if !isKeyValid {
+				bifrost.logger.Warn("key %s is not valid for provider: %s", key.ID, providerKey)
+				continue
+			}
+			if strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+				supportedKeys = append(supportedKeys, key)
+			}
+		}
+	} else {
+		// When NOT skipping model check: do full model filtering
+		for _, key := range keys {
+			// Skip disabled keys
+			if key.Enabled != nil && !*key.Enabled {
+				continue
+			}
+			isKeyValid := validateKey(providerKey, &key)
+			if !isKeyValid {
+				bifrost.logger.Warn("key %s is not valid for provider: %s", key.ID, providerKey)
+				continue
+			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
 			// ["*"] = allow all models; [] = deny all; specific list = allow only listed
+			// NOTE: Model filtering uses the original requested model (which may be an alias).
+			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.
+			// The provider-specific identifier is resolved later in requestWorker via key.Aliases.Resolve(model).
 			modelSupported := hasValue && key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
-			// Additional deployment checks for Azure, Bedrock and Vertex
-			deploymentSupported := true
-			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {
-				// For Azure, check if deployment exists for this model
-				if len(key.AzureKeyConfig.Deployments) > 0 {
-					_, deploymentSupported = key.AzureKeyConfig.Deployments[model]
-				}
-			} else if baseProviderType == schemas.Bedrock && key.BedrockKeyConfig != nil {
-				// For Bedrock, check if deployment exists for this model
-				if len(key.BedrockKeyConfig.Deployments) > 0 {
-					_, deploymentSupported = key.BedrockKeyConfig.Deployments[model]
-				}
-			} else if baseProviderType == schemas.Vertex && key.VertexKeyConfig != nil {
-				// For Vertex, check if deployment exists for this model
-				if len(key.VertexKeyConfig.Deployments) > 0 {
-					_, deploymentSupported = key.VertexKeyConfig.Deployments[model]
-				}
-			} else if baseProviderType == schemas.Replicate && key.ReplicateKeyConfig != nil {
-				// For Replicate, check if deployment exists for this model
-				if len(key.ReplicateKeyConfig.Deployments) > 0 {
-					_, deploymentSupported = key.ReplicateKeyConfig.Deployments[model]
-				}
-			} else if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
+			if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
 				// For VLLM, check if model name matches the key's configured model
 				if key.VLLMKeyConfig.ModelName != "" {
-					deploymentSupported = (key.VLLMKeyConfig.ModelName == model)
+					modelSupported = modelSupported && (key.VLLMKeyConfig.ModelName == model)
 				}
 			}
 
-			if modelSupported && deploymentSupported {
+			if modelSupported {
 				supportedKeys = append(supportedKeys, key)
 			}
 		}
 	}
 	if len(supportedKeys) == 0 {
 		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex || baseProviderType == schemas.Replicate || baseProviderType == schemas.VLLM {
-			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
+			return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 	}

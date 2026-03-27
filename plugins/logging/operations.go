@@ -404,10 +404,13 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	tempEntry := &logstore.Log{}
 	updates["latency"] = float64(streamResponse.Data.Latency)
 
-	// Update model if provided
-	if streamResponse.Data.Model != "" {
-		updates["model"] = streamResponse.Data.Model
+	// Update model and alias from resolved/requested model pair.
+	tempEntry2 := &logstore.Log{}
+	applyModelAlias(tempEntry2, streamResponse.RequestedModel, streamResponse.ResolvedModel)
+	if tempEntry2.Model != "" {
+		updates["model"] = tempEntry2.Model
 	}
+	updates["alias"] = tempEntry2.Alias
 
 	needsSerialization := false
 
@@ -544,10 +547,8 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	latF := float64(streamResponse.Data.Latency)
 	entry.Latency = &latF
 
-	// Update model if provided
-	if streamResponse.Data.Model != "" {
-		entry.Model = streamResponse.Data.Model
-	}
+	// Update model and alias from resolved/requested model pair.
+	applyModelAlias(entry, streamResponse.RequestedModel, streamResponse.ResolvedModel)
 
 	// Token usage
 	if streamResponse.Data.TokenUsage != nil {
@@ -802,6 +803,16 @@ func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	return models
 }
 
+// GetAvailableAliases returns all unique alias values from logs.
+func (p *LoggerPlugin) GetAvailableAliases(ctx context.Context) []string {
+	aliases, err := p.store.GetDistinctAliases(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available aliases: %v", err)
+		return []string{}
+	}
+	return aliases
+}
+
 func (p *LoggerPlugin) GetAvailableSelectedKeys(ctx context.Context) []KeyPair {
 	results, err := p.store.GetDistinctKeyPairs(ctx, "selected_key_id", "selected_key_name")
 	if err != nil {
@@ -978,11 +989,17 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	// Build a minimal BifrostResponse matching the request type so that
 	// extractCostInput routes usage into the correct field for each compute function.
+	originalModelRequested := logEntry.Model
+	if logEntry.Alias != nil && *logEntry.Alias != "" {
+		originalModelRequested = *logEntry.Alias
+	}
+
 	extraFields := schemas.BifrostResponseExtraFields{
-		RequestType:    requestType,
-		Provider:       schemas.ModelProvider(logEntry.Provider),
-		ModelRequested: logEntry.Model,
-		CacheDebug:     cacheDebug,
+		RequestType:            requestType,
+		Provider:               schemas.ModelProvider(logEntry.Provider),
+		OriginalModelRequested: originalModelRequested,
+		ResolvedModelUsed:      logEntry.Model,
+		CacheDebug:             cacheDebug,
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)

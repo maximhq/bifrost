@@ -50,6 +50,7 @@ type LogStore interface {
 
 	// Distinct value methods for filter data
 	GetDistinctModels(ctx context.Context) ([]string, error)
+	GetDistinctAliases(ctx context.Context) ([]string, error)
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error)

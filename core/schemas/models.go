@@ -138,7 +138,7 @@ type Model struct {
 	ID                  string             `json:"id"`
 	CanonicalSlug       *string            `json:"canonical_slug,omitempty"`
 	Name                *string            `json:"name,omitempty"`
-	Deployment          *string            `json:"deployment,omitempty"` // Name of the actual deployment
+	Alias               *string            `json:"alias,omitempty"` // Provider API identifier this model alias maps to (e.g. Azure deployment name, Bedrock ARN)
 	Created             *int64             `json:"created,omitempty"`
 	ContextLength       *int               `json:"context_length,omitempty"`
 	MaxInputTokens      *int               `json:"max_input_tokens,omitempty"`

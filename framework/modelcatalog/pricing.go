@@ -87,8 +87,8 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	}
 
 	provider := string(extraFields.Provider)
-	model := extraFields.ModelRequested
-	deployment := extraFields.ModelDeployment
+	originalModelRequested := extraFields.OriginalModelRequested
+	resolvedModelUsed := extraFields.ResolvedModelUsed
 	requestType := extraFields.RequestType
 
 	// Extract usage data from the response
@@ -108,7 +108,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	requestType = normalizeStreamRequestType(requestType)
 
 	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, model, deployment, requestType, scopes)
+	pricing := mc.resolvePricing(provider, originalModelRequested, resolvedModelUsed, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -759,37 +759,38 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // ---------------------------------------------------------------------------
 
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
-func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
-	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
+func (mc *ModelCatalog) resolvePricing(provider, originalModelRequested, resolvedModelUsed string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
+	if resolvedModelUsed == "" {
+		resolvedModelUsed = originalModelRequested
+	}
+	mc.logger.Debug("looking up pricing for resolved model %s and provider %s of request type %s", resolvedModelUsed, provider, normalizeRequestType(requestType))
 
 	if scopes.Provider == "" {
 		scopes.Provider = provider
 	}
 
-	base, exists := mc.getBasePricing(model, provider, requestType)
+	base, exists := mc.getBasePricing(resolvedModelUsed, provider, requestType)
 	if exists && base != nil {
-		result, _ := mc.applyPricingOverrides(model, requestType, *base, scopes)
+		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
 		return &result
 	}
 
-	if deployment != "" {
-		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		base, exists = mc.getBasePricing(deployment, provider, requestType)
-		if exists && base != nil {
-			// Apply overrides using the requested model name, not the deployment name
-			result, _ := mc.applyPricingOverrides(model, requestType, *base, scopes)
-			return &result
-		}
+	mc.logger.Debug("pricing not found for resolved model %s, trying alias %s", resolvedModelUsed, originalModelRequested)
+	base, exists = mc.getBasePricing(originalModelRequested, provider, requestType)
+	if exists && base != nil {
+		// Apply overrides using the resolved model name, not the alias
+		result, _ := mc.applyPricingOverrides(resolvedModelUsed, requestType, *base, scopes)
+		return &result
 	}
 
 	// No base catalog entry found; still try overrides in case the user defined
 	// override-only pricing for a model not in the built-in catalog.
-	mc.logger.Debug("pricing not found for model %s and provider %s, trying override-only pricing", model, provider)
-	result, applied := mc.applyPricingOverrides(model, requestType, configstoreTables.TableModelPricing{}, scopes)
+	mc.logger.Debug("pricing not found for resolved model %s and provider %s, trying override-only pricing", resolvedModelUsed, provider)
+	result, applied := mc.applyPricingOverrides(resolvedModelUsed, requestType, configstoreTables.TableModelPricing{}, scopes)
 	if applied {
 		return &result
 	}
-	mc.logger.Debug("no pricing found for model %s and provider %s, skipping cost calculation", model, provider)
+	mc.logger.Debug("no pricing found for resolved model %s and provider %s, skipping cost calculation", resolvedModelUsed, provider)
 	return nil
 }
 

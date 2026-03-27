@@ -378,7 +378,7 @@ func parseUpstreamWSEvent(data []byte, provider schemas.ModelProvider, model str
 	}
 	streamResp.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 	streamResp.ExtraFields.Provider = provider
-	streamResp.ExtraFields.ModelRequested = model
+	streamResp.ExtraFields.OriginalModelRequested = model
 	return &streamResp
 }
 

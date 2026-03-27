@@ -12,7 +12,7 @@ func TestParseOpenAIError_FallbackMessageWhenProviderBodyIsNonOpenAIShape(t *tes
 	resp.SetStatusCode(fasthttp.StatusUnprocessableEntity)
 	resp.SetBodyString(`{"detail":[{"loc":["body","messages",0,"role"],"msg":"value is not a valid enumeration member"}]}`)
 
-	errResp := ParseOpenAIError(&resp, schemas.ResponsesStreamRequest, schemas.Cerebras, "llama3.1-8b")
+	errResp := ParseOpenAIError(&resp)
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}
@@ -29,7 +29,7 @@ func TestParseOpenAIError_PreservesProviderMessageWhenPresent(t *testing.T) {
 	resp.SetStatusCode(fasthttp.StatusUnprocessableEntity)
 	resp.SetBodyString(`{"error":{"message":"unsupported role: developer","type":"invalid_request_error","param":"messages.0.role","code":"invalid_value"}}`)
 
-	errResp := ParseOpenAIError(&resp, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	errResp := ParseOpenAIError(&resp)
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}
@@ -43,7 +43,7 @@ func TestParseOpenAIError_FallbackMessageWhenBodyIsEmpty(t *testing.T) {
 	resp.SetStatusCode(fasthttp.StatusBadRequest)
 	resp.SetBody(nil)
 
-	errResp := ParseOpenAIError(&resp, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	errResp := ParseOpenAIError(&resp)
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}
@@ -59,7 +59,7 @@ func TestParseOpenAIError_WhitespaceProviderMessageFallsBack(t *testing.T) {
 	resp.SetStatusCode(fasthttp.StatusBadRequest)
 	resp.SetBodyString(`{"error":{"message":"   ","type":"invalid_request_error"}}`)
 
-	errResp := ParseOpenAIError(&resp, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	errResp := ParseOpenAIError(&resp)
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}
@@ -73,7 +73,7 @@ func TestParseOpenAIError_DefaultStatusCodeFallsBackWithStatusNumber(t *testing.
 	// fasthttp defaults zero-value response status code to 200.
 	resp.SetBodyString(`{"error":{"message":""}}`)
 
-	errResp := ParseOpenAIError(&resp, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o")
+	errResp := ParseOpenAIError(&resp)
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}

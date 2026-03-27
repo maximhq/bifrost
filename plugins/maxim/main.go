@@ -117,10 +117,11 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 		streamType = streaming.StreamTypeResponses
 	}
 	return &streaming.ProcessedStreamResponse{
-		RequestID:  accResult.RequestID,
-		StreamType: streamType,
-		Model:      accResult.Model,
-		Provider:   accResult.Provider,
+		RequestID:      accResult.RequestID,
+		StreamType:     streamType,
+		RequestedModel: accResult.RequestedModel,
+		ResolvedModel:  accResult.ResolvedModel,
+		Provider:       accResult.Provider,
 		Data: &streaming.AccumulatedData{
 			Status:              accResult.Status,
 			Latency:             accResult.Latency,
@@ -510,7 +511,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	go func() {
-		requestType, _, model := bifrost.GetResponseFields(result, bifrostErr)
+		requestType, _, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 		var streamResponse *streaming.ProcessedStreamResponse
 		if bifrost.IsStreamRequestType(requestType) {
@@ -610,8 +611,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 		}
-		logger.AddTagToGeneration(generationID, "model", string(model))
-		logger.AddTagToTrace(traceID, "model", string(model))
+		logger.AddTagToGeneration(generationID, "model", string(resolvedModel))
+		logger.AddTagToTrace(traceID, "model", string(resolvedModel))
+		if originalModel != "" && originalModel != resolvedModel {
+			logger.AddTagToGeneration(generationID, "alias", originalModel)
+			logger.AddTagToTrace(traceID, "alias", originalModel)
+		}
 		// Flush only the effective logger that was used for this request
 		logger.Flush()
 	}()

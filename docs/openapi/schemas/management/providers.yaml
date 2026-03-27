@@ -71,10 +71,6 @@ AzureKeyConfig:
   properties:
     endpoint:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
     api_version:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     client_id:
@@ -101,10 +97,6 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
 
 BedrockKeyConfig:
   type: object
@@ -120,10 +112,6 @@ BedrockKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     arn:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
     batch_s3_config:
       type: object
       properties:
@@ -159,6 +147,14 @@ OllamaKeyConfig:
   required:
     - url
 
+ReplicateKeyConfig:
+  type: object
+  description: Replicate-specific key configuration
+  properties:
+    use_deployments_endpoint:
+      type: boolean
+      description: Whether to use the deployments endpoint instead of the models endpoint
+
 SglKeyConfig:
   type: object
   description: SGLang-specific key configuration
@@ -167,15 +163,6 @@ SglKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
   required:
     - url
-
-ReplicateKeyConfig:
-  type: object
-  description: Replicate-specific key configuration
-  properties:
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
 
 VLLMKeyConfig:
   type: object
@@ -214,20 +201,28 @@ Key:
     weight:
       type: number
       description: Weight for load balancing
+    aliases:
+      type: object
+      propertyNames:
+        minLength: 1
+      additionalProperties:
+        type: string
+        minLength: 1
+      description: Model alias mappings — maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)
     azure_key_config:
       $ref: '#/AzureKeyConfig'
     vertex_key_config:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
-    replicate_key_config:
-      $ref: '#/ReplicateKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:
       $ref: '#/OllamaKeyConfig'
     sgl_key_config:
       $ref: '#/SglKeyConfig'
+    replicate_key_config:
+      $ref: '#/ReplicateKeyConfig'
     enabled:
       type: boolean
       description: Whether the key is active (defaults to true)

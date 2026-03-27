@@ -41,9 +41,9 @@ func makeChatResponse(provider schemas.ModelProvider, model string, usage *schem
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -55,9 +55,9 @@ func makeEmbeddingResponse(provider schemas.ModelProvider, model string, usage *
 		EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.EmbeddingRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.EmbeddingRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -69,9 +69,9 @@ func makeRerankResponse(provider schemas.ModelProvider, model string, usage *sch
 		RerankResponse: &schemas.BifrostRerankResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.RerankRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.RerankRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -83,9 +83,9 @@ func makeImageResponse(provider schemas.ModelProvider, model string, usage *sche
 		ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
 			Usage: usage,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       provider,
-				ModelRequested: model,
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               provider,
+				OriginalModelRequested: model,
 			},
 		},
 	}
@@ -847,9 +847,9 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit: true,
 					HitType:  &hitType,
@@ -883,9 +883,9 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     true,
 					HitType:      &hitType,
@@ -922,9 +922,9 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 				CacheDebug: &schemas.BifrostCacheDebug{
 					CacheHit:     false,
 					ProviderUsed: &embProvider,
@@ -1117,9 +1117,9 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		ChatResponse: &schemas.BifrostChatResponse{
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionStreamRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
 			},
 		},
 	}
@@ -1474,9 +1474,9 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 				{URL: "https://example.com/img3.png", Index: 2},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       "openai",
-				ModelRequested: "dall-e-3",
+				RequestType:            schemas.ImageGenerationRequest,
+				Provider:               "openai",
+				OriginalModelRequested: "dall-e-3",
 			},
 		},
 	}

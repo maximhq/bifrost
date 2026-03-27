@@ -9,7 +9,7 @@ import (
 )
 
 // parseRunwayError parses Runway API error responses and converts them to BifrostError.
-func parseRunwayError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseRunwayError(resp *fasthttp.Response) *schemas.BifrostError {
 	// Parse as RunwayAPIError
 	var errorResp RunwayAPIError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
@@ -32,13 +32,6 @@ func parseRunwayError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	// Remove trailing newlines
 	if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 		bifrostErr.Error.Message = strings.TrimRight(bifrostErr.Error.Message, "\n")
-	}
-
-	// Set metadata
-	if meta != nil {
-		bifrostErr.ExtraFields.Provider = meta.Provider
-		bifrostErr.ExtraFields.ModelRequested = meta.Model
-		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 
 	return bifrostErr

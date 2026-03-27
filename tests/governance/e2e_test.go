@@ -1426,7 +1426,7 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 		// Try to detect which provider was used
 		// Check if model in response contains provider name
 		if provider, ok := resp.Body["extra_fields"].(map[string]interface{})["provider"].(string); ok {
-			model, ok := resp.Body["extra_fields"].(map[string]interface{})["model_requested"].(string)
+			model, ok := resp.Body["extra_fields"].(map[string]interface{})["original_model_requested"].(string)
 			if !ok {
 				t.Logf("Request %d failed to get model requested", i+1)
 				continue

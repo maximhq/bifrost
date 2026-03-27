@@ -18,7 +18,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
-	
+
 	// Test request
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -75,9 +75,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -213,9 +213,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -309,7 +309,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)		
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 
 	request := &schemas.BifrostRequest{
@@ -375,10 +375,10 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:       schemas.OpenAI,
-					ModelRequested: "gpt-4o-mini",
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					ChunkIndex:     i,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-4o-mini",
+					RequestType:            schemas.ChatCompletionStreamRequest,
+					ChunkIndex:             i,
 				},
 			},
 		}
@@ -524,9 +524,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -547,7 +547,7 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 	defer setup.Cleanup()
 
 	// Configure plugin with custom threshold key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)	
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 	ctx.SetValue(CacheThresholdKey, 0.95) // Very high threshold
 
@@ -635,9 +635,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}

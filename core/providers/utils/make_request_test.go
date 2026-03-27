@@ -295,7 +295,7 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 }
 
 func TestNewBifrostTimeoutError(t *testing.T) {
-	err := NewBifrostTimeoutError("test timeout", context.DeadlineExceeded, "openai")
+	err := NewBifrostTimeoutError("test timeout", context.DeadlineExceeded)
 
 	if !err.IsBifrostError {
 		t.Fatal("expected IsBifrostError to be true")

@@ -126,11 +126,12 @@ type Key struct {
 	Models             WhiteList           `json:"models"`                         // List of models this key can access
 	BlacklistedModels  BlackList           `json:"blacklisted_models"`             // List of models this key cannot access
 	Weight             float64             `json:"weight"`                         // Weight for load balancing between multiple keys
+	Aliases            KeyAliases          `json:"aliases,omitempty"`              // Mapping of model identifiers to inference profiles
 	AzureKeyConfig     *AzureKeyConfig     `json:"azure_key_config,omitempty"`     // Azure-specific key configuration
 	VertexKeyConfig    *VertexKeyConfig    `json:"vertex_key_config,omitempty"`    // Vertex-specific key configuration
 	BedrockKeyConfig   *BedrockKeyConfig   `json:"bedrock_key_config,omitempty"`   // AWS Bedrock-specific key configuration
-	ReplicateKeyConfig *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
 	VLLMKeyConfig      *VLLMKeyConfig      `json:"vllm_key_config,omitempty"`      // vLLM-specific key configuration
+	ReplicateKeyConfig *ReplicateKeyConfig `json:"replicate_key_config,omitempty"` // Replicate-specific key configuration
 	OllamaKeyConfig    *OllamaKeyConfig    `json:"ollama_key_config,omitempty"`    // Ollama-specific key configuration
 	SGLKeyConfig       *SGLKeyConfig       `json:"sgl_key_config,omitempty"`       // SGLang-specific key configuration
 	Enabled            *bool               `json:"enabled,omitempty"`              // Whether the key is active (default:true)
@@ -138,6 +139,48 @@ type Key struct {
 	ConfigHash         string              `json:"config_hash,omitempty"`          // Hash of config.json version, used for change detection
 	Status             KeyStatusType       `json:"status,omitempty"`               // Status of key
 	Description        string              `json:"description,omitempty"`          // Description of key
+}
+
+type KeyAliases map[string]string
+
+func (ka KeyAliases) Validate() error {
+	seen := make(map[string]struct{}, len(ka))
+	for from, to := range ka {
+		if strings.TrimSpace(from) == "" {
+			return fmt.Errorf("alias source cannot be empty")
+		}
+		if strings.TrimSpace(to) == "" {
+			return fmt.Errorf("alias target for %q cannot be empty", from)
+		}
+		if strings.TrimSpace(from) != from {
+			return fmt.Errorf("alias source %q cannot have leading or trailing whitespace", from)
+		}
+		if strings.TrimSpace(to) != to {
+			return fmt.Errorf("alias target for %q cannot have leading or trailing whitespace", from)
+		}
+		normalized := strings.ToLower(from)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate alias source %q (case-insensitive)", from)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func (ka KeyAliases) Resolve(model string) string {
+	if ka == nil {
+		return model
+	}
+	if alias, ok := ka[model]; ok {
+		return alias
+	}
+	// Fall back to case-insensitive lookup for consistency with WhiteList.Contains
+	for k, v := range ka {
+		if strings.EqualFold(k, model) {
+			return v
+		}
+	}
+	return model
 }
 
 type AzureAuthType string
@@ -150,9 +193,8 @@ const (
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
-	Endpoint    EnvVar            `json:"endpoint"`              // Azure service endpoint URL
-	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
-	APIVersion  *EnvVar           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+	Endpoint   EnvVar  `json:"endpoint"`              // Azure service endpoint URL
+	APIVersion *EnvVar `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
 
 	ClientID     *EnvVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
 	ClientSecret *EnvVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
@@ -163,11 +205,10 @@ type AzureKeyConfig struct {
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexKeyConfig struct {
-	ProjectID       EnvVar            `json:"project_id"`
-	ProjectNumber   EnvVar            `json:"project_number"`
-	Region          EnvVar            `json:"region"`
-	AuthCredentials EnvVar            `json:"auth_credentials"`
-	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
+	ProjectID       EnvVar `json:"project_id"`
+	ProjectNumber   EnvVar `json:"project_number"`
+	Region          EnvVar `json:"region"`
+	AuthCredentials EnvVar `json:"auth_credentials"`
 }
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
@@ -198,16 +239,11 @@ type BedrockKeyConfig struct {
 	ExternalID      *EnvVar `json:"external_id,omitempty"`
 	RoleSessionName *EnvVar `json:"session_name,omitempty"`
 
-	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
-	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
+	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
 // To use Bedrock API Key authentication, set Value in Key struct instead.
-
-type ReplicateKeyConfig struct {
-	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
-}
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,
@@ -215,6 +251,12 @@ type ReplicateKeyConfig struct {
 type VLLMKeyConfig struct {
 	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+}
+
+// ReplicateKeyConfig represents the Replicate-specific key configuration.
+// It contains Replicate-specific settings required for authentication and service access.
+type ReplicateKeyConfig struct {
+	UseDeploymentsEndpoint bool `json:"use_deployments_endpoint"` // Whether to use the deployments endpoint instead of the models endpoint
 }
 
 // OllamaKeyConfig represents the Ollama-specific key configuration.

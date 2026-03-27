@@ -121,7 +121,7 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
-	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	_, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	// For audio, all the data comes in the final chunk
 	chunk := a.getAudioStreamChunk()
@@ -177,21 +177,23 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 			rawRequest = result.SpeechStreamResponse.ExtraFields.RawRequest
 		}
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: StreamTypeAudio,
-			Model:      model,
-			Provider:   provider,
-			Data:       data,
-			RawRequest: &rawRequest,
+			RequestID:      requestID,
+			StreamType:     StreamTypeAudio,
+			RequestedModel: requestedModel,
+			ResolvedModel:  resolvedModel,
+			Provider:       provider,
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
 	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: StreamTypeAudio,
-		Model:      model,
-		Provider:   provider,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     StreamTypeAudio,
+		RequestedModel: requestedModel,
+		ResolvedModel:  resolvedModel,
+		Provider:       provider,
+		Data:           nil,
 	}, nil
 }

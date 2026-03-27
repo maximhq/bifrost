@@ -1054,7 +1054,7 @@ Azure supports three authentication methods: **Managed Identity** (DefaultAzureC
 
 #### Managed Identity / DefaultAzureCredential
 
-Leave API key and Entra ID credentials empty. Bifrost uses `DefaultAzureCredential`, which auto-detects managed identity on Azure VMs, App Service, AKS, and similar environments. Provide only `endpoint`, `deployments`, and optionally `api_version`.
+Leave API key and Entra ID credentials empty. Bifrost uses `DefaultAzureCredential`, which auto-detects managed identity on Azure VMs, App Service, AKS, and similar environments. Provide only `endpoint` and optionally `api_version`.
 
 #### Azure Entra ID (Service Principal)
 
@@ -1070,7 +1070,7 @@ Leave API key and Entra ID credentials empty. Bifrost uses `DefaultAzureCredenti
 4. Set **Client Secret**: Your Azure Entra ID client secret
 5. Set **Tenant ID**: Your Azure Entra ID tenant ID
 6. Set **Endpoint**: Your Azure endpoint URL
-7. Configure **Deployments**: Map model names to deployment names
+7. Configure **Aliases**: Map model names to deployment names
 8. Set **API Version**: e.g., `2024-08-01-preview`
 9. Save configuration
 
@@ -1089,16 +1089,16 @@ curl --location 'http://localhost:8080/api/providers' \
             "value": "",
             "models": ["gpt-4o", "gpt-4o-mini"],
             "weight": 1.0,
+            "aliases": {
+                "gpt-4o": "gpt-4o-deployment",
+                "gpt-4o-mini": "gpt-4o-mini-deployment"
+            },
             "azure_key_config": {
                 "endpoint": "env.AZURE_ENDPOINT",
                 "client_id": "env.AZURE_CLIENT_ID",
                 "client_secret": "env.AZURE_CLIENT_SECRET",
                 "tenant_id": "env.AZURE_TENANT_ID",
                 "scopes": ["https://cognitiveservices.azure.com/.default"],
-                "deployments": {
-                    "gpt-4o": "gpt-4o-deployment",
-                    "gpt-4o-mini": "gpt-4o-mini-deployment"
-                },
                 "api_version": "2024-08-01-preview"
             }
         }
@@ -1120,16 +1120,16 @@ curl --location 'http://localhost:8080/api/providers' \
                     "value": "",
                     "models": ["gpt-4o", "gpt-4o-mini"],
                     "weight": 1.0,
+                    "aliases": {
+                        "gpt-4o": "gpt-4o-deployment",
+                        "gpt-4o-mini": "gpt-4o-mini-deployment"
+                    },
                     "azure_key_config": {
                         "endpoint": "env.AZURE_ENDPOINT",
                         "client_id": "env.AZURE_CLIENT_ID",
                         "client_secret": "env.AZURE_CLIENT_SECRET",
                         "tenant_id": "env.AZURE_TENANT_ID",
                         "scopes": ["https://cognitiveservices.azure.com/.default"],
-                        "deployments": {
-                            "gpt-4o": "gpt-4o-deployment",
-                            "gpt-4o-mini": "gpt-4o-mini-deployment"
-                        },
                         "api_version": "2024-08-01-preview"
                     }
                 }
@@ -1156,7 +1156,7 @@ For simpler use cases, provide the authentication credential directly in the `va
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Set **API Key**: Your Azure API key
 3. Set **Endpoint**: Your Azure endpoint URL
-4. Configure **Deployments**: Map model names to deployment names
+4. Configure **Aliases**: Map model names to deployment names
 5. Set **API Version**: e.g., `2024-08-01-preview`
 6. Save configuration
 
@@ -1175,12 +1175,12 @@ curl --location 'http://localhost:8080/api/providers' \
             "value": "env.AZURE_API_KEY",
             "models": ["gpt-4o", "gpt-4o-mini"],
             "weight": 1.0,
+            "aliases": {
+                "gpt-4o": "gpt-4o-deployment",
+                "gpt-4o-mini": "gpt-4o-mini-deployment"
+            },
             "azure_key_config": {
                 "endpoint": "env.AZURE_ENDPOINT",
-                "deployments": {
-                    "gpt-4o": "gpt-4o-deployment",
-                    "gpt-4o-mini": "gpt-4o-mini-deployment"
-                },
                 "api_version": "2024-08-01-preview"
             }
         }
@@ -1202,12 +1202,12 @@ curl --location 'http://localhost:8080/api/providers' \
                     "value": "env.AZURE_API_KEY",
                     "models": ["gpt-4o", "gpt-4o-mini"],
                     "weight": 1.0,
+                    "aliases": {
+                        "gpt-4o": "gpt-4o-deployment",
+                        "gpt-4o-mini": "gpt-4o-mini-deployment"
+                    },
                     "azure_key_config": {
                         "endpoint": "env.AZURE_ENDPOINT",
-                        "deployments": {
-                            "gpt-4o": "gpt-4o-deployment",
-                            "gpt-4o-mini": "gpt-4o-mini-deployment"
-                        },
                         "api_version": "2024-08-01-preview"
                     }
                 }
@@ -1240,8 +1240,8 @@ AWS Bedrock supports both explicit credentials and IAM role authentication:
 3. Set **Access Key**: AWS Access Key ID (or leave empty to use IAM in environment)
 4. Set **Secret Key**: AWS Secret Access Key (or leave empty to use IAM in environment)
 5. Set **Region**: e.g., `us-east-1`
-6. Configure **Deployments**: Map model names to inference profiles
-7. Set **ARN**: Required for deployments mapping
+6. Configure **Aliases**: Map model names to inference profiles
+7. Set **ARN**: Required only when Bifrost must construct a full inference-profile ARN for an alias
 8. Save configuration
 
 </Tab>
@@ -1256,16 +1256,16 @@ curl --location 'http://localhost:8080/api/providers' \
     "keys": [
         {
             "name": "bedrock-key-1",
-            "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1"],
+            "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1", "claude-3-sonnet"],
             "weight": 1.0,
+            "aliases": {
+                "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
+            },
             "bedrock_key_config": {
                 "access_key": "env.AWS_ACCESS_KEY_ID",
                 "secret_key": "env.AWS_SECRET_ACCESS_KEY",
                 "session_token": "env.AWS_SESSION_TOKEN",
                 "region": "us-east-1",
-                "deployments": {
-                    "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
-                },
                 "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
             }
         }
@@ -1284,16 +1284,16 @@ curl --location 'http://localhost:8080/api/providers' \
             "keys": [
                 {
                     "name": "bedrock-key-1",
-                    "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1"],
+                    "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1", "claude-3-sonnet"],
                     "weight": 1.0,
+                    "aliases": {
+                        "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
+                    },
                     "bedrock_key_config": {
                         "access_key": "env.AWS_ACCESS_KEY_ID",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY",
                         "session_token": "env.AWS_SESSION_TOKEN",
                         "region": "us-east-1",
-                        "deployments": {
-                            "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
-                        },
                         "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
                     }
                 }
@@ -1310,9 +1310,9 @@ curl --location 'http://localhost:8080/api/providers' \
 **Notes:**
 - If using API Key authentication, set `value` field to the API key, else leave it empty for IAM role authentication.
 - In IAM role authentication, if both `access_key` and `secret_key` are empty, Bifrost uses IAM role authentication from the environment.
-- `arn` is required for URL formation - `deployments` mapping is ignored without it.
-- When using `arn` + `deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
-- **ARN vs deployments**: Put the ARN prefix in `arn` and the model/inference profile resource ID only in `deployments` — never the full ARN in deployments. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
+- `arn` is required when you want Bifrost to build a full inference-profile ARN from an alias target.
+- Aliases are still resolved before provider dispatch; without `arn`, the resolved alias value is sent as the Bedrock model/profile identifier directly.
+- **ARN vs aliases**: Put the ARN prefix in `arn` and the model/inference profile resource ID only in the key-level `aliases` map — never the full ARN in alias values. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
 
 ### Google Vertex
 
@@ -1343,15 +1343,16 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "vertex-key-1",
             "value": "env.VERTEX_API_KEY",
-            "models": ["gemini-pro", "gemini-pro-vision"],
+            "models": ["gemini-pro", "gemini-pro-vision", "123456789", "fine-tuned-gemini-2.5-pro"],
             "weight": 1.0,
+            "aliases": {
+                "fine-tuned-gemini-2.5-pro": "123456789"
+            },
             "vertex_key_config": {
                 "project_id": "env.VERTEX_PROJECT_ID",
+                "project_number": "env.VERTEX_PROJECT_NUMBER",
                 "region": "us-central1",
-                "auth_credentials": "env.VERTEX_CREDENTIALS",
-                "deployments": {
-                    "fine-tuned-gemini-2.5-pro": "123456789"
-                }
+                "auth_credentials": "env.VERTEX_CREDENTIALS"
             }
         }
     ]
@@ -1370,15 +1371,16 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "vertex-key-1",
                     "value": "env.VERTEX_API_KEY",
-                    "models": ["gemini-pro", "gemini-pro-vision"],
+                    "models": ["gemini-pro", "gemini-pro-vision", "123456789", "fine-tuned-gemini-2.5-pro"],
                     "weight": 1.0,
+                    "aliases": {
+                        "fine-tuned-gemini-2.5-pro": "123456789"
+                    },
                     "vertex_key_config": {
                         "project_id": "env.VERTEX_PROJECT_ID",
+                        "project_number": "env.VERTEX_PROJECT_NUMBER",
                         "region": "us-central1",
-                        "auth_credentials": "env.VERTEX_CREDENTIALS",
-                        "deployments": {
-                            "fine-tuned-gemini-2.5-pro": "123456789"
-                        }
+                        "auth_credentials": "env.VERTEX_CREDENTIALS"
                     }
                 }
             ]
@@ -1395,7 +1397,7 @@ curl --location 'http://localhost:8080/api/providers' \
 - You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
 - You must set Project Number in Key config if using fine-tuned models.
 - API Key Authentication is only supported for Gemini and fine-tuned models.
-- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-deployment-alias>` if you have set the deployments in the key config.
+- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-alias>` if you have set the aliases on the key.
 
 <Note>
 Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.

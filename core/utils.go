@@ -132,6 +132,51 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	return nil
 }
 
+// validateKey validates the given key.
+func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) bool {
+	// Valid the key for the provider
+	switch providerKey {
+	case schemas.Azure:
+		if key.AzureKeyConfig == nil {
+			return false
+		}
+		if key.AzureKeyConfig.Endpoint.GetValue() == "" {
+			return false
+		}
+	case schemas.Bedrock:
+		// Key is valid if either:
+		// 1. BedrockKeyConfig is provided
+		// 2. Value is provided and is not empty
+		if key.BedrockKeyConfig == nil {
+			if key.Value.GetValue() == "" {
+				return false
+			}
+			key.BedrockKeyConfig = &schemas.BedrockKeyConfig{}
+		}
+	case schemas.Vertex:
+		if key.VertexKeyConfig == nil {
+			return false
+		}
+	case schemas.Replicate:
+		if key.ReplicateKeyConfig == nil {
+			return false
+		}
+	case schemas.VLLM:
+		if key.VLLMKeyConfig == nil || key.VLLMKeyConfig.URL.GetValue() == "" {
+			return false
+		}
+	case schemas.Ollama:
+		if key.OllamaKeyConfig == nil || key.OllamaKeyConfig.URL.GetValue() == "" {
+			return false
+		}
+	case schemas.SGL:
+		if key.SGLKeyConfig == nil || key.SGLKeyConfig.URL.GetValue() == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // IsRateLimitErrorMessage checks if an error message indicates a rate limit issue
 func IsRateLimitErrorMessage(errorMessage string) bool {
 	if errorMessage == "" {
@@ -176,7 +221,7 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 
 // newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
 // It distinguishes DeadlineExceeded (504 RequestTimedOut) from Canceled (499 RequestCancelled).
-func newBifrostCtxDoneError(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestType schemas.RequestType, stage string) *schemas.BifrostError {
+func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.BifrostError {
 	var statusCode int
 	var errorType string
 	var message string
@@ -199,11 +244,6 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, provider schemas.ModelP
 			Type:    &errorType,
 			Message: message,
 			Error:   ctx.Err(),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    requestType,
-			Provider:       provider,
-			ModelRequested: model,
 		},
 	}
 }
@@ -333,14 +373,14 @@ func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
-// GetResponseFields extracts the request type, provider, and model from the result or error
-func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, model string) {
+// GetResponseFields extracts the request type, provider, original model, and resolved model from the result or error.
+func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, originalModel string, resolvedModel string) {
 	if result != nil {
 		extraFields := result.GetExtraFields()
-		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
+		return extraFields.RequestType, extraFields.Provider, extraFields.OriginalModelRequested, extraFields.ResolvedModelUsed
 	}
 	if err != nil {
-		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.OriginalModelRequested, err.ExtraFields.ResolvedModelUsed
 	}
 	return
 }

@@ -715,6 +715,9 @@ func processProvider(
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
+		if err := providerKeyInFile.Aliases.Validate(); err != nil {
+			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
+		}
 	}
 	// Generate hash from config.json provider config
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -798,6 +801,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					VertexKeyConfig:    dbKey.VertexKeyConfig,
 					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					Aliases:            dbKey.Aliases,
 					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
 					SGLKeyConfig:       dbKey.SGLKeyConfig,
@@ -878,6 +882,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					VertexKeyConfig:    dbKey.VertexKeyConfig,
 					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					Aliases:            dbKey.Aliases,
 					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:    dbKey.OllamaKeyConfig,
 					SGLKeyConfig:       dbKey.SGLKeyConfig,

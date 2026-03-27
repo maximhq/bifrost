@@ -3,9 +3,8 @@ package vertex
 import (
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 )
 
 // VertexRankRequest represents the Discovery Engine rank API request.
@@ -55,49 +54,6 @@ type vertexRerankOptions struct {
 	UserLabels                    map[string]string
 }
 
-// formatDeploymentName converts a deployment alias into a human-readable name.
-// It splits the alias by "-" or "_", capitalizes each word, and joins them with spaces.
-// Example: "gemini-pro" → "Gemini Pro", "claude_3_opus" → "Claude 3 Opus"
-func formatDeploymentName(alias string) string {
-	caser := cases.Title(language.English)
-
-	// Try splitting by hyphen first, then underscore
-	var parts []string
-	if strings.Contains(alias, "-") {
-		parts = strings.Split(alias, "-")
-	} else if strings.Contains(alias, "_") {
-		parts = strings.Split(alias, "_")
-	} else {
-		// No delimiter found, just capitalize the whole string
-		return caser.String(strings.ToLower(alias))
-	}
-
-	// Capitalize each part
-	for i, part := range parts {
-		if part != "" {
-			parts[i] = caser.String(strings.ToLower(part))
-		}
-	}
-
-	return strings.Join(parts, " ")
-}
-
-// findDeploymentMatch finds a matching deployment value in the deployments map.
-// Returns the deployment value and alias if found, empty strings otherwise.
-func findDeploymentMatch(deployments map[string]string, customModelID string) (deploymentValue, alias string) {
-	// Check exact match by deployment value
-	for aliasKey, depValue := range deployments {
-		if depValue == customModelID {
-			return depValue, aliasKey
-		}
-	}
-	// Check exact match by alias/key
-	if deployment, ok := deployments[customModelID]; ok {
-		return deployment, customModelID
-	}
-	return "", ""
-}
-
 // ToBifrostListModelsResponse converts a Vertex AI list models response to Bifrost's format.
 // It processes both custom models (from the API response) and non-custom models (from deployments and allowedModels).
 //
@@ -113,7 +69,7 @@ func findDeploymentMatch(deployments map[string]string, customModelID string) (d
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -122,14 +78,22 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       schemas.Vertex,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	// Track which model IDs have been added to avoid duplicates
-	addedModelIDs := make(map[string]bool)
+	included := make(map[string]bool)
 
-	// First pass: Process all models from the Vertex AI API response (custom models)
+	// Process all models from the Vertex AI API response (custom deployed models).
+	// The model ID is extracted from the endpoint URL last segment.
 	for _, model := range response.Models {
 		if len(model.DeployedModels) == 0 {
 			continue
@@ -145,111 +109,28 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 				continue
 			}
 
-			// Filter if model is not present in both lists (when both are non-empty)
-			var deploymentValue, deploymentAlias string
-			restrictAllowed := !unfiltered && allowedModels.IsRestricted()
-			shouldFilter := false
-			if restrictAllowed && len(deployments) > 0 {
-				// Both lists are present: model must be in allowedModels AND deployments
-				// AND the deployment alias must also be in allowedModels
-				deploymentValue, deploymentAlias = findDeploymentMatch(deployments, customModelID)
-				inDeployments := deploymentAlias != ""
-
-				// Check if deployment alias is also in allowedModels (direct string match)
-				deploymentAliasInAllowedModels := false
-				if deploymentAlias != "" {
-					deploymentAliasInAllowedModels = allowedModels.Contains(deploymentAlias)
+			for _, result := range pipeline.FilterModel(customModelID) {
+				resolvedKey := strings.ToLower(result.ResolvedID)
+				if included[resolvedKey] {
+					continue
 				}
-
-				// Filter if: model not in deployments OR deployment alias not in allowedModels
-				shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-			} else if restrictAllowed {
-				// Only allowedModels is present: filter if model is not in allowedModels
-				shouldFilter = !allowedModels.Contains(customModelID)
-			} else if !unfiltered && len(deployments) > 0 {
-				// Only deployments is present: filter if model is not in deployments
-				deploymentValue, deploymentAlias = findDeploymentMatch(deployments, customModelID)
-				shouldFilter = deploymentValue == ""
+				modelEntry := schemas.Model{
+					ID:          string(schemas.Vertex) + "/" + result.ResolvedID,
+					Name:        schemas.Ptr(model.DisplayName),
+					Description: schemas.Ptr(model.Description),
+					Created:     schemas.Ptr(model.VersionCreateTime.Unix()),
+				}
+				if result.AliasValue != "" {
+					modelEntry.Alias = schemas.Ptr(result.AliasValue)
+				}
+				bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+				included[resolvedKey] = true
 			}
-			// If both are empty (or allowedModels is unrestricted and no deployments), shouldFilter remains false
-
-			if shouldFilter {
-				continue
-			}
-			if !unfiltered && blacklistedModels.IsBlocked(customModelID) {
-				continue
-			}
-
-			modelID := customModelID
-
-			modelEntry := schemas.Model{
-				ID:          string(schemas.Vertex) + "/" + modelID,
-				Name:        schemas.Ptr(model.DisplayName),
-				Description: schemas.Ptr(model.Description),
-				Created:     schemas.Ptr(model.VersionCreateTime.Unix()),
-			}
-			// Set deployment info if matched via deployments
-			if deploymentValue != "" && deploymentAlias != "" {
-				modelEntry.ID = string(schemas.Vertex) + "/" + deploymentAlias
-				modelEntry.Deployment = schemas.Ptr(deploymentValue)
-			}
-			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
-			addedModelIDs[modelEntry.ID] = true
 		}
 	}
 
-	restrictAllowed := !unfiltered && allowedModels.IsRestricted()
-
-	// Second pass: Backfill deployments that were not matched from the API response
-	if !unfiltered && len(deployments) > 0 {
-		for alias, deploymentValue := range deployments {
-			// Check if model already exists in the list
-			modelID := string(schemas.Vertex) + "/" + alias
-			if addedModelIDs[modelID] {
-				continue
-			}
-			// If allowedModels is restricted, only include if alias is in the list
-			if restrictAllowed && !allowedModels.Contains(alias) {
-				continue
-			}
-			if blacklistedModels.IsBlocked(alias) {
-				continue
-			}
-
-			modelName := formatDeploymentName(alias)
-			modelEntry := schemas.Model{
-				ID:         modelID,
-				Name:       schemas.Ptr(modelName),
-				Deployment: schemas.Ptr(deploymentValue),
-			}
-
-			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
-			addedModelIDs[modelID] = true
-		}
-	}
-
-	// Third pass: Backfill allowed models that were not in the response or deployments
-	if restrictAllowed {
-		for _, allowedModel := range allowedModels {
-			// Check if model already exists in the list
-			modelID := string(schemas.Vertex) + "/" + allowedModel
-			if addedModelIDs[modelID] {
-				continue
-			}
-			if blacklistedModels.IsBlocked(allowedModel) {
-				continue
-			}
-
-			modelName := formatDeploymentName(allowedModel)
-			modelEntry := schemas.Model{
-				ID:   modelID,
-				Name: schemas.Ptr(modelName),
-			}
-
-			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
-			addedModelIDs[modelID] = true
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	bifrostResponse.NextPageToken = response.NextPageToken
 
@@ -258,7 +139,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 // ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
 // This is for foundation models from the Model Garden (publishers.models.list endpoint).
-func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -267,12 +148,19 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 		Data: make([]schemas.Model, 0, len(response.PublisherModels)),
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       schemas.Vertex,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	// Track which model IDs have been added to avoid duplicates
-	addedModelIDs := make(map[string]bool)
+	included := make(map[string]bool)
 
 	for _, model := range response.PublisherModels {
 		// Extract model ID from name (format: "publishers/google/models/gemini-1.5-pro")
@@ -281,34 +169,26 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 			continue
 		}
 
-		// Filter based on allowedModels if specified
-		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(modelID) {
-			continue
+		for _, result := range pipeline.FilterModel(modelID) {
+			// Extract display name from supported actions if available
+			displayName := result.ResolvedID
+			if model.SupportedActions != nil && model.SupportedActions.Deploy != nil && model.SupportedActions.Deploy.ModelDisplayName != "" {
+				displayName = model.SupportedActions.Deploy.ModelDisplayName
+			}
+			modelEntry := schemas.Model{
+				ID:   string(schemas.Vertex) + "/" + result.ResolvedID,
+				Name: schemas.Ptr(displayName),
+			}
+			if result.AliasValue != "" {
+				modelEntry.Alias = schemas.Ptr(result.AliasValue)
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
-		if !unfiltered && blacklistedModels.IsBlocked(modelID) {
-			continue
-		}
-
-		// Skip if already added (shouldn't happen, but safety check)
-		fullModelID := string(schemas.Vertex) + "/" + modelID
-		if addedModelIDs[fullModelID] {
-			continue
-		}
-
-		// Extract display name from supported actions if available
-		displayName := modelID
-		if model.SupportedActions != nil && model.SupportedActions.Deploy != nil && model.SupportedActions.Deploy.ModelDisplayName != "" {
-			displayName = model.SupportedActions.Deploy.ModelDisplayName
-		}
-
-		modelEntry := schemas.Model{
-			ID:   fullModelID,
-			Name: schemas.Ptr(displayName),
-		}
-
-		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
-		addedModelIDs[fullModelID] = true
 	}
+
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	bifrostResponse.NextPageToken = response.NextPageToken
 

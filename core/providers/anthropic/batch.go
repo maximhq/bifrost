@@ -3,9 +3,7 @@ package anthropic
 import (
 	"time"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // Anthropic Batch API Types
@@ -129,7 +127,7 @@ func ToBifrostObjectType(anthropicType string) string {
 }
 
 // ToBifrostBatchCreateResponse converts Anthropic batch response to Bifrost batch create response.
-func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
+func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
 	expiresAt := parseAnthropicTimestamp(r.ExpiresAt)
 	resp := &schemas.BifrostBatchCreateResponse{
 		ID:               r.ID,
@@ -140,9 +138,7 @@ func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schem
 		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
 		ExpiresAt:        &expiresAt,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchCreateRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -170,7 +166,7 @@ func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schem
 }
 
 // ToBifrostBatchRetrieveResponse converts Anthropic batch response to Bifrost batch retrieve response.
-func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
+func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
 	resp := &schemas.BifrostBatchRetrieveResponse{
 		ID:               r.ID,
 		Object:           ToBifrostObjectType(r.Type),
@@ -179,9 +175,7 @@ func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(providerName sch
 		ResultsURL:       r.ResultsURL,
 		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -226,26 +220,6 @@ func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(providerName sch
 	}
 
 	return resp
-}
-
-// ParseAnthropicError parses Anthropic error responses for batch operations.
-func ParseAnthropicError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
-	var errorResp AnthropicError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-	if errorResp.Error != nil {
-		if errorResp.Error.Type != "" {
-			bifrostErr.Error.Type = &errorResp.Error.Type
-		}
-		if errorResp.Error.Message != "" {
-			bifrostErr.Error.Message = errorResp.Error.Message
-		}
-	}
-	bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-		RequestType:    requestType,
-		Provider:       providerName,
-		ModelRequested: model,
-	}
-	return bifrostErr
 }
 
 // ToAnthropicBatchCreateResponse converts a Bifrost batch create response to Anthropic format.

@@ -306,9 +306,10 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 
 	// Convert ProcessedStreamResponse to StreamAccumulatorResult
 	accResult := &schemas.StreamAccumulatorResult{
-		RequestID: processedResp.RequestID,
-		Model:     processedResp.Model,
-		Provider:  processedResp.Provider,
+		RequestID:      processedResp.RequestID,
+		RequestedModel: processedResp.RequestedModel,
+		ResolvedModel:  processedResp.ResolvedModel,
+		Provider:       processedResp.Provider,
 	}
 
 	if processedResp.Data != nil {

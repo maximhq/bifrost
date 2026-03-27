@@ -14,7 +14,8 @@ type SpanHandle interface{}
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
 	RequestID             string                          // Request ID
-	Model                 string                          // Model used
+	RequestedModel        string                          // Original model requested by the caller
+	ResolvedModel         string                          // Actual model used by the provider (equals RequestedModel when no alias mapping exists)
 	Provider              ModelProvider                   // Provider used
 	Status                string                          // Status of the stream
 	Latency               int64                           // Latency in milliseconds

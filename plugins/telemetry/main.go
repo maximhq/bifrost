@@ -136,6 +136,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	defaultBifrostLabels := []string{
 		"provider",
 		"model",
+		"alias",
 		"method",
 		"virtual_key_id",
 		"virtual_key_name",
@@ -359,7 +360,17 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 //   - Request latency
 //   - Total request count
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
+
+	// Determine effective model label and alias label (mirrors applyModelAlias logic in logging)
+	model := originalModel
+	alias := ""
+	if resolvedModel != "" {
+		model = resolvedModel
+		if resolvedModel != originalModel {
+			alias = originalModel
+		}
+	}
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
 	if !ok {
@@ -393,6 +404,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	labelValues := map[string]string{
 		"provider":            string(provider),
 		"model":               model,
+		"alias":               alias,
 		"method":              string(requestType),
 		"virtual_key_id":      virtualKeyID,
 		"virtual_key_name":    virtualKeyName,

@@ -25,6 +25,7 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 
 	const availableProviders = providersData || [];
 	const availableModels = filterData?.models || [];
+	const availableAliases = filterData?.aliases || [];
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const availableRoutingRules = filterData?.routing_rules || [];
@@ -53,6 +54,7 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 		Providers: providersLoading ? [] : availableProviders.map((provider) => provider.name),
 		Type: [...RequestTypes],
 		Models: filterDataLoading ? [] : availableModels,
+		Aliases: filterDataLoading ? [] : availableAliases,
 		"Selected Keys": filterDataLoading ? [] : dedup(availableSelectedKeys),
 		"Virtual Keys": filterDataLoading ? [] : dedup(availableVirtualKeys),
 		"Routing Engines": filterDataLoading ? [] : availableRoutingEngines,
@@ -68,11 +70,13 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 		(category === "Providers" && providersLoading) ||
 		(category !== "Status" && category !== "Type" && category !== "Providers" && !category.startsWith("Metadata: ") && filterDataLoading);
 
+
 	const filterKeyMap: Record<string, keyof LogFiltersType> = {
 		Status: "status",
 		Providers: "providers",
 		Type: "objects",
 		Models: "models",
+		Aliases: "aliases",
 		"Selected Keys": "selected_key_ids",
 		"Virtual Keys": "virtual_key_ids",
 		"Routing Rules": "routing_rule_ids",
