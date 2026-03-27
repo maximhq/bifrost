@@ -11,7 +11,7 @@ import (
 )
 
 // ToOpenAIImageGenerationRequest converts a Bifrost Image Request to OpenAI format
-func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *OpenAIImageGenerationRequest {
+func ToOpenAIImageGenerationRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostImageGenerationRequest) *OpenAIImageGenerationRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
 		return nil
 	}
@@ -27,9 +27,9 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 	switch bifrostReq.Provider {
 	case schemas.XAI:
-		filterXAISpecificParameters(req)
+		filterXAISpecificParameters(ctx, req)
 	case schemas.OpenAI, schemas.Azure:
-		filterOpenAISpecificParameters(req)
+		filterOpenAISpecificParameters(ctx, req)
 	}
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
@@ -37,16 +37,37 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	return req
 }
 
-func filterXAISpecificParameters(req *OpenAIImageGenerationRequest) {
+func filterXAISpecificParameters(ctx *schemas.BifrostContext, req *OpenAIImageGenerationRequest) {
+	if req.ImageGenerationParameters.Quality != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "quality")
+	}
 	req.ImageGenerationParameters.Quality = nil
+	if req.ImageGenerationParameters.Style != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "style")
+	}
 	req.ImageGenerationParameters.Style = nil
+	if req.ImageGenerationParameters.Size != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "size")
+	}
 	req.ImageGenerationParameters.Size = nil
+	if req.ImageGenerationParameters.OutputCompression != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "output_compression")
+	}
 	req.ImageGenerationParameters.OutputCompression = nil
 }
 
-func filterOpenAISpecificParameters(req *OpenAIImageGenerationRequest) {
+func filterOpenAISpecificParameters(ctx *schemas.BifrostContext, req *OpenAIImageGenerationRequest) {
+	if req.ImageGenerationParameters.Seed != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "seed")
+	}
 	req.ImageGenerationParameters.Seed = nil
+	if req.NumInferenceSteps != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "num_inference_steps")
+	}
 	req.NumInferenceSteps = nil
+	if req.NegativePrompt != nil {
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "negative_prompt")
+	}
 	req.NegativePrompt = nil
 }
 

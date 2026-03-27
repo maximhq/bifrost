@@ -44,7 +44,7 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 }
 
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
-func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
+func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
@@ -206,6 +206,9 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
 				}
 				// Clear max_tokens since OpenAI doesn't use it
+				if req.ResponsesParameters.Reasoning.MaxTokens != nil {
+					schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "reasoning.max_tokens")
+				}
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
@@ -217,6 +220,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "reasoning.max_tokens")
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			}
 
@@ -226,6 +230,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				schemas.IsGrokReasoningModel(bifrostReq.Model) &&
 				!strings.Contains(bifrostReq.Model, "grok-3-mini") {
 				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "reasoning.effort")
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
@@ -234,6 +239,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
 			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(bifrostReq.Model) {
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "reasoning")
 				req.ResponsesParameters.Reasoning = nil
 			}
 		}
@@ -258,6 +264,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				stripTopP = false
 			}
 			if stripTopP {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "top_p")
 				req.ResponsesParameters.TopP = nil
 			}
 		}
@@ -365,4 +372,3 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	}
 	resp.Tools = filteredTools
 }
-

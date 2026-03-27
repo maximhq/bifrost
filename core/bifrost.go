@@ -609,7 +609,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.TextCompletionResponse, nil
 }
 
@@ -922,7 +922,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.EmbeddingResponse, nil
 }
 
@@ -1026,7 +1026,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.SpeechResponse, nil
 }
 
@@ -1099,7 +1099,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.TranscriptionResponse, nil
 }
 
@@ -1139,7 +1139,8 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 
 // ImageGenerationRequest sends an image generation request to the specified provider.
 func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	req *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1192,7 +1193,8 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 
 // ImageGenerationStreamRequest sends an image generation stream request to the specified provider.
 func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	req *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1405,7 +1407,8 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 
 // VideoGenerationRequest sends a video generation request to the specified provider.
 func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	req *schemas.BifrostVideoGenerationRequest,
+) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -4082,6 +4085,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 			}
 		}
+		AttachDroppedParams(ctx, primaryResult, primaryErr)
 		return primaryResult, primaryErr
 	}
 
@@ -4113,6 +4117,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+			AttachDroppedParams(ctx, result, nil)
 			return result, nil
 		}
 
@@ -4132,6 +4137,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				RawResponse:    fallbackErr.ExtraFields.RawResponse,
 				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
 			}
+			AttachDroppedParams(ctx, nil, fallbackErr)
 			return nil, fallbackErr
 		}
 	}
@@ -4148,6 +4154,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// All providers failed, return the original error
+	AttachDroppedParams(ctx, nil, primaryErr)
 	return nil, primaryErr
 }
 
@@ -4197,6 +4204,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 			}
 		}
+		AttachDroppedParams(ctx, nil, primaryErr)
 		return primaryResult, primaryErr
 	}
 
@@ -4245,6 +4253,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				RawResponse:    fallbackErr.ExtraFields.RawResponse,
 				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
 			}
+			AttachDroppedParams(ctx, nil, fallbackErr)
 			return nil, fallbackErr
 		}
 	}
@@ -4261,6 +4270,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	// All providers failed, return the original error
+	AttachDroppedParams(ctx, nil, primaryErr)
 	return nil, primaryErr
 }
 
@@ -4594,7 +4604,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Send the processed message to the output stream
 					outputStream <- streamResponse
 
-					//TODO: Release the processed response immediately after use
+					// TODO: Release the processed response immediately after use
 				}
 			}()
 

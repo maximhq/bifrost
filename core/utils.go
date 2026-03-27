@@ -525,3 +525,23 @@ func isPromptOptionalImageEditType(t *string) bool {
 		normalized,
 	)
 }
+
+// AttachDroppedParams attaches dropped params from the context to the response and/or error extra fields.
+func AttachDroppedParams(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	if ctx == nil {
+		return
+	}
+	droppedParams, ok := ctx.Value(schemas.BifrostContextKeyDroppedParams).([]string)
+	if !ok || len(droppedParams) == 0 {
+		return
+	}
+	if resp != nil {
+		extraFields := resp.GetExtraFields()
+		if extraFields != nil {
+			extraFields.DroppedParams = droppedParams
+		}
+	}
+	if err != nil {
+		err.ExtraFields.DroppedParams = droppedParams
+	}
+}

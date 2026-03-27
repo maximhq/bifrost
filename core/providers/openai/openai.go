@@ -1465,7 +1465,7 @@ func HandleOpenAIResponsesRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		},
 		providerName)
 	if bifrostErr != nil {
@@ -1611,7 +1611,7 @@ func HandleOpenAIResponsesStreaming(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToOpenAIResponsesRequest(request)
+			reqBody := ToOpenAIResponsesRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
@@ -2958,7 +2958,7 @@ func HandleOpenAIImageGenerationRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIImageGenerationRequest(request), nil
+			return ToOpenAIImageGenerationRequest(ctx, request), nil
 		},
 		providerName)
 	if bifrostErr != nil {
@@ -3098,7 +3098,7 @@ func HandleOpenAIImageGenerationStreaming(
 			if customRequestConverter != nil {
 				return customRequestConverter(request)
 			}
-			reqBody := ToOpenAIImageGenerationRequest(request)
+			reqBody := ToOpenAIImageGenerationRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 				if postRequestConverter != nil {
@@ -4102,7 +4102,7 @@ func HandleOpenAICountTokensRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIResponsesRequest(request), nil
+			return ToOpenAIResponsesRequest(ctx, request), nil
 		},
 		providerName,
 	)
