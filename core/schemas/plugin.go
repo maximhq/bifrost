@@ -313,9 +313,15 @@ type ObservabilityPlugin interface {
 	//
 	// Implementations should:
 	// - Convert the trace to their backend's format
-	// - Send the trace to the backend (can be async)
+	// - Send the trace to the backend (can be async, but see retention note below)
 	// - Handle errors gracefully (log and continue)
 	//
 	// The context passed is a fresh background context, not the request context.
+	//
+	// Retention: implementations MUST NOT retain the *Trace pointer after Inject
+	// returns. The caller releases the trace back to a sync.Pool immediately after
+	// Inject completes, so any background goroutine that still references it will
+	// race with pool reuse. If a plugin needs to forward the trace asynchronously,
+	// it must copy the data it needs before returning.
 	Inject(ctx context.Context, trace *Trace) error
 }

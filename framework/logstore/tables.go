@@ -34,6 +34,7 @@ type SearchFilters struct {
 	Aliases           []string          `json:"aliases,omitempty"`
 	Status            []string          `json:"status,omitempty"`
 	Objects           []string          `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID   string            `json:"parent_request_id,omitempty"`
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
@@ -68,6 +69,25 @@ type SearchResult struct {
 	HasLogs    bool              `json:"has_logs"`
 }
 
+type SessionDetailResult struct {
+	SessionID     string            `json:"session_id"`
+	Logs          []Log             `json:"logs"`
+	Pagination    PaginationOptions `json:"pagination"`
+	Count         int64             `json:"count"`
+	ReturnedCount int               `json:"returned_count"`
+	HasMore       bool              `json:"has_more"`
+}
+
+type SessionSummaryResult struct {
+	SessionID   string  `json:"session_id"`
+	Count       int64   `json:"count"`
+	TotalCost   float64 `json:"total_cost"`
+	TotalTokens int64   `json:"total_tokens"`
+	StartedAt   string  `json:"started_at,omitempty"`
+	LatestAt    string  `json:"latest_at,omitempty"`
+	DurationMs  int64   `json:"duration_ms"`
+}
+
 type SearchStats struct {
 	TotalRequests  int64   `json:"total_requests"`
 	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
@@ -80,7 +100,7 @@ type SearchStats struct {
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID         *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
+	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
