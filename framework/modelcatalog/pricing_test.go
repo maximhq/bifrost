@@ -1192,6 +1192,14 @@ func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
+func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
+	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+	p := mc.resolvePricing("openai", "gpt-4o", "", schemas.RealtimeRequest, PricingLookupScopes{Provider: "openai"})
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
 func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): chatPricing(0.0000001, 0.0000004),
@@ -1256,6 +1264,7 @@ func TestNormalizeStreamRequestType(t *testing.T) {
 		{schemas.TranscriptionStreamRequest, schemas.TranscriptionRequest},
 		{schemas.ImageGenerationStreamRequest, schemas.ImageGenerationRequest},
 		{schemas.ImageEditStreamRequest, schemas.ImageEditRequest},
+		{schemas.RealtimeRequest, schemas.RealtimeRequest},             // realtime is its own base type
 		{schemas.ChatCompletionRequest, schemas.ChatCompletionRequest}, // non-stream unchanged
 		{schemas.EmbeddingRequest, schemas.EmbeddingRequest},           // non-stream unchanged
 	}

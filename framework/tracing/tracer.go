@@ -3,6 +3,8 @@ package tracing
 
 import (
 	"context"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,6 +20,8 @@ type Tracer struct {
 	store          *TraceStore
 	accumulator    *streaming.Accumulator
 	pricingManager *modelcatalog.ModelCatalog
+	logger         schemas.Logger
+	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -28,7 +32,17 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		store:          store,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
+		logger:         logger,
+		obsPlugins:     atomic.Pointer[[]schemas.ObservabilityPlugin]{},
 	}
+}
+
+// SetObservabilityPlugins updates the plugins that receive completed traces.
+func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+	if t == nil {
+		return
+	}
+	t.obsPlugins.Store(&obsPlugins)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -366,6 +380,42 @@ func (t *Tracer) Stop() {
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
 	}
+}
+
+// CompleteAndFlushTrace ends a trace and forwards it to any observability
+// plugins asynchronously. Realtime transports need this explicit flush because
+// they bypass the HTTP tracing middleware that normally injects completed traces.
+func (t *Tracer) CompleteAndFlushTrace(traceID string) {
+	if strings.TrimSpace(traceID) == "" {
+		return
+	}
+	go func() {
+		completedTrace := t.EndTrace(strings.TrimSpace(traceID))
+		if completedTrace == nil {
+			return
+		}
+
+		var obsPlugins []schemas.ObservabilityPlugin
+		if loaded := t.obsPlugins.Load(); loaded != nil {
+			obsPlugins = *loaded
+		}
+		seen := make(map[string]struct{}, len(obsPlugins))
+		for _, plugin := range obsPlugins {
+			if plugin == nil {
+				continue
+			}
+			name := plugin.GetName()
+			if _, exists := seen[name]; exists {
+				continue
+			}
+			seen[name] = struct{}{}
+			if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
+				t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
+			}
+		}
+
+		t.ReleaseTrace(completedTrace)
+	}()
 }
 
 // Ensure Tracer implements schemas.Tracer at compile time

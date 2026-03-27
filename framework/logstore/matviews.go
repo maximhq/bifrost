@@ -164,7 +164,8 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 // mv_logs_hourly. Per-row filters (content search, metadata, numeric ranges)
 // require the raw logs table.
 func canUseMatView(f SearchFilters) bool {
-	return f.ContentSearch == "" &&
+	return f.ParentRequestID == "" &&
+		f.ContentSearch == "" &&
 		len(f.MetadataFilters) == 0 &&
 		len(f.RoutingEngineUsed) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&

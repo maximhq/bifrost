@@ -110,6 +110,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddParentRequestIDColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddParentRequestIDIndex(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddResponsesOutputColumn(ctx, db); err != nil {
 		return err
 	}
@@ -357,6 +360,34 @@ func migrationAddParentRequestIDColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding parent_request_id column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddParentRequestIDIndex adds an index for session-grouped log queries.
+func migrationAddParentRequestIDIndex(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_parent_request_id_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			switch tx.Dialector.Name() {
+			case "postgres":
+				return tx.Exec(
+					"CREATE INDEX IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
+				).Error
+			default:
+				return tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id)").Error
+			}
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Exec("DROP INDEX IF EXISTS idx_logs_parent_request_id").Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding parent_request_id index: %s", err.Error())
 	}
 	return nil
 }
