@@ -21,6 +21,8 @@ require (
 	github.com/maximhq/bifrost/plugins/otel v1.1.31
 	github.com/maximhq/bifrost/plugins/semanticcache v1.4.30
 	github.com/maximhq/bifrost/plugins/telemetry v1.4.32
+	github.com/pion/rtcp v1.2.16
+	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -117,6 +119,20 @@ require (
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0 // indirect
+	github.com/pion/datachannel v1.6.0 // indirect
+	github.com/pion/dtls/v3 v3.1.2 // indirect
+	github.com/pion/ice/v4 v4.2.1 // indirect
+	github.com/pion/interceptor v0.1.44 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/mdns/v2 v2.1.0 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtp v1.10.1 // indirect
+	github.com/pion/sctp v1.9.2 // indirect
+	github.com/pion/sdp/v3 v3.0.18 // indirect
+	github.com/pion/srtp/v3 v3.0.10 // indirect
+	github.com/pion/stun/v3 v3.1.1 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pion/turn/v4 v4.1.4 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
@@ -138,6 +154,7 @@ require (
 	github.com/weaviate/weaviate v1.36.5 // indirect
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.mongodb.org/mongo-driver v1.17.6 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -159,6 +176,7 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260203192932-546029d2fa20 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/grpc v1.79.3 // indirect

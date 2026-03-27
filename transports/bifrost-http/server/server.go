@@ -988,9 +988,20 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	// Initialize WebSocket pool and handler before integrations so it can be wired through
 	s.wsPool = bfws.NewPool(s.Config.WebSocketConfig.Pool)
 	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
+	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool, func(logEntry *logstore.Log) {
+		if err := s.NewLogEntryAdded(s.Ctx, logEntry); err != nil {
+			logger.Error("failed to add realtime log entry: %v", err)
+		}
+	})
+	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config, func(logEntry *logstore.Log) {
+		if err := s.NewLogEntryAdded(s.Ctx, logEntry); err != nil {
+			logger.Error("failed to add realtime log entry: %v", err)
+		}
+	})
+	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
@@ -1435,6 +1446,10 @@ func (s *BifrostHTTPServer) Start() error {
 	select {
 	case sig := <-sigChan:
 		logger.Info("received signal %v, initiating graceful shutdown...", sig)
+		if s.IntegrationHandler != nil {
+			logger.Info("closing realtime transport sessions...")
+			s.IntegrationHandler.Close()
+		}
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
