@@ -3354,3 +3354,209 @@ def run_ws_responses_test(
         }
     finally:
         conn.close()
+
+
+def get_realtime_test_model(provider: str) -> str:
+    """Get a Realtime test model for the given provider."""
+    env_var = f"{provider.upper()}_REALTIME_MODEL"
+    if provider == "openai":
+        return os.getenv(env_var, "gpt-4o-realtime-preview")
+    return os.getenv(env_var, "")
+
+
+def run_ws_realtime_test(
+    ws_url,
+    api_key,
+    timeout=30,
+    extra_headers=None,
+):
+    """Connect to a Realtime websocket endpoint and drive a text-only round trip."""
+    import time
+    import websocket as ws_client
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    header_list = [f"{k}: {v}" for k, v in headers.items()]
+    conn = ws_client.create_connection(ws_url, header=header_list, timeout=timeout)
+
+    try:
+        events = []
+        got_session_created = False
+        got_session_updated = False
+        got_text_delta = False
+        got_response_done = False
+        content = ""
+        error = None
+
+        start_time = time.monotonic()
+
+        def recv_event():
+            if time.monotonic() - start_time > timeout:
+                raise TimeoutError(
+                    f"Realtime websocket did not reach terminal state within {timeout}s"
+                )
+            raw = conn.recv()
+            data = json.loads(raw)
+            events.append(data)
+            return data
+
+        for _ in range(10):
+            data = recv_event()
+            event_type = data.get("type", "")
+            if event_type == "session.created":
+                got_session_created = True
+                break
+            if event_type == "error":
+                error = data
+                break
+
+        if got_session_created and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {
+                            "modalities": ["text"],
+                            "temperature": 0.7,
+                        },
+                    }
+                )
+            )
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+                if event_type == "session.updated":
+                    got_session_updated = True
+                    break
+                if event_type == "error":
+                    error = data
+                    break
+
+        if got_session_updated and error is None:
+            conn.send(
+                json.dumps(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Say hello in exactly two words.",
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+            conn.send(json.dumps({"type": "response.create"}))
+
+            while True:
+                data = recv_event()
+                event_type = data.get("type", "")
+
+                if event_type == "response.text.delta":
+                    delta = data.get("delta", "")
+                    if isinstance(delta, dict):
+                        content += delta.get("text", "")
+                    elif isinstance(delta, str):
+                        content += delta
+                    got_text_delta = True
+                elif event_type == "response.done":
+                    got_response_done = True
+                    break
+                elif event_type == "error":
+                    error = data
+                    break
+
+        return {
+            "events": events,
+            "event_count": len(events),
+            "got_session_created": got_session_created,
+            "got_session_updated": got_session_updated,
+            "got_text_delta": got_text_delta,
+            "got_response_done": got_response_done,
+            "content": content,
+            "error": error,
+        }
+    finally:
+        conn.close()
+
+
+def run_realtime_client_secret_request(
+    url,
+    api_key,
+    request_body,
+    extra_headers=None,
+    timeout=30,
+):
+    """POST a realtime client-secret/session request and return status + body."""
+    import requests
+
+    headers = {
+        "Content-Type": "application/json",
+        "OpenAI-Beta": "realtime=v1",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    response = requests.post(url, headers=headers, json=request_body, timeout=timeout)
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"raw_body": response.text}
+
+    return {
+        "status_code": response.status_code,
+        "body": body,
+        "headers": dict(response.headers),
+    }
+
+
+def run_openai_base_url_client_secret_request(
+    base_url,
+    api_key,
+    request_body,
+    timeout=30,
+    default_headers=None,
+):
+    """Exercise the OpenAI client constructor base_url using the SDK's public request surface."""
+    import httpx
+    from openai import OpenAI
+
+    merged_headers = {"OpenAI-Beta": "realtime=v1"}
+    if default_headers:
+        merged_headers.update(default_headers)
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        default_headers=merged_headers,
+    )
+
+    response = client.post(
+        "v1/realtime/client_secrets",
+        cast_to=httpx.Response,
+        body=request_body,
+    )
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"raw_body": response.text}
+
+    return {
+        "status_code": response.status_code,
+        "body": body,
+        "headers": dict(response.headers),
+    }
