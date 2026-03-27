@@ -2010,7 +2010,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan)
-
 	}()
 
 	return responseChan, nil
@@ -4253,8 +4252,17 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 		var payload map[string]any
 		if err := sonic.Unmarshal(jsonData, &payload); err == nil {
+			if _, ok := payload["toolConfig"]; ok {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "tool_config")
+			}
 			delete(payload, "toolConfig")
+			if _, ok := payload["generationConfig"]; ok {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "generation_config")
+			}
 			delete(payload, "generationConfig")
+			if _, ok := payload["systemInstruction"]; ok {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "system_instruction")
+			}
 			delete(payload, "systemInstruction")
 			newData, err := sonic.Marshal(payload)
 			if err != nil {

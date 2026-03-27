@@ -40,6 +40,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Anthropic doesn't allow both temperature and top_p to be specified
 		// If both are present, prefer temperature (more commonly used)
 		if bifrostReq.Params.Temperature != nil {
+			if bifrostReq.Params.TopP != nil {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyDroppedParams, "top_p")
+			}
 			anthropicReq.Temperature = bifrostReq.Params.Temperature
 		} else if bifrostReq.Params.TopP != nil {
 			anthropicReq.TopP = bifrostReq.Params.TopP
