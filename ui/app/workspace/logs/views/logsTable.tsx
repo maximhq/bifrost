@@ -6,9 +6,9 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -21,7 +21,6 @@ const COLUMN_LABELS: Record<string, string> = {
 	tokens: "Tokens",
 	cost: "Cost",
 };
-
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -38,7 +37,6 @@ interface DataTableProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
-	metadataKeys?: string[];
 }
 
 export function LogsDataTable({
@@ -56,7 +54,6 @@ export function LogsDataTable({
 	onLiveToggle,
 	fetchLogs,
 	fetchStats,
-	metadataKeys = [],
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -83,14 +80,7 @@ export function LogsDataTable({
 	const lastLeftPinId = columnPinning.left?.at(-1);
 	const firstRightPinId = columnPinning.right?.at(0);
 
-	// Build labels including dynamic metadata columns
-	const columnLabels = useMemo(() => {
-		const labels = { ...COLUMN_LABELS };
-		for (const key of metadataKeys) {
-			labels[`metadata_${key}`] = key.charAt(0).toUpperCase() + key.slice(1);
-		}
-		return labels;
-	}, [metadataKeys]);
+	const columnLabels = useMemo(() => ({ ...COLUMN_LABELS }), []);
 
 	// Handle native drag-and-drop reorder
 	const handleColumnDrop = useCallback(

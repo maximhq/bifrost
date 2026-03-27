@@ -433,6 +433,7 @@ export interface PluginLogEntry {
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
+	parent_request_id?: string;
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
@@ -489,6 +490,7 @@ export interface LogEntry {
 export interface LogFilters {
 	providers?: string[];
 	models?: string[];
+	parent_request_id?: string;
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
@@ -509,7 +511,7 @@ export interface LogFilters {
 export interface Pagination {
 	limit: number;
 	offset: number;
-	sort_by: "timestamp" | "latency" | "tokens" | "cost";
+	sort_by: string;
 	order: "asc" | "desc";
 }
 
@@ -519,6 +521,20 @@ export interface LogStats {
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+}
+
+export interface LogSessionDetailResponse {
+	session_id: string;
+	logs: LogEntry[];
+	pagination: Pagination & { total_count?: number };
+	count: number;
+	returned_count: number;
+	has_more: boolean;
+	total_cost: number;
+	total_tokens: number;
+	started_at?: string;
+	latest_at?: string;
+	duration_ms: number;
 }
 
 export interface HistogramBucket {
