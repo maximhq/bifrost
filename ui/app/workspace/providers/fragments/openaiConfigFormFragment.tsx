@@ -5,14 +5,14 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
-import { ModelProvider } from "@/lib/types/config";
-import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
+import type { ModelProvider } from "@/lib/types/config";
 import { openaiConfigFormSchema, type OpenAIConfigFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface OpenAIConfigFormFragmentProps {
 	provider: ModelProvider;
