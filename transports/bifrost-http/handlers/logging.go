@@ -275,6 +275,21 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Assemble virtual key, selected key, and routing rule objects (gorm:"-" fields not
+	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
+	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
+		redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, []string{log.SelectedKeyID})
+		log.SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
+	}
+	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
+		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
+		log.VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+	}
+	if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
+		redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, []string{*log.RoutingRuleID})
+		log.RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
+	}
+
 	SendJSON(ctx, log)
 }
 
