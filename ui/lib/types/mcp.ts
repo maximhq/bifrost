@@ -92,6 +92,22 @@ export interface UpdateMCPClientRequest {
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 }
 
+// Pagination params for MCP clients list
+export interface GetMCPClientsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
+// Paginated response for MCP clients list
+export interface GetMCPClientsResponse {
+	clients: MCPClient[];
+	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
 // Types for MCP Tool Selector component
 export interface SelectedTool {
 	mcpClientId: string;

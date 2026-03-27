@@ -48,7 +48,7 @@ type ConfigManager interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
-	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
@@ -308,10 +308,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.InitialPoolSize = payload.ClientConfig.InitialPoolSize
 	}
 
-	if payload.ClientConfig.EnableLogging != currentConfig.EnableLogging {
-		restartReasons = append(restartReasons, "Logging enabled")
+	if payload.ClientConfig.EnableLogging != nil {
+		payloadLogging := *payload.ClientConfig.EnableLogging
+		currentLogging := currentConfig.EnableLogging == nil || *currentConfig.EnableLogging
+		if payloadLogging != currentLogging {
+			restartReasons = append(restartReasons, "Logging changed")
+		}
+		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
-	updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 
 	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
 		restartReasons = append(restartReasons, "Content logging")
@@ -337,7 +341,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.EnableLiteLLMFallbacks != currentConfig.EnableLiteLLMFallbacks {
 		if payload.ClientConfig.EnableLiteLLMFallbacks {
 			// Load and register the litellmcompat plugin
-			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}); err != nil {
+			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}, nil, nil); err != nil {
 				logger.Warn(fmt.Sprintf("failed to load litellmcompat plugin: %v", err))
 			}
 		} else {
@@ -791,25 +795,68 @@ func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) b
 }
 
 // validateHeaderFilterConfig validates that no security headers are in the allowlist or denylist
-// Returns an error if any security headers are found
+// and that wildcard patterns use valid syntax (only trailing * is supported).
+// Returns an error if any security headers are found or patterns are invalid.
 func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConfig) error {
 	if config == nil {
 		return nil
 	}
 
+	// Validate pattern syntax and normalize entries (trim, lowercase, drop empties)
+	filteredAllow := config.Allowlist[:0]
+	for _, header := range config.Allowlist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		if h == "" {
+			continue
+		}
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+		filteredAllow = append(filteredAllow, h)
+	}
+	config.Allowlist = filteredAllow
+	filteredDeny := config.Denylist[:0]
+	for _, header := range config.Denylist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		if h == "" {
+			continue
+		}
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+		filteredDeny = append(filteredDeny, h)
+	}
+	config.Denylist = filteredDeny
+
 	var foundSecurityHeaders []string
 
-	// Check allowlist for security headers
+	// Check allowlist for security headers (including wildcard patterns)
 	for _, header := range config.Allowlist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			for _, secHeader := range securityHeaders {
+				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
+					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
+				}
+			}
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}
 	}
 
-	// Check denylist for security headers
+	// Check denylist for security headers (including wildcard patterns)
 	for _, header := range config.Denylist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			for _, secHeader := range securityHeaders {
+				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
+					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
+				}
+			}
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}

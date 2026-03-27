@@ -39,7 +39,7 @@ type ClientConfig struct {
 	DropExcessRequests              bool                             `json:"drop_excess_requests"`    // Drop excess requests if the provider queue is full
 	InitialPoolSize                 int                              `json:"initial_pool_size"`       // The initial pool size for the bifrost client
 	PrometheusLabels                []string                         `json:"prometheus_labels"`       // The labels to be used for prometheus metrics
-	EnableLogging                   bool                             `json:"enable_logging"`          // Enable logging of requests and responses
+	EnableLogging                   *bool                            `json:"enable_logging"`          // Enable logging of requests and responses
 	DisableContentLogging           bool                             `json:"disable_content_logging"` // Disable logging of content
 	DisableDBPingsInHealth          bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays                int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
@@ -75,7 +75,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("dropExcessRequests:false"))
 	}
 
-	if c.EnableLogging {
+	enableLogging := c.EnableLogging == nil || *c.EnableLogging
+	if enableLogging {
 		hash.Write([]byte("enableLogging:true"))
 	} else {
 		hash.Write([]byte("enableLogging:false"))
@@ -256,6 +257,7 @@ type ProviderConfig struct {
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
@@ -276,6 +278,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
+		OpenAIConfig:             p.OpenAIConfig,
 		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
@@ -293,12 +296,17 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if models == nil {
 			models = []string{} // Ensure models is never nil in JSON response
 		}
+		blacklistedModels := key.BlacklistedModels
+		if blacklistedModels == nil {
+			blacklistedModels = []string{} // Match models: empty JSON array, not null
+		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:         key.ID,
-			Name:       key.Name,
-			Models:     models,
-			Weight:     key.Weight,
-			ConfigHash: key.ConfigHash,
+			ID:                key.ID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklistedModels,
+			Weight:            key.Weight,
+			ConfigHash:        key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -445,6 +453,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash OpenAIConfig
+	if p.OpenAIConfig != nil {
+		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash PricingOverrides
 	if p.PricingOverrides != nil {
 		data, err := sonic.Marshal(p.PricingOverrides)
@@ -494,6 +511,18 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+	// Hash BlacklistedModels (key-level deny list)
+	if len(key.BlacklistedModels) > 0 {
+		sortedBlacklistedModels := make([]string, len(key.BlacklistedModels))
+		copy(sortedBlacklistedModels, key.BlacklistedModels)
+		sort.Strings(sortedBlacklistedModels)
+		data, err := sonic.Marshal(sortedBlacklistedModels)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("blacklistedModels:"))
 		hash.Write(data)
 	}
 	// Hash Weight

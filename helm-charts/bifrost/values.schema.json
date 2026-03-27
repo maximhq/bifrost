@@ -868,6 +868,17 @@
                   },
                   "config": {
                     "type": "object"
+                  },
+                  "placement": {
+                    "type": "string",
+                    "enum": ["pre_builtin", "post_builtin"],
+                    "default": "post_builtin",
+                    "description": "Plugin execution placement relative to built-in plugins"
+                  },
+                  "order": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Position within placement group. Lower = earlier execution"
                   }
                 },
                 "required": [
@@ -2484,6 +2495,26 @@
         "retry_backoff_max_ms": {
           "type": "integer",
           "minimum": 0
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections"
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections"
+        },
+        "stream_idle_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600,
+          "description": "Idle timeout per stream chunk in seconds (default: 60)"
+        },
+        "max_conns_per_host": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
         }
       }
     },

@@ -101,41 +101,30 @@ export function CodeEditor(props: CodeEditorProps) {
 	};
 
 	// Handle editor mount
-	const handleEditorDidMount = (editor: any, monaco: any) => {
+	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor, monaco: any) => {
 		if (props.autoFocus) {
 			editor.focus();
 		}
 
 		// Auto-resize logic
 		if (props.shouldAdjustInitialHeight || props.autoResize) {
-			const updateHeight = () => {
-				try {
-					let contentHeight = editor.getContentHeight();
-					if (props.minHeight && contentHeight < props.minHeight) {
-						contentHeight = props.minHeight;
-					}
-					if (props.maxHeight && contentHeight > props.maxHeight) {
-						contentHeight = props.maxHeight;
-					}
-					setEditorHeight(contentHeight + 15);
-					editor.layout();
-				} catch (error) {
-					console.warn("Error updating editor height:", error);
-				}
+			const clampHeight = (h: number) => {
+				if (props.minHeight && h < props.minHeight) h = props.minHeight;
+				if (props.maxHeight && h > props.maxHeight) h = props.maxHeight;
+				return h;
 			};
 
-			// Initial height adjustment
-			setTimeout(updateHeight, 100);
+			editor.onDidContentSizeChange((e: editor.IContentSizeChangedEvent) => {
+				if (!e.contentHeightChanged) return;
+				const height = clampHeight(e.contentHeight);
+				setEditorHeight(height);
+				editor.layout();
+			});
 
-			// Auto-resize on content change
-			if (props.autoResize) {
-				const model = editor.getModel();
-				if (model) {
-					model.onDidChangeContent(() => {
-						requestAnimationFrame(updateHeight);
-					});
-				}
-			}
+			// Initial height adjustment
+			const height = clampHeight(editor.getContentHeight());
+			setEditorHeight(height);
+			editor.layout();
 		}
 
 		// Auto-format

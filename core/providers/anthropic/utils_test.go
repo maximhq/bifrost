@@ -1,10 +1,13 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestExtractTypesFromValue(t *testing.T) {
@@ -567,4 +570,293 @@ func TestConvertChatResponseFormatToAnthropicOutputFormat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateToolsForProvider(t *testing.T) {
+	tests := []struct {
+		name      string
+		tools     []schemas.ResponsesTool
+		provider  schemas.ModelProvider
+		expectErr bool
+	}{
+		{
+			name:      "Anthropic allows web_search",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider:  schemas.Anthropic,
+			expectErr: false,
+		},
+		{
+			name:      "Anthropic allows web_fetch",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
+			provider:  schemas.Anthropic,
+			expectErr: false,
+		},
+		{
+			name:      "Vertex allows web_search",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider:  schemas.Vertex,
+			expectErr: false,
+		},
+		{
+			name:      "Vertex rejects web_fetch",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
+			provider:  schemas.Vertex,
+			expectErr: true,
+		},
+		{
+			name:      "Vertex rejects code_interpreter",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
+			provider:  schemas.Vertex,
+			expectErr: true,
+		},
+		{
+			name:      "Vertex rejects MCP",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeMCP}},
+			provider:  schemas.Vertex,
+			expectErr: true,
+		},
+		{
+			name:      "Bedrock rejects web_search",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
+			provider:  schemas.Bedrock,
+			expectErr: true,
+		},
+		{
+			name:      "Bedrock rejects web_fetch",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
+			provider:  schemas.Bedrock,
+			expectErr: true,
+		},
+		{
+			name:      "Bedrock allows computer_use",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputerUsePreview}},
+			provider:  schemas.Bedrock,
+			expectErr: false,
+		},
+		{
+			name:      "Azure allows everything",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}, {Type: schemas.ResponsesToolTypeCodeInterpreter}, {Type: schemas.ResponsesToolTypeMCP}},
+			provider:  schemas.Azure,
+			expectErr: false,
+		},
+		{
+			name:      "Unknown provider allows all",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
+			provider:  "custom_provider",
+			expectErr: false,
+		},
+		{
+			name:      "Function tools always allowed",
+			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction}},
+			provider:  schemas.Bedrock,
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateToolsForProvider(tt.tools, tt.provider)
+			if tt.expectErr && err == nil {
+				t.Errorf("expected error but got nil")
+			}
+			if !tt.expectErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		req             *AnthropicMessageRequest
+		expectHeaders   []string
+		unexpectHeaders []string
+	}{
+		{
+			name:     "Anthropic gets structured outputs header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				OutputFormat: json.RawMessage(`{"type":"json_schema"}`),
+			},
+			expectHeaders: []string{AnthropicStructuredOutputsBetaHeader},
+		},
+		{
+			name:     "Vertex skips structured outputs header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				OutputFormat: json.RawMessage(`{"type":"json_schema"}`),
+			},
+			unexpectHeaders: []string{AnthropicStructuredOutputsBetaHeader},
+		},
+		{
+			name:     "Vertex skips MCP header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				MCPServers: []AnthropicMCPServer{{URL: "http://example.com"}},
+			},
+			unexpectHeaders: []string{AnthropicMCPClientBetaHeader},
+		},
+		{
+			name:     "Anthropic gets MCP header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				MCPServers: []AnthropicMCPServer{{URL: "http://example.com"}},
+			},
+			expectHeaders: []string{AnthropicMCPClientBetaHeader},
+		},
+		{
+			name:     "Vertex gets compaction header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{{Type: ContextManagementEditTypeCompact}},
+				},
+			},
+			expectHeaders: []string{AnthropicCompactionBetaHeader},
+		},
+		{
+			name:     "Bedrock gets compaction header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				ContextManagement: &ContextManagement{
+					Edits: []ContextManagementEdit{{Type: ContextManagementEditTypeCompact}},
+				},
+			},
+			expectHeaders: []string{AnthropicCompactionBetaHeader},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
+
+			var headers []string
+			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+				headers = extraHeaders["anthropic-beta"]
+			}
+
+			for _, expected := range tt.expectHeaders {
+				found := false
+				for _, h := range headers {
+					if h == expected {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected header %q not found in %v", expected, headers)
+				}
+			}
+
+			for _, unexpected := range tt.unexpectHeaders {
+				for _, h := range headers {
+					if h == unexpected {
+						t.Errorf("unexpected header %q found in %v", unexpected, headers)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestFilterBetaHeadersForProvider(t *testing.T) {
+	allHeaders := []string{
+		AnthropicComputerUseBetaHeader20251124,
+		AnthropicStructuredOutputsBetaHeader,
+		AnthropicMCPClientBetaHeader,
+		AnthropicPromptCachingScopeBetaHeader,
+		AnthropicCompactionBetaHeader,
+		AnthropicContextManagementBetaHeader,
+		AnthropicAdvancedToolUseBetaHeader,
+		AnthropicFilesAPIBetaHeader,
+	}
+
+	t.Run("Anthropic/keeps_all_headers", func(t *testing.T) {
+		result, err := FilterBetaHeadersForProvider(allHeaders, schemas.Anthropic)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, h := range allHeaders {
+			found := false
+			for _, r := range result {
+				if r == h {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected header %q to be kept for Anthropic, got %v", h, result)
+			}
+		}
+	})
+
+	t.Run("Vertex/errors_on_unsupported_headers", func(t *testing.T) {
+		unsupported := []string{
+			AnthropicStructuredOutputsBetaHeader,
+			AnthropicMCPClientBetaHeader,
+			AnthropicPromptCachingScopeBetaHeader,
+			AnthropicAdvancedToolUseBetaHeader,
+			AnthropicFilesAPIBetaHeader,
+		}
+		for _, h := range unsupported {
+			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Vertex)
+			if err == nil {
+				t.Errorf("expected error for header %q on Vertex, got nil", h)
+			}
+		}
+	})
+
+	t.Run("Vertex/allows_supported_headers", func(t *testing.T) {
+		supported := []string{
+			AnthropicComputerUseBetaHeader20251124,
+			AnthropicCompactionBetaHeader,
+			AnthropicContextManagementBetaHeader,
+		}
+		result, err := FilterBetaHeadersForProvider(supported, schemas.Vertex)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result) != len(supported) {
+			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("Bedrock/errors_on_unsupported_headers", func(t *testing.T) {
+		unsupported := []string{
+			AnthropicMCPClientBetaHeader,
+			AnthropicPromptCachingScopeBetaHeader,
+			AnthropicAdvancedToolUseBetaHeader,
+			AnthropicFilesAPIBetaHeader,
+		}
+		for _, h := range unsupported {
+			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Bedrock)
+			if err == nil {
+				t.Errorf("expected error for header %q on Bedrock, got nil", h)
+			}
+		}
+	})
+
+	t.Run("unknown_headers_forwarded", func(t *testing.T) {
+		headers := []string{"some-future-beta-2025"}
+		result, err := FilterBetaHeadersForProvider(headers, schemas.Vertex)
+		if err != nil {
+			t.Fatalf("unexpected error for unknown headers: %v", err)
+		}
+		if len(result) != len(headers) {
+			t.Errorf("expected all unknown headers to be forwarded, got %v", result)
+		}
+	})
+
+	t.Run("unknown_provider_allows_all", func(t *testing.T) {
+		result, err := FilterBetaHeadersForProvider(allHeaders, schemas.ModelProvider("custom-provider"))
+		if err != nil {
+			t.Fatalf("unexpected error for unknown provider: %v", err)
+		}
+		if len(result) != len(allHeaders) {
+			t.Errorf("expected all headers for unknown provider, got %v", result)
+		}
+	})
 }

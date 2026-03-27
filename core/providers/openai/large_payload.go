@@ -76,7 +76,8 @@ func handleOpenAILargePayloadPassthrough(
 	// Choose client: enable response body streaming when threshold is configured
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	wait()
 	if bifrostErr != nil {
 		fasthttp.ReleaseResponse(resp)
 		return nil, bifrostErr, true

@@ -13,17 +13,18 @@ import (
 
 // TableKey represents an API key configuration in the database
 type TableKey struct {
-	ID         uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name       string         `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
-	ProviderID uint           `gorm:"index;not null" json:"provider_id"`
-	Provider   string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
-	KeyID      string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
-	Value      schemas.EnvVar `gorm:"type:text;not null" json:"value"`
-	ModelsJSON string         `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight     *float64       `json:"weight"`
-	Enabled    *bool          `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt  time.Time      `gorm:"index;not null" json:"created_at"`
-	UpdatedAt  time.Time      `gorm:"index;not null" json:"updated_at"`
+	ID                    uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name                  string         `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
+	ProviderID            uint           `gorm:"index;not null" json:"provider_id"`
+	Provider              string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
+	KeyID                 string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
+	Value                 schemas.EnvVar `gorm:"type:text;not null" json:"value"`
+	ModelsJSON            string         `gorm:"type:text" json:"-"` // JSON serialized []string
+	BlacklistedModelsJSON string         `gorm:"type:text" json:"-"` // JSON serialized []string
+	Weight                *float64       `json:"weight"`
+	Enabled               *bool          `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt             time.Time      `gorm:"index;not null" json:"created_at"`
+	UpdatedAt             time.Time      `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -73,6 +74,7 @@ type TableKey struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	Models             []string                    `gorm:"-" json:"models"`
+	BlacklistedModels  []string                    `gorm:"-" json:"blacklisted_models"`
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
 	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
@@ -97,6 +99,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.ModelsJSON = string(data)
 	} else {
 		k.ModelsJSON = "[]"
+	}
+	if k.BlacklistedModels != nil {
+		data, err := json.Marshal(k.BlacklistedModels)
+		if err != nil {
+			return err
+		}
+		k.BlacklistedModelsJSON = string(data)
+	} else {
+		k.BlacklistedModelsJSON = "[]"
 	}
 	if k.Enabled == nil {
 		enabled := true // DB default
@@ -486,6 +497,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.Models = []string{}
+	}
+	if k.BlacklistedModelsJSON != "" {
+		if err := json.Unmarshal([]byte(k.BlacklistedModelsJSON), &k.BlacklistedModels); err != nil {
+			return err
+		}
+	} else {
+		k.BlacklistedModels = []string{}
 	}
 	if k.Enabled == nil {
 		enabled := true // DB default

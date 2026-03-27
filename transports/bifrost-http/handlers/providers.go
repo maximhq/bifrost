@@ -67,7 +67,9 @@ type ProviderResponse struct {
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config"`                     // Proxy configuration
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
 	ProviderStatus           ProviderStatus                    `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                            `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
@@ -103,11 +105,19 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 
 // listProviders handles GET /api/providers - List all providers
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
-	// Fetching providers from database
-	providers, err := h.dbStore.GetProvidersConfig(ctx)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
-		return
+	// Fetching providers from database or in-memory store
+	var providers map[schemas.ModelProvider]configstore.ProviderConfig
+	if h.dbStore != nil {
+		var err error
+		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
+			return
+		}
+	} else {
+		h.inMemoryStore.Mu.RLock()
+		providers = h.inMemoryStore.Providers
+		h.inMemoryStore.Mu.RUnlock()
 	}
 	providersInClient, err := h.client.GetConfiguredProviders()
 	if err != nil {
@@ -151,14 +161,27 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	config, err := h.dbStore.GetProviderConfig(ctx, provider)
-	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+	var config *configstore.ProviderConfig
+	if h.dbStore != nil {
+		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
 			return
 		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
-		return
+	} else {
+		config, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+		if err != nil {
+			if errors.Is(err, lib.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+			return
+		}
 	}
 	redactedConfig := config.Redacted()
 
@@ -184,7 +207,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`       // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
+		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`  // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	}{}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -256,7 +281,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
+		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
+		OpenAIConfig:             payload.OpenAIConfig,
 		PricingOverrides:         payload.PricingOverrides,
 	}
 	// Validate custom provider configuration before persisting
@@ -299,6 +326,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
+			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
@@ -333,7 +361,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`           // Proxy configuration
 		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"` // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
 		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
 	}{}
 
@@ -380,7 +410,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
+		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
 		PricingOverrides:         oldConfigRaw.PricingOverrides,
+		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
 	}
@@ -457,7 +489,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
-			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
@@ -466,12 +498,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
+	config.OpenAIConfig = payload.OpenAIConfig
 	config.PricingOverrides = payload.PricingOverrides
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
 	if payload.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *payload.SendBackRawResponse
+	}
+	if payload.StoreRawRequestResponse != nil {
+		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
@@ -524,6 +560,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
+			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
@@ -733,6 +770,17 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	ctx.SetBodyString(params.Data)
 }
 
+// keyAllowsModelForList reports whether a provider key permits model for catalog listing.
+func keyAllowsModelForList(key schemas.Key, model string) bool {
+	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+		return false
+	}
+	if len(key.Models) > 0 {
+		return slices.Contains(key.Models, model)
+	}
+	return true
+}
+
 // filterModelsByKeys filters models based on key-level model restrictions
 func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
 	// Get provider config to access keys
@@ -741,42 +789,28 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
 		return models
 	}
-	// Build a set of allowed models from the specified keys
-	// Track whether we have any unrestricted keys (which grant access to all models)
-	// and whether we have any restricted keys (which limit to specific models)
-	allowedModels := make(map[string]bool)
-	hasRestrictedKey := false
-	hasUnrestrictedKey := false
+	keysByID := make(map[string]schemas.Key, len(config.Keys))
+	for i := range config.Keys {
+		k := config.Keys[i]
+		keysByID[k.ID] = k
+	}
+	matchedKeys := make([]schemas.Key, 0, len(keyIDs))
 	for _, keyID := range keyIDs {
-		for _, key := range config.Keys {
-			if key.ID == keyID {
-				if len(key.Models) > 0 {
-					// Key has model restrictions - add them to allowedModels
-					hasRestrictedKey = true
-					for _, model := range key.Models {
-						allowedModels[model] = true
-					}
-				} else {
-					// Key has no model restrictions - grants access to all models
-					hasUnrestrictedKey = true
-				}
-				break
-			}
+		if key, ok := keysByID[keyID]; ok {
+			matchedKeys = append(matchedKeys, key)
 		}
 	}
-	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
-	if hasUnrestrictedKey {
+	// Unknown key IDs (or empty keyIDs): do not filter
+	if len(matchedKeys) == 0 {
 		return models
 	}
-	// If no keys have model restrictions (e.g., unknown key IDs), return all models
-	if !hasRestrictedKey {
-		return models
-	}
-	// Filter models based on restrictions from restricted keys only
-	filtered := []string{}
+	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if allowedModels[model] {
-			filtered = append(filtered, model)
+		for _, key := range matchedKeys {
+			if keyAllowsModelForList(key, model) {
+				filtered = append(filtered, model)
+				break
+			}
 		}
 	}
 	return filtered
@@ -1073,7 +1107,9 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
+		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
+		OpenAIConfig:             config.OpenAIConfig,
 		PricingOverrides:         config.PricingOverrides,
 		ProviderStatus:           status,
 		Status:                   config.Status,

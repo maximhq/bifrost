@@ -21,6 +21,7 @@ func TestCohere(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Cohere,
@@ -57,5 +58,4 @@ func TestCohere(t *testing.T) {
 	t.Run("CohereTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

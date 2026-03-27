@@ -66,7 +66,8 @@ function getMessage(log?: LogEntry) {
 	return "";
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => [
+export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true, metadataKeys: string[] = []): ColumnDef<LogEntry>[] => {
+	const baseColumns: ColumnDef<LogEntry>[] = [
 	{
 		accessorKey: "status",
 		header: "",
@@ -202,7 +203,19 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 			);
 		},
 	},
-	{
+	];
+
+	// Generate dynamic metadata columns
+	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
+		id: `metadata_${key}`,
+		header: key.charAt(0).toUpperCase() + key.slice(1),
+		cell: ({ row }) => {
+			const value = row.original.metadata?.[key];
+			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+		},
+	}));
+
+	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
 		cell: ({ row }) => {
 			const log = row.original;
@@ -212,5 +225,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				</Button>
 			);
 		},
-	},
-];
+	};
+
+	return [...baseColumns, ...metadataColumns, actionsColumn];
+};

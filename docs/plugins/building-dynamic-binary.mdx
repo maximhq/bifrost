@@ -99,7 +99,7 @@ Use this for Alpine-based deployments or when you want minimal image size.
 
 ```dockerfile
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.23 AS ui-builder
+FROM node:25-alpine3.23 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -216,7 +216,7 @@ Use this for Debian/Ubuntu-based deployments or when deploying to glibc-based sy
 
 ```dockerfile
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-bookworm AS ui-builder
+FROM node:25-bookworm AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies

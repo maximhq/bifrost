@@ -1,5 +1,5 @@
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.23 AS ui-builder
+FROM node:25-alpine3.23 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -48,7 +48,7 @@ RUN go build \
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
 # --- Runtime Stage: Minimal runtime image ---
-FROM alpine:3.23
+FROM alpine:3.23.3
 WORKDIR /app
 
 # Install runtime dependencies for CGO-enabled binary

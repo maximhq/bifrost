@@ -1,0 +1,107 @@
+---
+title: "v1.4.17"
+description: "v1.4.17 changelog - 2026-03-26"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.17
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.17
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.17
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.17">
+## ✨ Features
+
+- **Denylist Models** — Provider keys support `blacklisted_models` field to exclude specific models from routing and filtered list-models; denylist takes precedence over the `models` allow list
+
+## 🐞 Fixed
+
+- **MCP Gateway Headers** — Fixed support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` headers to filter MCP tools/list response
+- **Bedrock Duplicate Events** — Fixed duplicate `content_block_stop` events in Bedrock streaming responses
+- **Reasoning Content Marshaling** — Fixed `reasoning_content` JSON tag in OpenAI response types
+- **OTEL Streaming Traces** — Fixed response capture in OTEL tracing for streaming calls
+- **Broken Pipe Handling** — Added broken pipe detection to connection pool error handler
+- **Cache Token Streaming** — Fixed cache token capture for streaming calls across Anthropic and Bedrock providers
+- **Vertex Embedding URL** — Fixed global region URL construction in Vertex embedding method
+- **Bedrock Reasoning Merge** — Fixed reasoning content merge logic for Bedrock provider
+- **Bedrock HTTP/2 Toggle** — Fixed enforce HTTP/2 toggle behavior for Bedrock provider
+- **Codex Store Parameter** — Fixed `store` parameter handling for Codex conversations
+- **Gemini Duplicate Text** — Skipped `OutputTextDone` events to prevent duplicate text in Gemini GenAI streaming (thanks [@ava-grace-zoe](https://github.com/ava-grace-zoe)!)
+- **Gemini Thought Signatures** — Handled missing thought signatures in Gemini provider (thanks [@mrcfps](https://github.com/mrcfps)!)
+- **Replicate Model Slugs** — Refined replicate model slug resolution in model catalog (thanks [@brianphillips](https://github.com/brianphillips)!)
+- **Logging Default** — Kept logging enabled by default for new configurations
+- **Gin Migration Deadlocks** — Moved all gin migrations to Go to avoid deadlocks
+- **WebSocket Concurrent Writes** — Fixed concurrent write safety in WebSocket Responses API sessions
+- **Persist Store Config** — Persisted store raw request/response config at provider level (thanks [@chenbo515](https://github.com/chenbo515)!)
+
+</Update>
+<Update label="Core" description="1.4.14">
+- fix: fixed duplicate content_block_stop events in Bedrock streaming responses
+- fix: fixed reasoning_content JSON tag in OpenAI response types
+- fix: fixed response capture in OTEL tracing for streaming calls
+- fix: added broken pipe detection to connection pool error handler
+- fix: fixed cache token capture for streaming calls across Anthropic and Bedrock providers
+- fix: fixed global region URL in Vertex embedding method
+- feat: added blacklisted_models on provider keys to exclude models from routing and filtered list-models
+- fix: fixed reasoning content merge logic for Bedrock provider
+- fix: kept logging enabled by default
+- fix: fixed store parameter handling for Codex conversations
+- fix: fixed enforce HTTP/2 toggle for Bedrock provider
+- fix: skipped OutputTextDone to prevent duplicate text in Gemini GenAI streaming (thanks [@ava-grace-zoe](https://github.com/ava-grace-zoe)!)
+- fix: handled missing thought signatures in Gemini provider (thanks [@mrcfps](https://github.com/mrcfps)!)
+
+</Update>
+<Update label="Framework" description="1.2.33">
+- fix: fixed response capture in OTEL tracing for streaming calls
+- fix: fixed cache token capture for streaming calls
+- feat: added blacklisted_models migration and config store support
+- fix: kept logging enabled by default
+- fix: fixed store parameter config for Codex conversations
+- fix: moved all gin migrations to Go to avoid deadlocks
+- fix: refined replicate model slug resolution in model catalog (thanks [@brianphillips](https://github.com/brianphillips)!)
+
+</Update>
+<Update label="governance" description="1.4.33">
+- feat: added blacklisted_models support for denylist filtering
+- fix: refined replicate model slug resolution (thanks [@brianphillips](https://github.com/brianphillips)!)
+
+</Update>
+<Update label="jsonparser" description="1.4.32">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>
+<Update label="litellmcompat" description="0.0.22">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>
+<Update label="logging" description="1.4.33">
+- fix: fixed cache token capture for streaming calls
+
+</Update>
+<Update label="maxim" description="1.5.32">
+- chore: upgraded maxim-go dependency to latest version
+
+</Update>
+<Update label="mocker" description="1.4.32">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>
+<Update label="otel" description="1.1.32">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>
+<Update label="semanticcache" description="1.4.31">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>
+<Update label="telemetry" description="1.4.33">
+- chore: upgraded core to v1.4.14 and framework to v1.2.33
+
+</Update>

@@ -3,10 +3,11 @@ package anthropic
 import (
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -40,6 +41,9 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 				continue
 			}
 		}
+		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, modelID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:      string(providerKey) + "/" + modelID,
 			Name:    schemas.Ptr(model.DisplayName),
@@ -48,9 +52,12 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		includedModels[modelID] = true
 	}
 
-	// Backfill allowed models that were not in the response
+	// Backfill allowed models that were not in the response (skip blacklisted; blacklist wins over allow list)
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

@@ -16,7 +16,7 @@ Bifrost follows a precise selection process for every request:
 
 1. **Context Override Check**: First checks if a key is explicitly provided in context (bypassing management)
 2. **Provider Key Lookup**: Retrieves all configured keys for the requested provider
-3. **Model Filtering**: Filters keys that support the requested model
+3. **Model Filtering**: Filters keys that support the requested model (respecting `models` allowlists and `blacklisted_models` denylists)
 4. **Deployment Validation**: For Azure/Bedrock, validates deployment mappings
 5. **Weighted Selection**: Uses weighted random selection among eligible keys
 
@@ -161,8 +161,9 @@ Random selection ensures statistical distribution over time
 Keys can be restricted to specific models for access control and cost management:
 
 **Model Filtering Logic:**
-- **Empty `models` array**: Key supports ALL models for that provider
+- **Empty `models` array**: Key supports ALL models for that provider (except any listed under `blacklisted_models`)
 - **Populated `models` array**: Key only supports listed models
+- **`blacklisted_models`**: Optional per-key denylist. If non-empty and the requested model appears in it, the key is excluded—even if that model is also in `models` (denylist wins over the allowlist)
 - **Model mismatch**: Key is excluded from selection for that request
 
 **Use Cases:**
@@ -170,6 +171,7 @@ Keys can be restricted to specific models for access control and cost management
 - **Team Separation**: Different keys for different teams or projects
 - **Cost Control**: Restrict access to specific model tiers
 - **Compliance**: Separate keys for different security requirements
+- **Denylist**: Block specific models on a key
 
 **Example Model Restrictions:**
 ```json
@@ -185,6 +187,13 @@ Keys can be restricted to specific models for access control and cost management
       "name": "openai-std-key-1",
       "value": "standard-key", 
       "models": ["gpt-4o-mini", "gpt-3.5-turbo"], // Only standard models
+      "weight": 1.0
+    },
+    {
+      "name": "openai-shared-key",
+      "value": "env.OPENAI_API_KEY",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "blacklisted_models": ["gpt-5"],
       "weight": 1.0
     }
   ]
@@ -237,7 +246,7 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "openai-key-1")
 ```
 
-Note: Both mechanisms reference a stored key (not the raw secret). The gateway resolves the key against configured provider keys and applies model filtering and deployment mapping. When an explicit key ID or name is supplied, weighted selection is bypassed and the referenced key is used directly.
+Note: Both mechanisms reference a stored key (not the raw secret). The gateway resolves the key against configured provider keys and applies model allowlists, denylists, and deployment mapping. When an explicit key ID or name is supplied, weighted selection is bypassed and the referenced key is used directly.
 
 ```bash
 # Example: request referencing a stored key name that doesn't exist

@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
@@ -136,14 +137,15 @@ func (r *BedrockConverseRequest) UnmarshalJSON(data []byte) error {
 		r.ExtraParams = make(map[string]interface{})
 	}
 
-	// Extract unknown fields
+	// Extract unknown fields, preserving nested key ordering for prompt caching.
 	for key, value := range rawData {
 		if !bedrockConverseRequestKnownFields[key] {
-			var v interface{}
-			if err := sonic.Unmarshal(value, &v); err != nil {
-				continue // Skip fields that can't be unmarshaled
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, value); err == nil {
+				r.ExtraParams[key] = json.RawMessage(buf.Bytes())
+			} else {
+				r.ExtraParams[key] = json.RawMessage(value)
 			}
-			r.ExtraParams[key] = v
 		}
 	}
 
@@ -194,7 +196,7 @@ type BedrockContentBlock struct {
 	ReasoningContent *BedrockReasoningContent `json:"reasoningContent,omitempty"`
 
 	// For Tool Call Result content
-	JSON interface{} `json:"json,omitempty"`
+	JSON json.RawMessage `json:"json,omitempty"`
 
 	// Cache point for the content block
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
@@ -239,7 +241,7 @@ type BedrockDocumentSourceData struct {
 type BedrockToolUse struct {
 	ToolUseID string      `json:"toolUseId"` // Required: Unique identifier for this tool use
 	Name      string      `json:"name"`      // Required: Name of the tool to use
-	Input     interface{} `json:"input"`     // Required: Input parameters for the tool (JSON object)
+	Input     json.RawMessage `json:"input"`     // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
 }
 
 // BedrockToolResult represents the result of a tool use
@@ -307,7 +309,7 @@ type BedrockToolSpec struct {
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)
 type BedrockToolInputSchema struct {
-	JSON interface{} `json:"json,omitempty"` // The JSON schema for the tool
+	JSON json.RawMessage `json:"json,omitempty"` // The JSON schema for the tool
 }
 
 // BedrockToolChoice represents tool choice configuration
@@ -372,7 +374,7 @@ type BedrockConverseResponse struct {
 	StopReason                    string                    `json:"stopReason"`                              // Required: Reason for stopping
 	Usage                         *BedrockTokenUsage        `json:"usage"`                                   // Required: Token usage information
 	Metrics                       *BedrockConverseMetrics   `json:"metrics"`                                 // Required: Response metrics
-	AdditionalModelResponseFields map[string]interface{}    `json:"additionalModelResponseFields,omitempty"` // Optional: Additional model-specific response fields
+	AdditionalModelResponseFields json.RawMessage           `json:"additionalModelResponseFields,omitempty"` // Optional: Additional model-specific response fields (json.RawMessage preserves key ordering)
 	PerformanceConfig             *BedrockPerformanceConfig `json:"performanceConfig,omitempty"`             // Optional: Performance configuration used
 	ServiceTier                   *BedrockServiceTier       `json:"serviceTier,omitempty"`                   // Optional: Service tier that was used
 	Trace                         *BedrockConverseTrace     `json:"trace,omitempty"`                         // Optional: Guardrail trace information

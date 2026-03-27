@@ -302,6 +302,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationRenameTruncatedPricingColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddImageQualityPricingColumns(ctx, db); err != nil {
 		return err
 	}
@@ -309,6 +312,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -4229,7 +4241,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 				"output_cost_per_pixel",
 				"output_cost_per_image_premium_image",
 				"output_cost_per_image_above_512_and_512_pixels",
-				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_512x512_pixels_premium",
 				"output_cost_per_image_above_1024_and_1024_pixels",
 				"output_cost_per_image_above_1024x1024_pixels_premium",
 				"input_cost_per_audio_token",
@@ -4271,7 +4283,7 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 				"output_cost_per_pixel",
 				"output_cost_per_image_premium_image",
 				"output_cost_per_image_above_512_and_512_pixels",
-				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_512x512_pixels_premium",
 				"output_cost_per_image_above_1024_and_1024_pixels",
 				"output_cost_per_image_above_1024x1024_pixels_premium",
 				"input_cost_per_audio_token",
@@ -4301,6 +4313,48 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing refactor columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRenameTruncatedPricingColumn renames the output_cost_per_image_above_512_and_512_pixels_and_premium_image
+// column which at 64 chars exceeds PostgreSQL's 63-character identifier limit. PostgreSQL silently truncated
+// it to output_cost_per_image_above_512_and_512_pixels_and_premium_imag (63 chars), while SQLite kept the
+// full 64-char name. This migration renames whichever variant exists to the shorter canonical name.
+func migrationRenameTruncatedPricingColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "rename_truncated_pricing_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			const newName = "output_cost_per_image_above_512x512_pixels_premium"
+			if mg.HasColumn(&tables.TableModelPricing{}, newName) {
+				return nil
+			}
+
+			// PostgreSQL truncated the 64-char name to 63 chars
+			const oldNamePG = "output_cost_per_image_above_512_and_512_pixels_and_premium_imag"
+			// SQLite kept the full 64-char name
+			const oldNameSQLite = "output_cost_per_image_above_512_and_512_pixels_and_premium_image"
+
+			if mg.HasColumn(&tables.TableModelPricing{}, oldNamePG) {
+				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNamePG + " TO " + newName).Error; err != nil {
+					return fmt.Errorf("failed to rename column %s to %s: %w", oldNamePG, newName, err)
+				}
+			} else if mg.HasColumn(&tables.TableModelPricing{}, oldNameSQLite) {
+				if err := tx.Exec("ALTER TABLE governance_model_pricing RENAME COLUMN " + oldNameSQLite + " TO " + newName).Error; err != nil {
+					return fmt.Errorf("failed to rename column %s to %s: %w", oldNameSQLite, newName, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running rename_truncated_pricing_column migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4673,5 +4727,115 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
 	}
 
+	return nil
+}
+
+// migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
+func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_plugin_order_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Placement"); err != nil {
+					return fmt.Errorf("failed to add placement column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Order"); err != nil {
+					return fmt.Errorf("failed to add exec_order column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "placement"); err != nil {
+					return fmt.Errorf("failed to drop placement column: %w", err)
+				}
+			}
+			if migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "exec_order"); err != nil {
+					return fmt.Errorf("failed to drop exec_order column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_plugin_order_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOpenAIConfigJSONColumn adds the open_ai_config_json column to the provider table
+func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_open_ai_config_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "OpenAIConfigJSON"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableProvider{}, "open_ai_config_json") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "open_ai_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddKeyBlacklistedModelsJSONColumn adds blacklisted_models_json to config_keys
+// for per-key model deny lists (JSON array of model ids, default []).
+func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_key_blacklisted_models_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				if err := mg.AddColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
+					return fmt.Errorf("failed to add blacklisted_models_json column: %w", err)
+				}
+			}
+			if err := tx.Exec("UPDATE config_keys SET blacklisted_models_json = '[]' WHERE blacklisted_models_json IS NULL OR blacklisted_models_json = ''").Error; err != nil {
+				return fmt.Errorf("failed to backfill blacklisted_models_json: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "blacklisted_models_json") {
+				if err := mg.DropColumn(&tables.TableKey{}, "blacklisted_models_json"); err != nil {
+					return fmt.Errorf("failed to drop blacklisted_models_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
 	return nil
 }

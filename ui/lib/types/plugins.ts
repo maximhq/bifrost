@@ -20,6 +20,8 @@ export interface Plugin {
 	isCustom: boolean;
 	path?: string;
 	status?: PluginStatus;
+	placement?: string;
+	order?: number;
 }
 
 export interface PluginsResponse {
@@ -32,10 +34,14 @@ export interface CreatePluginRequest {
 	path: string;
 	enabled: boolean;
 	config: any;
+	placement?: string;
+	order?: number;
 }
 
 export interface UpdatePluginRequest {
 	enabled: boolean;
-	path?: string;	
+	path?: string;
 	config?: any;
+	placement?: string;
+	order?: number;
 }

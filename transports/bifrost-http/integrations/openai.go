@@ -149,7 +149,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
 
-
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
 		apiVersion := string(ctx.QueryArgs().Peek("api-version"))
@@ -539,14 +538,15 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
-			GetRequestTypeInstance: func(ctx context.Context) interface{} {				
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
-					return &schemas.BifrostRequest{
+					br := &schemas.BifrostRequest{
 						ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
-					}, nil
+					}
+					return br, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
@@ -556,6 +556,50 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
+				// Here we will combine content blocks into a single text block as required by openai SDK
+				if len(resp.Choices) == 0 {
+					return resp, nil
+				}
+				choice := resp.Choices[0]
+				allText := true
+				message := choice.ChatNonStreamResponseChoice.Message
+				if message == nil || message.Content == nil || message.Content.ContentBlocks == nil {
+					return resp, nil
+				}
+				for _, block := range message.Content.ContentBlocks {
+					if block.Type != schemas.ChatContentBlockTypeText {
+						allText = false
+						break
+					}
+				}
+				if !allText || len(message.Content.ContentBlocks) == 0 {
+					return resp, nil
+				}
+				var contentStr *string
+				contentBlocks := message.Content.ContentBlocks
+				var reasoningDetails []schemas.ChatReasoningDetails
+				if message.ChatAssistantMessage != nil && message.ChatAssistantMessage.ReasoningDetails != nil {
+					reasoningDetails = message.ChatAssistantMessage.ReasoningDetails
+				}
+				needsCombine := len(contentBlocks) > 1
+				if !needsCombine {
+					contentStr = contentBlocks[0].Text
+				} else {
+					var parts []string
+					// Then text blocks top to bottom
+					for _, block := range contentBlocks {
+						if block.Text != nil {
+							parts = append(parts, *block.Text)
+						}
+					}
+					joined := strings.Join(parts, "\n\n")
+					contentStr = &joined
+				}
+				if message.ChatAssistantMessage != nil {
+					message.ReasoningDetails = reasoningDetails
+				}
+				message.Content.ContentStr = contentStr
+				message.Content.ContentBlocks = nil
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
@@ -3294,4 +3338,3 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 
 	return nil
 }
-

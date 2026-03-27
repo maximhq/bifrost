@@ -41,6 +41,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 				id: uuid(),
 				name: "",
 				models: [],
+				blacklisted_models: [],
 				weight: 1.0,
 				enabled: true,
 			},

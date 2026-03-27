@@ -171,6 +171,7 @@ export const modelProviderKeySchema = z
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
 		models: z.array(z.string()).default([]).optional(),
+		blacklisted_models: z.array(z.string()).default([]).optional(),
 		weight: z.union([
 			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
 			z
@@ -227,6 +228,19 @@ export const networkConfigSchema = z
 		retry_backoff_max: z.number().min(1000),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.string().optional(),
+		stream_idle_timeout_in_seconds: z
+			.number()
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		max_conns_per_host: z
+			.number()
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -266,6 +280,19 @@ export const networkFormConfigSchema = z
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.string().optional(),
+		stream_idle_timeout_in_seconds: z.coerce
+			.number("Stream idle timeout must be a number")
+			.int("Stream idle timeout must be a whole number of seconds")
+			.min(5, "Stream idle timeout must be at least 5 seconds")
+			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		max_conns_per_host: z.coerce
+			.number("Max connections must be a number")
+			.int("Max connections must be a whole number")
+			.min(1, "Max connections must be at least 1")
+			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		enforce_http2: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
@@ -652,6 +679,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z

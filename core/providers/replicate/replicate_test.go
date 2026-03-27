@@ -23,6 +23,7 @@ func TestReplicate(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Replicate,
@@ -75,7 +76,6 @@ func TestReplicate(t *testing.T) {
 	t.Run("ReplicateTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestBifrostToReplicateChatRequestConversion tests the conversion from Bifrost chat request to Replicate format

@@ -118,6 +118,7 @@ export interface ModelProviderKey {
 	name: string;
 	value?: EnvVar;
 	models?: string[];
+	blacklisted_models?: string[];
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
@@ -141,6 +142,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 		from_env: false,
 	},
 	models: [],
+	blacklisted_models: [],
 	weight: 1.0,
 	enabled: true,
 };
@@ -156,6 +158,9 @@ export interface NetworkConfig {
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: string;
+	stream_idle_timeout_in_seconds?: number;
+	max_conns_per_host?: number;
+	enforce_http2?: boolean;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize
@@ -299,6 +304,11 @@ export interface ProviderPricingOverride {
 	cache_read_input_image_token_cost?: number;
 }
 
+// OpenAIConfig holds OpenAI-specific provider configuration.
+export interface OpenAIConfig {
+	disable_store?: boolean;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	keys: ModelProviderKey[];
@@ -309,6 +319,7 @@ export interface ModelProviderConfig {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -338,6 +349,7 @@ export interface AddProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 
@@ -351,6 +363,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	openai_config?: OpenAIConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 

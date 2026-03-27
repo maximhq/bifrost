@@ -301,12 +301,15 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		schemas.ResponsesToolTypeFileSearch:         true,
 		schemas.ResponsesToolTypeComputerUsePreview: true,
 		schemas.ResponsesToolTypeWebSearch:          true,
+		schemas.ResponsesToolTypeWebFetch:           true,
 		schemas.ResponsesToolTypeMCP:                true,
 		schemas.ResponsesToolTypeCodeInterpreter:    true,
 		schemas.ResponsesToolTypeImageGeneration:    true,
 		schemas.ResponsesToolTypeLocalShell:         true,
 		schemas.ResponsesToolTypeCustom:             true,
 		schemas.ResponsesToolTypeWebSearchPreview:   true,
+		schemas.ResponsesToolTypeMemory:             true,
+		schemas.ResponsesToolTypeToolSearch:         true,
 	}
 
 	// Filter tools to only include supported types

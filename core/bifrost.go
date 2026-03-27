@@ -2949,6 +2949,55 @@ func (bifrost *Bifrost) reloadMCPPlugin(plugin schemas.MCPPlugin) error {
 	}
 }
 
+// ReorderPlugins reorders all plugin slices (LLM, MCP) to match the given
+// base plugin name ordering. This should be called after SortAndRebuildPlugins
+// on the config layer to sync the core's execution order.
+// Plugins not in the ordering are appended at the end (defensive).
+func (bifrost *Bifrost) ReorderPlugins(orderedNames []string) {
+	pos := make(map[string]int, len(orderedNames))
+	for i, name := range orderedNames {
+		pos[name] = i
+	}
+	reorderAtomicSlice(&bifrost.llmPlugins, pos)
+	reorderAtomicSlice(&bifrost.mcpPlugins, pos)
+}
+
+// pluginWithName is satisfied by both LLMPlugin and MCPPlugin.
+type pluginWithName interface {
+	GetName() string
+}
+
+// reorderAtomicSlice atomically reorders the plugin slice stored behind ptr
+// so that plugins appear in the order given by pos (name → position).
+// Uses CAS retry for lock-free safety.
+func reorderAtomicSlice[T pluginWithName](ptr *atomic.Pointer[[]T], pos map[string]int) {
+	for {
+		old := ptr.Load()
+		if old == nil || len(*old) == 0 {
+			return
+		}
+		reordered := make([]T, len(*old))
+		copy(reordered, *old)
+		sort.SliceStable(reordered, func(i, j int) bool {
+			iPos, iOk := pos[reordered[i].GetName()]
+			jPos, jOk := pos[reordered[j].GetName()]
+			if !iOk && !jOk {
+				return false
+			}
+			if !iOk {
+				return false
+			}
+			if !jOk {
+				return true
+			}
+			return iPos < jPos
+		})
+		if ptr.CompareAndSwap(old, &reordered) {
+			return
+		}
+	}
+}
+
 // GetConfiguredProviders returns the configured providers.
 //
 // Returns:
@@ -6047,10 +6096,14 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		// Model filtering logic:
 		// - If model is nil or empty → include all keys (no model filter)
 		// - If model is specified:
-		//   - If key.Models is empty → include key (supports all models)
+		//   - If model is in key.BlacklistedModels → exclude (wins over Models allow list)
+		//   - If key.Models is empty → include key (supports all non-blacklisted models)
 		//   - If key.Models is non-empty → only include if model is in list
-		if model != nil && *model != "" && len(k.Models) > 0 {
-			if !slices.Contains(k.Models, *model) {
+		if model != nil && *model != "" {
+			if len(k.BlacklistedModels) > 0 && slices.Contains(k.BlacklistedModels, *model) {
+				continue
+			}
+			if len(k.Models) > 0 && !slices.Contains(k.Models, *model) {
 				continue
 			}
 		}
@@ -6118,7 +6171,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		keys = batchEnabledKeys
 	}
 
-	// filter out keys which don't support the model, if the key has no models, it is supported for all models
+	// Filter out keys that don't support the model: blacklisted_models wins over models allow list;
+	// if the key has no models list, it supports all models except those blacklisted.
 	var supportedKeys []schemas.Key
 
 	// Skip model check conditions
@@ -6143,7 +6197,12 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				continue
 			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
-			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
+			var modelSupported bool
+			if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+				modelSupported = false
+			} else {
+				modelSupported = (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
+			}
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

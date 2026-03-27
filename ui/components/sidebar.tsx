@@ -167,6 +167,10 @@ interface SidebarItem {
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
 
+const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
+	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
+};
+
 const SidebarItemView = ({
 	item,
 	isActive,
@@ -179,6 +183,7 @@ const SidebarItemView = ({
 	isSidebarCollapsed,
 	expandSidebar,
 	highlightedUrl,
+	prefetchRoute,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -191,6 +196,7 @@ const SidebarItemView = ({
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
 	highlightedUrl?: string;
+	prefetchRoute: (url: string) => void;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -228,7 +234,7 @@ const SidebarItemView = ({
 	};
 
 	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
-		const url = subItem.queryParam ? `${subItem.url}?tab=${subItem.queryParam}` : subItem.url;
+		const url = getSidebarItemHref(subItem);
 		if (e?.metaKey || e?.ctrlKey) {
 			openInNewTab(url);
 			return;
@@ -253,6 +259,8 @@ const SidebarItemView = ({
 								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 				} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
+				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
+				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
@@ -282,14 +290,15 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
+						const subItemHref = getSidebarItemHref(subItem);
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
-						const isSubItemHighlighted = highlightedUrl === subItem.url;
+						const isSubItemHighlighted = highlightedUrl === subItemHref;
 						const SubItemIcon = subItem.icon;
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									data-nav-url={subItem.url}
+									data-nav-url={subItemHref}
 									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 										isSubItemHighlighted
 											? "bg-sidebar-accent text-accent-foreground"
@@ -300,6 +309,8 @@ const SidebarItemView = ({
 													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 									}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
+									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
+									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
 								>
 									<div className="flex w-full items-center gap-2">
 										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -452,6 +463,13 @@ export default function AppSidebar() {
 				description: "Configure models",
 				hasAccess: true,
 				subItems: [
+					{
+						title: "Model Catalog",
+						url: "/workspace/model-catalog",
+						icon: LayoutGrid,
+						description: "Overview of providers, keys, and usage",
+						hasAccess: hasModelProvidersAccess,
+					},
 					{
 						title: "Model Providers",
 						url: "/workspace/providers",
@@ -621,34 +639,34 @@ export default function AppSidebar() {
 				description: "Manage adaptive load balancer",
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
-		...(isDbConnected
-			? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-						subItems: [
-							{
-								title: "Prompts",
-								url: "/workspace/prompt-repo/prompts",
-								icon: SquareTerminal,
-								description: "Manage prompts",
-								hasAccess: hasPromptRepositoryAccess,
-								tag: "Beta",
-							},
-							{
-								title: "Deployments",
-								url: "/workspace/prompt-repo/deployments",
-								icon: Router,
-								description: "Manage deployment",
-								hasAccess: hasPromptDeploymentStrategyAccess,
-							},
-						],
-					},
-				]
-			: []),
+			...(isDbConnected
+				? [
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+							subItems: [
+								{
+									title: "Prompts",
+									url: "/workspace/prompt-repo/prompts",
+									icon: SquareTerminal,
+									description: "Manage prompts",
+									hasAccess: hasPromptRepositoryAccess,
+									tag: "Beta",
+								},
+								{
+									title: "Deployments",
+									url: "/workspace/prompt-repo/deployments",
+									icon: Router,
+									description: "Manage deployment",
+									hasAccess: hasPromptDeploymentStrategyAccess,
+								},
+							],
+						},
+					]
+				: []),
 			{
 				title: "Evals",
 				url: "https://www.getmaxim.ai",
@@ -763,6 +781,16 @@ export default function AppSidebar() {
 	const { resolvedTheme } = useTheme();
 	const [logout] = useLogoutMutation();
 
+	const prefetchRoute = useCallback(
+		(url: string) => {
+			if (!url.startsWith("/")) {
+				return;
+			}
+			router.prefetch(url);
+		},
+		[router],
+	);
+
 	// Get user info from localStorage (for enterprise SCIM OAuth)
 	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
 
@@ -797,7 +825,7 @@ export default function AppSidebar() {
 		if (newExpandedItems.size > 0) {
 			setExpandedItems((prev) => new Set([...prev, ...newExpandedItems]));
 		}
-	}, [pathname]);
+	}, [pathname, items]);
 
 	// Auto-expand parents when search matches their subItems
 	useEffect(() => {
@@ -848,7 +876,7 @@ export default function AppSidebar() {
 				if (searchQuery.trim() || expandedItems.has(item.title)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
-						result.push({ title: sub.title, url: sub.url, queryParam: sub.queryParam });
+						result.push({ title: sub.title, url: getSidebarItemHref(sub), queryParam: sub.queryParam });
 					}
 				} else {
 					// Parent is collapsed - include parent as a toggle target
@@ -873,7 +901,7 @@ export default function AppSidebar() {
 				e.preventDefault();
 				const target = navigableItems[focusedIndex];
 				if (target) {
-					const url = target.queryParam ? `${target.url}?tab=${target.queryParam}` : target.url;
+					const url = target.url;
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
 						window.open(url, "_blank", "noopener,noreferrer");
 					} else {
@@ -1092,12 +1120,13 @@ export default function AppSidebar() {
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
-										pathname={pathname}
-										router={router}
-										isSidebarCollapsed={sidebarState === "collapsed"}
-										expandSidebar={() => toggleSidebar()}
-										highlightedUrl={highlightedUrl}
-									/>
+									pathname={pathname}
+									router={router}
+									isSidebarCollapsed={sidebarState === "collapsed"}
+									expandSidebar={() => toggleSidebar()}
+									highlightedUrl={highlightedUrl}
+									prefetchRoute={prefetchRoute}
+								/>
 								);
 							})}
 						</SidebarMenu>

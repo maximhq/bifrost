@@ -17,69 +17,20 @@ The vault integration provides:
 
 ## Supported Vault Systems
 
-### HashiCorp Vault
-
-Connect to your HashiCorp Vault instance for centralized secret management.
-
-```json
-{
-  "vault": {
-    "type": "hashicorp",
-    "address": "https://vault.company.com:8200",
-    "token": "${VAULT_TOKEN}",
-    "mount": "secret",
-    "sync_interval": "300s"
-  }
-}
-```
-
-### AWS Secrets Manager
-
-Integrate with AWS Secrets Manager for cloud-native secret storage.
-
-```json
-{
-  "vault": {
-    "type": "aws_secrets_manager",
-    "region": "us-east-1",
-    "access_key_id": "${AWS_ACCESS_KEY_ID}",
-    "secret_access_key": "${AWS_SECRET_ACCESS_KEY}",
-    "sync_interval": "300s"
-  }
-}
-```
-
-### Google Secret Manager
-
-Use Google Cloud's Secret Manager for secure key storage.
-
-```json
-{
-  "vault": {
-    "type": "google_secret_manager",
-    "project_id": "your-project-id",
-    "credentials_file": "/path/to/service-account.json",
-    "sync_interval": "300s"
-  }
-}
-```
-
-### Azure Key Vault
-
-Connect to Azure Key Vault for Microsoft cloud environments.
-
-```json
-{
-  "vault": {
-    "type": "azure_key_vault",
-    "vault_url": "https://your-keyvault.vault.azure.net/",
-    "client_id": "${AZURE_CLIENT_ID}",
-    "client_secret": "${AZURE_CLIENT_SECRET}",
-    "tenant_id": "${AZURE_TENANT_ID}",
-    "sync_interval": "300s"
-  }
-}
-```
+<CardGroup cols={2}>
+  <Card title="HashiCorp Vault" icon="vault" href="/integrations/vaults/hashicorp-vault">
+    Centralized secret management for self-hosted deployments.
+  </Card>
+  <Card title="AWS Secrets Manager" icon="aws" href="/integrations/vaults/aws-secrets-manager">
+    Cloud-native secret storage on AWS.
+  </Card>
+  <Card title="Google Secret Manager" icon="google" href="/integrations/vaults/google-secret-manager">
+    Secure key storage on Google Cloud Platform.
+  </Card>
+  <Card title="Azure Key Vault" icon="microsoft" href="/integrations/vaults/azure-key-vault">
+    Key management for Microsoft Azure environments.
+  </Card>
+</CardGroup>
 
 ## Key Synchronization
 

@@ -37,6 +37,7 @@ interface VirtualKeysTableProps {
 	teams: Team[];
 	customers: Customer[];
 	search: string;
+	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
 	customerFilter: string;
 	onCustomerFilterChange: (value: string) => void;
@@ -53,6 +54,7 @@ export default function VirtualKeysTable({
 	teams,
 	customers,
 	search,
+	debouncedSearch,
 	onSearchChange,
 	customerFilter,
 	onCustomerFilterChange,
@@ -139,7 +141,7 @@ export default function VirtualKeysTable({
 		toast.success("Copied to clipboard");
 	};
 
-	const hasActiveFilters = search || customerFilter || teamFilter;
+	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter;
 
 	// True empty state: no VKs at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -190,6 +192,7 @@ export default function VirtualKeysTable({
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
 						<Input
+							aria-label="Search virtual keys by name"
 							placeholder="Search by name..."
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}

@@ -28,6 +28,13 @@ import { usePathname } from "next/navigation";
 import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import { usePromptContext } from "../context";
 
+/**
+ * Renders the prompt-manager sidebar including search, folder hierarchy, root prompts, and drag-and-drop reorganization.
+ *
+ * The sidebar supports creating, renaming, and deleting folders and prompts (when permitted), selecting prompts, auto-expanding the folder that contains the selected prompt, filtering by search query, and dragging prompts between folders or to the root. Visual drag-over feedback and permission gating for create/update/delete actions are applied.
+ *
+ * @returns The sidebar React element containing the search input, folder list, root prompt drop zone, and drag-and-drop provider.
+ */
 export function PromptSidebar() {
 	const {
 		folders,
@@ -126,13 +133,6 @@ export function PromptSidebar() {
 		return { folders: filteredFolders, promptsByFolder: filteredPromptsByFolder, rootPrompts: filteredRootPrompts };
 	}, [folders, prompts, promptsByFolder, rootPrompts, searchQuery]);
 
-	const getPromptHref = useCallback(
-		(promptId: string) => {
-			return `${pathname}?promptId=${encodeURIComponent(promptId)}`;
-		},
-		[pathname],
-	);
-
 	// Prompt lookup for drag events
 	const promptMap = useMemo(() => {
 		const map = new Map<string, Prompt>();
@@ -190,7 +190,12 @@ export function PromptSidebar() {
 					{canCreate && (
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" data-testid="sidebar-create-menu" aria-label="Create prompt or folder">
+								<Button
+									variant="outline"
+									className="h-8 w-8 shrink-0 bg-transparent"
+									data-testid="sidebar-create-menu"
+									aria-label="Create prompt or folder"
+								>
 									<PlusIcon className="h-3.5 w-3.5" />
 								</Button>
 							</DropdownMenuTrigger>
@@ -218,9 +223,8 @@ export function PromptSidebar() {
 					)}
 				</div>
 
-				{/* Tree content */}
 				<ScrollArea className="grow overflow-y-auto" viewportClassName="no-table viewport-table-height-full">
-					<div className="flex h-full flex-col p-2">
+					<div className="flex flex-col p-2 px-3">
 						{filteredData.folders.length === 0 && filteredData.rootPrompts.length === 0 ? (
 							<div className="text-muted-foreground py-8 text-center text-sm">{searchQuery ? "No results found" : "No prompts yet"}</div>
 						) : (
@@ -235,7 +239,6 @@ export function PromptSidebar() {
 										selectedPromptId={selectedPromptId}
 										onToggle={() => toggleFolder(folder.id)}
 										onSelectPrompt={onSelectPrompt}
-										getPromptHref={getPromptHref}
 										onEdit={() => onEditFolder(folder)}
 										onDelete={() => onDeleteFolder(folder)}
 										onCreatePrompt={() => onCreatePrompt(folder.id)}
@@ -250,7 +253,6 @@ export function PromptSidebar() {
 									isDragOver={dragOverTarget === "root-drop-zone"}
 									rootPrompts={filteredData.rootPrompts}
 									selectedPromptId={selectedPromptId}
-									getPromptHref={getPromptHref}
 									onSelectPrompt={onSelectPrompt}
 									onEditPrompt={onEditPrompt}
 									onDeletePrompt={onDeletePrompt}
@@ -270,7 +272,6 @@ interface RootDropZoneProps {
 	isDragOver: boolean;
 	rootPrompts: Prompt[];
 	selectedPromptId?: string | null;
-	getPromptHref: (promptId: string) => string;
 	onSelectPrompt: (promptId: string) => void;
 	onEditPrompt: (prompt: Prompt) => void;
 	onDeletePrompt: (prompt: Prompt) => void;
@@ -278,11 +279,23 @@ interface RootDropZoneProps {
 	canDelete: boolean;
 }
 
+/**
+ * Renders the droppable root area that lists and hosts draggable root-level prompts.
+ *
+ * @param isDragOver - Whether a draggable item is currently over the root drop zone (applies drag-over styling).
+ * @param rootPrompts - Array of prompts that belong at the root (no folder).
+ * @param selectedPromptId - ID of the currently selected prompt, used to mark its item as selected.
+ * @param onSelectPrompt - Callback invoked with a prompt ID when a prompt is selected.
+ * @param onEditPrompt - Callback invoked with a prompt when the prompt's edit action is triggered.
+ * @param onDeletePrompt - Callback invoked with a prompt when the prompt's delete action is triggered.
+ * @param canUpdate - Whether prompts are movable/editable (enables dragging).
+ * @param canDelete - Whether prompts may be deleted (controls delete action visibility).
+ * @returns The JSX element for the root drop zone containing draggable prompt items.
+ */
 function RootDropZone({
 	isDragOver,
 	rootPrompts,
 	selectedPromptId,
-	getPromptHref,
 	onSelectPrompt,
 	onEditPrompt,
 	onDeletePrompt,
@@ -298,7 +311,6 @@ function RootDropZone({
 					key={prompt.id}
 					prompt={prompt}
 					isSelected={selectedPromptId === prompt.id}
-					href={getPromptHref(prompt.id)}
 					onSelect={() => onSelectPrompt(prompt.id)}
 					onEdit={() => onEditPrompt(prompt)}
 					onDelete={() => onDeletePrompt(prompt)}
@@ -318,7 +330,6 @@ interface DroppableFolderProps {
 	selectedPromptId?: string | null;
 	onToggle: () => void;
 	onSelectPrompt: (promptId: string) => void;
-	getPromptHref: (promptId: string) => string;
 	onEdit: () => void;
 	onDelete: () => void;
 	onCreatePrompt: () => void;
@@ -329,6 +340,26 @@ interface DroppableFolderProps {
 	canDelete: boolean;
 }
 
+/**
+ * Renders a droppable folder header with optional action menu and its list of prompts.
+ *
+ * @param folder - Folder metadata (id, name, etc.)
+ * @param prompts - Prompts that belong to this folder
+ * @param isExpanded - Whether the folder is expanded to show its prompts
+ * @param isDragOver - Whether a draggable item is currently over this folder (affects visual state)
+ * @param selectedPromptId - ID of the currently selected prompt, used to highlight an item
+ * @param onToggle - Callback invoked to toggle the folder's expanded state
+ * @param onSelectPrompt - Callback invoked with a prompt ID when a prompt is selected
+ * @param onEdit - Callback invoked to start editing the folder
+ * @param onDelete - Callback invoked to start deleting the folder
+ * @param onCreatePrompt - Callback invoked to create a new prompt inside this folder
+ * @param onEditPrompt - Callback invoked with a prompt to start editing that prompt
+ * @param onDeletePrompt - Callback invoked with a prompt to start deleting that prompt
+ * @param canCreate - Whether the current user may create prompts in this folder
+ * @param canUpdate - Whether the current user may move/rename prompts or edit the folder
+ * @param canDelete - Whether the current user may delete prompts or the folder
+ * @returns A JSX element containing the folder row and, when expanded, its nested prompt items
+ */
 function DroppableFolder({
 	folder,
 	prompts,
@@ -337,7 +368,6 @@ function DroppableFolder({
 	selectedPromptId,
 	onToggle,
 	onSelectPrompt,
-	getPromptHref,
 	onEdit,
 	onDelete,
 	onCreatePrompt,
@@ -354,7 +384,7 @@ function DroppableFolder({
 		<div ref={ref} className="mb-1 last:mb-0">
 			<div
 				className={cn(
-					"hover:bg-muted/50 group relative flex cursor-pointer items-center gap-1 rounded-sm px-2 h-[30px] transition-colors",
+					"hover:bg-muted/50 group relative flex h-[30px] cursor-pointer items-center gap-1 rounded-sm px-2 transition-colors",
 					isDragOver && "bg-primary/10 ring-primary/30 ring-1",
 				)}
 				onClick={onToggle}
@@ -368,16 +398,22 @@ function DroppableFolder({
 					)}
 				</button>
 				{isExpanded ? (
-					<FolderOpen className="text-muted-foreground mr-2 h-4 w-4 shrink-0" />
+					<FolderOpen className="text-muted-foreground h-4 w-4 shrink-0" />
 				) : (
-					<FolderIcon className="text-muted-foreground mr-2 h-4 w-4 shrink-0" />
+					<FolderIcon className="text-muted-foreground h-4 w-4 shrink-0" />
 				)}
 				<span className="flex-1 truncate text-sm font-medium">{folder.name}</span>
 				<span className="text-muted-foreground mr-1 shrink-0 text-xs">{prompts.length}</span>
 				{showActions && (
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()} className="bg-card absolute top-1/2 right-2 -translate-y-1/2">
-							<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-folder-actions-${folder.id}`} aria-label="Folder actions">
+							<Button
+								variant="ghost"
+								size="icon"
+								className="h-6 w-6 shrink-0 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+								data-testid={`sidebar-folder-actions-${folder.id}`}
+								aria-label="Folder actions"
+							>
 								<MoreHorizontal className="h-4 w-4" />
 							</Button>
 						</DropdownMenuTrigger>
@@ -403,7 +439,7 @@ function DroppableFolder({
 										onEdit();
 									}}
 								>
-									<Pencil className="mr-2 h-4 w-4" />
+									<Pencil className="h-4 w-4" />
 									Edit Folder
 								</DropdownMenuItem>
 							)}
@@ -416,7 +452,7 @@ function DroppableFolder({
 										onDelete();
 									}}
 								>
-									<Trash2 className="mr-2 h-4 w-4" />
+									<Trash2 className="h-4 w-4" />
 									Delete Folder
 								</DropdownMenuItem>
 							)}
@@ -435,7 +471,6 @@ function DroppableFolder({
 								key={prompt.id}
 								prompt={prompt}
 								isSelected={selectedPromptId === prompt.id}
-								href={getPromptHref(prompt.id)}
 								onSelect={() => onSelectPrompt(prompt.id)}
 								onEdit={() => onEditPrompt(prompt)}
 								onDelete={() => onDeletePrompt(prompt)}
@@ -453,7 +488,6 @@ function DroppableFolder({
 interface DraggablePromptItemProps {
 	prompt: Prompt;
 	isSelected: boolean;
-	href: string;
 	onSelect: () => void;
 	onEdit: () => void;
 	onDelete: () => void;
@@ -461,7 +495,21 @@ interface DraggablePromptItemProps {
 	canDelete: boolean;
 }
 
-function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
+/**
+ * Renders a draggable prompt list item that shows the prompt name, selection/drag states, and an actions menu when permitted.
+ *
+ * Displays a file icon and truncated prompt name, applies visual styles for selection and dragging, prevents selection while dragging, and exposes rename/delete actions via a dropdown when `canUpdate` or `canDelete` are true.
+ *
+ * @param prompt - The prompt object to render.
+ * @param isSelected - Whether this prompt is currently selected; used for styling.
+ * @param onSelect - Callback invoked when the item is clicked (not invoked if the item is being dragged).
+ * @param onEdit - Callback invoked to start editing/renaming the prompt.
+ * @param onDelete - Callback invoked to delete the prompt.
+ * @param canUpdate - When true, enables dragging and shows the rename action.
+ * @param canDelete - When true, shows the delete action.
+ * @returns The rendered prompt item JSX element.
+ */
+function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
 	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}`, disabled: !canUpdate });
 	const showActions = canUpdate || canDelete;
 
@@ -470,7 +518,7 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 			ref={ref}
 			data-testid={`sidebar-prompt-${prompt.id}`}
 			className={cn(
-				"group flex cursor-pointer items-center gap-2 rounded-sm px-2 h-[30px] mb-1 last:mb-0",
+				"group mb-1 flex h-[30px] cursor-pointer items-center gap-2 rounded-sm px-2 last:mb-0",
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
 				isDragging && "opacity-50",
 			)}
@@ -485,7 +533,13 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 			{showActions && (
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-						<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-prompt-actions-${prompt.id}`} aria-label="Prompt actions">
+						<Button
+							variant="ghost"
+							size="icon"
+							className="h-6 w-6 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+							data-testid={`sidebar-prompt-actions-${prompt.id}`}
+							aria-label="Prompt actions"
+						>
 							<MoreHorizontal className="h-4 w-4" />
 						</Button>
 					</DropdownMenuTrigger>

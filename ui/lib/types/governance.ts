@@ -249,14 +249,33 @@ export interface GetVirtualKeysResponse {
 	offset: number;
 }
 
+export interface GetTeamsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
+}
+
 export interface GetTeamsResponse {
 	teams: Team[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface GetCustomersParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
 }
 
 export interface GetCustomersResponse {
 	customers: Customer[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetBudgetsResponse {
@@ -330,10 +349,19 @@ export interface UpdateModelConfigRequest {
 	rate_limit?: UpdateRateLimitRequest;
 }
 
+export interface GetModelConfigsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 // Response types for model configs
 export interface GetModelConfigsResponse {
 	model_configs: ModelConfig[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Provider governance - for extending provider with budget/rate limit

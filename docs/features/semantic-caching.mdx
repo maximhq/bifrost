@@ -29,10 +29,20 @@ Semantic caching uses vector similarity search to intelligently cache AI respons
 
 Semantic caching requires a configured vector store. Bifrost supports the following vector databases:
 
-- **[Weaviate](/architecture/framework/vector-store#weaviate)**: Production-ready vector database with gRPC support
-- **[Redis](/architecture/framework/vector-store#redis)**: High-performance in-memory vector store using RediSearch-compatible APIs (including Valkey bundles with `FT.*` support)
-- **[Qdrant](/architecture/framework/vector-store#qdrant)**: Rust-based vector search engine with advanced filtering
-- **[Pinecone](/architecture/framework/vector-store#pinecone)**: Managed vector database service with serverless options
+<CardGroup cols={2}>
+  <Card title="Weaviate" icon="database" href="/integrations/vector-databases/weaviate">
+    Production-ready vector database with gRPC support.
+  </Card>
+  <Card title="Redis / Valkey" icon="database" href="/integrations/vector-databases/redis">
+    High-performance in-memory vector store using RediSearch-compatible APIs.
+  </Card>
+  <Card title="Qdrant" icon="database" href="/integrations/vector-databases/qdrant">
+    Rust-based vector search engine with advanced filtering.
+  </Card>
+  <Card title="Pinecone" icon="database" href="/integrations/vector-databases/pinecone">
+    Managed vector database service with serverless options.
+  </Card>
+</CardGroup>
 
 <Info>
 For detailed setup instructions and configuration options for each vector store, see the [Vector Store documentation](/architecture/framework/vector-store).

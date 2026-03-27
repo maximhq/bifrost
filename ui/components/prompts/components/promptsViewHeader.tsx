@@ -304,12 +304,12 @@ function SessionItem({
 
 	if (isEditing) {
 		return (
-			<div className="px-2 py-1.5" onKeyDown={(e) => e.stopPropagation()}>
+			<div className="flex items-center gap-2 rounded-sm px-2 py-1.5" onKeyDown={(e) => e.stopPropagation()}>
 				<Input
 					ref={inputRef}
 					defaultValue={session.name}
 					placeholder="Session name"
-					className="h-7 text-sm"
+					className="h-auto border-none bg-transparent p-0 text-sm shadow-none focus-visible:border-none focus-visible:ring-0"
 					data-testid="session-rename-input"
 					autoFocus
 					onKeyDown={(e) => {
@@ -326,7 +326,7 @@ function SessionItem({
 		<CommandItem
 			value={`${session.id}-${dateLabel}-${session.name}`}
 			onSelect={onSelect}
-			className="group/item flex items-center justify-between gap-2"
+			className="group/item flex items-center justify-between gap-2 py-1"
 		>
 			<div className="flex min-w-0 flex-col">
 				<span className="truncate text-sm">

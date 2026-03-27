@@ -7,7 +7,7 @@ import (
 )
 
 // ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
-func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -19,6 +19,9 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
+			continue
+		}
+		if !unfiltered && slices.Contains(blacklistedModels, model.ID) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -33,6 +36,9 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

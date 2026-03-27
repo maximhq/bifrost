@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"
+	maximSchemas "github.com/maximhq/maxim-go/schemas"
 )
 
 // PluginName is the canonical name for the maxim plugin.
@@ -284,14 +285,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	provider, model, _ := req.GetRequestFields()
 
 	// Determine request type and set appropriate tags
-	var messages []logging.CompletionRequest
+	var messages []maximSchemas.CompletionRequest
 	var latestMessage string
 
 	modelParams := make(map[string]interface{})
 
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		messages = append(messages, logging.CompletionRequest{
+		messages = append(messages, maximSchemas.CompletionRequest{
 			Role:    string(schemas.ChatMessageRoleUser),
 			Content: req.TextCompletionRequest.Input,
 		})
@@ -314,7 +315,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		for _, message := range req.ChatRequest.Input {
-			messages = append(messages, logging.CompletionRequest{
+			messages = append(messages, maximSchemas.CompletionRequest{
 				Role:    string(message.Role),
 				Content: message.Content,
 			})
@@ -353,7 +354,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 				if message.Role != nil {
 					role = schemas.ChatMessageRole(*message.Role)
 				}
-				messages = append(messages, logging.CompletionRequest{
+				messages = append(messages, maximSchemas.CompletionRequest{
 					Role:    string(role),
 					Content: message.Content,
 				})
@@ -548,7 +549,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 						errorType = *bifrostErr.Error.Type
 					}
 				}
-				genErr := logging.GenerationError{
+				genErr := maximSchemas.GenerationError{
 					Message: message,
 					Code:    &code,
 					Type:    &errorType,
@@ -576,12 +577,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 					} else {
 						logger.AddResultToGeneration(generationID, result.ChatResponse)
 					}
-			case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-				if streamResponse != nil {
-					logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
-				} else {
-					logger.AddResultToGeneration(generationID, result.ResponsesResponse)
-				}
+				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
+					} else {
+						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
+					}
 				}
 				if streamResponse != nil && isFinalChunk {
 					// Cleanup via central tracer

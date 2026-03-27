@@ -100,20 +100,10 @@
             ]
           },
           {
-            "group": "CLI Agents & Editors",
-            "icon": "command",
+            "group": "Integrations",
+            "icon": "plug",
             "pages": [
-              "cli-agents/overview",
-              "cli-agents/cursor",
-              "cli-agents/librechat",
-              "cli-agents/claude-code",
-              "cli-agents/codex-cli",
-              "cli-agents/gemini-cli",
-              "cli-agents/qwen-code",
-              "cli-agents/opencode",
-              "cli-agents/zed-editor",
-              "cli-agents/roo-code",
-              "cli-agents/open-webui"
+              "integrations/what-is-an-integration"
             ]
           },
           {
@@ -158,10 +148,127 @@
             ]
           },
           {
-            "group": "SDK Integrations",
-            "icon": "plug",
+            "group": "MCP Gateway",
+            "icon": "toolbox",
             "pages": [
-              "integrations/what-is-an-integration",
+              "mcp/overview",
+              "mcp/connecting-to-servers",
+              "mcp/oauth",
+              "mcp/tool-execution",
+              "mcp/agent-mode",
+              "mcp/code-mode",
+              "mcp/gateway-url",
+              "mcp/tool-hosting",
+              "mcp/filtering"
+            ]
+          },
+          {
+            "group": "Custom plugins",
+            "icon": "puzzle-piece",
+            "pages": [
+              "plugins/getting-started",
+              "plugins/building-dynamic-binary",
+              "plugins/sequencing",
+              {
+                "group": "Writing Plugins",
+                "icon": "code",
+                "pages": [
+                  "plugins/writing-go-plugin",
+                  "plugins/writing-wasm-plugin"
+                ]
+              },
+              "plugins/migration-guide"
+            ]
+          },
+          {
+            "group": "Open Source Features",
+            "icon": "bolt",
+            "pages": [
+              "features/drop-in-replacement",
+              "features/fallbacks",
+              "features/litellm-compat",
+              "features/keys-management",
+              "features/async-inference",
+              {
+                "group": "Governance",
+                "icon": "user-lock",
+                "pages": [
+                  "features/governance/virtual-keys",
+                  "features/governance/routing",
+                  "features/governance/budget-and-limits",
+                  "features/governance/mcp-tools",
+                  "features/governance/required-headers"
+                ]
+              },
+              "features/telemetry",
+              "features/semantic-caching",
+              {
+                "group": "Prompt Repository",
+                "icon": "folder",
+                "pages": [
+                  "features/prompt-repository/playground"
+                ]
+              },
+              {
+                "group": "Plugins",
+                "icon": "puzzle-piece",
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Enterprise Features",
+            "icon": "building",
+            "pages": [
+              "enterprise/guardrails",
+              "enterprise/clustering",
+              "enterprise/adaptive-load-balancing",
+              {
+                "group": "Advanced Governance",
+                "icon": "shield-check",
+                "pages": [
+                  "enterprise/advanced-governance",
+                  "enterprise/rbac"
+                ]
+              },
+              "enterprise/mcp-with-fa",
+              "enterprise/vault-support",
+              "enterprise/invpc-deployments",
+              "enterprise/custom-plugins",
+              "enterprise/audit-logs",
+              "enterprise/log-exports"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "icon": "plug",
+        "groups": [
+          {
+            "group": "CLI Agents & Editors",
+            "icon": "command",
+            "pages": [
+              "cli-agents/overview",
+              "cli-agents/cursor",
+              "cli-agents/librechat",
+              "cli-agents/claude-code",
+              "cli-agents/codex-cli",
+              "cli-agents/gemini-cli",
+              "cli-agents/qwen-code",
+              "cli-agents/opencode",
+              "cli-agents/zed-editor",
+              "cli-agents/roo-code",
+              "cli-agents/open-webui"
+            ]
+          },
+          {
+            "group": "SDKs & Frameworks",
+            "icon": "code",
+            "pages": [
               {
                 "group": "OpenAI SDK",
                 "icon": "openai",
@@ -200,120 +307,52 @@
             ]
           },
           {
-            "group": "MCP Gateway",
-            "icon": "toolbox",
+            "group": "Identity Providers (SSO)",
+            "icon": "id-card",
             "pages": [
-              "mcp/overview",
-              "mcp/connecting-to-servers",
-              "mcp/oauth",
-              "mcp/tool-execution",
-              "mcp/agent-mode",
-              "mcp/code-mode",
-              "mcp/gateway-url",
-              "mcp/tool-hosting",
-              "mcp/filtering"
+              "enterprise/setting-up-okta",
+              "enterprise/setting-up-entra"
             ]
           },
           {
-            "group": "Custom plugins",
-            "icon": "puzzle-piece",
+            "group": "Content Safety (Guardrails)",
+            "icon": "road-barrier",
             "pages": [
-              "plugins/getting-started",
-              "plugins/building-dynamic-binary",
-              {
-                "group": "Writing Plugins",
-                "icon": "code",
-                "pages": [
-                  "plugins/writing-go-plugin",
-                  "plugins/writing-wasm-plugin"
-                ]
-              },
-              "plugins/migration-guide"
+              "integrations/guardrails/aws-bedrock",
+              "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/grayswan",
+              "integrations/guardrails/patronus-ai"
             ]
           },
           {
-            "group": "Open Source Features",
-            "icon": "bolt",
+            "group": "Secret Management (Vaults)",
+            "icon": "vault",
             "pages": [
-              "features/drop-in-replacement",
-              "features/fallbacks",
-              "features/litellm-compat",
-              "features/keys-management",
-              "features/async-inference",
-              {
-                "group": "Governance",
-                "icon": "user-lock",
-                "pages": [
-                  "features/governance/virtual-keys",
-                  "features/governance/routing",
-                  "features/governance/budget-and-limits",
-                  "features/governance/mcp-tools",
-                  "features/governance/required-headers"
-                ]
-              },
-              {
-                "group": "Observability",
-                "icon": "binoculars",
-                "pages": [
-                  "features/observability/default",
-                  {
-                    "group": "Connectors",
-                    "icon": "arrows-left-right-to-line",
-                    "pages": [
-                      "features/observability/maxim",
-                      "features/observability/otel"
-                    ]
-                  }
-                ]
-              },
-              "features/telemetry",
-              "features/semantic-caching",
-              {
-                "group": "Plugins",
-                "icon": "puzzle-piece",
-                "pages": [
-                  "features/plugins/mocker",
-                  "features/plugins/jsonparser"
-                ]
-              }
+              "integrations/vaults/hashicorp-vault",
+              "integrations/vaults/aws-secrets-manager",
+              "integrations/vaults/google-secret-manager",
+              "integrations/vaults/azure-key-vault"
             ]
           },
           {
-            "group": "Enterprise Features",
-            "icon": "building",
+            "group": "Observability",
+            "icon": "binoculars",
             "pages": [
-              "enterprise/guardrails",
-              "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
-              {
-                "group": "Advanced Governance",
-                "icon": "shield-check",
-                "pages": [
-                  "enterprise/advanced-governance",
-                  "enterprise/rbac",
-                  {
-                    "group": "Identity Providers",
-                    "icon": "id-card",
-                    "pages": [
-                      "enterprise/setting-up-okta",
-                      "enterprise/setting-up-entra"
-                    ]
-                  }
-                ]
-              },
-              {
-                "group": "Enterprise Observability",
-                "icon": "binoculars",
-                "pages": [
-                  "enterprise/datadog-connector"
-                ]
-              },
-              "enterprise/mcp-with-fa",
-              "enterprise/vault-support",
-              "enterprise/invpc-deployments",
-              "enterprise/custom-plugins",
-              "enterprise/audit-logs",
-              "enterprise/log-exports"
+              "features/observability/default",
+              "features/observability/maxim",
+              "features/observability/otel",
+              "features/observability/prometheus",
+              "enterprise/datadog-connector"
+            ]
+          },
+          {
+            "group": "Vector Databases",
+            "icon": "database",
+            "pages": [
+              "integrations/vector-databases/weaviate",
+              "integrations/vector-databases/redis",
+              "integrations/vector-databases/qdrant",
+              "integrations/vector-databases/pinecone"
             ]
           }
         ]
@@ -429,6 +468,11 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.4.17",
+              "changelogs/v1.4.16",
+              "changelogs/v1.4.15",
+              "changelogs/v1.4.14",
+              "changelogs/v1.4.13",
               "changelogs/v1.4.12",
               "changelogs/v1.4.11",
               "changelogs/v1.4.10",
@@ -562,6 +606,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.3.10",
+              "changelogs/ent-v1.3.9",
               "changelogs/ent-v1.3.8"
             ]
           },

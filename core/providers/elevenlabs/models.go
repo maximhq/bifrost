@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -20,6 +20,9 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ModelID) {
 			continue
 		}
+		if !unfiltered && slices.Contains(blacklistedModels, model.ModelID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:   string(providerKey) + "/" + model.ModelID,
 			Name: schemas.Ptr(model.Name),
@@ -30,6 +33,9 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

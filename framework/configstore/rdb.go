@@ -250,6 +250,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
+			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
@@ -287,6 +288,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Name:               key.Name,
 				Value:              key.Value,
 				Models:             key.Models,
+				BlacklistedModels:  key.BlacklistedModels,
 				Weight:             &key.Weight,
 				Enabled:            key.Enabled,
 				UseForBatchAPI:     key.UseForBatchAPI,
@@ -421,6 +423,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
+	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PricingOverrides = configCopy.PricingOverrides
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
@@ -455,6 +458,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Name:               key.Name,
 			Value:              key.Value,
 			Models:             key.Models,
+			BlacklistedModels:  key.BlacklistedModels,
 			Weight:             &key.Weight,
 			Enabled:            key.Enabled,
 			UseForBatchAPI:     key.UseForBatchAPI,
@@ -560,6 +564,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
+		OpenAIConfig:             configCopy.OpenAIConfig,
 		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
 	}
@@ -576,6 +581,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Name:               key.Name,
 			Value:              key.Value,
 			Models:             key.Models,
+			BlacklistedModels:  key.BlacklistedModels,
 			Weight:             &key.Weight,
 			Enabled:            key.Enabled,
 			UseForBatchAPI:     key.UseForBatchAPI,
@@ -697,6 +703,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 				Name:               dbKey.Name,
 				Value:              dbKey.Value,
 				Models:             dbKey.Models,
+				BlacklistedModels:  dbKey.BlacklistedModels,
 				Weight:             getWeight(dbKey.Weight),
 				Enabled:            dbKey.Enabled,
 				UseForBatchAPI:     dbKey.UseForBatchAPI,
@@ -719,6 +726,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
+			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
@@ -746,6 +754,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 			Name:               dbKey.Name,
 			Value:              dbKey.Value,
 			Models:             dbKey.Models,
+			BlacklistedModels:  dbKey.BlacklistedModels,
 			Weight:             getWeight(dbKey.Weight),
 			Enabled:            dbKey.Enabled,
 			UseForBatchAPI:     dbKey.UseForBatchAPI,
@@ -768,6 +777,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
+		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
@@ -933,6 +943,44 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: &toolManagerConfig,
 	}, nil
+}
+
+// GetMCPClientsPaginated retrieves MCP clients with pagination and optional search.
+func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableMCPClient{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var clients []tables.TableMCPClient
+	if err := baseQuery.
+		Order("created_at ASC, client_id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&clients).Error; err != nil {
+		return nil, 0, err
+	}
+	return clients, totalCount, nil
 }
 
 // GetMCPClientByID retrieves an MCP client by ID from the database.
@@ -1678,12 +1726,12 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) ([]schemas.Key, error) {
 	var keys []tables.TableKey
 	if len(ids) > 0 {
-		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Where("key_id IN ?", ids).Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, weight").Find(&keys).Error
+		err := s.db.WithContext(ctx).Select("id, key_id, name, models_json, blacklisted_models_json, weight").Find(&keys).Error
 		if err != nil {
 			return nil, err
 		}
@@ -1694,11 +1742,16 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 		if models == nil {
 			models = []string{} // Ensure models is never nil in JSON response
 		}
+		blacklisted := key.BlacklistedModels
+		if blacklisted == nil {
+			blacklisted = []string{}
+		}
 		redactedKeys[i] = schemas.Key{
-			ID:     key.KeyID,
-			Name:   key.Name,
-			Models: models,
-			Weight: getWeight(key.Weight),
+			ID:                key.KeyID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklisted,
+			Weight:            getWeight(key.Weight),
 		}
 	}
 	return redactedKeys, nil
@@ -2058,6 +2111,46 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 	return teams, nil
 }
 
+// GetTeamsPaginated retrieves teams with pagination, filtering, and search support.
+func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableTeam{})
+
+	if params.CustomerID != "" {
+		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
+	}
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var teams []tables.TableTeam
+	if err := baseQuery.
+		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&teams).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return teams, totalCount, nil
+}
+
 // GetTeam retrieves a specific team from the database.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
@@ -2151,6 +2244,38 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 		return nil, err
 	}
 	return customers, nil
+}
+
+// GetCustomersPaginated retrieves customers with pagination and optional search filtering.
+func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableCustomer{})
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var customers []tables.TableCustomer
+	if err := baseQuery.
+		Preload("Teams").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	return customers, totalCount, nil
 }
 
 // GetCustomer retrieves a specific customer from the database.
@@ -2451,7 +2576,7 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 }
 
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
-// rules by priority ASC, created_at DESC; targets by weight DESC for deterministic ordering.
+// rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
 	q := s.db.WithContext(ctx).
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
@@ -2460,7 +2585,7 @@ func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]ta
 				Order("COALESCE(model, '') ASC").
 				Order("COALESCE(key_id, '') ASC")
 		}).
-		Order("priority ASC, created_at DESC")
+		Order("priority ASC, created_at DESC, id ASC")
 	for _, scope := range scopes {
 		q = scope(q)
 	}
@@ -2474,6 +2599,50 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 		return nil, err
 	}
 	return rules, nil
+}
+
+// GetRoutingRulesPaginated retrieves routing rules with pagination and optional search filtering.
+func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableRoutingRule{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var rules []tables.TableRoutingRule
+	if err := baseQuery.
+		Preload("Targets", func(db *gorm.DB) *gorm.DB {
+			return db.Order("weight DESC").
+				Order("COALESCE(provider, '') ASC").
+				Order("COALESCE(model, '') ASC").
+				Order("COALESCE(key_id, '') ASC")
+		}).
+		Order("priority ASC, created_at DESC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&rules).Error; err != nil {
+		return nil, 0, err
+	}
+	return rules, totalCount, nil
 }
 
 // GetRoutingRulesByScope retrieves routing rules by scope and scope ID, ordered by priority ASC.
@@ -2657,6 +2826,45 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 		return nil, err
 	}
 	return modelConfigs, nil
+}
+
+func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableModelConfig{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var modelConfigs []tables.TableModelConfig
+	if err := baseQuery.
+		Preload("Budget").
+		Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, 0, err
+	}
+	return modelConfigs, totalCount, nil
 }
 
 // GetModelConfig retrieves a specific model config from the database by model name and optional provider.

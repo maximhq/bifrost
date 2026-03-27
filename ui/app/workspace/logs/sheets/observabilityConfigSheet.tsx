@@ -13,7 +13,7 @@ export function ObservabilityConfigSheet({ open, onOpenChange }: ObservabilityCo
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]"
+        className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]"
       >
         <SheetHeader className="flex flex-row items-center px-0">
           <SheetTitle>Observability settings</SheetTitle>

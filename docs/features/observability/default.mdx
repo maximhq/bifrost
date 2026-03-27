@@ -207,7 +207,7 @@ func main() {
 
 Retrieve and analyze logs with powerful filtering capabilities via the UI, API, and WebSockets.
 
-![Advanced Log Filtering Interface](../../media/ui-log-filtering.gif)
+![Advanced Log Filtering Interface](/media/ui-log-filtering.gif)
 
 ### Web UI
 
@@ -540,10 +540,27 @@ In benchmarks, the logging plugin adds **< 0.1ms overhead** to request processin
 
 ---
 
+## Connectors
+
+<CardGroup cols={2}>
+  <Card title="Maxim AI" icon="infinity" href="/features/observability/maxim">
+    Comprehensive LLM observability and evaluation.
+  </Card>
+  <Card title="OpenTelemetry" icon="bolt" href="/features/observability/otel">
+    OTLP integration for distributed tracing.
+  </Card>
+  <Card title="Prometheus" icon="chart-line" href="/features/observability/prometheus">
+    Native Prometheus metrics.
+  </Card>
+  <Card title="Datadog" icon="dog" href="/enterprise/datadog-connector">
+    Native APM, LLM Observability, and metrics.
+  </Card>
+</CardGroup>
+
+---
+
 ## Next Steps
 
-- **[Maxim Plugin](./maxim)** - Advanced observability with evaluation and monitoring
-- **[OTel Plugin](./otel)** - OpenTelemetry integration for distributed tracing
 - **[Gateway Setup](../../quickstart/gateway/setting-up)** - Get Bifrost running with tracing enabled
 - **[Provider Configuration](../../quickstart/gateway/provider-configuration)** - Configure multiple providers for better insights
 - **[Telemetry](../telemetry)** - Prometheus metrics and dashboards

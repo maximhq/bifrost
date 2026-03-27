@@ -74,6 +74,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				stream_idle_timeout_in_seconds:
+					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				max_conns_per_host:
+					provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
 		},
 	});
@@ -105,6 +110,11 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
 				insecure_skip_verify: data.network_config?.insecure_skip_verify ?? false,
 				ca_cert_pem: data.network_config?.ca_cert_pem?.trim() || undefined,
+				stream_idle_timeout_in_seconds:
+					data.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				max_conns_per_host:
+					data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -133,6 +143,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
 				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
+				stream_idle_timeout_in_seconds:
+					provider.network_config?.stream_idle_timeout_in_seconds ?? DefaultNetworkConfig.stream_idle_timeout_in_seconds,
+				max_conns_per_host:
+					provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -194,6 +208,41 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											/>
 										</FormControl>
 										<FormDescription>{secondsToHumanReadable(field.value)}</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.stream_idle_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+										<FormControl>
+											<Input
+												placeholder="60"
+												data-testid="network-config-stream-idle-timeout-input"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											{field.value ? secondsToHumanReadable(field.value) : ""}
+											{" "}Max time to wait for next chunk before closing a stalled stream
+										</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -291,6 +340,64 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<div className="flex w-full flex-row items-start gap-4">
+							<FormField
+								control={form.control}
+								name="network_config.max_conns_per_host"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Max Connections Per Host</FormLabel>
+										<FormControl>
+											<Input
+												data-testid="network-config-max-conns-per-host-input"
+												placeholder="5000"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>
+											Max TCP connections per provider host. For HTTP/2 providers (e.g. Bedrock), each connection supports ~100 concurrent streams.
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</div>
+						<FormField
+							control={form.control}
+							name="network_config.enforce_http2"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between">
+									<div className="space-y-0.5">
+										<FormLabel>Enforce HTTP/2</FormLabel>
+										<FormDescription>
+											Force HTTP/2 on provider connections. Relevant for net/http-based providers (e.g. Bedrock) where each HTTP/2 connection supports ~100 concurrent streams.
+										</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value ?? false}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+											data-testid="network-config-enforce-http2"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="network_config.extra_headers"

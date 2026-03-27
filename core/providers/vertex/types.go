@@ -88,6 +88,23 @@ func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(r.RequestBody)
 }
 
+// VertexRawRequestBody holds pre-serialized JSON bytes to preserve key ordering
+// for LLM prompt caching. This avoids the map[string]interface{} round-trip that
+// destroys key order.
+type VertexRawRequestBody struct {
+	RawBody     []byte                 `json:"-"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (r *VertexRawRequestBody) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// MarshalJSON returns the pre-serialized JSON bytes directly, preserving key order.
+func (r *VertexRawRequestBody) MarshalJSON() ([]byte, error) {
+	return r.RawBody, nil
+}
+
 // VertexAdvancedVoiceOptions represents advanced voice options for TTS synthesis.
 type VertexAdvancedVoiceOptions struct {
 	LowLatencyJourneySynthesis bool `json:"lowLatencyJourneySynthesis,omitempty"`

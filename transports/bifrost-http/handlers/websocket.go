@@ -180,6 +180,27 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		operationType = "create"
 	}
 
+	// Trim payload for table view: keep only the last input message and nil out
+	// large output fields that the table never renders.
+	if len(logEntry.InputHistoryParsed) > 1 {
+		logEntry.InputHistoryParsed = logEntry.InputHistoryParsed[len(logEntry.InputHistoryParsed)-1:]
+	}
+	if len(logEntry.ResponsesInputHistoryParsed) > 1 {
+		logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
+	}
+	logEntry.OutputMessageParsed = nil
+	logEntry.ResponsesOutputParsed = nil
+	logEntry.EmbeddingOutputParsed = nil
+	logEntry.RerankOutputParsed = nil
+	logEntry.ParamsParsed = nil
+	logEntry.ToolsParsed = nil
+	logEntry.ToolCallsParsed = nil
+	logEntry.SpeechOutputParsed = nil
+	logEntry.TranscriptionOutputParsed = nil
+	logEntry.ImageGenerationOutputParsed = nil
+	logEntry.ListModelsOutputParsed = nil
+	logEntry.CacheDebugParsed = nil
+
 	message := struct {
 		Type      string        `json:"type"`
 		Operation string        `json:"operation"` // "create" or "update"
