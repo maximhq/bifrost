@@ -77,7 +77,9 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
 			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
-			if len(config.ClientConfig.AllowedHeaders) > 0 {
+			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
+				allowedHeaders = []string{"*"}
+			} else if len(config.ClientConfig.AllowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
 				for _, header := range config.ClientConfig.AllowedHeaders {
 					if !slices.Contains(allowedHeaders, header) {

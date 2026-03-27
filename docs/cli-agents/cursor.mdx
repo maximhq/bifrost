@@ -8,6 +8,10 @@ icon: "arrow-pointer"
 
 ![Setting up Bifrost for Cursor](/media/ides/cursor-add-custom-model-1.png)
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Cursor, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 1. **Open Cursor Settings**
@@ -22,9 +26,9 @@ icon: "arrow-pointer"
 
    Toggle **Override OpenAI Base URL** to ON and enter your Bifrost endpoint:
 
-   ```
-   http://localhost:8080/cursor
-   ```
+   <Note>
+      For cursor you need publicly accessible link for Bifrost.
+   </Note>
 
    For deployed instances, use your Bifrost deployment URL (e.g., `https://bifrost.example.com/cursor`).
 

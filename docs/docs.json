@@ -256,6 +256,7 @@
               "cli-agents/cursor",
               "cli-agents/librechat",
               "cli-agents/claude-code",
+              "cli-agents/claude-for-office",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
