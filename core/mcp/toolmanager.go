@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -218,7 +219,23 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 		}
 	}
 
+	// Sort tools by function name for deterministic ordering.
+	// MCP servers back tools with Go maps whose iteration order is randomized,
+	// so without sorting the tool list changes across requests, breaking
+	// prefix-based prompt caching (e.g. Anthropic, OpenAI).
+	sort.Slice(availableTools, func(i, j int) bool {
+		return chatToolName(availableTools[i]) < chatToolName(availableTools[j])
+	})
+
 	return availableTools
+}
+
+// chatToolName returns the function name of a ChatTool, or "" if unavailable.
+func chatToolName(t schemas.ChatTool) string {
+	if t.Function != nil {
+		return t.Function.Name
+	}
+	return ""
 }
 
 // buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates

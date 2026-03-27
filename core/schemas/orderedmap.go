@@ -54,9 +54,10 @@ func NewOrderedMapFromPairs(pairs ...Pair) *OrderedMap {
 }
 
 // OrderedMapFromMap creates an OrderedMap from a plain map.
-// Key order is NOT guaranteed since Go maps have undefined iteration order.
-// Use this only when insertion order doesn't matter (e.g., for hashing).
-func OrderedMapFromMap(m map[string]interface{}) *OrderedMap {
+// Since Go maps have undefined iteration order, keys are sorted
+// lexicographically by default for deterministic output. Pass a custom
+// sortFn to override the sorting behavior (e.g. case-insensitive, reverse).
+func OrderedMapFromMap(m map[string]interface{}, sortFn ...func([]string)) *OrderedMap {
 	if m == nil {
 		return nil
 	}
@@ -67,6 +68,11 @@ func OrderedMapFromMap(m map[string]interface{}) *OrderedMap {
 	for k, v := range m {
 		om.keys = append(om.keys, k)
 		om.values[k] = v
+	}
+	if len(sortFn) > 0 && sortFn[0] != nil {
+		sortFn[0](om.keys)
+	} else {
+		sort.Strings(om.keys)
 	}
 	return om
 }

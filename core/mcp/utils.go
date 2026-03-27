@@ -468,23 +468,20 @@ func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) 
 	return false // Tool is allowed (default when no filtering specified)
 }
 
-// convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
+// convertMCPToolToBifrostSchema converts an MCP tool definition to the Bifrost ChatTool format.
+//
+// Properties are stored in an OrderedMap with keys sorted lexicographically.
+// This guarantees stable JSON serialization, which is required for reliable
+// prompt caching in downstream providers.
 func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) schemas.ChatTool {
 	var properties *schemas.OrderedMap
 	if len(mcpTool.InputSchema.Properties) > 0 {
-		// Fix array schemas on the source map before copying to OrderedMap
 		FixArraySchemas(mcpTool.InputSchema.Properties, logger)
-
-		orderedProps := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Properties))
-		for k, v := range mcpTool.InputSchema.Properties {
-			orderedProps.Set(k, v)
-		}
-
-		properties = orderedProps
+		properties = schemas.OrderedMapFromMap(mcpTool.InputSchema.Properties)
 	} else {
-		// For tools with no parameters, initialize an empty properties map
+		// For tools with no parameters, initialize an empty properties map.
 		// This is required by some providers (e.g., OpenAI) which expect
-		// object schemas to always have a properties field, even if empty
+		// object schemas to always have a properties field, even if empty.
 		properties = schemas.NewOrderedMap()
 	}
 	return schemas.ChatTool{

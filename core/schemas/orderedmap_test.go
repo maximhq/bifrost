@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -283,6 +284,27 @@ func TestOrderedMapFromMap(t *testing.T) {
 func TestOrderedMapFromMap_Nil(t *testing.T) {
 	om := OrderedMapFromMap(nil)
 	assert.Nil(t, om)
+}
+
+func TestOrderedMapFromMap_DefaultSortsKeys(t *testing.T) {
+	m := map[string]interface{}{"z": 3, "a": 1, "m": 2}
+	om := OrderedMapFromMap(m)
+
+	data, err := json.Marshal(om)
+	require.NoError(t, err)
+	assert.Equal(t, `{"a":1,"m":2,"z":3}`, string(data))
+}
+
+func TestOrderedMapFromMap_CustomSortFn(t *testing.T) {
+	m := map[string]interface{}{"z": 3, "a": 1, "m": 2}
+	reverse := func(keys []string) {
+		sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	}
+	om := OrderedMapFromMap(m, reverse)
+
+	data, err := json.Marshal(om)
+	require.NoError(t, err)
+	assert.Equal(t, `{"z":3,"m":2,"a":1}`, string(data))
 }
 
 func TestOrderedMap_NestedOrderedMapMarshal(t *testing.T) {
