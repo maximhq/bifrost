@@ -4,6 +4,8 @@ import {
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
+	LogSessionDetailResponse,
+	LogSessionSummaryResponse,
 	LogsHistogramResponse,
 	LogStats,
 	ModelHistogramResponse,
@@ -22,6 +24,9 @@ import { RoutingRule } from "@/lib/types/routingRules";
 function buildFilterParams(filters: LogFilters): Record<string, string | number> {
 	const params: Record<string, string | number> = {};
 
+	if (filters.parent_request_id) {
+		params.parent_request_id = filters.parent_request_id;
+	}
 	if (filters.providers && filters.providers.length > 0) {
 		params.providers = filters.providers.join(",");
 	}
@@ -90,6 +95,31 @@ export const logsApi = baseApi.injectEndpoints({
 					order: pagination.order,
 					...buildFilterParams(filters),
 				},
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		getLogSessionById: builder.query<
+			LogSessionDetailResponse,
+			{
+				sessionId: string;
+				pagination: Pick<Pagination, "limit" | "offset" | "order">;
+			}
+		>({
+			query: ({ sessionId, pagination }) => ({
+				url: `/logs/sessions/${encodeURIComponent(sessionId)}`,
+				params: {
+					limit: pagination.limit,
+					offset: pagination.offset,
+					order: pagination.order,
+				},
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		getLogSessionSummaryById: builder.query<LogSessionSummaryResponse, string>({
+			query: (sessionId) => ({
+				url: `/logs/sessions/${encodeURIComponent(sessionId)}/summary`,
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -295,8 +325,10 @@ export const {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderTokenHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
+	useGetLogSessionSummaryByIdQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
+	useLazyGetLogSessionByIdQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
 	useLazyGetLogsHistogramQuery,

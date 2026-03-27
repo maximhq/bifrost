@@ -4,30 +4,73 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
-import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { cn } from "@/lib/utils";
 import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown, Trash2 } from "lucide-react";
 import moment from "moment";
 
-function getMessage(log?: LogEntry) {
+function getAssistantToolCallSummary(log?: LogEntry): string {
+	const toolCalls = log?.output_message?.tool_calls || [];
+	return toolCalls
+		.map((toolCall) => {
+			const name = toolCall?.function?.name;
+			if (!name) {
+				return "";
+			}
+			const argumentsText = toolCall?.function?.arguments?.trim();
+			return argumentsText ? `${name}(${argumentsText})` : name;
+		})
+		.filter(Boolean)
+		.join("\n");
+}
+
+function getMessageFromContent(content?: ChatMessageContent): string {
+	if (content == undefined) {
+		return "";
+	}
+	if (typeof content === "string") {
+		return content;
+	}
+	let lastTextContentBlock = "";
+	for (const block of content) {
+		if ((block.type === "text" || block.type === "input_text" || block.type === "output_text") && block.text) {
+			lastTextContentBlock = block.text;
+		}
+	}
+	return lastTextContentBlock;
+}
+
+export function getRealtimeTurnMessages(log?: LogEntry): { tool?: string; user?: string; assistant?: string; assistantToolCall?: string } {
+	const toolMessages = log?.input_history?.filter((message) => message.role === "tool") || [];
+	const userMessages = log?.input_history?.filter((message) => message.role === "user") || [];
+	return {
+		tool: toolMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
+		user: userMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
+		assistant: log?.output_message ? getMessageFromContent(log.output_message.content) : "",
+		assistantToolCall: getAssistantToolCallSummary(log),
+	};
+}
+
+export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
 		return "N/A";
 	}
+	if (log?.object === "realtime.turn") {
+		const messages = getRealtimeTurnMessages(log);
+		const parts = [
+			messages.tool ? `Tool Result: ${messages.tool}` : "",
+			messages.user ? `User: ${messages.user}` : "",
+			messages.assistantToolCall ? `Assistant Tool Call: ${messages.assistantToolCall}` : "",
+			messages.assistant ? `Assistant: ${messages.assistant}` : "",
+		].filter(Boolean);
+		if (parts.length > 0) {
+			return parts.join("\n");
+		}
+		return "";
+	}
 	if (log?.input_history && log.input_history.length > 0) {
-		let userMessageContent = log.input_history[log.input_history.length - 1].content;
-		if (userMessageContent == undefined) {
-			return "";
-		}
-		if (typeof userMessageContent === "string") {
-			return userMessageContent;
-		}
-		let lastTextContentBlock = "";
-		for (const block of userMessageContent) {
-			if (block.type === "text" && block.text) {
-				lastTextContentBlock = block.text;
-			}
-		}
-		return lastTextContentBlock;
+		return getMessageFromContent(log.input_history[log.input_history.length - 1].content);
 	} else if (log?.responses_input_history && log.responses_input_history.length > 0) {
 		let lastMessage = log.responses_input_history[log.responses_input_history.length - 1];
 		let lastMessageContent = lastMessage.content;
@@ -52,6 +95,8 @@ function getMessage(log?: LogEntry) {
 			}
 		}
 		return lastTextContentBlock ?? "";
+	} else if (log?.output_message) {
+		return getMessageFromContent(log.output_message.content);
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
@@ -66,7 +111,37 @@ function getMessage(log?: LogEntry) {
 	return "";
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true, metadataKeys: string[] = []): ColumnDef<LogEntry>[] => {
+export function LogMessageCell({ log, maxWidth = "max-w-[400px]" }: { log: LogEntry; maxWidth?: string }) {
+	const input = getMessage(log);
+	const isLargePayload = log.is_large_payload_request || log.is_large_payload_response;
+	const realtimeMessages = log.object === "realtime.turn" ? getRealtimeTurnMessages(log) : null;
+
+	return (
+		<div className="flex items-center gap-1.5">
+			{isLargePayload && (
+				<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
+					LP
+				</span>
+			)}
+			{realtimeMessages && (realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+				<div className={cn(maxWidth, "font-mono text-sm font-normal leading-5")} title={input || "-"}>
+					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
+					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
+					{realtimeMessages.assistantToolCall ? <div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div> : null}
+					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
+				</div>
+			) : (
+				<div className={cn(maxWidth, "truncate font-mono text-sm font-normal")} title={input || "-"}>
+					{input || (isLargePayload
+					? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+					: "-")}
+				</div>
+			)}
+		</div>
+	);
+}
+
+export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
 		{
 			accessorKey: "status",
@@ -105,24 +180,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		{
 			accessorKey: "input",
 			header: "Message",
-			cell: ({ row }) => {
-				const input = getMessage(row.original);
-				const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
-				return (
-					<div className="flex items-center gap-1.5">
-						{isLargePayload && (
-							<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
-								LP
-							</span>
-						)}
-						<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
-							{input || (isLargePayload
-								? `Large payload ${row.original.is_large_payload_request && row.original.is_large_payload_response ? "request & response" : row.original.is_large_payload_request ? "request" : "response"}`
-								: "-")}
-						</div>
-					</div>
-				);
-			},
+			cell: ({ row }) => <LogMessageCell log={row.original} />,
 		},
 		{
 			accessorKey: "provider",
@@ -206,16 +264,6 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	];
 
-	// Generate dynamic metadata columns
-	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
-		id: `metadata_${key}`,
-		header: key.charAt(0).toUpperCase() + key.slice(1),
-		cell: ({ row }) => {
-			const value = row.original.metadata?.[key];
-			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
-		},
-	}));
-
 	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
 		cell: ({ row }) => {
@@ -228,5 +276,5 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	};
 
-	return [...baseColumns, ...metadataColumns, actionsColumn];
+	return [...baseColumns, actionsColumn];
 };

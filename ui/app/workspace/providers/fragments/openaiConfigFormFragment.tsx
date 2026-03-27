@@ -1,18 +1,18 @@
 "use client";
 
-import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
-import { ModelProvider } from "@/lib/types/config";
+import type { ModelProvider } from "@/lib/types/config";
 import { openaiConfigFormSchema, type OpenAIConfigFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface OpenAIConfigFormFragmentProps {
 	provider: ModelProvider;
@@ -42,11 +42,13 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 	}, [form, provider.name, provider.openai_config?.disable_store]);
 
 	const onSubmit = (data: OpenAIConfigFormSchema) => {
-		updateProvider(buildProviderUpdatePayload(provider, {
-			openai_config: {
-				disable_store: data.disable_store,
-			},
-		}))
+		updateProvider(
+			buildProviderUpdatePayload(provider, {
+				openai_config: {
+					disable_store: data.disable_store,
+				},
+			}),
+		)
 			.unwrap()
 			.then(() => {
 				toast.success("OpenAI configuration updated successfully");
