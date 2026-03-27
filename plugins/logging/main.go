@@ -447,6 +447,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		Model:    model,
 		Object:   string(req.RequestType),
 	}
+	if req.RequestType == schemas.RealtimeRequest {
+		initialData.Object = "realtime.turn"
+	}
 
 	if p.disableContentLogging == nil || !*p.disableContentLogging {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
@@ -467,6 +470,10 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				tools = append(tools, *tool.ToChatTool())
 			}
 			initialData.Tools = tools
+		case schemas.RealtimeRequest:
+			if req.ResponsesRequest != nil {
+				initialData.Params = req.ResponsesRequest.Params
+			}
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
 		case schemas.RerankRequest:
@@ -528,7 +535,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
-	initialData.Metadata = p.captureLoggingHeaders(ctx)
+	initialData.Metadata = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
 
 	// System entries are set after so they take precedence over dynamic header values
 	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
@@ -546,10 +553,15 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Determine effective request ID (fallback override)
 	effectiveRequestID := requestID
 	var parentRequestID string
+	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" {
+		parentRequestID = directParentRequestID
+	}
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
 		effectiveRequestID = fallbackRequestID
-		parentRequestID = requestID
+		if parentRequestID == "" {
+			parentRequestID = requestID
+		}
 	}
 
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
@@ -626,7 +638,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	var tracer schemas.Tracer
 	var traceID string
-	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && requestType != schemas.RealtimeRequest {
 		var err error
 		tracer, traceID, err = bifrost.GetTracerFromContext(ctx)
 		if err != nil {
@@ -640,7 +652,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// and skip the write queue entirely. The accumulator work (ProcessStreamingChunk)
 	// is fast (mutex + append). Only final chunks, errors, and non-streaming
 	// responses need a DB write.
-	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && !isFinalChunk && result != nil && bifrostErr == nil {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && requestType != schemas.RealtimeRequest && !isFinalChunk && result != nil && bifrostErr == nil {
 		if tracer != nil && traceID != "" {
 			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
 		}
@@ -679,6 +691,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	pending := pendingVal.(*PendingLogData)
+	if requestType == schemas.RealtimeRequest {
+		if resolvedRealtimeSessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRealtimeSessionID); resolvedRealtimeSessionID != "" {
+			pending.ParentRequestID = resolvedRealtimeSessionID
+			if pending.InitialData.Metadata == nil {
+				pending.InitialData.Metadata = make(map[string]interface{})
+			}
+			pending.InitialData.Metadata["realtime_session_id"] = resolvedRealtimeSessionID
+		}
+	}
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
@@ -689,6 +710,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, numberOfRetries, latency)
 	entry.MetadataParsed = pending.InitialData.Metadata
+	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Branch based on response type to populate output-specific fields
@@ -728,7 +750,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	// Path B: Streaming final chunk
-	if bifrost.IsStreamRequestType(requestType) {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.RealtimeRequest {
 		var streamResponse *streaming.ProcessedStreamResponse
 		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
 			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
@@ -786,7 +808,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		entry.ErrorDetailsParsed = bifrostErr
 	} else if result != nil {
 		entry.Status = "success"
-		p.applyNonStreamingOutputToEntry(entry, result)
+		if requestType == schemas.RealtimeRequest {
+			p.applyRealtimeOutputToEntry(entry, result)
+		} else {
+			p.applyNonStreamingOutputToEntry(entry, result)
+		}
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = "error"
