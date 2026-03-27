@@ -56,16 +56,16 @@ func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if e.Text != nil {
-		return Marshal(*e.Text)
+		return MarshalSorted(*e.Text)
 	}
 	if e.Texts != nil {
-		return Marshal(e.Texts)
+		return MarshalSorted(e.Texts)
 	}
 	if e.Embedding != nil {
-		return Marshal(e.Embedding)
+		return MarshalSorted(e.Embedding)
 	}
 	if e.Embeddings != nil {
-		return Marshal(e.Embeddings)
+		return MarshalSorted(e.Embeddings)
 	}
 
 	return nil, fmt.Errorf("invalid embedding input")
@@ -127,13 +127,13 @@ type EmbeddingStruct struct {
 
 func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 	if be.EmbeddingStr != nil {
-		return Marshal(be.EmbeddingStr)
+		return MarshalSorted(be.EmbeddingStr)
 	}
 	if be.EmbeddingArray != nil {
-		return Marshal(be.EmbeddingArray)
+		return MarshalSorted(be.EmbeddingArray)
 	}
 	if be.Embedding2DArray != nil {
-		return Marshal(be.Embedding2DArray)
+		return MarshalSorted(be.Embedding2DArray)
 	}
 	return nil, fmt.Errorf("no embedding found")
 }

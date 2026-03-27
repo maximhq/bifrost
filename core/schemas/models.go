@@ -37,7 +37,7 @@ func (k KeyStatus) MarshalJSON() ([]byte, error) {
 		errCopy.ExtraFields.KeyStatuses = nil
 		alias.Error = &errCopy
 	}
-	return Marshal(alias)
+	return MarshalSorted(alias)
 }
 
 type BifrostListModelsRequest struct {
@@ -214,7 +214,7 @@ func encodePaginationCursor(offset int, lastID string) (string, error) {
 		LastID: lastID,
 	}
 
-	jsonData, err := Marshal(cursor)
+	jsonData, err := MarshalSorted(cursor)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal pagination cursor: %w", err)
 	}

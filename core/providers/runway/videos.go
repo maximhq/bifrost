@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -84,12 +83,9 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 				if refs, ok := refsVal.([]Reference); ok && refs != nil {
 					request.References = refs
 					delete(request.ExtraParams, "references")
-				} else if data, err := sonic.Marshal(refsVal); err == nil {
-					var refs []Reference
-					if sonic.Unmarshal(data, &refs) == nil {
-						request.References = refs
-						delete(request.ExtraParams, "references")
-					}
+				} else if refs, err := schemas.ConvertViaJSON[[]Reference](refsVal); err == nil {
+					request.References = refs
+					delete(request.ExtraParams, "references")
 				}
 			}
 
@@ -98,12 +94,9 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 				if refImages, ok := refImagesVal.([]ReferenceImage); ok && refImages != nil {
 					delete(request.ExtraParams, "reference_images")
 					request.ReferenceImages = refImages
-				} else if data, err := sonic.Marshal(refImagesVal); err == nil {
-					var refImages []ReferenceImage
-					if sonic.Unmarshal(data, &refImages) == nil {
-						delete(request.ExtraParams, "reference_images")
-						request.ReferenceImages = refImages
-					}
+				} else if refImages, err := schemas.ConvertViaJSON[[]ReferenceImage](refImagesVal); err == nil {
+					delete(request.ExtraParams, "reference_images")
+					request.ReferenceImages = refImages
 				}
 			}
 
@@ -113,12 +106,9 @@ func ToRunwayVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 					if cm, ok := cmVal.(*ContentModeration); ok && cm != nil {
 						delete(request.ExtraParams, "content_moderation")
 						request.ContentModeration = cm
-					} else if data, err := sonic.Marshal(cmVal); err == nil {
-						var cm ContentModeration
-						if sonic.Unmarshal(data, &cm) == nil {
-							delete(request.ExtraParams, "content_moderation")
-							request.ContentModeration = &cm
-						}
+					} else if cm, err := schemas.ConvertViaJSON[ContentModeration](cmVal); err == nil {
+						delete(request.ExtraParams, "content_moderation")
+						request.ContentModeration = &cm
 					}
 				}
 			}

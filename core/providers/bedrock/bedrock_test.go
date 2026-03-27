@@ -119,7 +119,15 @@ func assertBedrockRequestEqual(t *testing.T, expected, actual *bedrock.BedrockCo
 		actualTool, exists := actualToolMap[name]
 		assert.True(t, exists, "Tool %s not found in actual tools", name)
 		if exists {
-			assert.Equal(t, expectedTool, actualTool, "Tool %s differs", name)
+			// Compare tool specs field-by-field, using JSON-semantic comparison
+			// for InputSchema to handle key ordering differences from sorted marshaling
+			if expectedTool.ToolSpec != nil && actualTool.ToolSpec != nil {
+				assert.Equal(t, expectedTool.ToolSpec.Name, actualTool.ToolSpec.Name, "Tool %s name differs", name)
+				assert.Equal(t, expectedTool.ToolSpec.Description, actualTool.ToolSpec.Description, "Tool %s description differs", name)
+				jsonEqual(t, expectedTool.ToolSpec.InputSchema.JSON, actualTool.ToolSpec.InputSchema.JSON, "Tool %s input schema differs", name)
+			} else {
+				assert.Equal(t, expectedTool, actualTool, "Tool %s differs", name)
+			}
 		}
 	}
 }

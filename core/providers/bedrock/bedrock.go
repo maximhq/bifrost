@@ -2878,7 +2878,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		}
 	}
 
-	jsonData, err := sonic.Marshal(bedrockReq)
+	jsonData, err := providerUtils.MarshalSorted(bedrockReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
@@ -3609,7 +3609,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	countTokensReq := &BedrockCountTokensRequest{}
 	countTokensReq.Input.Converse = converseReq
 
-	jsonData, err := sonic.Marshal(countTokensReq)
+	jsonData, err := providerUtils.MarshalSorted(countTokensReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}

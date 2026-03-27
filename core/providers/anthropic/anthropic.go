@@ -1396,7 +1396,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 		}
 	}
 
-	jsonData, err := sonic.Marshal(anthropicReq)
+	jsonData, err := providerUtils.MarshalSorted(anthropicReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}

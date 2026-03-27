@@ -90,13 +90,13 @@ func (vi *SpeechVoiceInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if vi.Voice != nil {
-		return Marshal(*vi.Voice)
+		return MarshalSorted(*vi.Voice)
 	}
 	if len(vi.MultiVoiceConfig) > 0 {
-		return Marshal(vi.MultiVoiceConfig)
+		return MarshalSorted(vi.MultiVoiceConfig)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for SpeechVoiceInput.

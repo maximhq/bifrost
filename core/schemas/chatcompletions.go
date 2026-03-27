@@ -374,7 +374,7 @@ func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
 	type Alias ToolFunctionParameters
-	data, err := Marshal(Alias(t))
+	data, err := MarshalSorted(Alias(t))
 	if err != nil {
 		return nil, err
 	}
@@ -495,12 +495,12 @@ func (a AdditionalPropertiesStruct) MarshalJSON() ([]byte, error) {
 
 	// If bool is set, marshal as boolean
 	if a.AdditionalPropertiesBool != nil {
-		return Marshal(*a.AdditionalPropertiesBool)
+		return MarshalSorted(*a.AdditionalPropertiesBool)
 	}
 
 	// If map is set, marshal as object
 	if a.AdditionalPropertiesMap != nil {
-		return Marshal(a.AdditionalPropertiesMap)
+		return MarshalSorted(a.AdditionalPropertiesMap)
 	}
 
 	// If both are nil, return null
@@ -586,7 +586,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 	buf.WriteByte('{')
 
 	// Always emit "type" first
-	typeBytes, err := Marshal(string(s.Type))
+	typeBytes, err := MarshalSorted(string(s.Type))
 	if err != nil {
 		return nil, err
 	}
@@ -596,7 +596,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 	switch s.Type {
 	case ChatToolChoiceTypeFunction:
 		if s.Function != nil {
-			funcBytes, err := Marshal(s.Function)
+			funcBytes, err := MarshalSorted(s.Function)
 			if err != nil {
 				return nil, err
 			}
@@ -605,7 +605,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 		}
 	case ChatToolChoiceTypeCustom:
 		if s.Custom != nil {
-			customBytes, err := Marshal(s.Custom)
+			customBytes, err := MarshalSorted(s.Custom)
 			if err != nil {
 				return nil, err
 			}
@@ -614,7 +614,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 		}
 	case ChatToolChoiceTypeAllowedTools:
 		if s.AllowedTools != nil {
-			allowedBytes, err := Marshal(s.AllowedTools)
+			allowedBytes, err := MarshalSorted(s.AllowedTools)
 			if err != nil {
 				return nil, err
 			}
@@ -668,13 +668,13 @@ func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if ctc.ChatToolChoiceStr != nil {
-		return Marshal(ctc.ChatToolChoiceStr)
+		return MarshalSorted(ctc.ChatToolChoiceStr)
 	}
 	if ctc.ChatToolChoiceStruct != nil {
-		return Marshal(ctc.ChatToolChoiceStruct)
+		return MarshalSorted(ctc.ChatToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -804,13 +804,13 @@ func (mc ChatMessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return Marshal(*mc.ContentStr)
+		return MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return Marshal(mc.ContentBlocks)
+		return MarshalSorted(mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -1202,7 +1202,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
 		CachedTokens      int `json:"cached_tokens"`
 	}
-	return Marshal(raw{
+	return MarshalSorted(raw{
 		TextTokens:        d.TextTokens,
 		AudioTokens:       d.AudioTokens,
 		ImageTokens:       d.ImageTokens,

@@ -521,7 +521,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
 		default:
 			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
+			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
 				var contentMap map[string]interface{}
 				if json.Unmarshal(jsonBytes, &contentMap) == nil {
 					if text, ok := contentMap["text"].(string); ok {

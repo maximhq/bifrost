@@ -2575,11 +2575,8 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 	}
 
-	// Create request body with operation name
-	requestBody := map[string]string{
-		"operationName": taskID,
-	}
-	jsonBody, err := sonic.Marshal(requestBody)
+	// Create request body with operation name (using sjson to avoid map marshaling)
+	jsonBody, err := providerUtils.SetJSONField([]byte(`{}`), "operationName", taskID)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal request", err, providerName)
 	}
@@ -2912,17 +2909,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		// Skip field-stripping when large payload mode is active — jsonBody is nil
 		// and the raw body will stream directly from the ingress reader.
 		if jsonBody != nil {
-			var payload map[string]any
-			if err := sonic.Unmarshal(jsonBody, &payload); err == nil {
-				delete(payload, "toolConfig")
-				delete(payload, "generationConfig")
-				delete(payload, "systemInstruction")
-				newBody, err := sonic.Marshal(payload)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-				jsonBody = newBody
-			}
+			// Use sjson to delete fields directly from JSON bytes, preserving key ordering
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "toolConfig")
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "generationConfig")
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "systemInstruction")
 		}
 	}
 

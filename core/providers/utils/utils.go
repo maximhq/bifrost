@@ -964,7 +964,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	sort.Strings(extraKeys)
 	for _, k := range extraKeys {
 		v := extraParams[k]
-		newValBytes, err := sonic.Marshal(v)
+		newValBytes, err := MarshalSorted(v)
 		if err != nil {
 			continue
 		}
@@ -982,7 +982,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 				if existingDec.Decode(&existingMap) == nil {
 					if newDec.Decode(&newMap) == nil {
 						MergeExtraParams(existingMap, newMap)
-						if merged, err := sortedAPI.Marshal(existingMap); err == nil {
+						if merged, err := MarshalSorted(existingMap); err == nil {
 							pairs[idx].val = merged
 							continue
 						}
@@ -1039,7 +1039,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
 
-		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
+		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 		}

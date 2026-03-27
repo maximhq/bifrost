@@ -1223,7 +1223,7 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
