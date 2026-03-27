@@ -32,7 +32,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ]
@@ -47,7 +47,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "anthropic-key-1",
             "value": "env.ANTHROPIC_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ]
@@ -62,7 +62,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "vllm-key-1",
             "value": "dummy",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -97,7 +97,7 @@ Each key in a provider needs to have a unique name.
                 {
                     "name": "openai-key",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ]
@@ -107,7 +107,7 @@ Each key in a provider needs to have a unique name.
                 {
                     "name": "anthropic-key",
                     "value": "env.ANTHROPIC_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ]
@@ -117,7 +117,7 @@ Each key in a provider needs to have a unique name.
                 {
                     "name": "vllm-key",
                     "value": "dummy",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -213,13 +213,13 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY_1",
-            "models": [],
+            "models": ["*"],
             "weight": 0.7
         },
         {
             "name": "openai-key-2",
             "value": "env.OPENAI_API_KEY_2", 
-            "models": [],
+            "models": ["*"],
             "weight": 0.3
         }
     ]
@@ -238,13 +238,13 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY_1",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 0.7
                 },
                 {
                     "name": "openai-key-2",
                     "value": "env.OPENAI_API_KEY_2",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 0.3
                 }
             ]
@@ -356,7 +356,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -378,7 +378,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -427,7 +427,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -451,7 +451,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -498,7 +498,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -517,7 +517,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.ANTHROPIC_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -540,7 +540,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -554,7 +554,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "anthropic-key-1",
                     "value": "env.ANTHROPIC_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -602,7 +602,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -627,7 +627,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -724,7 +724,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -743,7 +743,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "anthropic-key-1",
             "value": "env.ANTHROPIC_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -768,7 +768,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -782,7 +782,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "anthropic-key-1",
                     "value": "env.ANTHROPIC_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -828,7 +828,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -848,7 +848,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -904,7 +904,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -924,7 +924,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],

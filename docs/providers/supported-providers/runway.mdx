@@ -82,7 +82,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "runway-key-1",
             "value": "env.RUNWAY_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ]
@@ -98,7 +98,7 @@ See **[Provider Configuration](../../quickstart/gateway/provider-configuration)*
 case schemas.Runway:
     return []schemas.Key{{
         Value:  os.Getenv("RUNWAY_API_KEY"),
-        Models: []string{},
+        Models: []string{"*"},
         Weight: 1.0,
     }}, nil
 ```

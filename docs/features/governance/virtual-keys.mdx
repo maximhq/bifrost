@@ -119,7 +119,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 > **Note**: 
 > - `team_id` and `customer_id` are mutually exclusive - a VK can only belong to one team OR one customer, not both.
-> - `key_ids` restricts the VK to only use those specific provider API keys. Omit this field to allow access to all available keys.
+> - `key_ids` restricts the VK to only use those specific provider API keys. Use `["*"]` to allow access to all available keys. An empty array `[]` or omitting the field entirely denies all keys.
 
 **Update Virtual Key:**
 ```bash
