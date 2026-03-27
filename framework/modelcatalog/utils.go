@@ -20,6 +20,8 @@ func normalizeProvider(p string) string {
 		return string(schemas.Cohere)
 	} else if strings.Contains(p, "runwayml") {
 		return string(schemas.Runway)
+	} else if strings.Contains(p, "fireworks_ai") {
+		return string(schemas.Fireworks)
 	} else {
 		return p
 	}

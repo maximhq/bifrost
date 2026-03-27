@@ -78,6 +78,24 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.applyMistralCompatibility()
 		}
 		return openaiReq
+	case schemas.Fireworks:
+		// Fireworks uses the "user" field for session affinity (prompt cache routing).
+		// See: https://docs.fireworks.ai/guides/prompt-caching
+		// Map prompt_cache_key to user before filterOpenAISpecificParameters strips it.
+		if openaiReq.ChatParameters.PromptCacheKey != nil && openaiReq.ChatParameters.User == nil {
+			openaiReq.ChatParameters.User = openaiReq.ChatParameters.PromptCacheKey
+		}
+		// Fireworks supports predicted outputs; save before the filter strips it.
+		prediction := openaiReq.ChatParameters.Prediction
+		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.ChatParameters.Prediction = prediction
+		// Fireworks rejects the "reasoning" field in assistant messages.
+		for i := range openaiReq.Messages {
+			if openaiReq.Messages[i].OpenAIChatAssistantMessage != nil {
+				openaiReq.Messages[i].OpenAIChatAssistantMessage.Reasoning = nil
+			}
+		}
+		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
