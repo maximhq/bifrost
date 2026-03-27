@@ -214,6 +214,8 @@ bifrostConfig := schemas.BifrostConfig{
 
 Direct hash mode provides exact-match caching without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
 
+Exact-match direct entries are stored and retrieved using a deterministic cache ID. This keeps repeated direct cache lookups fast and consistent across retries, streaming responses, and restarts.
+
 **When to use direct hash mode:**
 - You only need exact-match deduplication (no fuzzy/semantic matching)
 - You cannot or do not want to call an external embedding API
