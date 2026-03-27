@@ -360,7 +360,8 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 													: formData.budgetResetDuration === "1Y"
 														? "year"
 														: "period"}
-										. This will take effect when you save.
+										. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later.
+										This will take effect when you save.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>

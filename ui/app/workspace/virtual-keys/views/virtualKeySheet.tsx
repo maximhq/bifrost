@@ -261,6 +261,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons
 	const watchedBudgetMaxLimit = form.watch("budgetMaxLimit");
 	const watchedBudgetResetDuration = form.watch("budgetResetDuration") || "1M";
+	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
 
@@ -1105,7 +1106,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										<Switch
 											id="vk-budget-calendar-aligned-toggle"
 											aria-describedby="vk-budget-calendar-aligned-description"
-											checked={form.watch("budgetCalendarAligned")}
+											checked={watchedBudgetCalendarAligned}
 											onCheckedChange={handleCalendarAlignedChange}
 											data-testid="vk-budget-calendar-aligned-toggle"
 										/>
@@ -1129,7 +1130,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															: watchedBudgetResetDuration === "1Y"
 																? "year"
 																: "period"}
-												. This will take effect when you save.
+												. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later.
+													This will take effect when you save.
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>

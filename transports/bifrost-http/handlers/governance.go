@@ -179,7 +179,7 @@ type UpdateRateLimitRequest struct {
 }
 
 func isBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
-	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil && req.CalendarAligned == nil
+	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil
 }
 
 // budgetLastReset returns the appropriate LastReset for a new budget.
