@@ -21,13 +21,13 @@ Research discovered that Bifrost's `CustomProviderConfig` already supports regis
 
 ### Keycloak OIDC Authentication
 
-- [ ] **AUTH-01**: OIDC discovery via `.well-known/openid-configuration` — auto-configure endpoints from issuer URL
+- [x] **AUTH-01**: OIDC discovery via `.well-known/openid-configuration` — auto-configure endpoints from issuer URL
 - [ ] **AUTH-02**: JWT token validation in AuthMiddleware — validate Bearer tokens against Keycloak JWKS, check audience + expiry
 - [ ] **AUTH-03**: Claims extraction — extract `sub`, `email`, `groups`, `organization_id` from ID token
 - [ ] **AUTH-04**: Claims-to-governance mapping — `organization_id` → Bifrost Customer, `sub` → User, groups → Team
-- [ ] **AUTH-05**: Config.json OIDC section — issuer URL, client ID/secret, scopes, claim name mappings
+- [x] **AUTH-05**: Config.json OIDC section — issuer URL, client ID/secret, scopes, claim name mappings
 - [ ] **AUTH-06**: Token refresh with `singleflight.Group` — prevent refresh token races under concurrent requests
-- [ ] **AUTH-07**: OIDC provider implemented in new files only (`framework/oidc/`, `handlers/oidc.go`) — minimize diff with upstream
+- [x] **AUTH-07**: OIDC provider implemented in new files only (`framework/oidc/`, `handlers/oidc.go`) — minimize diff with upstream
 
 ### Deployment
 
@@ -67,13 +67,13 @@ Research discovered that Bifrost's `CustomProviderConfig` already supports regis
 | FORK-02 | Phase 2 | Complete |
 | FORK-03 | Phase 2 | Complete |
 | FORK-04 | Phase 2 | Complete |
-| AUTH-01 | Phase 2 | Pending |
+| AUTH-01 | Phase 2 | Complete |
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
 | AUTH-04 | Phase 2 | Pending |
-| AUTH-05 | Phase 2 | Pending |
+| AUTH-05 | Phase 2 | Complete |
 | AUTH-06 | Phase 2 | Pending |
-| AUTH-07 | Phase 2 | Pending |
+| AUTH-07 | Phase 2 | Complete |
 | DEPLOY-01 | Phase 3 | Pending |
 | DEPLOY-02 | Phase 3 | Pending |
 | DEPLOY-03 | Phase 3 | Pending |
