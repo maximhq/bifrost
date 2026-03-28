@@ -49,7 +49,7 @@ Plans:
 - [x] 02-01-PLAN.md -- Fork infrastructure: go.work validation, golang-jwt CVE fix, upstream merge docs
 - [x] 02-02-PLAN.md -- CI pipelines: multi-arch Docker build + upstream drift check
 - [x] 02-03-PLAN.md -- OIDC core package: config, claims, provider singleton with JWKS
-- [ ] 02-04-PLAN.md -- OIDC middleware: JWT validation handler + server.go wiring
+- [x] 02-04-PLAN.md -- OIDC middleware: JWT validation handler + server.go wiring
 
 ### Phase 3: Production Deployment
 **Goal**: Bifrost fork is live in dev and prod with OIDC authentication and named provider routing working end-to-end
