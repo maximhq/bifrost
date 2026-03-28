@@ -14,10 +14,10 @@ Research discovered that Bifrost's `CustomProviderConfig` already supports regis
 
 ### Fork Setup
 
-- [ ] **FORK-01**: Establish fork with `go.work` strategy — keep `maximhq/bifrost` import paths to minimize upstream merge conflicts
-- [ ] **FORK-02**: Bump `golang-jwt/jwt/v5` from v5.3.0 to v5.3.1 (CVE-2025-30204 fix)
+- [x] **FORK-01**: Establish fork with `go.work` strategy — keep `maximhq/bifrost` import paths to minimize upstream merge conflicts
+- [x] **FORK-02**: Bump `golang-jwt/jwt/v5` from v5.3.0 to v5.3.1 (CVE-2025-30204 fix)
 - [x] **FORK-03**: CI pipeline for building multi-arch Docker image (amd64 + arm64) and pushing to GHCR
-- [ ] **FORK-04**: Upstream merge tracking — document process for periodically merging from `maximhq/bifrost`
+- [x] **FORK-04**: Upstream merge tracking — document process for periodically merging from `maximhq/bifrost`
 
 ### Keycloak OIDC Authentication
 
@@ -63,10 +63,10 @@ Research discovered that Bifrost's `CustomProviderConfig` already supports regis
 | PROV-03 | Phase 1 | Pending |
 | PROV-04 | Phase 1 | Pending |
 | PROV-05 | Phase 1 | Pending |
-| FORK-01 | Phase 2 | Pending |
-| FORK-02 | Phase 2 | Pending |
+| FORK-01 | Phase 2 | Complete |
+| FORK-02 | Phase 2 | Complete |
 | FORK-03 | Phase 2 | Complete |
-| FORK-04 | Phase 2 | Pending |
+| FORK-04 | Phase 2 | Complete |
 | AUTH-01 | Phase 2 | Pending |
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
