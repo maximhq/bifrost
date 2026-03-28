@@ -39,6 +39,14 @@ func isStabilityAIModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "stability.")
 }
 
+// isPromptOnlyImageGenerationModel returns true for image generation models that use a flat
+// {"prompt": "..."} payload (no taskType field). Covers Vertex Imagen and similar models.
+// Stability AI is excluded here — it's handled separately because it also supports image edit.
+func isPromptOnlyImageGenerationModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "image")
+}
+
 // ToStabilityAIImageGenerationRequest converts a Bifrost image generation request to the Stability AI
 // flat request format used by Bedrock (stability.stable-image-* models).
 func ToStabilityAIImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) (*StabilityAIImageGenerationRequest, error) {
@@ -146,6 +154,24 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 
 	return bedrockReq, nil
 
+}
+
+// ToStabilityAIImageGenerationResponse converts a BifrostImageGenerationResponse back to
+// the native Bedrock invoke API response format used by Stability AI models.
+// Stability AI models use the same BedrockImageGenerationResponse format as Titan/Nova Canvas.
+func ToStabilityAIImageGenerationResponse(response *schemas.BifrostImageGenerationResponse) (*BedrockImageGenerationResponse, error) {
+	if response == nil {
+		return nil, fmt.Errorf("response is nil")
+	}
+	result := &BedrockImageGenerationResponse{}
+	for _, d := range response.Data {
+		result.Images = append(result.Images, d.B64JSON)
+	}
+	if response.ImageGenerationResponseParameters != nil {
+		result.FinishReasons = response.ImageGenerationResponseParameters.FinishReasons
+		result.Seeds = response.ImageGenerationResponseParameters.Seeds
+	}
+	return result, nil
 }
 
 // ToBedrockImageVariationRequest converts a Bifrost image variation request to a Bedrock image variation request
@@ -698,6 +724,13 @@ func ToBifrostImageGenerationResponse(response *BedrockImageGenerationResponse) 
 	}
 
 	bifrostResponse := &schemas.BifrostImageGenerationResponse{}
+
+	if len(response.FinishReasons) > 0 || len(response.Seeds) > 0 {
+		bifrostResponse.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
+			FinishReasons: append([]*string(nil), response.FinishReasons...),
+			Seeds:         append([]int(nil), response.Seeds...),
+		}
+	}
 
 	for index, image := range response.Images {
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.ImageData{
