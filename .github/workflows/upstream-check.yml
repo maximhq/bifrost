@@ -1,0 +1,76 @@
+name: Upstream Drift Check
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly on Monday at 9am UTC
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/maximhq/bifrost.git || true
+          git fetch upstream main
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          # Count commits ahead/behind
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          AHEAD=$(git rev-list --count upstream/main..HEAD)
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          echo "ahead=$AHEAD" >> $GITHUB_OUTPUT
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "status=up-to-date" >> $GITHUB_OUTPUT
+            echo "Up to date with upstream"
+            exit 0
+          fi
+
+          echo "Behind upstream by $BEHIND commits, ahead by $AHEAD commits"
+
+      - name: Test merge
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          git config user.email "ci@stragix.com"
+          git config user.name "CI Bot"
+          if git merge upstream/main --no-commit --no-ff 2>/dev/null; then
+            echo "result=clean" >> $GITHUB_OUTPUT
+            echo "Clean merge possible"
+            git merge --abort
+          else
+            echo "result=conflicts" >> $GITHUB_OUTPUT
+            echo "Merge has conflicts"
+            # List conflicting files
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt 2>/dev/null || true
+            git merge --abort
+            if [ -f /tmp/conflicts.txt ]; then
+              echo "Conflicting files:"
+              cat /tmp/conflicts.txt
+              echo "conflict_files<<EOF" >> $GITHUB_OUTPUT
+              cat /tmp/conflicts.txt >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Report status
+        if: steps.check.outputs.behind != '0'
+        run: |
+          BEHIND=${{ steps.check.outputs.behind }}
+          RESULT=${{ steps.merge.outputs.result }}
+          if [ "$RESULT" = "conflicts" ]; then
+            echo "::warning::Upstream merge has conflicts ($BEHIND commits behind). Conflicting files: ${{ steps.merge.outputs.conflict_files }}"
+          else
+            echo "::notice::Upstream has $BEHIND new commits. Clean merge possible."
+          fi
