@@ -162,6 +162,7 @@ export const baseApi = createApi({
 		"Prompts",
 		"Versions",
 		"Sessions",
+		"AccessProfiles",
 	],
 	endpoints: () => ({}),
 });

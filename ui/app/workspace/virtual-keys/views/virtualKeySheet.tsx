@@ -18,6 +18,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import MultiBudgetLines from "@/components/ui/multiBudgetLines";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -86,6 +87,10 @@ const providerConfigSchema = z.object({
 			reset_duration: z.string().optional(),
 		})
 		.optional(),
+	budgets: z.array(z.object({
+		max_limit: z.string().optional(),
+		reset_duration: z.string().optional(),
+	})).optional(),
 	// Provider-level rate limits
 	rate_limit: z
 		.object({
@@ -187,22 +192,28 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			description: virtualKey?.description || "",
 			providerConfigs:
 				virtualKey?.provider_configs?.map((config) => ({
-					...config,
+					id: config.id,
+					provider: config.provider,
 					weight: config.weight ?? "",
-					key_ids: config.allow_all_keys ? ["*"] : (config.keys?.map((key) => key.key_id) || []),
+					allowed_models: config.allowed_models,
+					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
 					budget: config.budget
 						? {
-							max_limit: String(config.budget.max_limit),
-							reset_duration: config.budget.reset_duration,
-						}
+								max_limit: String(config.budget.max_limit),
+								reset_duration: config.budget.reset_duration,
+							}
 						: undefined,
+					budgets: config.budgets?.map((b) => ({
+						max_limit: String(b.max_limit),
+						reset_duration: b.reset_duration,
+					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -374,24 +385,30 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight: config.weight === undefined || config.weight === null
-				? null
-				: typeof config.weight === "string" ? (Number.isNaN(parseFloat(config.weight)) ? null : parseFloat(config.weight)) : config.weight, budget: (() => {
-					const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
-					if (budgetMaxLimit !== undefined) {
-						return {
-							max_limit: budgetMaxLimit,
-							reset_duration: config.budget?.reset_duration || "1M",
-						};
-					}
+			weight:
+				config.weight === undefined || config.weight === null
+					? null
+					: typeof config.weight === "string"
+						? Number.isNaN(parseFloat(config.weight))
+							? null
+							: parseFloat(config.weight)
+						: config.weight,
+			budget: (() => {
+				const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
+				if (budgetMaxLimit !== undefined) {
+					return {
+						max_limit: budgetMaxLimit,
+						reset_duration: config.budget?.reset_duration || "1M",
+					};
+				}
 
-					const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
-					if (existingConfig?.budget) {
-						return {};
-					}
+				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+				if (existingConfig?.budget) {
+					return {};
+				}
 
-					return undefined;
-				})(),
+				return undefined;
+			})(),
 			rate_limit: (() => {
 				const tokenMaxLimit = normalizeIntegerField(config.rate_limit?.token_max_limit);
 				const requestMaxLimit = normalizeIntegerField(config.rate_limit?.request_max_limit);
@@ -685,7 +702,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		: ProviderLabels[config.provider as ProviderName]}
 																</div>
 																<div className="hover:bg-accent/50 cursor-pointer rounded-sm p-2">
-																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" data-testid={`vk-delete-provider-${index}`} />
+																	<Trash2
+																		onClick={() => handleRemoveProvider(index)}
+																		className="h-4 w-4 opacity-75"
+																		data-testid={`vk-delete-provider-${index}`}
+																	/>
 																</div>
 															</div>
 														</AccordionTrigger>
@@ -739,14 +760,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																						: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
 																				})()}
 																				allowAllOption={true}
-																				value={hasWildcardModels ? ["*"] : (config.allowed_models || [])}
+																				value={hasWildcardModels ? ["*"] : config.allowed_models || []}
 																				onChange={(models: string[]) => {
 																					const hadStar = (config.allowed_models || []).includes("*");
 																					const hasStar = models.includes("*");
 																					if (!hadStar && hasStar) {
 																						handleUpdateProviderConfig(index, "allowed_models", ["*"]);
 																					} else if (hadStar && hasStar && models.length > 1) {
-																						handleUpdateProviderConfig(index, "allowed_models", models.filter((m) => m !== "*"));
+																						handleUpdateProviderConfig(
+																							index,
+																							"allowed_models",
+																							models.filter((m) => m !== "*"),
+																						);
 																					} else {
 																						handleUpdateProviderConfig(index, "allowed_models", models);
 																					}
@@ -757,44 +782,34 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																						: (config.allowed_models || []).length === 0
 																							? "No models (deny all)"
 																							: config.provider
-																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
+																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
+																									ModelPlaceholders.default
 																								: ModelPlaceholders.default
 																				}
 																				className="min-h-10 max-w-[500px] min-w-[200px]"
 																			/>
 																		);
 																	})()}
-																	<p className="text-muted-foreground text-xs">Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.</p>
+																	<p className="text-muted-foreground text-xs">
+																		Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.
+																	</p>
 																</div>
 															</div>
 
 															{/* Allowed Keys for this provider */}
-															{(() => {
-																const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																const configKeyIds = config.key_ids || [];
-																const hasWildcard = configKeyIds.includes("*");
-																const allKeyOptions = [
-																	{
-																		label: "Allow All Keys",
-																		value: "*",
-																		description: "Allow all current and future keys for this provider",
-																		provider: "",
-																	},
-																	...providerKeys.map((key) => ({
-																		label: key.name,
-																		value: key.key_id,
-																		description:
-																			key.models == null || key.models.includes("*")
-																				? "All models"
-																				: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																		provider: key.provider,
-																	})),
-																];
-																const selectedProviderKeys = hasWildcard
-																	? [allKeyOptions[0]]
-																	: providerKeys
-																		.filter((key) => configKeyIds.includes(key.key_id))
-																		.map((key) => ({
+															{
+																(() => {
+																	const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+																	const configKeyIds = config.key_ids || [];
+																	const hasWildcard = configKeyIds.includes("*");
+																	const allKeyOptions = [
+																		{
+																			label: "Allow All Keys",
+																			value: "*",
+																			description: "Allow all current and future keys for this provider",
+																			provider: "",
+																		},
+																		...providerKeys.map((key) => ({
 																			label: key.name,
 																			value: key.key_id,
 																			description:
@@ -802,114 +817,156 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																					? "All models"
 																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
 																			provider: key.provider,
-																		}));
+																		})),
+																	];
+																	const selectedProviderKeys = hasWildcard
+																		? [allKeyOptions[0]]
+																		: providerKeys
+																				.filter((key) => configKeyIds.includes(key.key_id))
+																				.map((key) => ({
+																					label: key.name,
+																					value: key.key_id,
+																					description:
+																						key.models == null || key.models.includes("*")
+																							? "All models"
+																							: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+																					provider: key.provider,
+																				}));
 
-																return (
-																	<div className="mx-0.5 space-y-2">
-																		<Label className="text-sm font-medium">Allowed Keys</Label>
-																		<p className="text-muted-foreground text-xs">Select specific keys or allow all. Leave empty to block all keys for this provider.</p>
-																		<AsyncMultiSelect
-																			hideSelectedOptions
-																			isNonAsync
-																			closeMenuOnSelect={false}
-																			menuPlacement="auto"
-																			defaultOptions={allKeyOptions}
-																			views={{
-																				multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
-																					return (
-																						<div
-																							{...multiValueProps.innerProps}
-																							className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
-																						>
-																							{multiValueProps.data.label}{" "}
-																							<X
-																								className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
-																								onClick={(e) => {
-																									e.stopPropagation();
-																									multiValueProps.removeProps.onClick?.(e as any);
-																								}}
-																							/>
-																						</div>
-																					);
-																				},
-																				option: (optionProps: OptionProps<VirtualKeyType>) => {
-																					const { Option } = components;
-																					return (
-																						<Option
-																							{...optionProps}
-																							className={cn(
-																								"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
-																								optionProps.isFocused && "bg-accent dark:!bg-card",
-																								"hover:bg-accent",
-																								optionProps.isSelected && "bg-accent dark:!bg-card",
-																							)}
-																						>
-																							<span className="text-content-primary grow truncate text-sm">{optionProps.data.label}</span>
-																							{optionProps.data.description && (
-																								<span className="text-content-tertiary max-w-[70%] text-sm">
-																									{optionProps.data.description}
-																								</span>
-																							)}
-																						</Option>
-																					);
-																				},
-																			}}
-																			value={selectedProviderKeys}
-																			onChange={(keys) => {
-																				const hadStar = hasWildcard;
-																				const hasStar = keys.some((k) => k.value === "*");
-																				if (!hadStar && hasStar) {
-																					// Just selected "Allow All Keys" — set to ["*"] only
-																					handleUpdateProviderConfig(index, "key_ids", ["*"]);
-																				} else if (hadStar && hasStar && keys.length > 1) {
-																					// Had "*", still has "*", but user also selected a specific key — drop "*"
-																					handleUpdateProviderConfig(index, "key_ids", keys.filter((k) => k.value !== "*").map((k) => k.value as string));
-																				} else {
-																					handleUpdateProviderConfig(index, "key_ids", keys.map((k) => k.value as string));
+																	return (
+																		<div className="mx-0.5 space-y-2">
+																			<Label className="text-sm font-medium">Allowed Keys</Label>
+																			<p className="text-muted-foreground text-xs">
+																				Select specific keys or allow all. Leave empty to block all keys for this provider.
+																			</p>
+																			<AsyncMultiSelect
+																				hideSelectedOptions
+																				isNonAsync
+																				closeMenuOnSelect={false}
+																				menuPlacement="auto"
+																				defaultOptions={allKeyOptions}
+																				views={{
+																					multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
+																						return (
+																							<div
+																								{...multiValueProps.innerProps}
+																								className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
+																							>
+																								{multiValueProps.data.label}{" "}
+																								<X
+																									className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
+																									onClick={(e) => {
+																										e.stopPropagation();
+																										multiValueProps.removeProps.onClick?.(e as any);
+																									}}
+																								/>
+																							</div>
+																						);
+																					},
+																					option: (optionProps: OptionProps<VirtualKeyType>) => {
+																						const { Option } = components;
+																						return (
+																							<Option
+																								{...optionProps}
+																								className={cn(
+																									"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
+																									optionProps.isFocused && "bg-accent dark:!bg-card",
+																									"hover:bg-accent",
+																									optionProps.isSelected && "bg-accent dark:!bg-card",
+																								)}
+																							>
+																								<span className="text-content-primary grow truncate text-sm">{optionProps.data.label}</span>
+																								{optionProps.data.description && (
+																									<span className="text-content-tertiary max-w-[70%] text-sm">
+																										{optionProps.data.description}
+																									</span>
+																								)}
+																							</Option>
+																						);
+																					},
+																				}}
+																				value={selectedProviderKeys}
+																				onChange={(keys) => {
+																					const hadStar = hasWildcard;
+																					const hasStar = keys.some((k) => k.value === "*");
+																					if (!hadStar && hasStar) {
+																						// Just selected "Allow All Keys" — set to ["*"] only
+																						handleUpdateProviderConfig(index, "key_ids", ["*"]);
+																					} else if (hadStar && hasStar && keys.length > 1) {
+																						// Had "*", still has "*", but user also selected a specific key — drop "*"
+																						handleUpdateProviderConfig(
+																							index,
+																							"key_ids",
+																							keys.filter((k) => k.value !== "*").map((k) => k.value as string),
+																						);
+																					} else {
+																						handleUpdateProviderConfig(
+																							index,
+																							"key_ids",
+																							keys.map((k) => k.value as string),
+																						);
+																					}
+																				}}
+																				placeholder={
+																					hasWildcard
+																						? "All keys allowed"
+																						: configKeyIds.length === 0
+																							? "No keys selected"
+																							: "Select keys..."
 																				}
-																			}}
-																			placeholder={
-																				hasWildcard
-																					? "All keys allowed"
-																					: configKeyIds.length === 0
-																						? "No keys selected"
-																						: "Select keys..."
-																			}
-																			className="hover:bg-accent w-full"
-																			menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
-																		/>
-																	</div>
-																);
-															})()}
+																				className="hover:bg-accent w-full"
+																				menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
+																			/>
+																		</div>
+																	);
+																})()
+															}
 
 															<DottedSeparator />
 
-															{/* Provider Budget Configuration */}
-															<div className="space-y-4">
-																<Label className="text-sm font-medium">Provider Budget</Label>
-																<NumberAndSelect
-																	id={`providerBudget-${index}`}
-																	labelClassName="font-normal"
-																	label="Maximum Spend (USD)"
-																	value={config.budget?.max_limit || ""}
-																	selectValue={config.budget?.reset_duration || "1M"}
-																	onChangeNumber={(value) => {
-																		const currentBudget = config.budget || {};
+															{
+																/* Provider Budget Configuration */
+															}
+															<MultiBudgetLines
+																id={`providerBudget-${index}`}
+																label="Provider Budget"
+																lines={
+																	config.budgets && config.budgets.length > 0
+																		? config.budgets.map((b) => ({
+																				max_limit: String(b.max_limit ?? ""),
+																				reset_duration: b.reset_duration || "1M",
+																			}))
+																		: config.budget?.max_limit
+																			? [
+																					{
+																						max_limit: String(config.budget.max_limit),
+																						reset_duration: config.budget.reset_duration || "1M",
+																					},
+																				]
+																			: []
+																}
+																onChange={(lines) => {
+																	if (lines.length === 0) {
+																		handleUpdateProviderConfig(index, "budget", undefined);
+																		handleUpdateProviderConfig(index, "budgets", []);
+																	} else {
+																		// Legacy single budget field = first line
 																		handleUpdateProviderConfig(index, "budget", {
-																			...currentBudget,
-																			max_limit: value,
+																			max_limit: lines[0].max_limit,
+																			reset_duration: lines[0].reset_duration,
 																		});
-																	}}
-																	onChangeSelect={(value) => {
-																		const currentBudget = config.budget || {};
-																		handleUpdateProviderConfig(index, "budget", {
-																			...currentBudget,
-																			reset_duration: value,
-																		});
-																	}}
-																	options={resetDurationOptions}
-																/>
-															</div>
+																		// All lines in budgets array
+																		handleUpdateProviderConfig(
+																			index,
+																			"budgets",
+																			lines.map((l) => ({
+																				max_limit: l.max_limit,
+																				reset_duration: l.reset_duration,
+																			})),
+																		);
+																	}
+																}}
+															/>
 
 															<DottedSeparator />
 
@@ -990,8 +1047,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												</TooltipTrigger>
 												<TooltipContent>
 													<p>
-														Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
-														blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
+														Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty blocks
+														all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
 														<span className="font-medium">Allow All Tools</span> to grant tool access.
 													</p>
 												</TooltipContent>
@@ -1000,166 +1057,184 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									</div>
 
 									{/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
-									{(() => {
-										const defaultMCPClients = mcpClientsData.filter(
-											(client) =>
-												client.config.allow_on_all_virtual_keys &&
-												!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-										);
-										return defaultMCPClients.length > 0 ? (
-											<div className="text-muted-foreground rounded-md border p-3 text-xs">
-												<div className="flex items-start gap-1.5">
-													<Info className="mt-0.5 h-3 w-3 shrink-0" />
-													<span>
-														The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
-														<span className="text-foreground font-medium">
-															{defaultMCPClients.map((c) => c.config.name).join(", ")}
+									{
+										(() => {
+											const defaultMCPClients = mcpClientsData.filter(
+												(client) =>
+													client.config.allow_on_all_virtual_keys &&
+													!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+											);
+											return defaultMCPClients.length > 0 ? (
+												<div className="text-muted-foreground rounded-md border p-3 text-xs">
+													<div className="flex items-start gap-1.5">
+														<Info className="mt-0.5 h-3 w-3 shrink-0" />
+														<span>
+															The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
+															<span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>.
+															Adding an explicit config for any of them below will override the all-tools default for this key.
 														</span>
-														. Adding an explicit config for any of them below will override the all-tools default for this key.
-													</span>
+													</div>
 												</div>
+											) : null
+										})()
+									}
+
+									{
+										/* Add MCP Client Dropdown */
+									}
+									{
+										mcpClientsData && mcpClientsData.length > 0 && (
+											<div className="flex gap-2">
+												<Select
+													value={selectedMCPClient}
+													onValueChange={(mcpClientId) => {
+														handleAddMCPClient(mcpClientId);
+														setSelectedMCPClient(""); // Reset to placeholder state
+													}}
+												>
+													<SelectTrigger className="flex-1">
+														<SelectValue placeholder="Select an MCP client to add" />
+													</SelectTrigger>
+													<SelectContent>
+														{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
+															.length > 0 ? (
+															mcpClientsData
+																.filter(
+																	(client) =>
+																		client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+																)
+																.map((client, index) => {
+																	const client_tools = client.tools || [];
+																	const totalTools = client.config.tools_to_execute?.includes("*")
+																		? client_tools.length
+																		: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
+																	return (
+																		<SelectItem key={index} value={client.config.name}>
+																			<div className="flex items-center gap-2">
+																				{client.config.name}
+																				<span className="text-muted-foreground text-xs">
+																					({totalTools} {totalTools === 1 ? "enabled tool" : "enabled tools"})
+																				</span>
+																			</div>
+																		</SelectItem>
+																	);
+																})
+														) : (
+															<div className="text-muted-foreground px-2 py-1.5 text-sm">All MCP clients configured</div>
+														)}
+													</SelectContent>
+												</Select>
 											</div>
-										) : null;
-									})()}
+										)
+									}
 
-									{/* Add MCP Client Dropdown */}
-									{mcpClientsData && mcpClientsData.length > 0 && (
-										<div className="flex gap-2">
-											<Select
-												value={selectedMCPClient}
-												onValueChange={(mcpClientId) => {
-													handleAddMCPClient(mcpClientId);
-													setSelectedMCPClient(""); // Reset to placeholder state
-												}}
-											>
-												<SelectTrigger className="flex-1">
-													<SelectValue placeholder="Select an MCP client to add" />
-												</SelectTrigger>
-												<SelectContent>
-													{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
-														.length > 0 ? (
-														mcpClientsData
-															.filter(
-																(client) =>
-																	client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
-															)
-															.map((client, index) => {
-																const client_tools = client.tools || [];
-																const totalTools = client.config.tools_to_execute?.includes("*")
-																	? client_tools.length
-																	: client_tools.filter((tool) => client.config.tools_to_execute?.includes(tool.name)).length;
-																return (
-																	<SelectItem key={index} value={client.config.name}>
-																		<div className="flex items-center gap-2">
-																			{client.config.name}
-																			<span className="text-muted-foreground text-xs">
-																				({totalTools} {totalTools === 1 ? "enabled tool" : "enabled tools"})
-																			</span>
-																		</div>
-																	</SelectItem>
-																);
-															})
-													) : (
-														<div className="text-muted-foreground px-2 py-1.5 text-sm">All MCP clients configured</div>
-													)}
-												</SelectContent>
-											</Select>
-										</div>
-									)}
+									{
+										/* MCP Configurations Table */
+									}
+									{
+										mcpConfigs.length > 0 && (
+											<div className="rounded-md border">
+												<Table>
+													<TableHeader>
+														<TableRow>
+															<TableHead>MCP Client</TableHead>
+															<TableHead>Allowed Tools</TableHead>
+															<TableHead className="w-[50px]"></TableHead>
+														</TableRow>
+													</TableHeader>
+													<TableBody>
+														{mcpConfigs.map((config, index) => {
+															const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
 
-									{/* MCP Configurations Table */}
-									{mcpConfigs.length > 0 && (
-										<div className="rounded-md border">
-											<Table>
-												<TableHeader>
-													<TableRow>
-														<TableHead>MCP Client</TableHead>
-														<TableHead>Allowed Tools</TableHead>
-														<TableHead className="w-[50px]"></TableHead>
-													</TableRow>
-												</TableHeader>
-												<TableBody>
-													{mcpConfigs.map((config, index) => {
-														const mcpClient = mcpClientsData?.find((client) => client.config.name === config.mcp_client_name);
+															// Handle new wildcard semantics for client-level filtering
+															const clientToolsToExecute = mcpClient?.config?.tools_to_execute;
+															let availableTools: any[] = [];
 
-														// Handle new wildcard semantics for client-level filtering
-														const clientToolsToExecute = mcpClient?.config?.tools_to_execute;
-														let availableTools: any[] = [];
+															if (!clientToolsToExecute || clientToolsToExecute.length === 0) {
+																// nil/undefined or empty array - no tools available from client config
+																availableTools = [];
+															} else if (clientToolsToExecute.includes("*")) {
+																// Wildcard - all tools available
+																availableTools = mcpClient?.tools || [];
+															} else {
+																// Specific tools listed
+																availableTools = (mcpClient?.tools || []).filter((tool) => clientToolsToExecute.includes(tool.name)) || [];
+															}
 
-														if (!clientToolsToExecute || clientToolsToExecute.length === 0) {
-															// nil/undefined or empty array - no tools available from client config
-															availableTools = [];
-														} else if (clientToolsToExecute.includes("*")) {
-															// Wildcard - all tools available
-															availableTools = mcpClient?.tools || [];
-														} else {
-															// Specific tools listed
-															availableTools = (mcpClient?.tools || []).filter((tool) => clientToolsToExecute.includes(tool.name)) || [];
-														}
+															const enabledToolsByConfig =
+																(mcpClient?.tools || []).filter((tool) => config.tools_to_execute?.includes(tool.name)) || [];
+															const selectedTools = config.tools_to_execute || [];
 
-														const enabledToolsByConfig =
-															(mcpClient?.tools || []).filter((tool) => config.tools_to_execute?.includes(tool.name)) || [];
-														const selectedTools = config.tools_to_execute || [];
-
-														return (
-															<TableRow key={`${config.mcp_client_name}-${index}`}>
-																<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
-																<TableCell>
-																	<MultiSelect
-																		options={[
-																			{
-																				label: "Allow All Tools",
-																				value: "*",
-																				description: "Allow all current and future tools",
-																			},
-																			...[...availableTools, ...enabledToolsByConfig]
-																				.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
-																				.map((tool) => ({
-																					label: tool.name,
-																					value: tool.name,
-																					description: tool.description,
-																				})),
-																		]}
-																		defaultValue={selectedTools}
-																		onValueChange={(tools: string[]) => {
-																			const hadStar = selectedTools.includes("*");
-																			const hasStar = tools.includes("*");
-																			if (!hadStar && hasStar) {
-																				// Just selected "Allow All Tools" — set to ["*"] only
-																				handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
-																			} else if (hadStar && hasStar && tools.length > 1) {
-																				// Had "*", still has "*", but user also selected a specific tool — drop "*"
-																				handleUpdateMCPConfig(index, "tools_to_execute", tools.filter((t) => t !== "*"));
-																			} else {
-																				handleUpdateMCPConfig(index, "tools_to_execute", tools);
+															return (
+																<TableRow key={`${config.mcp_client_name}-${index}`}>
+																	<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
+																	<TableCell>
+																		<MultiSelect
+																			options={[
+																				{
+																					label: "Allow All Tools",
+																					value: "*",
+																					description: "Allow all current and future tools",
+																				},
+																				...[...availableTools, ...enabledToolsByConfig]
+																					.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
+																					.map((tool) => ({
+																						label: tool.name,
+																						value: tool.name,
+																						description: tool.description,
+																					})),
+																			]}
+																			defaultValue={selectedTools}
+																			onValueChange={(tools: string[]) => {
+																				const hadStar = selectedTools.includes("*");
+																				const hasStar = tools.includes("*");
+																				if (!hadStar && hasStar) {
+																					// Just selected "Allow All Tools" — set to ["*"] only
+																					handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
+																				} else if (hadStar && hasStar && tools.length > 1) {
+																					// Had "*", still has "*", but user also selected a specific tool — drop "*"
+																					handleUpdateMCPConfig(
+																						index,
+																						"tools_to_execute",
+																						tools.filter((t) => t !== "*"),
+																					);
+																				} else {
+																					handleUpdateMCPConfig(index, "tools_to_execute", tools);
+																				}
+																			}}
+																			placeholder={
+																				selectedTools.length === 0
+																					? "No tools selected"
+																					: selectedTools.includes("*")
+																						? "All tools allowed"
+																						: "Select tools..."
 																			}
-																		}}
-																		placeholder={
-																			selectedTools.length === 0
-																				? "No tools selected"
-																				: selectedTools.includes("*")
-																					? "All tools allowed"
-																					: "Select tools..."
-																		}
-																		variant="inverted"
-																		className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
-																		commandClassName="w-full max-w-96"
-																		modalPopover={true}
-																		animation={0}
-																	/>
-																</TableCell>
-																<TableCell>
-																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)} data-testid={`vk-delete-mcp-${index}`}>
-																		<Trash2 className="h-4 w-4" />
-																	</Button>
-																</TableCell>
-															</TableRow>
-														);
-													})}
-												</TableBody>
-											</Table>
-										</div>
-									)}
+																			variant="inverted"
+																			className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
+																			commandClassName="w-full max-w-96"
+																			modalPopover={true}
+																			animation={0}
+																		/>
+																	</TableCell>
+																	<TableCell>
+																		<Button
+																			type="button"
+																			variant="ghost"
+																			size="sm"
+																			onClick={() => handleRemoveMCPClient(index)}
+																			data-testid={`vk-delete-mcp-${index}`}
+																		>
+																			<Trash2 className="h-4 w-4" />
+																		</Button>
+																	</TableCell>
+																</TableRow>
+															);
+														})}
+													</TableBody>
+												</Table>
+											</div>
+										)
+									}
 								</div>
 							)}
 
@@ -1367,7 +1442,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<SelectValue />
 																</SelectTrigger>
 															</FormControl>
-															<SelectContent >
+															<SelectContent>
 																<SelectItem value="none">No Assignment</SelectItem>
 																{teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
 																{customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}
