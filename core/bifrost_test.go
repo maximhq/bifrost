@@ -399,6 +399,8 @@ func TestIsRateLimitError_AllPatterns(t *testing.T) {
 		"api rate limit",
 		"usage limit",
 		"concurrent requests limit",
+		"burst_rate",
+		"rate increased",
 	}
 
 	for _, pattern := range patterns {
@@ -479,6 +481,20 @@ func TestIsRateLimitError_EdgeCases(t *testing.T) {
 		message := "RATE LIMIT exceeded 🚫"
 		if !IsRateLimitErrorMessage(message) {
 			t.Error("Message with unicode should still detect rate limit pattern")
+		}
+	})
+
+	t.Run("DashScopeErrorCode", func(t *testing.T) {
+		// DashScope returns "limit_burst_rate" as the error code
+		if !IsRateLimitErrorMessage("limit_burst_rate") {
+			t.Error("DashScope error code 'limit_burst_rate' should be detected as rate limit error")
+		}
+	})
+
+	t.Run("DashScopeErrorMessage", func(t *testing.T) {
+		// DashScope returns this as the error message
+		if !IsRateLimitErrorMessage("Request rate increased too quickly, please slow down and try again") {
+			t.Error("DashScope error message should be detected as rate limit error")
 		}
 	})
 }

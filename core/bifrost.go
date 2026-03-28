@@ -4801,6 +4801,22 @@ func executeRequestWithRetries[T any](
 		// Attempt the request
 		result, bifrostError = requestHandler()
 
+		// For streaming requests that returned success, check if the first chunk
+		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
+		// This enables retries and fallbacks for providers that embed errors in
+		// the SSE stream instead of returning proper HTTP error status codes.
+		if bifrostError == nil {
+			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
+				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(streamChan)
+				if firstChunkErr != nil {
+					<-drainDone
+					bifrostError = firstChunkErr
+				} else {
+					result = any(checkedStream).(T)
+				}
+			}
+		}
+
 		// Check if result is a streaming channel - if so, defer span completion
 		if _, isStreamChan := any(result).(chan *schemas.BifrostStreamChunk); isStreamChan {
 			// For streaming requests, store the span handle in TraceStore keyed by trace ID
@@ -4850,7 +4866,8 @@ func executeRequestWithRetries[T any](
 		if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) ||
 			(bifrostError.Error != nil &&
 				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
-					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)))) {
+					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
+					(bifrostError.Error.Code != nil && IsRateLimitErrorMessage(*bifrostError.Error.Code)))) {
 			shouldRetry = true
 			logger.Debug("detected rate limit error in message, will retry: %s", bifrostError.Error.Message)
 		}
