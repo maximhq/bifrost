@@ -45,8 +45,9 @@ func TestAddProviderKeysToSemanticCacheConfig_InjectsProviderKeys(t *testing.T) 
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
 		Config: map[string]interface{}{
-			"provider":  "openai",
-			"dimension": 1536,
+			"provider":        "openai",
+			"embedding_model": "text-embedding-3-small",
+			"dimension":       1536,
 		},
 	}
 
@@ -59,6 +60,7 @@ func TestAddProviderKeysToSemanticCacheConfig_InjectsProviderKeys(t *testing.T) 
 	require.True(t, ok, "provider-backed mode should inject provider keys")
 	require.Len(t, keys, 1)
 	require.Equal(t, "openai-key", keys[0].Name)
+	require.Equal(t, "openai", configMap["provider"])
 }
 
 func TestAddProviderKeysToSemanticCacheConfig_SemanticModeMissingProvider(t *testing.T) {
@@ -73,6 +75,52 @@ func TestAddProviderKeysToSemanticCacheConfig_SemanticModeMissingProvider(t *tes
 	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires 'provider' for semantic mode")
+}
+
+func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingDimension(t *testing.T) {
+	config := &Config{}
+	pluginConfig := &schemas.PluginConfig{
+		Name: semanticcache.PluginName,
+		Config: map[string]interface{}{
+			"provider":        "openai",
+			"embedding_model": "text-embedding-3-small",
+		},
+	}
+
+	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires 'dimension' for provider-backed semantic mode")
+}
+
+func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeDimensionOne(t *testing.T) {
+	config := &Config{}
+	pluginConfig := &schemas.PluginConfig{
+		Name: semanticcache.PluginName,
+		Config: map[string]interface{}{
+			"provider":        "openai",
+			"embedding_model": "text-embedding-3-small",
+			"dimension":       1,
+		},
+	}
+
+	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires 'dimension' > 1")
+}
+
+func TestAddProviderKeysToSemanticCacheConfig_ProviderBackedModeMissingEmbeddingModel(t *testing.T) {
+	config := &Config{}
+	pluginConfig := &schemas.PluginConfig{
+		Name: semanticcache.PluginName,
+		Config: map[string]interface{}{
+			"provider":  "openai",
+			"dimension": 1536,
+		},
+	}
+
+	err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires 'embedding_model'")
 }
 
 func TestAddProviderKeysToSemanticCacheConfig_InvalidDimensionZero(t *testing.T) {

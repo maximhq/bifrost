@@ -1131,6 +1131,7 @@
                   "properties": {
                     "provider": {
                       "type": "string",
+                      "minLength": 1,
                       "description": "Provider to use for generating embeddings. Required for semantic search; omit it for direct hash mode with dimension: 1.",
                       "enum": [
                         "openai",
@@ -1225,19 +1226,33 @@
                     {
                       "if": {
                         "properties": {
-                          "dimension": {
-                            "const": 1
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "required": [
-                          "dimension"
-                        ]
-                      },
-                      "then": {},
-                      "else": {
-                        "required": [
                           "provider"
                         ]
+                      },
+                      "then": {
+                        "required": [
+                          "provider",
+                          "embedding_model"
+                        ],
+                        "properties": {
+                          "dimension": {
+                            "type": "integer",
+                            "minimum": 2
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "dimension": {
+                            "const": 1
+                          }
+                        }
                       }
                     }
                   ],

@@ -55,7 +55,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	const semanticCachePlugin = useMemo(() => plugins?.find((plugin) => plugin.name === SEMANTIC_CACHE_PLUGIN), [plugins]);
 
 	const isSemanticCacheEnabled = Boolean(semanticCachePlugin?.enabled);
-	const isDirectOnlyConfig = cacheConfig.dimension === 1 && !cacheConfig.provider;
+	const loadedDirectOnlyConfig = serverCacheConfig.dimension === 1 && !serverCacheConfig.provider;
+	const hasInvalidProviderBackedDimension = cacheConfig.dimension === 1 && Boolean(cacheConfig.provider?.trim());
 
 	// Initialize cache config from plugin data
 	useEffect(() => {
@@ -108,6 +109,11 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 
 	// Save all changes
 	const handleSave = async () => {
+		if (hasInvalidProviderBackedDimension) {
+			toast.error("Provider-backed semantic cache requires the embedding model's real dimension. Use a value greater than 1, or remove the provider to keep direct-only mode.")
+			return
+		}
+
 		try {
 			if (semanticCachePlugin) {
 				// Update existing plugin
@@ -176,7 +182,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							}}
 						/>
 						{(isSemanticCacheEnabled || originalCacheEnabled) && (
-							<Button onClick={handleSave} disabled={!hasChanges || isUpdating || isCreating} size="sm">
+							<Button onClick={handleSave} disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension} size="sm">
 								{isUpdating || isCreating ? "Saving..." : "Save"}
 							</Button>
 						)}
@@ -193,10 +199,16 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 					) : (
 						<div className="mt-4 space-y-4">
 							<Separator />
-							{isDirectOnlyConfig && (
+							{loadedDirectOnlyConfig && (
 								<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-									This plugin is currently configured in direct-only mode via <code>config.json</code>. The Web UI currently edits
-									provider-backed semantic cache settings; keep using <code>config.json</code> if you want to stay in direct-only mode.
+									This plugin was loaded in direct-only mode via <code>config.json</code>. The Web UI currently edits provider-backed
+									semantic cache settings; keep using <code>config.json</code> if you want to stay in direct-only mode.
+								</div>
+							)}
+							{hasInvalidProviderBackedDimension && (
+								<div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900">
+									You selected a provider while keeping <code>dimension: 1</code>. That is only valid for direct-only mode. Set the
+									embedding model&apos;s real dimension before saving, or remove the provider to stay in direct-only mode.
 								</div>
 							)}
 							{/* Provider and Model Settings */}
