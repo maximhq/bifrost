@@ -34,7 +34,7 @@ Two work streams:
 
 ### Fork Repository Strategy
 - **D-12:** Fork lives at `stragix-innovations/bifrost` on GitHub
-- **D-13:** Keep `maximhq/bifrost` import paths everywhere in Go source. Use `go.work` for local development, `replace` directives in `go.mod` for Docker builds. The existing `setup-go-workspace.sh` CI script already initializes the 14-module workspace
+- **D-13:** Keep `maximhq/bifrost` import paths everywhere in Go source. Use `go.work` for local development, `replace` directives in `go.mod` for Docker builds. The existing `setup-go-workspace.sh` CI script already initializes the 12-module workspace
 - **D-14:** Manual periodic merge from `upstream/main`. CI job checks for upstream drift weekly. Document the merge process in FORK-04
 
 ### CI/CD Pipeline
@@ -70,7 +70,7 @@ Two work streams:
 - `framework/oauth2/discovery.go` -- OAuth discovery implementation. Reference for how Bifrost does discovery (RFC 8414)
 
 ### Fork and Build Infrastructure
-- `.github/workflows/scripts/setup-go-workspace.sh` -- Existing go.work setup for CI. Lists all 14 modules
+- `.github/workflows/scripts/setup-go-workspace.sh` -- Existing go.work setup for CI. Lists all 12 modules
 - `Makefile` -- Build targets, test commands
 - `.dockerignore` -- Files excluded from Docker build context
 
@@ -97,7 +97,7 @@ Two work streams:
 ### Reusable Assets
 - `framework/oauth2/discovery.go` -- OAuth discovery following RFC 8414. Reference pattern for OIDC discovery, though OIDC will use go-oidc's built-in discovery rather than reimplementing
 - `framework/oauth2/main.go` -- PKCE generation, token exchange, singleflight-ready architecture. Reference for token handling patterns
-- `setup-go-workspace.sh` -- Already handles all 14 Go modules. May need minimal extension for new `framework/oidc/` module
+- `setup-go-workspace.sh` -- Already handles all 12 Go modules. May need minimal extension for new `framework/oidc/` module
 - `AuthMiddleware` struct -- Uses `atomic.Pointer` for hot config updates, `configstore.ConfigStore` for persistence. OIDC middleware should follow the same pattern
 
 ### Established Patterns
