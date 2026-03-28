@@ -43,10 +43,13 @@ Plans:
   3. A user with a valid Keycloak JWT can authenticate to Bifrost API endpoints
   4. OIDC claims (`sub`, `email`, `organization_id`, `groups`) are extracted and mapped to Bifrost Customer/User/Team entities
   5. An expired or invalid JWT is rejected with an appropriate error before reaching any handler
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md -- Fork infrastructure: go.work validation, golang-jwt CVE fix, upstream merge docs
+- [ ] 02-02-PLAN.md -- CI pipelines: multi-arch Docker build + upstream drift check
+- [ ] 02-03-PLAN.md -- OIDC core package: config, claims, provider singleton with JWKS
+- [ ] 02-04-PLAN.md -- OIDC middleware: JWT validation handler + server.go wiring
 
 ### Phase 3: Production Deployment
 **Goal**: Bifrost fork is live in dev and prod with OIDC authentication and named provider routing working end-to-end
@@ -70,5 +73,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Named Provider Instances | 0/1 | Planning complete | - |
-| 2. Fork and OIDC Authentication | 0/0 | Not started | - |
+| 2. Fork and OIDC Authentication | 0/4 | Planning complete | - |
 | 3. Production Deployment | 0/0 | Not started | - |
