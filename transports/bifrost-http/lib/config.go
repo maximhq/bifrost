@@ -3447,6 +3447,7 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	providerVal, exists := configMap["provider"]
 	if !exists {
 		if hasDimension && dimension == 1 {
+			delete(configMap, "embedding_model")
 			return nil
 		}
 		return fmt.Errorf("semantic_cache plugin requires 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
@@ -3462,6 +3463,7 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	if provider == "" {
 		if hasDimension && dimension == 1 {
 			delete(configMap, "provider")
+			delete(configMap, "embedding_model")
 			return nil
 		}
 		return fmt.Errorf("semantic_cache plugin requires a non-empty 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
