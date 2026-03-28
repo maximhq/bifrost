@@ -8,7 +8,7 @@
 
 Deploy the forked Bifrost image to dev and prod clusters, replacing the upstream `maximhq/bifrost:v1.4.16` image. Update infra-ctrl manifests with OIDC configuration and CustomProviderConfig. Create the Keycloak OIDC client for Bifrost via Pulumi. Validate end-to-end: Keycloak user authenticates, OIDC claims map to Bifrost Customer/Team, LLM request is rate-limited by org.
 
-This is an infrastructure/deployment phase -- changes are in infra-ctrl manifests and tf-infra Pulumi, NOT in the Bifrost Go codebase.
+This is an infrastructure/deployment phase -- changes are in infra-ctrl manifests and infra-ctrl Pulumi, NOT in the Bifrost Go codebase.
 
 </domain>
 
@@ -27,7 +27,7 @@ This is an infrastructure/deployment phase -- changes are in infra-ctrl manifest
 - **D-07:** Dev issuer_url: `https://keycloak-dev.tail15b586.ts.net/realms/stragixlabs`. Prod issuer_url: `https://keycloak-prod.tail15b586.ts.net/realms/stragixlabs`. The issuer_url MUST match the `iss` claim in Keycloak-issued tokens -- Keycloak tokens use the frontend URL, which is the Tailscale hostname in this setup. Same realm, same client_id, different client_secret per environment.
 
 ### Keycloak Client Provisioning
-- **D-08:** Create Bifrost OIDC client in Pulumi (tf-infra repo), stragixlabs realm -- consistent with existing Keycloak management pattern
+- **D-08:** Create Bifrost OIDC client in Pulumi (infra-ctrl repo, `pulumi/programs/platform-bootstrap/platform-clients.ts`), stragixlabs realm -- consistent with existing Keycloak management pattern
 - **D-09:** Client type: confidential (server-side, not public). Grant types: authorization_code, client_credentials
 - **D-10:** Redirect URIs: Bifrost's OAuth callback URL per environment (derived from Tailscale ingress hostname)
 - **D-11:** Client secret stored in Vault at `infrastructure/auth/keycloak/clients/bifrost` (standard createPlatformClients path), pulled into pod via ExternalSecret. Vault payload: `{ client_id, client_secret, realm }`
@@ -98,7 +98,7 @@ This is an infrastructure/deployment phase -- changes are in infra-ctrl manifest
 - ExternalSecret -- new secret for OIDC client_secret from Vault
 - Deployment env vars -- add `BIFROST_OIDC_CLIENT_SECRET` from ExternalSecret
 - Network policy -- add Keycloak egress alongside existing cloud/llama-cpp egress rules
-- Pulumi in tf-infra -- Keycloak client resource for Bifrost
+- Pulumi in infra-ctrl -- Keycloak client resource for Bifrost
 
 </code_context>
 
