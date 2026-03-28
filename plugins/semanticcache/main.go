@@ -321,8 +321,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	if config.Provider == "" || len(config.Keys) == 0 {
-		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
+	if config.Provider == "" && config.Dimension == 1 {
+		logger.Info(PluginLoggerPrefix + " Starting in direct-only mode (dimension=1, no embedding provider)")
+	} else if config.Provider == "" || len(config.Keys) == 0 {
+		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider or keys, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
 		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {

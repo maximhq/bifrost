@@ -166,6 +166,7 @@ bifrostConfig := schemas.BifrostConfig{
 **Required Fields:**
 - **Provider**: The provider to use for caching.
 - **Embedding Model**: The embedding model to use for caching.
+- **Dimension**: The embedding dimension for the configured embedding model.
 
 **Note**: Changes will need a restart of the Bifrost server to take effect, because the plugin is loaded on startup only.
 
@@ -182,6 +183,7 @@ bifrostConfig := schemas.BifrostConfig{
       "config": {        
         "provider": "openai",
         "embedding_model": "text-embedding-3-small",
+        "dimension": 1536,
         
         "cleanup_on_shutdown": true,
         "ttl": "5m",
@@ -198,7 +200,9 @@ bifrostConfig := schemas.BifrostConfig{
 }
 ```
 
-> **Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
+> **Note**: In `config.json` setups, provider keys are taken from the provider config on initialization, so you do not need to duplicate `keys` inside the plugin config. Any updates to the provider keys will not be reflected until next restart.
+
+> **UI Note**: The current Web UI flow configures provider-backed semantic caching. If you want direct-only mode (`dimension: 1` with no `provider`), configure it through `config.json`.
 
 **TTL Format Options:**
 - Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
@@ -224,7 +228,9 @@ Exact-match direct entries are stored and retrieved using a deterministic cache 
 
 ### Setup
 
-To enable direct-only mode globally, omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
+To enable direct-only mode globally, set `dimension: 1` and omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
+
+> **Important**: If you specify `dimension: 1` and also provide a `provider`, Bifrost treats the config as provider-backed semantic mode, not direct-only mode. To use direct-only mode, omit the `provider` field entirely.
 
 <Warning>
 A vector store is still required as the storage backend, even in direct hash mode. See [Recommended Vector Store](#recommended-vector-store) below for the best choice.
@@ -398,7 +404,7 @@ Override default TTL and similarity threshold per request:
 
 <Tab title="Go SDK">
 
-You can set TTL and threshold in the request context, in the keys you configured in the plugin config:
+You can set TTL and threshold in the request context using the semantic cache context keys:
 
 ```go
 // Go SDK: Custom TTL and threshold

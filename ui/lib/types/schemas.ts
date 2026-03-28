@@ -598,9 +598,10 @@ export const updateProviderRequestSchema = z.object({
 
 // Cache config schema
 export const cacheConfigSchema = z.object({
-	provider: modelProviderNameSchema,
-	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
-	embedding_model: z.string().min(1, "Embedding model is required"),
+	provider: modelProviderNameSchema.optional(),
+	keys: z.array(modelProviderKeySchema).optional(),
+	embedding_model: z.string().min(1, "Embedding model is required").optional(),
+	dimension: z.number().min(1, "Dimension must be at least 1"),
 	ttl_seconds: z.number().min(1).default(3600),
 	threshold: z.number().min(0).max(1).default(0.8),
 	conversation_history_threshold: z.number().min(0).max(1).optional(),

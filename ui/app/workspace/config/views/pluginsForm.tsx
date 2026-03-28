@@ -17,10 +17,6 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const defaultCacheConfig: CacheConfig = {
-	provider: "openai" as ModelProviderName,
-	keys: [],
-	embedding_model: "text-embedding-3-small",
-	dimension: 0,
 	ttl_seconds: 300,
 	threshold: 0.8,
 	conversation_history_threshold: 3,
@@ -59,6 +55,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	const semanticCachePlugin = useMemo(() => plugins?.find((plugin) => plugin.name === SEMANTIC_CACHE_PLUGIN), [plugins]);
 
 	const isSemanticCacheEnabled = Boolean(semanticCachePlugin?.enabled);
+	const isDirectOnlyConfig = cacheConfig.dimension === 1 && !cacheConfig.provider;
 
 	// Initialize cache config from plugin data
 	useEffect(() => {
@@ -77,6 +74,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			setCacheConfig((prev) => ({
 				...prev,
 				provider: providers[0].name as ModelProviderName,
+				embedding_model: prev.embedding_model ?? "text-embedding-3-small",
+				dimension: prev.dimension ?? 1536,
 			}));
 		}
 	}, [providers, semanticCachePlugin?.config]);
@@ -194,6 +193,12 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 					) : (
 						<div className="mt-4 space-y-4">
 							<Separator />
+							{isDirectOnlyConfig && (
+								<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+									This plugin is currently configured in direct-only mode via <code>config.json</code>. The Web UI currently edits
+									provider-backed semantic cache settings; keep using <code>config.json</code> if you want to stay in direct-only mode.
+								</div>
+							)}
 							{/* Provider and Model Settings */}
 							<div className="space-y-4">
 								<h3 className="text-sm font-medium">Provider and Model Settings</h3>
@@ -221,7 +226,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										<Input
 											id="embedding_model"
 											placeholder="text-embedding-3-small"
-											value={cacheConfig.embedding_model}
+											value={cacheConfig.embedding_model ?? ""}
 											onChange={(e) => updateCacheConfigLocal({ embedding_model: e.target.value })}
 										/>
 									</div>
@@ -279,7 +284,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										<Input
 											id="dimension"
 											type="number"
-											min="0"
+											min="1"
 											value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? '' : cacheConfig.dimension}
 											onChange={(e) => {
 												const value = e.target.value

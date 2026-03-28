@@ -1025,7 +1025,7 @@ func TestValidateConfigSchema_Plugin_MissingName(t *testing.T) {
 // =============================================================================
 
 func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
-	// Valid semantic cache plugin with all required fields: provider, keys, dimension
+	// Valid semantic cache plugin with provider and dimension. Keys are injected at runtime.
 	validConfig := `{
 		"plugins": [
 			{
@@ -1033,7 +1033,6 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
-					"keys": ["sk-test-key"],
 					"dimension": 1536
 				}
 			}
@@ -1047,14 +1046,13 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 }
 
 func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) {
-	// Missing required field: provider
+	// Missing required field: provider for semantic mode (dimension > 1)
 	invalidConfig := `{
 		"plugins": [
 			{
 				"enabled": true,
 				"name": "semantic_cache",
 				"config": {
-					"keys": ["sk-test-key"],
 					"dimension": 1536
 				}
 			}
@@ -1067,9 +1065,9 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) 
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
-	// Missing required field: keys
-	invalidConfig := `{
+func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutKeys(t *testing.T) {
+	// Keys are not required at schema level for provider-backed config.
+	validConfig := `{
 		"plugins": [
 			{
 				"enabled": true,
@@ -1082,9 +1080,28 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'keys' in semantic cache plugin to fail validation")
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected provider-backed semantic cache config without plugin keys to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) {
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"dimension": 1
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected direct-only semantic cache config to pass validation, got error: %v", err)
 	}
 }
 
@@ -1096,8 +1113,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingDimension(t *testing.T)
 				"enabled": true,
 				"name": "semantic_cache",
 				"config": {
-					"provider": "openai",
-					"keys": ["sk-test-key"]
+					"provider": "openai"
 				}
 			}
 		]
