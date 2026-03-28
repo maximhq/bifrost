@@ -28,12 +28,13 @@ func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyMode(t *testing.T) {
 	require.False(t, hasKeys, "direct-only mode should not inject provider keys")
 }
 
-func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyModeRemovesStaleEmbeddingModel(t *testing.T) {
+func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyModeRemovesStaleProviderBackedFields(t *testing.T) {
 	config := &Config{}
 	pluginConfig := &schemas.PluginConfig{
 		Name: semanticcache.PluginName,
 		Config: map[string]interface{}{
 			"dimension":       1,
+			"keys":            []schemas.Key{{Name: "stale-key"}},
 			"embedding_model": "text-embedding-3-small",
 		},
 	}
@@ -43,6 +44,8 @@ func TestAddProviderKeysToSemanticCacheConfig_DirectOnlyModeRemovesStaleEmbeddin
 
 	configMap, ok := pluginConfig.Config.(map[string]interface{})
 	require.True(t, ok)
+	_, hasKeys := configMap["keys"]
+	require.False(t, hasKeys, "direct-only mode should remove stale provider keys")
 	_, hasEmbeddingModel := configMap["embedding_model"]
 	require.False(t, hasEmbeddingModel, "direct-only mode should remove stale embedding_model")
 }

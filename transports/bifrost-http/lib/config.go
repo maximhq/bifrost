@@ -3447,6 +3447,7 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	providerVal, exists := configMap["provider"]
 	if !exists {
 		if hasDimension && dimension == 1 {
+			delete(configMap, "keys")
 			delete(configMap, "embedding_model")
 			return nil
 		}
@@ -3463,6 +3464,7 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	if provider == "" {
 		if hasDimension && dimension == 1 {
 			delete(configMap, "provider")
+			delete(configMap, "keys")
 			delete(configMap, "embedding_model")
 			return nil
 		}
