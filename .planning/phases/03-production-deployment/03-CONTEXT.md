@@ -24,13 +24,13 @@ This is an infrastructure/deployment phase -- changes are in infra-ctrl manifest
 ### OIDC Configuration in config.json
 - **D-05:** Add `oidc` section to the ConfigMap's config.json alongside existing provider config. Fields: `issuer_url` (Keycloak realm URL), `client_id`, `scopes` (default: `["openid", "profile", "email"]`), `org_claim` (default: `"organization_id"`), `groups_claim` (default: `"groups"`)
 - **D-06:** `client_secret` is NOT in config.json -- it comes from ExternalSecret/Vault as an env var, referenced by the OIDC middleware at runtime
-- **D-07:** Dev issuer_url: `https://keycloak.stragix.io/realms/stragixlabs` (or the environment-specific Keycloak URL). Prod uses the same realm but different client_id/secret
+- **D-07:** Dev issuer_url: `https://keycloak-dev.tail15b586.ts.net/realms/stragixlabs`. Prod issuer_url: `https://keycloak-prod.tail15b586.ts.net/realms/stragixlabs`. The issuer_url MUST match the `iss` claim in Keycloak-issued tokens -- Keycloak tokens use the frontend URL, which is the Tailscale hostname in this setup. Same realm, same client_id, different client_secret per environment.
 
 ### Keycloak Client Provisioning
 - **D-08:** Create Bifrost OIDC client in Pulumi (tf-infra repo), stragixlabs realm -- consistent with existing Keycloak management pattern
 - **D-09:** Client type: confidential (server-side, not public). Grant types: authorization_code, client_credentials
 - **D-10:** Redirect URIs: Bifrost's OAuth callback URL per environment (derived from Tailscale ingress hostname)
-- **D-11:** Client secret stored in Vault at `kv/infrastructure/bifrost/oidc-client-secret`, pulled into pod via ExternalSecret
+- **D-11:** Client secret stored in Vault at `infrastructure/auth/keycloak/clients/bifrost` (standard createPlatformClients path), pulled into pod via ExternalSecret. Vault payload: `{ client_id, client_secret, realm }`
 
 ### Secret Management
 - **D-12:** Create new ExternalSecret `bifrost-oidc` (or extend existing `bifrost-llm-providers`) to pull OIDC client_secret from Vault
@@ -45,7 +45,6 @@ This is an infrastructure/deployment phase -- changes are in infra-ctrl manifest
 - **D-17:** Add egress rule to allow Bifrost to reach Keycloak for OIDC discovery and JWKS fetching (HTTPS port 443 to Keycloak service or external endpoint)
 
 ### Claude's Discretion
-- Exact image tag format (SHA digest vs semver tag from first CI build)
 - Whether to extend `bifrost-llm-providers` ExternalSecret or create a separate `bifrost-oidc` ExternalSecret
 - Config.json formatting and field ordering
 - Network policy specifics for Keycloak egress
@@ -108,7 +107,7 @@ This is an infrastructure/deployment phase -- changes are in infra-ctrl manifest
 
 - The infra-ctrl repo has TWO locations for Bifrost: the main `apps/platform-services/bifrost/` and the `infra-ctrl-bifrost-eval` worktree. Plans need to work across both or consolidate
 - The current deployment uses `emptyDir` for data volume -- SQLite databases Bifrost creates at runtime live here. The fork image should be drop-in compatible
-- Keycloak realm URL format: `https://keycloak.stragix.io/realms/stragixlabs` -- the OIDC discovery endpoint appends `/.well-known/openid-configuration` automatically
+- Keycloak realm URL format: `https://keycloak-{env}.tail15b586.ts.net/realms/stragixlabs` -- the OIDC discovery endpoint appends `/.well-known/openid-configuration` automatically
 - The docker-build.yml CI workflow pushes to GHCR -- the first successful push to main will produce the image tag needed for deployment
 
 </specifics>
