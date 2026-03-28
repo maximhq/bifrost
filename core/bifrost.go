@@ -152,6 +152,9 @@ type PluginPipeline struct {
 	postHookTimings     map[string]*pluginTimingAccumulator // keyed by plugin name
 	postHookPluginOrder []string                            // order in which post-hooks ran (for nested span creation)
 	chunkCount          int
+
+	// Plugin logging: cached scoped contexts for streaming post-hooks (reused across chunks)
+	streamScopedCtxs map[string]*schemas.BifrostContext
 }
 
 // pluginTimingAccumulator accumulates timing information for a plugin across streaming chunks
@@ -1248,8 +1251,12 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	// Prompt is not required when type is background_removal
-	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+	// Prompt is not required for certain operation types that work without a text prompt
+	var imageEditParamsType *string
+	if req.Params != nil {
+		imageEditParamsType = req.Params.Type
+	}
+	if !isPromptOptionalImageEditType(imageEditParamsType) &&
 		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1316,8 +1323,12 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
-	// Prompt is not required when type is background_removal
-	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+	// Prompt is not required for certain operation types that work without a text prompt
+	var imageEditStreamParamsType *string
+	if req.Params != nil {
+		imageEditStreamParamsType = req.Params.Type
+	}
+	if !isPromptOptionalImageEditType(imageEditStreamParamsType) &&
 		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -3347,7 +3358,7 @@ func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *syn
 //	    }, toolSchema)
 func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(args any) (string, error), toolSchema schemas.ChatTool) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.RegisterTool(name, description, handler, toolSchema)
@@ -3365,7 +3376,7 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 //   - error: Any retrieval error
 func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	if bifrost.MCPManager == nil {
-		return nil, fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return nil, fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	clients := bifrost.MCPManager.GetClients()
@@ -3405,7 +3416,7 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 //
 // Returns:
 //   - []schemas.ChatTool: List of available tools
-func (bifrost *Bifrost) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	if bifrost.MCPManager == nil {
 		return nil
 	}
@@ -3476,7 +3487,7 @@ func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 //	}
 func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.RemoveClient(id)
@@ -3509,7 +3520,7 @@ func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 //	})
 func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
@@ -3524,7 +3535,7 @@ func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPCli
 //   - error: Any reconnection error
 func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.ReconnectClient(id)
@@ -3532,15 +3543,18 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error {
+// Pass the current value of disableAutoToolInject whenever only other fields
+// change so the flag is never silently reset to its zero value.
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		MaxAgentDepth:        maxAgentDepth,
-		ToolExecutionTimeout: time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
-		CodeModeBindingLevel: schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		MaxAgentDepth:         maxAgentDepth,
+		ToolExecutionTimeout:  time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		DisableAutoToolInject: disableAutoToolInject,
 	})
 	return nil
 }
@@ -3790,6 +3804,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	if shortCircuit != nil {
 		if shortCircuit.Error != nil {
 			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			drainAndAttachPluginLogs(ctx)
 			cleanup()
 			if bifrostErr != nil {
 				return nil, bifrostErr
@@ -3798,6 +3813,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		}
 		if shortCircuit.Response != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			drainAndAttachPluginLogs(ctx)
 			cleanup()
 			if bifrostErr != nil {
 				return nil, bifrostErr
@@ -3810,7 +3826,11 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	}
 
 	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+		resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+		if IsFinalChunk(ctx) {
+			drainAndAttachPluginLogs(ctx)
+		}
+		return resp, bifrostErr
 	}
 
 	return &WSStreamHooks{
@@ -4283,6 +4303,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -4291,6 +4312,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -4398,6 +4420,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	select {
 	case result = <-msg.Response:
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
+		drainAndAttachPluginLogs(msg.Context)
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
@@ -4414,6 +4437,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
+		drainAndAttachPluginLogs(msg.Context)
 		bifrost.releaseChannelMessage(msg)
 		// Drop raw request/response on error path too
 		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
@@ -4494,13 +4518,19 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	pipeline := bifrost.getPluginPipeline()
-	defer bifrost.releasePluginPipeline(pipeline)
+	releasePipeline := true
+	defer func() {
+		if releasePipeline {
+			bifrost.releasePluginPipeline(pipeline)
+		}
+	}()
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -4509,13 +4539,23 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with stream
 		if shortCircuit.Stream != nil {
 			outputStream := make(chan *schemas.BifrostStreamChunk)
+			releasePipeline = false // pipeline is released inside the goroutine after stream drains
 
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+				if IsFinalChunk(ctx) {
+					drainAndAttachPluginLogs(ctx)
+				}
+				return resp, bifrostErr
 			}
 
 			go func() {
+				defer func() {
+					drainAndAttachPluginLogs(ctx) // ensure logs are drained even if stream closes without a final chunk
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					bifrost.releasePluginPipeline(pipeline)
+				}()
 				defer close(outputStream)
 
 				for streamMsg := range shortCircuit.Stream {
@@ -4563,6 +4603,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -4678,6 +4719,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
 		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
+		drainAndAttachPluginLogs(ctx)
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
@@ -4835,7 +4877,7 @@ func executeRequestWithRetries[T any](
 		} else {
 			// Populate LLM response attributes for non-streaming responses
 			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
-				tracer.PopulateLLMResponseAttributes(handle, resp, bifrostError)
+				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
 			}
 
 			// End span with appropriate status
@@ -5035,6 +5077,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			pipeline = bifrost.getPluginPipeline()
 			postHookRunner = func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+				if IsFinalChunk(ctx) {
+					drainAndAttachPluginLogs(ctx)
+				}
 				if bifrostErr != nil {
 					return nil, bifrostErr
 				}
@@ -5180,6 +5225,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		transcriptionResponse.BackfillParams(req.BifrostRequest.TranscriptionRequest)
 		response.TranscriptionResponse = transcriptionResponse
 	case schemas.ImageGenerationRequest:
 		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
@@ -5433,7 +5479,7 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "MCP is not configured in this Bifrost instance",
+				Message: "mcp is not configured in this bifrost instance",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: requestType,
@@ -5458,6 +5504,7 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			finalMcpResp, bifrostErr := pipeline.RunMCPPostHooks(ctx, shortCircuit.Response, nil, preCount)
+			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -5467,6 +5514,7 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 		if shortCircuit.Error != nil {
 			// Capture post-hook results to respect transformations or recovery
 			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, nil, shortCircuit.Error, preCount)
+			drainAndAttachPluginLogs(ctx)
 			// Return post-hook error if present (post-hook may have transformed the error)
 			if finalErr != nil {
 				return nil, finalErr
@@ -5526,6 +5574,7 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 
 	// Run post-hooks
 	finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, mcpResp, bifrostErr, preCount)
+	drainAndAttachPluginLogs(ctx)
 
 	if finalErr != nil {
 		return nil, finalErr
@@ -5590,7 +5639,9 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 			}
 		}
 
-		req, shortCircuit, err = plugin.PreLLMHook(ctx, req)
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		req, shortCircuit, err = plugin.PreLLMHook(pluginCtx, req)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5641,8 +5692,17 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 		p.logger.Debug("running post-hook for plugin %s", pluginName)
 		if isStreaming {
 			// For streaming: accumulate timing, don't create individual spans per chunk
+			// Lazily create cached scoped contexts on first chunk (reused across all chunks)
+			if p.streamScopedCtxs == nil {
+				p.streamScopedCtxs = make(map[string]*schemas.BifrostContext, len(p.llmPlugins))
+				for _, pl := range p.llmPlugins {
+					name := pl.GetName()
+					p.streamScopedCtxs[name] = ctx.WithPluginScope(&name)
+				}
+			}
+			pluginCtx := p.streamScopedCtxs[pluginName]
 			start := time.Now()
-			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
+			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
@@ -5659,7 +5719,9 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 					ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 				}
 			}
-			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
+			pluginCtx := ctx.WithPluginScope(&pluginName)
+			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+			pluginCtx.ReleasePluginScope()
 			// End span with appropriate status
 			if err != nil {
 				p.tracer.SetAttribute(handle, "error", err.Error())
@@ -5713,7 +5775,9 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 			}
 		}
 
-		req, shortCircuit, err = plugin.PreMCPHook(ctx, req)
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		req, shortCircuit, err = plugin.PreMCPHook(pluginCtx, req)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5768,7 +5832,9 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 			}
 		}
 
-		mcpResp, bifrostErr, err = plugin.PostMCPHook(ctx, mcpResp, bifrostErr)
+		pluginCtx := ctx.WithPluginScope(&pluginName)
+		mcpResp, bifrostErr, err = plugin.PostMCPHook(pluginCtx, mcpResp, bifrostErr)
+		pluginCtx.ReleasePluginScope()
 
 		// End span with appropriate status
 		if err != nil {
@@ -5794,7 +5860,11 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 	return mcpResp, nil
 }
 
-// resetPluginPipeline resets a PluginPipeline instance for reuse
+// resetPluginPipeline resets a PluginPipeline instance for reuse.
+// IMPORTANT: drainAndAttachPluginLogs must be called on the root BifrostContext
+// BEFORE this method, because it calls ReleasePluginScope on cached scoped contexts
+// which nils out their pluginLogs pointer. The drain reads from the shared store
+// on the root context, so it must happen while the store is still referenced.
 func (p *PluginPipeline) resetPluginPipeline() {
 	p.executedPreHooks = 0
 	p.preHookErrors = p.preHookErrors[:0]
@@ -5805,6 +5875,25 @@ func (p *PluginPipeline) resetPluginPipeline() {
 		clear(p.postHookTimings)
 	}
 	p.postHookPluginOrder = p.postHookPluginOrder[:0]
+	// Release cached scoped contexts for streaming
+	for _, scopedCtx := range p.streamScopedCtxs {
+		scopedCtx.ReleasePluginScope()
+	}
+	p.streamScopedCtxs = nil
+}
+
+// drainAndAttachPluginLogs drains accumulated plugin logs from the BifrostContext
+// and attaches them to the trace for later retrieval by observability plugins.
+func drainAndAttachPluginLogs(ctx *schemas.BifrostContext) {
+	tracer, traceID, err := GetTracerFromContext(ctx)
+	if err != nil || tracer == nil || traceID == "" {
+		return
+	}
+	logs := ctx.DrainPluginLogs()
+	if len(logs) == 0 {
+		return
+	}
+	tracer.AttachPluginLogs(traceID, logs)
 }
 
 // accumulatePluginTiming accumulates timing for a plugin during streaming
@@ -5896,7 +5985,9 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 	return pipeline
 }
 
-// releasePluginPipeline returns a PluginPipeline to the pool
+// releasePluginPipeline returns a PluginPipeline to the pool.
+// Caller must ensure drainAndAttachPluginLogs has already been called on the
+// associated BifrostContext before calling this method.
 func (bifrost *Bifrost) releasePluginPipeline(pipeline *PluginPipeline) {
 	pipeline.resetPluginPipeline()
 	bifrost.pluginPipelinePool.Put(pipeline)
@@ -6121,13 +6212,12 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		// - If model is nil or empty → include all keys (no model filter)
 		// - If model is specified:
 		//   - If model is in key.BlacklistedModels → exclude (wins over Models allow list)
-		//   - If key.Models is empty → include key (supports all non-blacklisted models)
+		//   - If key.Models is ["*"] → include key (supports all non-blacklisted models)
+		//   - If key.Models is empty → exclude key (deny-by-default)
 		//   - If key.Models is non-empty → only include if model is in list
+		// Blacklist wins over allowlist
 		if model != nil && *model != "" {
-			if len(k.BlacklistedModels) > 0 && slices.Contains(k.BlacklistedModels, *model) {
-				continue
-			}
-			if len(k.Models) > 0 && !slices.Contains(k.Models, *model) {
+			if k.BlacklistedModels.IsBlocked(*model) || !k.Models.IsAllowed(*model) {
 				continue
 			}
 		}
@@ -6221,12 +6311,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				continue
 			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
-			var modelSupported bool
-			if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
-				modelSupported = false
-			} else {
-				modelSupported = (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
-			}
+			// ["*"] = allow all models; [] = deny all; specific list = allow only listed
+			modelSupported := hasValue && key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

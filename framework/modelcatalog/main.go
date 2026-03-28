@@ -41,10 +41,13 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	// Provider-level pricing overrides are maintained separately to avoid contention
-	// with pricing cache rebuilds.
-	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
-	overridesMu       sync.RWMutex
+	// rawOverrides is the canonical list of all active overrides. It exists solely
+	// to support incremental mutations: UpsertPricingOverrides and DeletePricingOverride
+	// iterate over it to rebuild the list, then derive customPricing from it.
+	// customPricing is the actual lookup structure used at query time.
+	rawOverrides  []PricingOverride
+	customPricing *customPricingData
+	overridesMu   sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -64,10 +67,13 @@ type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
 	Mode      string `json:"mode"`
+	PricingOptions
+}
 
+type PricingOptions struct {
 	// Costs - Text
-	InputCostPerToken          float64  `json:"input_cost_per_token"`
-	OutputCostPerToken         float64  `json:"output_cost_per_token"`
+	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
 	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
 	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
 	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
@@ -197,7 +203,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -271,6 +276,10 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// Populate model pool with normalized providers from pricing data
 	mc.populateModelPoolFromPricingData()
 
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
+	}
+
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
@@ -340,6 +349,10 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
+
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		return fmt.Errorf("failed to load pricing overrides: %w", err)
+	}
 
 	// Also sync model parameters
 	if err := mc.syncModelParameters(ctx); err != nil {
@@ -516,8 +529,9 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //   - allowedModels: List of allowed model names (can be empty, can include provider prefixes)
 //
 // Behavior:
-//   - If allowedModels is empty: Uses model catalog to check if provider supports the model
+//   - If allowedModels is ["*"]: Uses model catalog to check if provider supports the model
 //     (delegates to GetProvidersForModel which handles all cross-provider logic)
+//   - If allowedModels is empty ([]): Deny-by-default — returns false for any provider/model pair
 //   - If allowedModels is not empty: Checks if model matches any entry in the list
 //     Provider-specific validation:
 //   - Direct matches: "gpt-4o" in allowedModels for any provider
@@ -530,9 +544,13 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //
 // Examples:
 //
-//	// Empty allowedModels - uses catalog
-//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{})
+//	// Wildcard allowedModels - uses catalog to check provider support
+//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{"*"})
 //	// Returns: true (catalog knows openrouter has "anthropic/claude-3-5-sonnet")
+//
+//	// Empty allowedModels - deny all (deny-by-default)
+//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{})
+//	// Returns: false (no models are permitted)
 //
 //	// Explicit allowedModels with prefix - validates against catalog
 //	mc.IsModelAllowedForProvider("openrouter", "gpt-4o", []string{"openai/gpt-4o"})
@@ -545,12 +563,15 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	// Explicit allowedModels without prefix
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels []string) bool {
-	// Case 1: Empty allowedModels = use catalog to determine support
-	// This leverages GetProvidersForModel which already handles all cross-provider logic
-	if len(allowedModels) == 0 {
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels schemas.WhiteList) bool {
+	// Case 1: ["*"] = allow all models; use catalog to determine support
+	// Empty allowedModels = deny all (fail-safe deny-by-default)
+	if allowedModels.IsUnrestricted() {
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
+	}
+	if allowedModels.IsEmpty() {
+		return false
 	}
 
 	// Case 2: Explicit allowedModels = check if model matches any entry
@@ -646,7 +667,7 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 }
 
 // UpsertModelDataForProvider upserts model data for a given provider
-func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model, deniedModels []schemas.Model) {
+func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model) {
 	if modelData == nil {
 		return
 	}
@@ -675,7 +696,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 		}
 	}
 	// If modelData is empty, then we allow all models
-	if len(modelData.Data) == 0 && len(allowedModels) == 0 && len(deniedModels) == 0 {
+	if len(modelData.Data) == 0 && len(allowedModels) == 0 {
 		mc.modelPool[provider] = providerModels
 		return
 	}
@@ -708,15 +729,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 	}
 
 	if len(allowedModels) == 0 {
-		deniedSet := make(map[string]struct{}, len(deniedModels))
-		for _, d := range deniedModels {
-			_, modelName := schemas.ParseModelString(d.ID, "")
-			deniedSet[modelName] = struct{}{}
-		}
 		for _, model := range providerModels {
-			if _, denied := deniedSet[model]; denied {
-				continue
-			}
 			if !seenModels[model] {
 				seenModels[model] = true
 				finalModelList = append(finalModelList, model)
@@ -819,6 +832,79 @@ func (mc *ModelCatalog) refineNestedProviderModel(provider schemas.ModelProvider
 	}
 }
 
+// SetPricingOverrides replaces the full in-memory pricing override set.
+func (mc *ModelCatalog) SetPricingOverrides(rows []configstoreTables.TablePricingOverride) error {
+	seen := make(map[string]int, len(rows))
+	overrides := make([]PricingOverride, 0, len(rows))
+	for i := range rows {
+		o, err := convertTablePricingOverrideToPricingOverride(&rows[i])
+		if err != nil {
+			return err
+		}
+		if idx, exists := seen[o.ID]; exists {
+			overrides[idx] = o // last entry wins for duplicate IDs
+		} else {
+			seen[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+	mc.overridesMu.Lock()
+	mc.rawOverrides = overrides
+	mc.customPricing = buildCustomPricingData(overrides)
+	mc.overridesMu.Unlock()
+	return nil
+}
+
+// UpsertPricingOverrides inserts or replaces one or more pricing overrides in a single
+// operation, rebuilding the lookup map only once at the end.
+func (mc *ModelCatalog) UpsertPricingOverrides(rows ...*configstoreTables.TablePricingOverride) error {
+	// Deduplicate the input batch by ID (last entry wins) and build the
+	// incoming set for O(1) lookup when filtering existing rawOverrides.
+	seenIncoming := make(map[string]int, len(rows))
+	overrides := make([]PricingOverride, 0, len(rows))
+	for _, row := range rows {
+		o, err := convertTablePricingOverrideToPricingOverride(row)
+		if err != nil {
+			return err
+		}
+		if idx, exists := seenIncoming[o.ID]; exists {
+			overrides[idx] = o // last entry wins for duplicate IDs
+		} else {
+			seenIncoming[o.ID] = len(overrides)
+			overrides = append(overrides, o)
+		}
+	}
+
+	mc.overridesMu.Lock()
+	defer mc.overridesMu.Unlock()
+
+	updated := make([]PricingOverride, 0, len(mc.rawOverrides)+len(overrides))
+	for _, o := range mc.rawOverrides {
+		if _, replacing := seenIncoming[o.ID]; !replacing {
+			updated = append(updated, o)
+		}
+	}
+	updated = append(updated, overrides...)
+	mc.rawOverrides = updated
+	mc.customPricing = buildCustomPricingData(updated)
+	return nil
+}
+
+// DeletePricingOverride removes a pricing override by ID.
+func (mc *ModelCatalog) DeletePricingOverride(id string) {
+	mc.overridesMu.Lock()
+	defer mc.overridesMu.Unlock()
+
+	updated := make([]PricingOverride, 0, len(mc.rawOverrides))
+	for _, o := range mc.rawOverrides {
+		if o.ID != id {
+			updated = append(updated, o)
+		}
+	}
+	mc.rawOverrides = updated
+	mc.customPricing = buildCustomPricingData(updated)
+}
+
 // IsTextCompletionSupported checks if a model supports text completion for the given provider.
 // Returns true if the model has pricing data for text completion ("text_completion"),
 // false otherwise. This is used by the litellmcompat plugin to determine whether to
@@ -913,7 +999,6 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		done:                make(chan struct{}),
 	}
 }

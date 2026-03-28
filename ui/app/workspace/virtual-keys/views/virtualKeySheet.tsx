@@ -64,7 +64,19 @@ interface VirtualKeySheetProps {
 const providerConfigSchema = z.object({
 	id: z.number().optional(),
 	provider: z.string().min(1, "Provider is required"),
-	weight: z.union([z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1"), z.string()]),
+	weight: z
+		.union([
+			z.literal("").transform(() => undefined as undefined),
+			z
+				.string()
+				.transform((v) => {
+					const n = Number.parseFloat(v);
+					return Number.isNaN(n) ? undefined : n;
+				})
+				.pipe(z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional()),
+			z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1"),
+		])
+		.optional(),
 	allowed_models: z.array(z.string()).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
@@ -168,7 +180,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	const availableProviders = providersData || [];
 
 	// Form setup
-	const form = useForm<FormData>({
+	const form = useForm<z.input<typeof formSchema>, unknown, FormData>({
 		resolver: zodResolver(formSchema),
 		defaultValues: {
 			name: virtualKey?.name || "",
@@ -176,20 +188,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			providerConfigs:
 				virtualKey?.provider_configs?.map((config) => ({
 					...config,
-					key_ids: config.keys?.map((key) => key.key_id) || [],
+					weight: config.weight ?? "",
+					key_ids: config.allow_all_keys ? ["*"] : (config.keys?.map((key) => key.key_id) || []),
 					budget: config.budget
 						? {
-								max_limit: String(config.budget.max_limit),
-								reset_duration: config.budget.reset_duration,
-							}
+							max_limit: String(config.budget.max_limit),
+							reset_duration: config.budget.reset_duration,
+						}
 						: undefined,
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -275,8 +288,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 		const newConfig = {
 			provider: provider,
-			weight: 0.5, // Default weight, user can adjust
-			allowed_models: [],
+			weight: "" as string | number, // Default empty string = excluded from weighted routing until user sets a weight
+			allowed_models: ["*"],
 			key_ids: [],
 		};
 
@@ -361,23 +374,24 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight: typeof config.weight === "string" ? parseFloat(config.weight) || 0 : config.weight,
-			budget: (() => {
-				const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
-				if (budgetMaxLimit !== undefined) {
-					return {
-						max_limit: budgetMaxLimit,
-						reset_duration: config.budget?.reset_duration || "1M",
-					};
-				}
+			weight: config.weight === undefined || config.weight === null
+				? null
+				: typeof config.weight === "string" ? (Number.isNaN(parseFloat(config.weight)) ? null : parseFloat(config.weight)) : config.weight, budget: (() => {
+					const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
+					if (budgetMaxLimit !== undefined) {
+						return {
+							max_limit: budgetMaxLimit,
+							reset_duration: config.budget?.reset_duration || "1M",
+						};
+					}
 
-				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
-				if (existingConfig?.budget) {
-					return {};
-				}
+					const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+					if (existingConfig?.budget) {
+						return {};
+					}
 
-				return undefined;
-			})(),
+					return undefined;
+				})(),
 			rate_limit: (() => {
 				const tokenMaxLimit = normalizeIntegerField(config.rate_limit?.token_max_limit);
 				const requestMaxLimit = normalizeIntegerField(config.rate_limit?.request_max_limit);
@@ -581,8 +595,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											</TooltipTrigger>
 											<TooltipContent>
 												<p>
-													Configure which providers this virtual key can use and their specific settings. Leave empty to allow all
-													providers.
+													Configure which providers this virtual key can use and their specific settings. Leave empty to block all
+													providers. Add providers to allow them.
 												</p>
 											</TooltipContent>
 										</Tooltip>
@@ -671,7 +685,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		: ProviderLabels[config.provider as ProviderName]}
 																</div>
 																<div className="hover:bg-accent/50 cursor-pointer rounded-sm p-2">
-																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" />
+																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" data-testid={`vk-delete-provider-${index}`} />
 																</div>
 															</div>
 														</AccordionTrigger>
@@ -680,9 +694,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																<div className="w-1/4 space-y-2">
 																	<Label className="text-sm font-medium">Weight</Label>
 																	<Input
-																		placeholder="0.5"
+																		placeholder="Exclude from routing"
 																		className="h-10 w-full"
-																		value={config.weight}
+																		data-testid={`vk-weight-input-${index}`}
+																		value={config.weight ?? ""}
 																		onChange={(e) => {
 																			const inputValue = e.target.value;
 																			// Allow empty string, numbers, and partial decimal inputs like "0."
@@ -710,23 +725,46 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<Label className="text-sm font-medium">
 																		Allowed Models <span className="text-muted-foreground ml-auto text-xs italic">type to search</span>
 																	</Label>
-																	<ModelMultiselect
-																		provider={config.provider}
-																		keys={(() => {
-																			const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																			const configKeyIds = config.key_ids || [];
-																			return providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
-																		})()}
-																		value={config.allowed_models || []}
-																		onChange={(models: string[]) => handleUpdateProviderConfig(index, "allowed_models", models)}
-																		placeholder={
-																			config.provider
-																				? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
-																				: ModelPlaceholders.default
-																		}
-																		className="min-h-10 max-w-[500px] min-w-[200px]"
-																	/>
-																	<p className="text-muted-foreground text-xs">Keep empty to use all available models for the provider</p>
+																	{(() => {
+																		const hasWildcardModels = (config.allowed_models || []).includes("*");
+																		return (
+																			<ModelMultiselect
+																				data-testid={`vk-models-multiselect-${index}`}
+																				provider={config.provider}
+																				keys={(() => {
+																					const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+																					const configKeyIds = config.key_ids || [];
+																					return configKeyIds.includes("*")
+																						? providerKeys.map((key) => key.key_id)
+																						: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
+																				})()}
+																				allowAllOption={true}
+																				value={hasWildcardModels ? ["*"] : (config.allowed_models || [])}
+																				onChange={(models: string[]) => {
+																					const hadStar = (config.allowed_models || []).includes("*");
+																					const hasStar = models.includes("*");
+																					if (!hadStar && hasStar) {
+																						handleUpdateProviderConfig(index, "allowed_models", ["*"]);
+																					} else if (hadStar && hasStar && models.length > 1) {
+																						handleUpdateProviderConfig(index, "allowed_models", models.filter((m) => m !== "*"));
+																					} else {
+																						handleUpdateProviderConfig(index, "allowed_models", models);
+																					}
+																				}}
+																				placeholder={
+																					hasWildcardModels
+																						? "All models allowed"
+																						: (config.allowed_models || []).length === 0
+																							? "No models (deny all)"
+																							: config.provider
+																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
+																								: ModelPlaceholders.default
+																				}
+																				className="min-h-10 max-w-[500px] min-w-[200px]"
+																			/>
+																		);
+																	})()}
+																	<p className="text-muted-foreground text-xs">Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.</p>
 																</div>
 															</div>
 
@@ -734,32 +772,48 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															{(() => {
 																const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
 																const configKeyIds = config.key_ids || [];
-																const selectedProviderKeys = providerKeys
-																	.filter((key) => configKeyIds.includes(key.key_id))
-																	.map((key) => ({
+																const hasWildcard = configKeyIds.includes("*");
+																const allKeyOptions = [
+																	{
+																		label: "Allow All Keys",
+																		value: "*",
+																		description: "Allow all current and future keys for this provider",
+																		provider: "",
+																	},
+																	...providerKeys.map((key) => ({
 																		label: key.name,
 																		value: key.key_id,
-																		description: key.models?.join(", ") || "",
+																		description:
+																			key.models == null || key.models.includes("*")
+																				? "All models"
+																				: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
 																		provider: key.provider,
-																	}));
-
-																if (providerKeys.length === 0) return null;
+																	})),
+																];
+																const selectedProviderKeys = hasWildcard
+																	? [allKeyOptions[0]]
+																	: providerKeys
+																		.filter((key) => configKeyIds.includes(key.key_id))
+																		.map((key) => ({
+																			label: key.name,
+																			value: key.key_id,
+																			description:
+																				key.models == null || key.models.includes("*")
+																					? "All models"
+																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+																			provider: key.provider,
+																		}));
 
 																return (
 																	<div className="mx-0.5 space-y-2">
 																		<Label className="text-sm font-medium">Allowed Keys</Label>
-																		<p className="text-muted-foreground text-xs">Keep empty to use all available keys for the provider</p>
+																		<p className="text-muted-foreground text-xs">Select specific keys or allow all. Leave empty to block all keys for this provider.</p>
 																		<AsyncMultiSelect
 																			hideSelectedOptions
 																			isNonAsync
 																			closeMenuOnSelect={false}
 																			menuPlacement="auto"
-																			defaultOptions={providerKeys.map((key) => ({
-																				label: key.name,
-																				value: key.key_id,
-																				description: key.models?.join(", ") || "",
-																				provider: key.provider,
-																			}))}
+																			defaultOptions={allKeyOptions}
 																			views={{
 																				multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
 																					return (
@@ -802,11 +856,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			}}
 																			value={selectedProviderKeys}
 																			onChange={(keys) => {
-																				// Update key_ids for this provider config
-																				const newKeyIds = keys.map((key) => key.value as string);
-																				handleUpdateProviderConfig(index, "key_ids", newKeyIds);
+																				const hadStar = hasWildcard;
+																				const hasStar = keys.some((k) => k.value === "*");
+																				if (!hadStar && hasStar) {
+																					// Just selected "Allow All Keys" — set to ["*"] only
+																					handleUpdateProviderConfig(index, "key_ids", ["*"]);
+																				} else if (hadStar && hasStar && keys.length > 1) {
+																					// Had "*", still has "*", but user also selected a specific key — drop "*"
+																					handleUpdateProviderConfig(index, "key_ids", keys.filter((k) => k.value !== "*").map((k) => k.value as string));
+																				} else {
+																					handleUpdateProviderConfig(index, "key_ids", keys.map((k) => k.value as string));
+																				}
 																			}}
-																			placeholder="Select keys..."
+																			placeholder={
+																				hasWildcard
+																					? "All keys allowed"
+																					: configKeyIds.length === 0
+																						? "No keys selected"
+																						: "Select keys..."
+																			}
 																			className="hover:bg-accent w-full"
 																			menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 																		/>
@@ -922,13 +990,37 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												</TooltipTrigger>
 												<TooltipContent>
 													<p>
-														Configure which MCP clients this virtual key can use and their allowed tools. Leave empty to allow all MCP
-														clients and tools.
+														Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
+														blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
+														<span className="font-medium">Allow All Tools</span> to grant tool access.
 													</p>
 												</TooltipContent>
 											</Tooltip>
 										</TooltipProvider>
 									</div>
+
+									{/* MCP servers available on all virtual keys by default, excluding explicitly overridden ones */}
+									{(() => {
+										const defaultMCPClients = mcpClientsData.filter(
+											(client) =>
+												client.config.allow_on_all_virtual_keys &&
+												!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+										);
+										return defaultMCPClients.length > 0 ? (
+											<div className="text-muted-foreground rounded-md border p-3 text-xs">
+												<div className="flex items-start gap-1.5">
+													<Info className="mt-0.5 h-3 w-3 shrink-0" />
+													<span>
+														The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
+														<span className="text-foreground font-medium">
+															{defaultMCPClients.map((c) => c.config.name).join(", ")}
+														</span>
+														. Adding an explicit config for any of them below will override the all-tools default for this key.
+													</span>
+												</div>
+											</div>
+										) : null;
+									})()}
 
 									{/* Add MCP Client Dropdown */}
 									{mcpClientsData && mcpClientsData.length > 0 && (
@@ -1014,20 +1106,39 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
 																<TableCell>
 																	<MultiSelect
-																		options={[...availableTools, ...enabledToolsByConfig]
-																			.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
-																			.map((tool) => ({
-																				label: tool.name,
-																				value: tool.name,
-																				description: tool.description,
-																			}))}
+																		options={[
+																			{
+																				label: "Allow All Tools",
+																				value: "*",
+																				description: "Allow all current and future tools",
+																			},
+																			...[...availableTools, ...enabledToolsByConfig]
+																				.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
+																				.map((tool) => ({
+																					label: tool.name,
+																					value: tool.name,
+																					description: tool.description,
+																				})),
+																		]}
 																		defaultValue={selectedTools}
-																		onValueChange={(tools: string[]) => handleUpdateMCPConfig(index, "tools_to_execute", tools)}
+																		onValueChange={(tools: string[]) => {
+																			const hadStar = selectedTools.includes("*");
+																			const hasStar = tools.includes("*");
+																			if (!hadStar && hasStar) {
+																				// Just selected "Allow All Tools" — set to ["*"] only
+																				handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
+																			} else if (hadStar && hasStar && tools.length > 1) {
+																				// Had "*", still has "*", but user also selected a specific tool — drop "*"
+																				handleUpdateMCPConfig(index, "tools_to_execute", tools.filter((t) => t !== "*"));
+																			} else {
+																				handleUpdateMCPConfig(index, "tools_to_execute", tools);
+																			}
+																		}}
 																		placeholder={
 																			selectedTools.length === 0
 																				? "No tools selected"
 																				: selectedTools.includes("*")
-																					? "All tools selected"
+																					? "All tools allowed"
 																					: "Select tools..."
 																		}
 																		variant="inverted"
@@ -1038,7 +1149,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	/>
 																</TableCell>
 																<TableCell>
-																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)}>
+																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)} data-testid={`vk-delete-mcp-${index}`}>
 																		<Trash2 className="h-4 w-4" />
 																	</Button>
 																</TableCell>
@@ -1256,7 +1367,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<SelectValue />
 																</SelectTrigger>
 															</FormControl>
-															<SelectContent>
+															<SelectContent >
 																<SelectItem value="none">No Assignment</SelectItem>
 																{teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
 																{customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}

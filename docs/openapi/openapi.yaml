@@ -38,7 +38,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, routing rules, and pricing overrides
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -636,6 +636,12 @@ paths:
   /api/governance/providers/{provider_name}:
     $ref: './paths/management/governance.yaml#/provider-governance-by-name'
 
+  # Governance - Pricing Overrides
+  /api/governance/pricing-overrides:
+    $ref: './paths/management/governance.yaml#/pricing-overrides'
+  /api/governance/pricing-overrides/{id}:
+    $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
+
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
@@ -1096,6 +1102,22 @@ components:
       $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
     UpdateProviderGovernanceRequest:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+
+    # Governance - Pricing Overrides
+    PricingOverrideRequestType:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
+    PricingPatch:
+      $ref: './schemas/management/governance.yaml#/PricingPatch'
+    PricingOverride:
+      $ref: './schemas/management/governance.yaml#/PricingOverride'
+    CreatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+    UpdatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+    PricingOverrideResponse:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
+    ListPricingOverridesResponse:
+      $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
 
     # Logging
     LogEntry:

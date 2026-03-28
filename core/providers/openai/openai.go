@@ -1836,7 +1836,6 @@ func HandleOpenAIResponsesStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan)
 			}
 		}
-
 	}()
 
 	return responseChan, nil
@@ -2403,7 +2402,6 @@ func HandleOpenAISpeechStreamRequest(
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 		}
-
 	}()
 
 	return responseChan, nil
@@ -2544,7 +2542,12 @@ func HandleOpenAITranscriptionRequest(
 	// Parse OpenAI's transcription response directly into BifrostTranscribe
 	response := &schemas.BifrostTranscriptionResponse{}
 	var rawResponse interface{}
-	if customResponseHandler != nil {
+	if request.Params != nil && schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) {
+		response.Text = string(copiedResponseBody)
+		if sendBackRawResponse {
+			rawResponse = string(copiedResponseBody)
+		}
+	} else if customResponseHandler != nil {
 		_, rawResponse, bifrostErr = customResponseHandler(copiedResponseBody, response, nil, false, sendBackRawResponse)
 	} else {
 		if err := sonic.Unmarshal(copiedResponseBody, response); err != nil {
@@ -2561,7 +2564,7 @@ func HandleOpenAITranscriptionRequest(
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 		}
 
-		//TODO: add HandleProviderResponse here
+		// TODO: add HandleProviderResponse here
 
 		// Parse raw response for RawResponse field
 		if sendBackRawResponse {
@@ -2865,7 +2868,6 @@ func HandleOpenAITranscriptionStreamRequest(
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan)
 		}
-
 	}()
 
 	return responseChan, nil
@@ -2875,8 +2877,8 @@ func HandleOpenAITranscriptionStreamRequest(
 // It formats the request, sends it to OpenAI, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
+	req *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
 		return nil, err
 	}
@@ -2909,7 +2911,6 @@ func HandleOpenAIImageGenerationRequest(
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -3030,7 +3031,6 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil, provider.GetProviderKey())
 	}
@@ -3079,7 +3079,6 @@ func HandleOpenAIImageGenerationStreaming(
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	// Set headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -3441,7 +3440,6 @@ func HandleOpenAIImageGenerationStreaming(
 				return
 			}
 		}
-
 	}()
 
 	return responseChan, nil
@@ -4350,7 +4348,6 @@ func HandleOpenAIImageEditStreamRequest(
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	reqBody := ToOpenAIImageEditRequest(request)
 	if reqBody == nil {
 		return nil, providerUtils.NewBifrostOperationError("image edit input is not provided", nil, providerName)
@@ -4696,7 +4693,6 @@ func HandleOpenAIImageEditStreamRequest(
 				return
 			}
 		}
-
 	}()
 
 	return responseChan, nil

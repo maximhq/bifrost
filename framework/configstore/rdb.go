@@ -35,6 +35,83 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
+	return schemas.Key{
+		ID:                 dbKey.KeyID,
+		Name:               dbKey.Name,
+		Value:              dbKey.Value,
+		Models:             dbKey.Models,
+		BlacklistedModels:  dbKey.BlacklistedModels,
+		Weight:             getWeight(dbKey.Weight),
+		Enabled:            dbKey.Enabled,
+		UseForBatchAPI:     dbKey.UseForBatchAPI,
+		AzureKeyConfig:     dbKey.AzureKeyConfig,
+		VertexKeyConfig:    dbKey.VertexKeyConfig,
+		BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+		ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+		VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+		ConfigHash:         dbKey.ConfigHash,
+		Status:             schemas.KeyStatusType(dbKey.Status),
+		Description:        dbKey.Description,
+	}
+}
+
+func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
+	dbKey := tables.TableKey{
+		Provider:           provider.Name,
+		ProviderID:         provider.ID,
+		KeyID:              key.ID,
+		Name:               key.Name,
+		Value:              key.Value,
+		Models:             key.Models,
+		BlacklistedModels:  key.BlacklistedModels,
+		Weight:             &key.Weight,
+		Enabled:            key.Enabled,
+		UseForBatchAPI:     key.UseForBatchAPI,
+		AzureKeyConfig:     key.AzureKeyConfig,
+		VertexKeyConfig:    key.VertexKeyConfig,
+		BedrockKeyConfig:   key.BedrockKeyConfig,
+		ReplicateKeyConfig: key.ReplicateKeyConfig,
+		VLLMKeyConfig:      key.VLLMKeyConfig,
+		ConfigHash:         key.ConfigHash,
+		Status:             string(key.Status),
+		Description:        key.Description,
+	}
+
+	if key.AzureKeyConfig != nil {
+		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+		dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+	}
+
+	if key.VertexKeyConfig != nil {
+		dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+		dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
+		dbKey.VertexRegion = &key.VertexKeyConfig.Region
+		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+	}
+
+	if key.BedrockKeyConfig != nil {
+		dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+		dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+		dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+		dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+		dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+		dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
+		dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
+		dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
+		if key.BedrockKeyConfig.BatchS3Config != nil {
+			data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
+			if err != nil {
+				return tables.TableKey{}, err
+			}
+			s := string(data)
+			dbKey.BedrockBatchS3ConfigJSON = &s
+		}
+	}
+
+	return dbKey, nil
+}
+
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
@@ -57,6 +134,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPToolExecutionTimeout:         config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:         config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:             config.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:        config.MCPDisableAutoToolInject,
 		AsyncJobResultTTL:               config.AsyncJobResultTTL,
 		RequiredHeaders:                 config.RequiredHeaders,
 		LoggingHeaders:                  config.LoggingHeaders,
@@ -223,6 +301,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPToolExecutionTimeout:         dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:         dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:             dbConfig.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:        dbConfig.MCPDisableAutoToolInject,
 		AsyncJobResultTTL:               dbConfig.AsyncJobResultTTL,
 		RequiredHeaders:                 dbConfig.RequiredHeaders,
 		LoggingHeaders:                  dbConfig.LoggingHeaders,
@@ -251,7 +330,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
-			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -355,6 +433,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+				dbKey.CreatedAt = existingKey.CreatedAt               // Preserve original creation timestamp
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -370,6 +449,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+					dbKey.CreatedAt = existingKey.CreatedAt               // Preserve original creation timestamp
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -424,7 +504,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
-	dbProvider.PricingOverrides = configCopy.PricingOverrides
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -515,6 +594,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+			dbKey.CreatedAt = existingKey.CreatedAt               // Preserve original creation timestamp
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -565,7 +645,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
-		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -698,24 +777,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		// Convert database keys to schemas.Key
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
-			keys[i] = schemas.Key{
-				ID:                 dbKey.KeyID,
-				Name:               dbKey.Name,
-				Value:              dbKey.Value,
-				Models:             dbKey.Models,
-				BlacklistedModels:  dbKey.BlacklistedModels,
-				Weight:             getWeight(dbKey.Weight),
-				Enabled:            dbKey.Enabled,
-				UseForBatchAPI:     dbKey.UseForBatchAPI,
-				AzureKeyConfig:     dbKey.AzureKeyConfig,
-				VertexKeyConfig:    dbKey.VertexKeyConfig,
-				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-				VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-				ConfigHash:         dbKey.ConfigHash,
-				Status:             schemas.KeyStatusType(dbKey.Status),
-				Description:        dbKey.Description,
-			}
+			keys[i] = schemaKeyFromTableKey(dbKey)
 		}
 		providerConfig := ProviderConfig{
 			Keys:                     keys,
@@ -727,7 +789,6 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
-			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -749,24 +810,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
-		keys[i] = schemas.Key{
-			ID:                 dbKey.KeyID,
-			Name:               dbKey.Name,
-			Value:              dbKey.Value,
-			Models:             dbKey.Models,
-			BlacklistedModels:  dbKey.BlacklistedModels,
-			Weight:             getWeight(dbKey.Weight),
-			Enabled:            dbKey.Enabled,
-			UseForBatchAPI:     dbKey.UseForBatchAPI,
-			AzureKeyConfig:     dbKey.AzureKeyConfig,
-			VertexKeyConfig:    dbKey.VertexKeyConfig,
-			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-			VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-			ConfigHash:         dbKey.ConfigHash,
-			Status:             schemas.KeyStatusType(dbKey.Status),
-			Description:        dbKey.Description,
-		}
+		keys[i] = schemaKeyFromTableKey(dbKey)
 	}
 	return &ProviderConfig{
 		Keys:                     keys,
@@ -778,11 +822,162 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
-		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
 	}, nil
+}
+
+// GetProviderKeys retrieves all keys for a provider ordered by creation time.
+func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	var dbKeys []tables.TableKey
+	result := s.db.WithContext(ctx).
+		Table("config_providers").
+		Select("config_keys.*").
+		Joins("LEFT JOIN config_keys ON config_keys.provider_id = config_providers.id").
+		Where("config_providers.name = ?", string(provider)).
+		Order("config_keys.created_at ASC").
+		Scan(&dbKeys)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+	if len(dbKeys) == 1 && dbKeys[0].ID == 0 && dbKeys[0].KeyID == "" {
+		return []schemas.Key{}, nil
+	}
+
+	keys := make([]schemas.Key, 0, len(dbKeys))
+	for _, dbKey := range dbKeys {
+		if dbKey.ID == 0 && dbKey.KeyID == "" {
+			continue
+		}
+		if err := dbKey.AfterFind(nil); err != nil {
+			return nil, err
+		}
+		keys = append(keys, schemaKeyFromTableKey(dbKey))
+	}
+
+	return keys, nil
+}
+
+func (s *RDBConfigStore) getProviderKeyByName(ctx context.Context, txDB *gorm.DB, provider schemas.ModelProvider, keyID string) (*tables.TableKey, error) {
+	var dbKey tables.TableKey
+	if err := txDB.WithContext(ctx).
+		Table("config_keys").
+		Select("config_keys.*").
+		Joins("JOIN config_providers ON config_providers.id = config_keys.provider_id").
+		Where("config_providers.name = ? AND config_keys.key_id = ?", string(provider), keyID).
+		First(&dbKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &dbKey, nil
+}
+
+// GetProviderKey retrieves a single key for a provider.
+func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	dbKey, err := s.getProviderKeyByName(ctx, s.db, provider, keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	key := schemaKeyFromTableKey(*dbKey)
+	return &key, nil
+}
+
+// CreateProviderKey creates a new key for an existing provider.
+func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	var dbProvider tables.TableProvider
+	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	dbKey, err := tableKeyFromSchemaKey(dbProvider, key)
+	if err != nil {
+		return err
+	}
+
+	if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	return nil
+}
+
+// UpdateProviderKey updates a single key for an existing provider.
+func (s *RDBConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	existingKey, err := s.getProviderKeyByName(ctx, txDB, provider, keyID)
+	if err != nil {
+		return err
+	}
+
+	dbKey, err := tableKeyFromSchemaKey(tables.TableProvider{
+		ID:   existingKey.ProviderID,
+		Name: existingKey.Provider,
+	}, key)
+	if err != nil {
+		return err
+	}
+	dbKey.ID = existingKey.ID
+	dbKey.KeyID = existingKey.KeyID
+	dbKey.ProviderID = existingKey.ProviderID
+	dbKey.Provider = existingKey.Provider
+	dbKey.ConfigHash = existingKey.ConfigHash
+	dbKey.EncryptionStatus = existingKey.EncryptionStatus
+	dbKey.CreatedAt = existingKey.CreatedAt // Preserve original creation timestamp
+
+	if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	return nil
+}
+
+// DeleteProviderKey deletes a single key for an existing provider.
+func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+
+	providerIDSubquery := txDB.Model(&tables.TableProvider{}).
+		Select("id").
+		Where("name = ?", string(provider))
+
+	result := txDB.WithContext(ctx).
+		Where("provider_id = (?) AND key_id = ?", providerIDSubquery, keyID).
+		Delete(&tables.TableKey{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 // GetProviders retrieves all providers from the database with their governance relationships.
@@ -878,26 +1073,23 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			// This will never happen, but just in case.
 			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 			for i, dbClient := range dbMCPClients {
-				// Dereference IsPingAvailable pointer, defaulting to true if nil
-				isPingAvailable := true
-				if dbClient.IsPingAvailable != nil {
-					isPingAvailable = *dbClient.IsPingAvailable
-				}
 				clientConfigs[i] = &schemas.MCPClientConfig{
-					ID:                 dbClient.ClientID,
-					Name:               dbClient.Name,
-					IsCodeModeClient:   dbClient.IsCodeModeClient,
-					ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
-					ConnectionString:   dbClient.ConnectionString,
-					StdioConfig:        dbClient.StdioConfig,
-					AuthType:           schemas.MCPAuthType(dbClient.AuthType),
-					OauthConfigID:      dbClient.OauthConfigID,
-					ToolsToExecute:     dbClient.ToolsToExecute,
-					ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
-					Headers:            dbClient.Headers,
-					IsPingAvailable:    isPingAvailable,
-					ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
-					ToolPricing:        dbClient.ToolPricing,
+					ID:                    dbClient.ClientID,
+					Name:                  dbClient.Name,
+					IsCodeModeClient:      dbClient.IsCodeModeClient,
+					ConnectionType:        schemas.MCPConnectionType(dbClient.ConnectionType),
+					ConnectionString:      dbClient.ConnectionString,
+					StdioConfig:           dbClient.StdioConfig,
+					AuthType:              schemas.MCPAuthType(dbClient.AuthType),
+					OauthConfigID:         dbClient.OauthConfigID,
+					ToolsToExecute:        dbClient.ToolsToExecute,
+					ToolsToAutoExecute:    dbClient.ToolsToAutoExecute,
+					Headers:               dbClient.Headers,
+					AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
+					IsPingAvailable:       dbClient.IsPingAvailable,
+					ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolPricing:           dbClient.ToolPricing,
+					AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -911,32 +1103,30 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout: time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
-		MaxAgentDepth:        clientConfig.MCPAgentDepth,
-		CodeModeBindingLevel: schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		ToolExecutionTimeout:  time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
+		MaxAgentDepth:         clientConfig.MCPAgentDepth,
+		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		DisableAutoToolInject: clientConfig.MCPDisableAutoToolInject,
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {
-		// Dereference IsPingAvailable pointer, defaulting to true if nil
-		isPingAvailable := true
-		if dbClient.IsPingAvailable != nil {
-			isPingAvailable = *dbClient.IsPingAvailable
-		}
 		clientConfigs[i] = &schemas.MCPClientConfig{
-			ID:                 dbClient.ClientID,
-			Name:               dbClient.Name,
-			IsCodeModeClient:   dbClient.IsCodeModeClient,
-			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:   dbClient.ConnectionString,
-			StdioConfig:        dbClient.StdioConfig,
-			AuthType:           schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:      dbClient.OauthConfigID,
-			ToolsToExecute:     dbClient.ToolsToExecute,
-			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
-			Headers:            dbClient.Headers,
-			IsPingAvailable:    isPingAvailable,
-			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
-			ToolPricing:        dbClient.ToolPricing,
+			ID:                    dbClient.ClientID,
+			Name:                  dbClient.Name,
+			IsCodeModeClient:      dbClient.IsCodeModeClient,
+			ConnectionType:        schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:      dbClient.ConnectionString,
+			StdioConfig:           dbClient.StdioConfig,
+			AuthType:              schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:         dbClient.OauthConfigID,
+			ToolsToExecute:        dbClient.ToolsToExecute,
+			ToolsToAutoExecute:    dbClient.ToolsToAutoExecute,
+			Headers:               dbClient.Headers,
+			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
+			IsPingAvailable:       dbClient.IsPingAvailable,
+			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
+			ToolPricing:           dbClient.ToolPricing,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -1021,19 +1211,21 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 		// Create new client
 		dbClient := tables.TableMCPClient{
-			ClientID:           clientConfigCopy.ID,
-			Name:               clientConfigCopy.Name,
-			IsCodeModeClient:   clientConfigCopy.IsCodeModeClient,
-			ConnectionType:     string(clientConfigCopy.ConnectionType),
-			ConnectionString:   clientConfigCopy.ConnectionString,
-			StdioConfig:        clientConfigCopy.StdioConfig,
-			AuthType:           string(clientConfigCopy.AuthType),
-			OauthConfigID:      clientConfigCopy.OauthConfigID,
-			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
-			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
-			Headers:            clientConfigCopy.Headers,
-			IsPingAvailable:    &clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:   int(clientConfigCopy.ToolSyncInterval.Minutes()),
+			ClientID:              clientConfigCopy.ID,
+			Name:                  clientConfigCopy.Name,
+			IsCodeModeClient:      clientConfigCopy.IsCodeModeClient,
+			ConnectionType:        string(clientConfigCopy.ConnectionType),
+			ConnectionString:      clientConfigCopy.ConnectionString,
+			StdioConfig:           clientConfigCopy.StdioConfig,
+			AuthType:              string(clientConfigCopy.AuthType),
+			OauthConfigID:         clientConfigCopy.OauthConfigID,
+			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute:    clientConfigCopy.ToolsToAutoExecute,
+			Headers:               clientConfigCopy.Headers,
+			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
+			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:      int(clientConfigCopy.ToolSyncInterval.Minutes()),
+			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -1092,6 +1284,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal headers: %w", err)
 		}
+		if clientConfigCopy.AllowedExtraHeaders == nil {
+			clientConfigCopy.AllowedExtraHeaders = []string{}
+		}
+		allowedExtraHeadersJSON, err := json.Marshal(clientConfigCopy.AllowedExtraHeaders)
+		if err != nil {
+			return fmt.Errorf("failed to marshal allowed_extra_headers: %w", err)
+		}
 
 		if clientConfigCopy.ToolPricing == nil {
 			clientConfigCopy.ToolPricing = map[string]float64{}
@@ -1118,8 +1317,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
 			"headers_json":               headersJSONStr,
+			"allowed_extra_headers_json": string(allowedExtraHeadersJSON),
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
+			"allow_on_all_virtual_keys":  clientConfigCopy.AllowOnAllVirtualKeys,
 			"updated_at":                 time.Now(),
 		}
 		if encrypt.IsEnabled() {
@@ -1311,6 +1512,130 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 		txDB = s.db
 	}
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
+}
+
+func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
+	var overrides []tables.TablePricingOverride
+	q := s.db.WithContext(ctx).Model(&tables.TablePricingOverride{})
+	if filters.ScopeKind != nil {
+		q = q.Where("scope_kind = ?", *filters.ScopeKind)
+	}
+	if filters.VirtualKeyID != nil {
+		q = q.Where("virtual_key_id = ?", *filters.VirtualKeyID)
+	}
+	if filters.ProviderID != nil {
+		q = q.Where("provider_id = ?", *filters.ProviderID)
+	}
+	if filters.ProviderKeyID != nil {
+		q = q.Where("provider_key_id = ?", *filters.ProviderKeyID)
+	}
+	if err := q.Order("created_at ASC").Find(&overrides).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	return overrides, nil
+}
+
+func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, params PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TablePricingOverride{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+	if params.ScopeKind != nil {
+		baseQuery = baseQuery.Where("scope_kind = ?", *params.ScopeKind)
+	}
+	if params.VirtualKeyID != nil {
+		baseQuery = baseQuery.Where("virtual_key_id = ?", *params.VirtualKeyID)
+	}
+	if params.ProviderID != nil {
+		baseQuery = baseQuery.Where("provider_id = ?", *params.ProviderID)
+	}
+	if params.ProviderKeyID != nil {
+		baseQuery = baseQuery.Where("provider_key_id = ?", *params.ProviderKeyID)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var overrides []tables.TablePricingOverride
+	if err := baseQuery.
+		Order("created_at ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&overrides).Error; err != nil {
+		return nil, 0, s.parseGormError(err)
+	}
+	return overrides, totalCount, nil
+}
+
+func (s *RDBConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	var override tables.TablePricingOverride
+	if err := s.db.WithContext(ctx).First(&override, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, s.parseGormError(err)
+	}
+	return &override, nil
+}
+
+func (s *RDBConfigStore) CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Create(override).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Save(override).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	res := txDB.WithContext(ctx).Delete(&tables.TablePricingOverride{}, "id = ?", id)
+	if res.Error != nil {
+		return s.parseGormError(res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // MODEL PARAMETERS METHODS
@@ -2055,6 +2380,27 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigs(ctx context.Context, virtualKey
 		return nil, err
 	}
 	return mcpConfigs, nil
+}
+
+// GetVirtualKeyMCPConfigsByMCPClientID retrieves all VK MCP configs for a given MCP client.
+func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	var configs []tables.TableVirtualKeyMCPConfig
+	if err := s.db.WithContext(ctx).Where("mcp_client_id = ?", mcpClientID).Find(&configs).Error; err != nil {
+		return nil, err
+	}
+	return configs, nil
+}
+
+// GetVirtualKeyMCPConfigsByMCPClientIDs retrieves all VK MCP configs for a set of MCP client IDs in one query.
+func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	if len(mcpClientIDs) == 0 {
+		return nil, nil
+	}
+	var configs []tables.TableVirtualKeyMCPConfig
+	if err := s.db.WithContext(ctx).Where("mcp_client_id IN ?", mcpClientIDs).Find(&configs).Error; err != nil {
+		return nil, err
+	}
+	return configs, nil
 }
 
 // CreateVirtualKeyMCPConfig creates a new virtual key MCP config in the database.

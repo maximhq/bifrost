@@ -422,6 +422,23 @@ export interface Annotation {
 	url_citation: Citation;
 }
 
+export interface PluginLogEntry {
+	plugin_name: string;
+	level: "debug" | "info" | "warn" | "error";
+	message: string;
+	timestamp: number;
+}
+
+export interface ImageEditInput {
+	images?: Array<{ image: string | null }> | null; // null when stripped by large-payload threshold
+	prompt: string;
+}
+
+export interface ImageVariationInput {
+	image: { image: string | null }; // image bytes null when stripped by large-payload threshold
+}
+
+
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
@@ -436,6 +453,7 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
+	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
 	routing_rule?: RoutingRule;
@@ -455,6 +473,8 @@ export interface LogEntry {
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
 	image_generation_input?: { prompt: string };
+	image_edit_input?: ImageEditInput;
+	image_variation_input?: ImageVariationInput;
 	video_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;

@@ -29,22 +29,22 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers         []string   `json:"providers,omitempty"`
-	Models            []string   `json:"models,omitempty"`
-	Status            []string   `json:"status,omitempty"`
-	Objects           []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	SelectedKeyIDs    []string   `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs     []string   `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs    []string   `json:"routing_rule_ids,omitempty"`
-	RoutingEngineUsed []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	StartTime         *time.Time `json:"start_time,omitempty"`
-	EndTime           *time.Time `json:"end_time,omitempty"`
-	MinLatency        *float64   `json:"min_latency,omitempty"`
-	MaxLatency        *float64   `json:"max_latency,omitempty"`
-	MinTokens         *int       `json:"min_tokens,omitempty"`
-	MaxTokens         *int       `json:"max_tokens,omitempty"`
-	MinCost           *float64   `json:"min_cost,omitempty"`
-	MaxCost           *float64   `json:"max_cost,omitempty"`
+	Providers         []string          `json:"providers,omitempty"`
+	Models            []string          `json:"models,omitempty"`
+	Status            []string          `json:"status,omitempty"`
+	Objects           []string          `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
+	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	StartTime         *time.Time        `json:"start_time,omitempty"`
+	EndTime           *time.Time        `json:"end_time,omitempty"`
+	MinLatency        *float64          `json:"min_latency,omitempty"`
+	MaxLatency        *float64          `json:"max_latency,omitempty"`
+	MinTokens         *int              `json:"min_tokens,omitempty"`
+	MaxTokens         *int              `json:"max_tokens,omitempty"`
+	MinCost           *float64          `json:"min_cost,omitempty"`
+	MaxCost           *float64          `json:"max_cost,omitempty"`
 	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
@@ -78,59 +78,62 @@ type SearchStats struct {
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
-	ID                     string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID        *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp              time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
-	Object                 string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider               string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
-	Model                  string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	NumberOfRetries        int       `gorm:"default:0" json:"number_of_retries"`
-	FallbackIndex          int       `gorm:"default:0" json:"fallback_index"`
-	SelectedKeyID          string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
-	SelectedKeyName        string    `gorm:"type:varchar(255)" json:"selected_key_name"`
-	VirtualKeyID           *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
-	VirtualKeyName         *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr  *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
-	RoutingRuleID          *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
-	RoutingRuleName        *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	InputHistory           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
-	ResponsesInputHistory  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput        string    `gorm:"type:text" json:"-"` // JSON serialized embedding response data
-	RerankOutput           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
-	Params                 string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools                  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls              string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	ImageGenerationInput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
-	VideoGenerationInput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
-	SpeechOutput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	ImageGenerationOutput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
-	ListModelsOutput       string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
-	VideoGenerationOutput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
-	VideoRetrieveOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
-	VideoDownloadOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
-	VideoListOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
-	VideoDeleteOutput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
-	Latency                *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	TokenUsage             string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
-	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	ErrorDetails           string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
-	Stream                 bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary         string    `gorm:"type:text" json:"-"`
-	RawRequest             string    `gorm:"type:text" json:"raw_request"`                        // Populated when `send-back-raw-request` is on
-	RawResponse            string    `gorm:"type:text" json:"raw_response"`                       // Populated when `send-back-raw-response` is on
+	ID                      string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentRequestID         *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
+	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
+	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
+	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
+	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
+	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
+	SelectedKeyName         string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	VirtualKeyID            *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
+	VirtualKeyName          *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
+	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
+	ResponsesOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput         string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	RerankOutput            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
+	Params                  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
+	Tools                   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
+	ToolCalls               string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
+	TranscriptionInput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	ImageGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
+	ImageEditInput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageEditInput
+	ImageVariationInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageVariationInput
+	VideoGenerationInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
+	SpeechOutput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput        string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
+	VideoGenerationOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
+	VideoRetrieveOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
+	VideoDownloadOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
+	VideoListOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
+	VideoDeleteOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
+	CacheDebug              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
+	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
+	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
+	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	ErrorDetails            string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                  bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary          string    `gorm:"type:text" json:"-"`
+	RawRequest              string    `gorm:"type:text" json:"raw_request"`                         // Populated when `send-back-raw-request` is on
+	RawResponse             string    `gorm:"type:text" json:"raw_response"`                        // Populated when `send-back-raw-response` is on
 	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
 	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
-	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
-	Metadata               *string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
-	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
-	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
+	RoutingEngineLogs       string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
+	PluginLogs              string    `gorm:"type:text" json:"plugin_logs,omitempty"`               // JSON serialized plugin log entries grouped by plugin name
+	Metadata                *string   `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]interface{}
+	IsLargePayloadRequest   bool      `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse  bool      `gorm:"default:false" json:"is_large_payload_response"`
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -156,6 +159,8 @@ type Log struct {
 	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
 	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
 	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	ImageEditInputParsed        *schemas.ImageEditInput                 `gorm:"-" json:"image_edit_input,omitempty"`
+	ImageVariationInputParsed   *schemas.ImageVariationInput            `gorm:"-" json:"image_variation_input,omitempty"`
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
@@ -285,6 +290,22 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.ImageGenerationInput = string(data)
+		}
+	}
+
+	if l.ImageEditInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageEditInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageEditInput = string(data)
+		}
+	}
+
+	if l.ImageVariationInputParsed != nil {
+		if data, err := sonic.Marshal(l.ImageVariationInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageVariationInput = string(data)
 		}
 	}
 
@@ -587,6 +608,18 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationInputParsed = nil
+		}
+	}
+
+	if l.ImageEditInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageEditInput), &l.ImageEditInputParsed); err != nil {
+			l.ImageEditInputParsed = nil
+		}
+	}
+
+	if l.ImageVariationInput != "" {
+		if err := sonic.Unmarshal([]byte(l.ImageVariationInput), &l.ImageVariationInputParsed); err != nil {
+			l.ImageVariationInputParsed = nil
 		}
 	}
 
@@ -1002,6 +1035,11 @@ func (l *Log) BuildContentSummary() string {
 		parts = append(parts, l.ImageGenerationInputParsed.Prompt)
 	}
 
+	// Add image edit input prompt
+	if l.ImageEditInputParsed != nil && l.ImageEditInputParsed.Prompt != "" {
+		parts = append(parts, l.ImageEditInputParsed.Prompt)
+	}
+
 	// Add video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		parts = append(parts, l.VideoGenerationInputParsed.Prompt)
@@ -1169,7 +1207,7 @@ type MCPHistogramBucket struct {
 // MCPHistogramResult represents the MCP tool call volume histogram query result
 type MCPHistogramResult struct {
 	Buckets           []MCPHistogramBucket `json:"buckets"`
-	BucketSizeSeconds int64               `json:"bucket_size_seconds"`
+	BucketSizeSeconds int64                `json:"bucket_size_seconds"`
 }
 
 // MCPCostHistogramBucket represents a single time bucket for MCP cost data

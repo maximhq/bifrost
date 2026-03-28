@@ -6,6 +6,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,6 +100,7 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -108,7 +110,6 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 	if !ok || deferredChan == nil {
 		return
 	}
-
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
@@ -127,7 +128,6 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
-
 		usageUpdates := map[string]interface{}{
 			"prompt_tokens":     deferredUsage.PromptTokens,
 			"completion_tokens": deferredUsage.CompletionTokens,
@@ -137,6 +137,27 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		if serErr := tempEntry.SerializeFields(); serErr == nil {
 			usageUpdates["token_usage"] = tempEntry.TokenUsage
 			usageUpdates["cached_read_tokens"] = tempEntry.CachedReadTokens
+		}
+
+		// Check if log entry present in the store
+		// exponential backoff with jitter and 3 retries
+		// then fail
+		var found bool
+		var findErr error
+		for i := 0; i < 3; i++ {
+			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
+			if findErr != nil {
+				p.logger.Warn("failed to check if log entry is present for request %s: %v", requestID, findErr)
+				continue
+			}
+			if found {
+				break
+			}
+			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second * 2)
+		}
+		if !found {
+			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", requestID)
+			return
 		}
 		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
 			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
@@ -187,6 +208,8 @@ type InitialLogData struct {
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
 	ImageGenerationInput   *schemas.ImageGenerationInput
+	ImageEditInput         *schemas.ImageEditInput
+	ImageVariationInput    *schemas.ImageVariationInput
 	VideoGenerationInput   *schemas.VideoGenerationInput
 	Tools                  []schemas.ChatTool
 	RoutingEngineUsed      []string
@@ -224,10 +247,11 @@ type LoggerPlugin struct {
 	cleanupTicker         *time.Ticker          // Ticker for cleaning up old processing logs
 	logMsgPool            sync.Pool             // Pool for reusing LogMessage structs
 	updateDataPool        sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	pendingLogsEntries    sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	pendingLogsToInject   sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
+	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -470,6 +494,50 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 			initialData.Params = req.ImageGenerationRequest.Params
 			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
+		case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+			params := req.ImageEditRequest.Params
+			input := req.ImageEditRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 {
+					var totalSize int64
+					for _, img := range input.Images {
+						totalSize += int64(len(img.Image))
+					}
+					if totalSize > reqThreshold {
+						logInput := *input
+						logInput.Images = nil
+						initialData.ImageEditInput = &logInput
+					} else {
+						initialData.ImageEditInput = input
+					}
+					if params != nil && int64(len(params.Mask)) > reqThreshold {
+						logParams := *params
+						logParams.Mask = nil
+						initialData.Params = &logParams
+					} else {
+						initialData.Params = params
+					}
+				} else {
+					initialData.ImageEditInput = input
+					initialData.Params = params
+				}
+			} else {
+				initialData.Params = params
+			}
+		case schemas.ImageVariationRequest:
+			initialData.Params = req.ImageVariationRequest.Params
+			input := req.ImageVariationRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 && int64(len(input.Image.Image)) > reqThreshold {
+					logInput := *input
+					logInput.Image = schemas.ImageInput{}
+					initialData.ImageVariationInput = &logInput
+				} else {
+					initialData.ImageVariationInput = input
+				}
+			}
 		case schemas.VideoGenerationRequest:
 			initialData.Params = req.VideoGenerationRequest.Params
 			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
@@ -552,7 +620,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		CreatedAt:          time.Now(),
 		Status:             "processing",
 	}
-	p.pendingLogs.Store(effectiveRequestID, pending)
+	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
 	p.mu.Lock()
@@ -628,7 +696,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
 	// Retrieve pending input data from PreLLMHook
-	pendingVal, hasPending := p.pendingLogs.LoadAndDelete(requestID)
+	pendingVal, hasPending := p.pendingLogsEntries.LoadAndDelete(requestID)
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
@@ -649,7 +717,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			entry.ErrorDetailsParsed = bifrostErr
 			applyLargePayloadPreviewsToEntry(ctx, entry)
-			p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+			p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		} else {
 			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
 		}
@@ -700,7 +768,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry)
-		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -747,7 +815,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 
-		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -779,29 +847,30 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		if cost := p.pricingManager.CalculateCost(result); cost > 0 {
+		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
 			entry.Cost = &cost
 		}
 	}
 
-	p.enqueueLogEntry(entry, p.makePostWriteCallback(func(updatedEntry *logstore.Log) {
-		updatedEntry.SelectedKey = &schemas.Key{
-			ID:   updatedEntry.SelectedKeyID,
-			Name: updatedEntry.SelectedKeyName,
+	// Pre-apply denormalized fields for WebSocket callback enrichment
+	entry.SelectedKey = &schemas.Key{
+		ID:   entry.SelectedKeyID,
+		Name: entry.SelectedKeyName,
+	}
+	if entry.VirtualKeyID != nil && entry.VirtualKeyName != nil {
+		entry.VirtualKey = &tables.TableVirtualKey{
+			ID:   *entry.VirtualKeyID,
+			Name: *entry.VirtualKeyName,
 		}
-		if updatedEntry.VirtualKeyID != nil && updatedEntry.VirtualKeyName != nil {
-			updatedEntry.VirtualKey = &tables.TableVirtualKey{
-				ID:   *updatedEntry.VirtualKeyID,
-				Name: *updatedEntry.VirtualKeyName,
-			}
+	}
+	if entry.RoutingRuleID != nil && entry.RoutingRuleName != nil {
+		entry.RoutingRule = &tables.TableRoutingRule{
+			ID:   *entry.RoutingRuleID,
+			Name: *entry.RoutingRuleName,
 		}
-		if updatedEntry.RoutingRuleID != nil && updatedEntry.RoutingRuleName != nil {
-			updatedEntry.RoutingRule = &tables.TableRoutingRule{
-				ID:   *updatedEntry.RoutingRuleID,
-				Name: *updatedEntry.RoutingRuleName,
-			}
-		}
-	}))
+	}
+	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
 }
@@ -825,6 +894,60 @@ func (p *LoggerPlugin) Cleanup() error {
 		// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
 		// GORM handles connection cleanup automatically
 	})
+	return nil
+}
+
+// storeOrEnqueueEntry stores a log entry in pendingLogs keyed by traceID for later
+// retrieval by Inject(), or enqueues directly if no traceID is available (Go SDK path).
+// Multiple entries per traceID are supported (e.g. fallback/retry attempts within the same trace).
+func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *logstore.Log, callback func(entry *logstore.Log)) {
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if traceID != "" {
+		// Append to slice for Inject() to pick up — supports multiple attempts per trace
+		existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
+		if !loaded {
+			return
+		}
+		pending := existing.(*pendingInjectEntries)
+		pending.mu.Lock()
+		pending.entries = append(pending.entries, entry)
+		pending.mu.Unlock()
+	} else {
+		// Fallback: no tracing (Go SDK path), enqueue directly
+		p.enqueueLogEntry(entry, callback)
+	}
+}
+
+// Inject receives a completed trace and writes the log entries with plugin logs to DB.
+// This implements the ObservabilityPlugin interface.
+func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		return nil
+	}
+	// Retrieve pending log entries built by PostLLMHook (stored by traceID)
+	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(trace.TraceID)
+	if !ok {
+		return nil
+	}
+	pending, ok := entryVal.(*pendingInjectEntries)
+	if !ok {
+		return nil
+	}
+
+	// Serialize plugin logs once for all entries
+	var pluginLogsJSON string
+	if len(trace.PluginLogs) > 0 {
+		grouped := schemas.GroupPluginLogsByName(trace.PluginLogs)
+		if data, err := sonic.Marshal(grouped); err == nil {
+			pluginLogsJSON = string(data)
+		}
+	}
+
+	// Enqueue each log entry (supports multiple attempts per trace)
+	for _, entry := range pending.entries {
+		entry.PluginLogs = pluginLogsJSON
+		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+	}
 	return nil
 }
 

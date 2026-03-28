@@ -173,6 +173,11 @@
           "minimum": 0,
           "description": "Global tool sync interval in minutes (0 = disabled)",
           "default": 10
+        },
+        "mcp_disable_auto_tool_inject": {
+          "type": "boolean",
+          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -465,14 +470,14 @@
               },
               "provider_configs": {
                 "type": "array",
-                "description": "Provider configurations for this virtual key (empty means all providers allowed)",
+                "description": "Provider configurations for this virtual key (empty means no providers allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_provider_config"
                 }
               },
               "mcp_configs": {
                 "type": "array",
-                "description": "MCP configurations for this virtual key",
+                "description": "MCP configurations for this virtual key (empty array means no MCP tools allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
                 }
@@ -490,6 +495,13 @@
           "description": "Routing rules for dynamic provider/model selection based on CEL expressions",
           "items": {
             "$ref": "#/$defs/routing_rule"
+          }
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "description": "Scoped pricing overrides applied at runtime by the model catalog",
+          "items": {
+            "$ref": "#/$defs/pricing_override"
           }
         },
         "auth_config": {
@@ -1543,13 +1555,13 @@
           "description": "Provider name"
         },
         "weight": {
-          "type": "number",
-          "description": "Weight for load balancing",
-          "default": 1.0
+          "type": ["number", "null"],
+          "description": "Weight for load balancing (null opts out of weighted routing)",
+          "default": null
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
@@ -1562,209 +1574,11 @@
           "type": "string",
           "description": "Associated rate limit ID"
         },
-        "keys": {
+        "key_ids": {
           "type": "array",
-          "description": "Provider keys for this config (empty means all keys allowed for this provider)",
+          "description": "Keys allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In config.json, values are key names. Via the API, values are key UUIDs.",
           "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "integer",
-                "description": "Key database ID (auto-generated)"
-              },
-              "key_id": {
-                "type": "string",
-                "description": "Key UUID identifier"
-              },
-              "name": {
-                "type": "string",
-                "description": "Key name (must be unique)"
-              },
-              "value": {
-                "type": "string",
-                "description": "API key value (can use env. prefix)"
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Supported models for this key"
-              },
-              "weight": {
-                "type": "number",
-                "minimum": 0,
-                "default": 1.0,
-                "description": "Weight for load balancing"
-              },
-              "azure_key_config": {
-                "type": "object",
-                "properties": {
-                  "endpoint": {
-                    "type": "string",
-                    "description": "Azure endpoint (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
-                  "api_version": {
-                    "type": "string",
-                    "description": "Azure API version"
-                  }
-                },
-                "required": [
-                  "endpoint"
-                ],
-                "additionalProperties": false
-              },
-              "vertex_key_config": {
-                "type": "object",
-                "properties": {
-                  "project_id": {
-                    "type": "string",
-                    "description": "Google Cloud project ID (can use env. prefix)"
-                  },
-                  "project_number": {
-                    "type": "string",
-                    "description": "Google Cloud project number"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "Google Cloud region"
-                  },
-                  "auth_credentials": {
-                    "type": "string",
-                    "description": "Authentication credentials (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  }
-                },
-                "required": [
-                  "project_id",
-                  "region"
-                ],
-                "additionalProperties": false
-              },
-              "bedrock_key_config": {
-                "type": "object",
-                "properties": {
-                  "access_key": {
-                    "type": "string",
-                    "description": "AWS access key (can use env. prefix)"
-                  },
-                  "secret_key": {
-                    "type": "string",
-                    "description": "AWS secret key (can use env. prefix)"
-                  },
-                  "session_token": {
-                    "type": "string",
-                    "description": "AWS session token (can use env. prefix)"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "AWS region"
-                  },
-                  "arn": {
-                    "type": "string",
-                    "description": "AWS ARN"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  }
-                },
-                "additionalProperties": false
-              },
-              "vllm_key_config": {
-                "type": "object",
-                "properties": {
-                  "url": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "VLLM server base URL (can use env. prefix)"
-                  },
-                  "model_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Exact model name served on this VLLM instance"
-                  }
-                },
-                "required": [
-                  "url",
-                  "model_name"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "oneOf": [
-              {
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["azure_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vertex_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["bedrock_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vllm_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
-                  ]
-                }
-              }
-            ],
-            "required": [
-              "key_id",
-              "name",
-              "value"
-            ]
+            "type": "string"
           }
         }
       },
@@ -1842,159 +1656,6 @@
           "minimum": 3600
         }
       },
-      "additionalProperties": false
-    },
-    "pricing_override_match_type": {
-      "type": "string",
-      "enum": [
-        "exact",
-        "wildcard",
-        "regex"
-      ]
-    },
-    "pricing_override_request_type": {
-      "type": "string",
-      "enum": [
-        "text_completion",
-        "text_completion_stream",
-        "chat_completion",
-        "chat_completion_stream",
-        "responses",
-        "responses_stream",
-        "embedding",
-        "rerank",
-        "speech",
-        "speech_stream",
-        "transcription",
-        "transcription_stream",
-        "image_generation",
-        "image_generation_stream"
-      ]
-    },
-    "provider_pricing_override": {
-      "type": "object",
-      "properties": {
-        "model_pattern": {
-          "type": "string",
-          "minLength": 1
-        },
-        "match_type": {
-          "$ref": "#/$defs/pricing_override_match_type"
-        },
-        "request_types": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/pricing_override_request_type"
-          }
-        },
-        "input_cost_per_token": { "type": "number", "minimum": 0 },
-        "output_cost_per_token": { "type": "number", "minimum": 0 },
-        "input_cost_per_video_per_second": { "type": "number", "minimum": 0 },
-        "input_cost_per_audio_per_second": { "type": "number", "minimum": 0 },
-        "input_cost_per_character": { "type": "number", "minimum": 0 },
-        "output_cost_per_character": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_image_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_video_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_audio_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_creation_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_read_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_read_input_token_cost": { "type": "number", "minimum": 0 },
-        "cache_creation_input_token_cost": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_batches": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_batches": { "type": "number", "minimum": 0 },
-        "input_cost_per_image_token": { "type": "number", "minimum": 0 },
-        "output_cost_per_image_token": { "type": "number", "minimum": 0 },
-        "input_cost_per_image": { "type": "number", "minimum": 0 },
-        "output_cost_per_image": { "type": "number", "minimum": 0 },
-        "cache_read_input_image_token_cost": { "type": "number", "minimum": 0 }
-      },
-      "required": [
-        "model_pattern",
-        "match_type"
-      ],
-      "additionalProperties": false
-    },
-    "custom_provider_config": {
-      "type": "object",
-      "description": "Custom provider configuration for extending or customizing provider behavior",
-      "properties": {
-        "is_key_less": {
-          "type": "boolean",
-          "description": "Whether the custom provider requires a key"
-        },
-        "base_provider_type": {
-          "type": "string",
-          "description": "Base provider type to extend"
-        },
-        "allowed_requests": {
-          "type": "object",
-          "description": "Allowed request types for the custom provider",
-          "properties": {
-            "list_models": { "type": "boolean" },
-            "text_completion": { "type": "boolean" },
-            "text_completion_stream": { "type": "boolean" },
-            "chat_completion": { "type": "boolean" },
-            "chat_completion_stream": { "type": "boolean" },
-            "responses": { "type": "boolean" },
-            "responses_stream": { "type": "boolean" },
-            "count_tokens": { "type": "boolean" },
-            "embedding": { "type": "boolean" },
-            "rerank": { "type": "boolean" },
-            "speech": { "type": "boolean" },
-            "speech_stream": { "type": "boolean" },
-            "transcription": { "type": "boolean" },
-            "transcription_stream": { "type": "boolean" },
-            "image_generation": { "type": "boolean" },
-            "image_generation_stream": { "type": "boolean" },
-            "image_edit": { "type": "boolean" },
-            "image_edit_stream": { "type": "boolean" },
-            "image_variation": { "type": "boolean" },
-            "video_generation": { "type": "boolean" },
-            "video_retrieve": { "type": "boolean" },
-            "video_download": { "type": "boolean" },
-            "video_delete": { "type": "boolean" },
-            "video_list": { "type": "boolean" },
-            "video_remix": { "type": "boolean" },
-            "batch_create": { "type": "boolean" },
-            "batch_list": { "type": "boolean" },
-            "batch_retrieve": { "type": "boolean" },
-            "batch_cancel": { "type": "boolean" },
-            "batch_delete": { "type": "boolean" },
-            "batch_results": { "type": "boolean" },
-            "file_upload": { "type": "boolean" },
-            "file_list": { "type": "boolean" },
-            "file_retrieve": { "type": "boolean" },
-            "file_delete": { "type": "boolean" },
-            "file_content": { "type": "boolean" },
-            "container_create": { "type": "boolean" },
-            "container_list": { "type": "boolean" },
-            "container_retrieve": { "type": "boolean" },
-            "container_delete": { "type": "boolean" },
-            "container_file_create": { "type": "boolean" },
-            "container_file_list": { "type": "boolean" },
-            "container_file_retrieve": { "type": "boolean" },
-            "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" },
-            "passthrough": { "type": "boolean" },
-            "passthrough_stream": { "type": "boolean" }
-          },
-          "additionalProperties": false
-        },
-        "request_path_overrides": {
-          "type": "object",
-          "description": "Mapping of request type to custom path overriding the default provider path",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      },
-      "required": ["base_provider_type"],
       "additionalProperties": false
     },
     "network_config": {
@@ -2091,8 +1752,7 @@
           "items": {
             "type": "string"
           },
-          "default": [],
-          "description": "Supported models for this key"
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
         },
         "weight": {
           "type": "number",
@@ -2318,13 +1978,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2366,13 +2019,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2414,13 +2060,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2462,13 +2101,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2510,13 +2142,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2654,6 +2279,11 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "allow_on_all_virtual_keys": {
+          "type": "boolean",
+          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
+          "default": false
         }
       },
       "required": [
@@ -2724,6 +2354,11 @@
           "type": "string",
           "enum": ["server", "tool"],
           "description": "How tools are exposed in VFS for code execution"
+        },
+        "disable_auto_tool_inject": {
+          "type": "boolean",
+          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "default": false
         }
       }
     },
@@ -3447,6 +3082,155 @@
           "additionalProperties": false
         }
       },
+      "additionalProperties": false
+    },
+    "pricing_override": {
+      "type": "object",
+      "description": "Scoped pricing override applied at runtime by the model catalog",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique pricing override ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for this override"
+        },
+        "scope_kind": {
+          "type": "string",
+          "description": "Scope level for this override",
+          "enum": ["global", "provider", "provider_key", "virtual_key", "virtual_key_provider", "virtual_key_provider_key"]
+        },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "Provider ID (required for provider* scopes)"
+        },
+        "provider_key_id": {
+          "type": "string",
+          "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)"
+        },
+        "match_type": {
+          "type": "string",
+          "description": "How the pattern is matched against model names",
+          "enum": ["exact", "wildcard"]
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Model name pattern to match (exact name or wildcard prefix ending with *)"
+        },
+        "request_types": {
+          "type": "array",
+          "description": "Request types this override applies to. At least one value is required.",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "pricing_patch": {
+          "type": "string",
+          "description": "JSON-encoded pricing fields to override (e.g. '{\"input_cost_per_token\":0.000001}')"
+        },
+        "config_hash": {
+          "type": "string",
+          "description": "Internal hash for change detection (auto-managed)"
+        }
+      },
+      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
+      "additionalProperties": false
+    },
+    "pricing_override_match_type": {
+      "type": "string",
+      "enum": ["exact", "wildcard"]
+    },
+    "pricing_override_request_type": {
+      "type": "string",
+      "enum": [
+        "chat_completion", "text_completion", "responses",
+        "embedding", "rerank",
+        "speech", "transcription",
+        "image_generation", "image_variation", "image_edit",
+        "video_generation", "video_remix"
+      ]
+    },
+    "custom_provider_config": {
+      "type": "object",
+      "description": "Custom provider configuration for extending or customizing provider behavior",
+      "properties": {
+        "is_key_less": {
+          "type": "boolean",
+          "description": "Whether the custom provider requires a key"
+        },
+        "base_provider_type": {
+          "type": "string",
+          "description": "Base provider type to extend"
+        },
+        "allowed_requests": {
+          "type": "object",
+          "description": "Allowed request types for the custom provider",
+          "properties": {
+            "list_models": { "type": "boolean" },
+            "text_completion": { "type": "boolean" },
+            "text_completion_stream": { "type": "boolean" },
+            "chat_completion": { "type": "boolean" },
+            "chat_completion_stream": { "type": "boolean" },
+            "responses": { "type": "boolean" },
+            "responses_stream": { "type": "boolean" },
+            "count_tokens": { "type": "boolean" },
+            "embedding": { "type": "boolean" },
+            "rerank": { "type": "boolean" },
+            "speech": { "type": "boolean" },
+            "speech_stream": { "type": "boolean" },
+            "transcription": { "type": "boolean" },
+            "transcription_stream": { "type": "boolean" },
+            "image_generation": { "type": "boolean" },
+            "image_generation_stream": { "type": "boolean" },
+            "image_edit": { "type": "boolean" },
+            "image_edit_stream": { "type": "boolean" },
+            "image_variation": { "type": "boolean" },
+            "video_generation": { "type": "boolean" },
+            "video_retrieve": { "type": "boolean" },
+            "video_download": { "type": "boolean" },
+            "video_delete": { "type": "boolean" },
+            "video_list": { "type": "boolean" },
+            "video_remix": { "type": "boolean" },
+            "batch_create": { "type": "boolean" },
+            "batch_list": { "type": "boolean" },
+            "batch_retrieve": { "type": "boolean" },
+            "batch_cancel": { "type": "boolean" },
+            "batch_delete": { "type": "boolean" },
+            "batch_results": { "type": "boolean" },
+            "file_upload": { "type": "boolean" },
+            "file_list": { "type": "boolean" },
+            "file_retrieve": { "type": "boolean" },
+            "file_delete": { "type": "boolean" },
+            "file_content": { "type": "boolean" },
+            "container_create": { "type": "boolean" },
+            "container_list": { "type": "boolean" },
+            "container_retrieve": { "type": "boolean" },
+            "container_delete": { "type": "boolean" },
+            "container_file_create": { "type": "boolean" },
+            "container_file_list": { "type": "boolean" },
+            "container_file_retrieve": { "type": "boolean" },
+            "container_file_content": { "type": "boolean" },
+            "container_file_delete": { "type": "boolean" },
+            "passthrough": { "type": "boolean" },
+            "passthrough_stream": { "type": "boolean" },
+            "websocket_responses": { "type": "boolean" },
+            "realtime": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "request_path_overrides": {
+          "type": "object",
+          "description": "Mapping of request type to custom path overriding the default provider path",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "required": ["base_provider_type"],
       "additionalProperties": false
     }
   }

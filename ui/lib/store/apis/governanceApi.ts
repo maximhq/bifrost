@@ -2,6 +2,8 @@ import {
 	Budget,
 	CreateCustomerRequest,
 	CreateModelConfigRequest,
+	CreatePricingOverrideRequest,
+	UpdatePricingOverrideRequest,
 	CreateTeamRequest,
 	CreateVirtualKeyRequest,
 	Customer,
@@ -11,6 +13,7 @@ import {
 	GetCustomersResponse,
 	GetModelConfigsParams,
 	GetModelConfigsResponse,
+	GetPricingOverridesResponse,
 	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
 	GetTeamsParams,
@@ -21,6 +24,7 @@ import {
 	HealthCheckResponse,
 	ModelConfig,
 	ProviderGovernance,
+	PricingOverride,
 	RateLimit,
 	ResetUsageRequest,
 	Team,
@@ -34,6 +38,8 @@ import {
 	VirtualKey,
 } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
+
+type PricingOverrideQueryArgs = { scopeKind?: string; virtualKeyID?: string; providerID?: string; providerKeyID?: string; limit?: number; offset?: number; search?: string };
 
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -562,6 +568,136 @@ export const governanceApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		getPricingOverrides: builder.query<GetPricingOverridesResponse, PricingOverrideQueryArgs | void>({
+			query: (params) => ({
+				url: "/governance/pricing-overrides",
+				params: {
+					scope_kind: params?.scopeKind,
+					virtual_key_id: params?.virtualKeyID,
+					provider_id: params?.providerID,
+					provider_key_id: params?.providerKeyID,
+					...(params?.limit !== undefined && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+				},
+			}),
+			providesTags: ["PricingOverrides"],
+		}),
+
+		createPricingOverride: builder.mutation<{ message: string; pricing_override: PricingOverride }, CreatePricingOverrideRequest>({
+			query: (data) => ({
+				url: "/governance/pricing-overrides",
+				method: "POST",
+				body: data,
+			}),
+			async onQueryStarted(_arg, { dispatch, getState, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const created = data.pricing_override;
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getPricingOverrides" || entry?.status !== "fulfilled") continue;
+						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
+						const matchesQuery =
+							(!args.scopeKind || args.scopeKind === created.scope_kind) &&
+							(!args.virtualKeyID || args.virtualKeyID === created.virtual_key_id) &&
+							(!args.providerID || args.providerID === created.provider_id) &&
+							(!args.providerKeyID || args.providerKeyID === created.provider_key_id) &&
+							(!args.search || created.name?.toLowerCase().includes(args.search.toLowerCase()));
+						if (!matchesQuery) continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getPricingOverrides", entry.originalArgs, (draft) => {
+								if (!draft.pricing_overrides) draft.pricing_overrides = [];
+								if (!args.offset || args.offset === 0) {
+									draft.pricing_overrides.unshift(created);
+									draft.count = (draft.count || 0) + 1;
+									draft.total_count = (draft.total_count || 0) + 1;
+								} else {
+									draft.total_count = (draft.total_count || 0) + 1;
+								}
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
+
+		updatePricingOverride: builder.mutation<
+			{ message: string; pricing_override: PricingOverride },
+			{ id: string; data: UpdatePricingOverrideRequest }
+		>({
+			query: ({ id, data }) => ({
+				url: `/governance/pricing-overrides/${id}`,
+				method: "PUT",
+				body: data,
+			}),
+			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const updated = data.pricing_override;
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getPricingOverrides" || entry?.status !== "fulfilled") continue;
+						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
+						const matchesQuery =
+							(!args.scopeKind || args.scopeKind === updated.scope_kind) &&
+							(!args.virtualKeyID || args.virtualKeyID === updated.virtual_key_id) &&
+							(!args.providerID || args.providerID === updated.provider_id) &&
+							(!args.providerKeyID || args.providerKeyID === updated.provider_key_id);
+						dispatch(
+							governanceApi.util.updateQueryData("getPricingOverrides", entry.originalArgs, (draft) => {
+								if (!draft.pricing_overrides) return;
+								const index = draft.pricing_overrides.findIndex((o) => o.id === id);
+								if (index === -1) return;
+								if (matchesQuery) {
+									draft.pricing_overrides[index] = updated;
+								} else {
+									// Override no longer belongs in this filtered list
+									draft.pricing_overrides.splice(index, 1);
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+								}
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
+
+		deletePricingOverride: builder.mutation<{ message: string }, string>({
+			query: (id) => ({
+				url: `/governance/pricing-overrides/${id}`,
+				method: "DELETE",
+			}),
+			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getPricingOverrides" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getPricingOverrides", entry.originalArgs, (draft) => {
+								if (!draft.pricing_overrides) return;
+								const before = draft.pricing_overrides.length;
+								draft.pricing_overrides = draft.pricing_overrides.filter((o) => o.id !== id);
+								const removed = before - draft.pricing_overrides.length;
+								if (removed > 0) {
+									draft.count = Math.max(0, (draft.count || 0) - removed);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - removed);
+								}
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
+
 		// Provider Governance
 		getProviderGovernance: builder.query<GetProviderGovernanceResponse, { fromMemory?: boolean } | void>({
 			query: (params) => ({
@@ -679,6 +815,10 @@ export const {
 	useCreateModelConfigMutation,
 	useUpdateModelConfigMutation,
 	useDeleteModelConfigMutation,
+	useGetPricingOverridesQuery,
+	useCreatePricingOverrideMutation,
+	useUpdatePricingOverrideMutation,
+	useDeletePricingOverrideMutation,
 
 	// Provider Governance
 	useGetProviderGovernanceQuery,

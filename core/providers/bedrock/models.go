@@ -1,10 +1,8 @@
 package bedrock
 
 import (
-	"slices"
 	"strings"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -118,29 +116,29 @@ func removePrefix(s string) string {
 	return s
 }
 
-// findMatchingAllowedModel finds a matching item in a slice, considering both
+// findMatchingAllowedModel finds a matching item in a whitelist, considering both
 // exact match and match with/without region prefixes (e.g., "global.", "us.", "eu."),
 // and also checks base model matches (ignoring version suffixes).
-// Returns the matched item from the slice if found, empty string otherwise.
-// If matched via base model, returns the item from slice (not the value parameter).
-func findMatchingAllowedModel(slice []string, value string) string {
-	// First check exact matches
-	if slices.Contains(slice, value) {
+// Returns the matched item from the whitelist if found, empty string otherwise.
+// If matched via base model, returns the item from whitelist (not the value parameter).
+func findMatchingAllowedModel(wl schemas.WhiteList, value string) string {
+	// First check exact matches (case-insensitive)
+	if wl.Contains(value) {
 		return value
 	}
 
 	// Check with region prefix added/removed
 	valuePrefix := extractPrefix(value)
 	if valuePrefix != "" {
-		// value has a prefix, check if slice contains version without prefix
+		// value has a prefix, check if whitelist contains version without prefix
 		withoutPrefix := removePrefix(value)
-		if slices.Contains(slice, withoutPrefix) {
+		if wl.Contains(withoutPrefix) {
 			return withoutPrefix
 		}
 	}
 
-	// Check if any item in slice has a prefix that matches value without prefix
-	for _, item := range slice {
+	// Check if any item in whitelist has a prefix that matches value without prefix
+	for _, item := range wl {
 		itemPrefix := extractPrefix(item)
 		if itemPrefix != "" {
 			// item has prefix, check if value matches without the prefix
@@ -156,12 +154,12 @@ func findMatchingAllowedModel(slice []string, value string) string {
 	// Normalize value by removing any region prefix for base model comparison
 	valueNormalized := removePrefix(value)
 
-	for _, item := range slice {
+	for _, item := range wl {
 		// Normalize item by removing any region prefix for base model comparison
 		itemNormalized := removePrefix(item)
 
 		// Check base model match with normalized values (prefix removed from both)
-		// Return the item from slice (not value) to use the actual name from allowedModels
+		// Return the item from whitelist (not value) to use the actual name from allowedModels
 		if schemas.SameBaseModel(itemNormalized, valueNormalized) {
 			return item
 		}
@@ -222,7 +220,35 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+// matchesBlacklist reports whether modelID matches any entry in the blacklist,
+// using the same matching logic as findMatchingAllowedModel (exact, prefix-normalized, base-model).
+func matchesBlacklist(bl schemas.BlackList, modelID string) bool {
+	if bl.IsEmpty() {
+		return false
+	}
+	if bl.Contains(modelID) {
+		return true
+	}
+	if extractPrefix(modelID) != "" {
+		if bl.Contains(removePrefix(modelID)) {
+			return true
+		}
+	}
+	for _, item := range bl {
+		if extractPrefix(item) != "" && removePrefix(item) == modelID {
+			return true
+		}
+	}
+	valueNormalized := removePrefix(modelID)
+	for _, item := range bl {
+		if schemas.SameBaseModel(removePrefix(item), valueNormalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -231,10 +257,16 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		Data: make([]schemas.Model, 0, len(response.ModelSummaries)),
 	}
 
+	if !unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || blacklistedModels.IsBlockAll()) {
+		return bifrostResponse
+	}
+
 	deploymentValues := make([]string, 0, len(deployments))
 	for _, deployment := range deployments {
 		deploymentValues = append(deploymentValues, deployment)
 	}
+
+	restrictAllowed := !unfiltered && allowedModels.IsRestricted()
 
 	includedModels := make(map[string]bool)
 	for _, model := range response.ModelSummaries {
@@ -247,7 +279,7 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		// Empty lists mean "allow all" for that dimension
 		// Check considering global prefix variations
 		shouldFilter := false
-		if !unfiltered && len(allowedModels) > 0 && len(deploymentValues) > 0 {
+		if restrictAllowed && len(deploymentValues) > 0 {
 			// Both lists are present: model must be in allowedModels AND deployments
 			// AND the deployment alias must also be in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
@@ -257,12 +289,12 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			// Check if deployment alias is also in allowedModels (direct string match)
 			deploymentAliasInAllowedModels := false
 			if deploymentAlias != "" {
-				deploymentAliasInAllowedModels = slices.Contains(allowedModels, deploymentAlias)
+				deploymentAliasInAllowedModels = allowedModels.Contains(deploymentAlias)
 			}
 
 			// Filter if: model not in deployments OR deployment alias not in allowedModels
 			shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-		} else if !unfiltered && len(allowedModels) > 0 {
+		} else if restrictAllowed {
 			// Only allowedModels is present: filter if model is not in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
 			shouldFilter = matchedAllowedModel == ""
@@ -271,9 +303,13 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			deploymentValue, deploymentAlias = findDeploymentMatch(deployments, model.ModelID)
 			shouldFilter = deploymentValue == ""
 		}
-		// If both are empty, shouldFilter remains false (allow all)
+		// If both are empty (or allowedModels is unrestricted and no deployments), shouldFilter remains false
 
 		if shouldFilter {
+			continue
+		}
+		if !unfiltered && (matchesBlacklist(blacklistedModels, model.ModelID) ||
+			(deploymentAlias != "" && matchesBlacklist(blacklistedModels, deploymentAlias))) {
 			continue
 		}
 
@@ -283,10 +319,6 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			modelID = deploymentValue
 		} else if matchedAllowedModel != "" {
 			modelID = matchedAllowedModel
-		}
-
-		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, model.ModelID, modelID, deploymentAlias, matchedAllowedModel) {
-			continue
 		}
 
 		modelEntry := schemas.Model{
@@ -303,9 +335,9 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			modelEntry.ID = string(providerKey) + "/" + deploymentAlias
 			// Use the actual deployment value (which might have global prefix)
 			modelEntry.Deployment = schemas.Ptr(deploymentValue)
-			includedModels[deploymentAlias] = true
+			includedModels[strings.ToLower(deploymentAlias)] = true
 		} else {
-			includedModels[modelID] = true
+			includedModels[strings.ToLower(modelID)] = true
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
 	}
@@ -313,14 +345,14 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 	// Backfill deployments that were not matched from the API response
 	if !unfiltered && len(deployments) > 0 {
 		for alias, deploymentValue := range deployments {
-			if includedModels[alias] {
+			if includedModels[strings.ToLower(alias)] {
 				continue
 			}
-			// If allowedModels is non-empty, only include if alias is in the list
-			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
+			// If allowedModels is restricted, only include if alias is in the list
+			if restrictAllowed && !allowedModels.Contains(alias) {
 				continue
 			}
-			if providerUtils.ModelMatchesDenylist(blacklistedModels, alias) {
+			if !unfiltered && matchesBlacklist(blacklistedModels, alias) {
 				continue
 			}
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -328,17 +360,17 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 				Name:       schemas.Ptr(alias),
 				Deployment: schemas.Ptr(deploymentValue),
 			})
-			includedModels[alias] = true
+			includedModels[strings.ToLower(alias)] = true
 		}
 	}
 
 	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
+	if restrictAllowed {
 		for _, allowedModel := range allowedModels {
-			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+			if matchesBlacklist(blacklistedModels, allowedModel) {
 				continue
 			}
-			if !includedModels[allowedModel] {
+			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
 					Name: schemas.Ptr(allowedModel),

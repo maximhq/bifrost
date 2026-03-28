@@ -26,6 +26,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 | **Llama** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Cohere** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | **Titan** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Stability AI** | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
 
 ### Supported Operations
 
@@ -761,6 +762,62 @@ resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schema
 </Tab>
 </Tabs>
 
+## Stability AI models
+
+Supported generation models: **`stability.stable-image-core-v1:1`**, **`stability.stable-image-ultra-v1:1`**
+
+These models use a flat JSON body (not the nested Bedrock `taskType` structure). Bifrost detects them automatically — any model ID containing `"stability."` is converted via `ToStabilityAIImageGenerationRequest`.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `prompt` | string | ✅ | Text description of the image |
+| `negative_prompt` | string | ❌ | What to exclude |
+| `seed` | int | ❌ | Reproducibility seed |
+| `aspect_ratio` | string | ❌ | e.g. `"16:9"`, `"1:1"`, `"21:9"` — via `aspect_ratio` param or `ExtraParams["aspect_ratio"]` |
+| `output_format` | string | ❌ | `"png"`, `"jpeg"`, `"webp"` — via `output_format` param |
+
+### Example Request
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/us.stability.stable-image-ultra-v1:1",
+    "prompt": "A majestic mountain range at golden hour",
+    "negative_prompt": "blurry, low quality",
+    "aspect_ratio": "16:9",
+    "output_format": "png",
+    "seed": 42
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Bedrock,
+    Model:    "us.stability.stable-image-ultra-v1:1",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A majestic mountain range at golden hour",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        NegativePrompt: schemas.Ptr("blurry, low quality"),
+        AspectRatio:    schemas.Ptr("16:9"),
+        OutputFormat:   schemas.Ptr("png"),
+        Seed:           schemas.Ptr(42),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
 ---
 
 # 6. Image Edit
@@ -837,6 +894,176 @@ Bedrock supports three image edit task types: **INPAINTING**, **OUTPAINTING**, a
 **Endpoint**: Same as image generation: `invoke` endpoint
 
 **Streaming**: Image edit streaming is not supported by Bedrock.
+
+---
+
+## Stability AI models
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Stability AI edit models are automatically detected by their model ID (contains `"stability."`). The **task type is inferred from the model name** by default, but you can also set the `type` field explicitly — useful when using deployment aliases. See [Type values for explicit task selection](#type-values-for-explicit-task-selection) below.
+
+### Supported models
+
+| Model ID | Task | Images required | Prompt |
+|----------|------|-----------------|--------|
+| `stability.stable-image-inpaint-v1:0` | inpaint | 1 + mask | ✅ |
+| `stability.stable-outpaint-v1:0` | outpaint | 1 (optional mask) | ✅ |
+| `stability.stable-image-search-recolor-v1:0` | recolor | 1 | ✅ |
+| `stability.stable-image-search-replace-v1:0` | search-replace | 1 | ✅ |
+| `stability.stable-image-erase-object-v1:0` | erase-object | 1 + mask | ❌ |
+| `stability.stable-image-remove-background-v1:0` | remove-bg | 1 | ❌ |
+| `stability.stable-image-control-sketch-v1:0` | control-sketch | 1 | ✅ |
+| `stability.stable-image-control-structure-v1:0` | control-structure | 1 | ✅ |
+| `stability.stable-image-style-guide-v1:0` | style-guide | 1 | ✅ |
+| `stability.stable-style-transfer-v1:0` | style-transfer | **2 required** | ✅ |
+| `stability.stable-creative-upscale-v1:0` | upscale-creative | 1 | ✅ |
+| `stability.stable-conservative-upscale-v1:0` | upscale-conservative | 1 | ✅ |
+| `stability.stable-fast-upscale-v1:0` | upscale-fast | 1 | ❌ |
+
+### Common parameters
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Stability AI model ID (see table above) |
+| `image[]` | binary | ✅ | Input image(s). `style-transfer` requires exactly 2. |
+| `prompt` | string | task-dependent | Required for all tasks except `remove-bg`, `upscale-fast`, and `erase-object`. For these no-prompt operations, set `type` to `remove_background`, `upscale_fast`, or `erase_object` to skip prompt validation at the gateway level. |
+| `negative_prompt` | string | ❌ | Not applied for: `remove-bg`, `upscale-fast`, `erase-object` |
+| `seed` | int | ❌ | Not applied for: `remove-bg`, `upscale-fast` |
+| `mask` | binary | task-dependent | Required for: `inpaint`, `erase-object`; ignored for others |
+
+### Task-specific extra parameters
+
+Pass these via `extra_params` (Go SDK) or as top-level form fields (Gateway).
+
+| Extra parameter | Type | Task(s) |
+|-----------------|------|---------|
+| `output_format` | string | All — `"png"`, `"jpeg"`, `"webp"` |
+| `style_preset` | string | inpaint, outpaint, recolor, search-replace, control-sketch, control-structure, style-guide, upscale-creative |
+| `grow_mask` | int | inpaint, recolor, search-replace, erase-object |
+| `left`, `right`, `up`, `down` | int | outpaint — pixels to expand in each direction |
+| `creativity` | float | upscale-creative, upscale-conservative, outpaint |
+| `select_prompt` | string | recolor — which region to recolor |
+| `search_prompt` | string | search-replace — what object to find and replace |
+| `control_strength` | float | control-sketch, control-structure — 0.0–1.0 |
+| `aspect_ratio` | string | style-guide — output aspect ratio |
+| `fidelity` | float | style-guide — 0.0–1.0 |
+| `style_strength` | float | style-transfer — 0.0–1.0 |
+| `composition_fidelity` | float | style-transfer — 0.0–1.0 |
+| `change_strength` | float | style-transfer — 0.0–1.0 |
+
+<Note>
+**Style-transfer image order matters.** The first image (`image[0]`) becomes `init_image` (the content to transform) and the second (`image[1]`) becomes `style_image` (the artistic reference). Both images must be non-empty.
+</Note>
+
+### Type values for explicit task selection
+
+You can set the `type` field to override model-name inference. This is especially useful with deployment aliases where the alias name may not contain the Stability AI model pattern.
+
+| `type` value | Stability AI task |
+|---|---|
+| `inpainting` or `inpaint` | inpaint |
+| `outpainting` or `outpaint` | outpaint |
+| `background_removal` or `remove_background` or `remove_bg` | remove-bg |
+| `erase_object` | erase-object |
+| `upscale_fast` | upscale-fast |
+| `upscale_creative` | upscale-creative |
+| `upscale_conservative` | upscale-conservative |
+| `recolor` | recolor |
+| `search_replace` | search-replace |
+| `control_sketch` | control-sketch |
+| `control_structure` | control-structure |
+| `style_guide` | style-guide |
+| `style_transfer` | style-transfer |
+
+### Example requests
+
+<Tabs>
+<Tab title="Inpaint">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-image-inpaint-v1:0" \
+  -F "image[]=@photo.png;type=image/png" \
+  -F "mask=@mask.png;type=image/png" \
+  -F "prompt=A beautiful garden replacing the masked area" \
+  -F "negative_prompt=ugly, blurry" \
+  -F "output_format=png"
+```
+
+</Tab>
+<Tab title="Style transfer">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-style-transfer-v1:0" \
+  -F "image[]=@content.png;type=image/png" \
+  -F "image[]=@style.png;type=image/png" \
+  -F "prompt=Apply the artistic style to the content image" \
+  -F "style_strength=0.8" \
+  -F "composition_fidelity=0.5" \
+  -F "change_strength=0.4" \
+  -F "output_format=png"
+```
+
+</Tab>
+<Tab title="Outpaint">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-outpaint-v1:0" \
+  -F "image[]=@photo.png;type=image/png" \
+  -F "prompt=Extend the scene naturally" \
+  -F "left=200" \
+  -F "right=200" \
+  -F "output_format=png"
+```
+
+</Tab>
+<Tab title="Remove background">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-image-remove-background-v1:0" \
+  -F "image[]=@photo.png;type=image/png" \
+  -F "output_format=png"
+```
+
+</Tab>
+<Tab title="Erase object">
+
+No prompt required. Set `type=erase_object` to skip gateway prompt validation.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-image-erase-object-v1:0" \
+  -F "image[]=@photo.png;type=image/png" \
+  -F "mask=@mask.png;type=image/png" \
+  -F "type=erase_object" \
+  -F "output_format=png"
+```
+
+</Tab>
+<Tab title="Fast upscale">
+
+No prompt required. Set `type=upscale_fast` to skip gateway prompt validation.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/edits \
+  -F "model=bedrock/us.stability.stable-fast-upscale-v1:0" \
+  -F "image[]=@photo.png;type=image/png" \
+  -F "type=upscale_fast" \
+  -F "output_format=png"
+```
+
+</Tab>
+</Tabs>
+
+**Endpoint**: `invoke` endpoint (same as all other Bedrock image operations)
+
+**Streaming**: Not supported.
 
 ---
 

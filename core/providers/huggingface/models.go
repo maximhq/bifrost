@@ -13,7 +13,7 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
-func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -22,12 +22,8 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	var blacklisted map[string]struct{}
-	if !unfiltered && len(blacklistedModels) > 0 {
-		blacklisted = make(map[string]struct{}, len(blacklistedModels))
-		for _, m := range blacklistedModels {
-			blacklisted[m] = struct{}{}
-		}
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+		return bifrostResponse
 	}
 
 	includedModels := make(map[string]bool)
@@ -41,10 +37,10 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 			continue
 		}
 
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ModelID) {
+		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(model.ModelID) {
 			continue
 		}
-		if _, ok := blacklisted[model.ModelID]; ok {
+		if !unfiltered && blacklistedModels.IsBlocked(model.ModelID) {
 			continue
 		}
 
@@ -56,16 +52,16 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		}
 
 		bifrostResponse.Data = append(bifrostResponse.Data, newModel)
-		includedModels[model.ModelID] = true
+		includedModels[strings.ToLower(model.ModelID)] = true
 	}
 
 	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
+	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
-			if _, ok := blacklisted[allowedModel]; ok {
+			if blacklistedModels.IsBlocked(allowedModel) {
 				continue
 			}
-			if !includedModels[allowedModel] {
+			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, allowedModel),
 					Name: schemas.Ptr(allowedModel),

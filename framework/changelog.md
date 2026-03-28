@@ -1,1 +1,6 @@
-[feat]: add CalendarAligned budget field, GetCalendarPeriodStart and IsCalendarAlignableDuration helpers [@17jmumford](https://github.com/17jmumford)
+- feat: migrate VK provider config allowed keys to explicit allow-list semantics — add AllowAllKeys bool to TableVirtualKeyProviderConfig; backfill existing configs with allow_all_keys=true; empty keys now denies all, ["*"] allows all
+- feat: add MCPDisableAutoToolInject column to TableClientConfig
+- refactor: standardize empty array conventions in modelcatalog and tables.
+- feat: add AllowedExtraHeadersJSON column to TableMCPClient
+- feat: add AllowOnAllVirtualKeys column to TableMCPClient
+- feat: add CalendarAligned budget field, GetCalendarPeriodStart and IsCalendarAlignableDuration helpers [@17jmumford](https://github.com/17jmumford)

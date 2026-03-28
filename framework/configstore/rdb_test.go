@@ -201,6 +201,86 @@ func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	assert.Len(t, result["anthropic"].Keys, 1)
 }
 
+func TestProviderKeyCRUD(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {},
+	})
+	require.NoError(t, err)
+
+	keys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	key := schemas.Key{
+		ID:     "key-uuid-1",
+		Name:   "openai-primary",
+		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Weight: 1.0,
+	}
+
+	err = store.CreateProviderKey(ctx, "openai", key)
+	require.NoError(t, err)
+
+	keys, err = store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Equal(t, "openai-primary", keys[0].Name)
+
+	storedKey, err := store.GetProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKey)
+	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
+
+	key.Value = *schemas.NewEnvVar("sk-test-key-v2")
+	key.Weight = 2.0
+
+	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
+	require.NoError(t, err)
+
+	storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, storedKey)
+	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
+	assert.Equal(t, 2.0, storedKey.Weight)
+
+	err = store.DeleteProviderKey(ctx, "openai", key.ID)
+	require.NoError(t, err)
+
+	keys, err = store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	key := schemas.Key{
+		ID:     "key-uuid-1",
+		Name:   "openai-primary",
+		Value:  *schemas.NewEnvVar("sk-test-key-v1"),
+		Weight: 1.0,
+	}
+
+	err := store.CreateProviderKey(ctx, "openai", key)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err = store.GetProviderKeys(ctx, "openai")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err = store.GetProviderKey(ctx, "openai", key.ID)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	err = store.DeleteProviderKey(ctx, "openai", key.ID)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 // =============================================================================
 // Budget Tests
 // =============================================================================

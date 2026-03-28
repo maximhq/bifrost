@@ -16,7 +16,7 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	base.SetValue(schemas.BifrostContextKeyRequestID, "req-shared")
 	ctx.SetUserValue(FastHTTPUserValueBifrostContext, base)
 
-	converted, cancel := ConvertToBifrostContext(ctx, false, nil)
+	converted, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancel()
 
 	if converted == nil {
@@ -36,13 +36,13 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
-	first, cancelFirst := ConvertToBifrostContext(ctx, false, nil)
+	first, cancelFirst := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancelFirst()
 	if first == nil {
 		t.Fatal("expected first context to be non-nil")
 	}
 
-	second, cancelSecond := ConvertToBifrostContext(ctx, false, nil)
+	second, cancelSecond := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancelSecond()
 	if second == nil {
 		t.Fatal("expected second context to be non-nil")
@@ -69,7 +69,7 @@ func TestConvertToBifrostContext_StarAllowlistSecurityHeadersBlocked(t *testing.
 	ctx.Request.Header.Set("x-bf-eh-connection", "should-be-blocked")
 	ctx.Request.Header.Set("x-bf-eh-proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -103,7 +103,7 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	// Security headers sent directly — should be blocked
 	ctx.Request.Header.Set("proxy-authorization", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -140,7 +140,7 @@ func TestConvertToBifrostContext_PrefixWildcardDirectForwarding(t *testing.T) {
 	// Header not matching the pattern
 	ctx.Request.Header.Set("openai-version", "should-not-forward")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -168,7 +168,7 @@ func TestConvertToBifrostContext_WildcardAllowlistFiltering(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-anthropic-version", "2024-01-01")
 	ctx.Request.Header.Set("x-bf-eh-openai-version", "should-be-blocked")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -196,7 +196,7 @@ func TestConvertToBifrostContext_WildcardDenylistBlocking(t *testing.T) {
 	ctx.Request.Header.Set("x-bf-eh-x-internal-secret", "blocked-value")
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, matcher, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
@@ -217,7 +217,7 @@ func TestConvertToBifrostContext_NilMatcher(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
 
-	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil)
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil, schemas.WhiteList{})
 	defer cancel()
 
 	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)

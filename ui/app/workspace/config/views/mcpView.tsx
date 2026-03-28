@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -40,13 +41,15 @@ export default function MCPView() {
 		}
 	}, [config, bifrostConfig]);
 
+
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
-			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10)
+			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false)
 		);
 	}, [config, localConfig]);
 
@@ -79,6 +82,10 @@ export default function MCPView() {
 		if (!isNaN(numValue) && numValue >= 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_tool_sync_interval: numValue }));
 		}
+	}, []);
+
+	const handleDisableAutoToolInjectChange = useCallback((checked: boolean) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_disable_auto_tool_inject: checked }));
 	}, []);
 
 	const handleSave = useCallback(async () => {
@@ -167,6 +174,25 @@ export default function MCPView() {
 						value={localValues.mcp_tool_sync_interval}
 						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
 						min="0"
+					/>
+				</div>
+
+				{/* Disable Auto Tool Injection */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-disable-auto-tool-inject" className="text-sm font-medium">
+							Disable Auto Tool Injection
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP configuration.
+						</p>
+					</div>
+					<Switch
+						id="mcp-disable-auto-tool-inject"
+						checked={localConfig.mcp_disable_auto_tool_inject ?? false}
+						onCheckedChange={handleDisableAutoToolInjectChange}
+						disabled={!hasSettingsUpdateAccess}
+						data-testid="mcp-disable-auto-tool-inject-switch"
 					/>
 				</div>
 
