@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 )
 
@@ -36,7 +37,7 @@ func (k KeyStatus) MarshalJSON() ([]byte, error) {
 		errCopy.ExtraFields.KeyStatuses = nil
 		alias.Error = &errCopy
 	}
-	return Marshal(alias)
+	return MarshalSorted(alias)
 }
 
 type BifrostListModelsRequest struct {
@@ -153,6 +154,10 @@ type Model struct {
 
 	OwnedBy          *string  `json:"owned_by,omitempty"`
 	SupportedMethods []string `json:"supported_methods,omitempty"`
+
+	// ProviderExtra carries opaque provider-specific data (e.g. Anthropic capabilities)
+	// through the Bifrost pipeline for integration reverse-conversion. Never serialized.
+	ProviderExtra json.RawMessage `json:"-"`
 }
 
 type Architecture struct {
@@ -209,7 +214,7 @@ func encodePaginationCursor(offset int, lastID string) (string, error) {
 		LastID: lastID,
 	}
 
-	jsonData, err := Marshal(cursor)
+	jsonData, err := MarshalSorted(cursor)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal pagination cursor: %w", err)
 	}

@@ -25,6 +25,7 @@ type Harness struct {
 	BasePath         string
 	BaseURLEnv       string
 	APIKeyEnv        string
+	AuthTokenEnv     string
 	ModelEnv         string
 	SupportsMCP      bool
 	SupportsWorktree bool
@@ -54,6 +55,7 @@ var all = map[string]Harness{
 		BasePath:         "/anthropic",
 		BaseURLEnv:       "ANTHROPIC_BASE_URL",
 		APIKeyEnv:        "ANTHROPIC_API_KEY",
+		AuthTokenEnv:     "ANTHROPIC_AUTH_TOKEN",
 		SupportsMCP:      true,
 		SupportsWorktree: true,
 		RunArgsForMod: func(model string) []string {

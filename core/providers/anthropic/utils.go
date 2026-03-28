@@ -161,7 +161,11 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		}
 		// Add max_tokens if not present
 		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", AnthropicDefaultMaxTokens)
+			defaultMaxTokens := AnthropicDefaultMaxTokens
+			if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+				defaultMaxTokens = providerUtils.GetMaxOutputTokensOrDefault(modelResult.String(), AnthropicDefaultMaxTokens)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}
@@ -172,6 +176,11 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}
+		}
+		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
+		jsonBody, err = StripAutoInjectableTools(jsonBody)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
 		// Remove excluded fields
 		for _, field := range excludeFields {
@@ -295,6 +304,18 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicMCPClientBetaHeader)
 		}
 	}
+	// Check for interleaved thinking (required for older Claude 4 models with thinking enabled)
+	if req.Thinking != nil && req.Thinking.Type == "enabled" {
+		if !hasProvider || features.InterleavedThinking {
+			headers = appendUniqueHeader(headers, AnthropicInterleavedThinkingBetaHeader)
+		}
+	}
+	// Check for fast mode
+	if req.Speed != nil && *req.Speed == "fast" {
+		if !hasProvider || features.FastMode {
+			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
+		}
+	}
 	// Check for output format (structured outputs)
 	if req.OutputFormat != nil {
 		if !hasProvider || features.StructuredOutputs {
@@ -343,13 +364,70 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			extraHeaders = ctxExtraHeaders
 		}
 	}
-	if len(extraHeaders["anthropic-beta"]) == 0 {
+	existing := extraHeaders["anthropic-beta"]
+	if len(existing) == 0 {
 		extraHeaders["anthropic-beta"] = headers
 	} else {
-		extraHeaders["anthropic-beta"] = append(extraHeaders["anthropic-beta"], headers...)
+		// Passthrough wins: skip auto-injected headers when a same-prefix header
+		// already exists from passthrough. This prevents conflicting versions
+		// (e.g. mcp-client-2025-04-04 + mcp-client-2025-11-20) in the same request.
+		for _, h := range headers {
+			if !betaHeaderPrefixExists(existing, h) {
+				existing = append(existing, h)
+			}
+		}
+		extraHeaders["anthropic-beta"] = existing
 	}
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	return nil
+}
+
+// betaHeaderPrefixKnown maps known beta header prefixes for prefix-aware dedup.
+var betaHeaderPrefixKnown = []string{
+	"computer-use-",
+	AnthropicStructuredOutputsBetaHeaderPrefix,
+	AnthropicMCPClientBetaHeaderPrefix,
+	AnthropicPromptCachingScopeBetaHeaderPrefix,
+	"compact-",
+	"context-management-",
+	"files-api-",
+	AnthropicAdvancedToolUseBetaHeaderPrefix,
+	AnthropicInterleavedThinkingBetaHeaderPrefix,
+	AnthropicSkillsBetaHeaderPrefix,
+	AnthropicContext1MBetaHeaderPrefix,
+	AnthropicFastModeBetaHeaderPrefix,
+}
+
+// betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
+// Returns true if a same-prefix header is already present (passthrough wins).
+// Handles comma-separated values within a single header string (per HTTP spec).
+func betaHeaderPrefixExists(existing []string, newHeader string) bool {
+	// Find which known prefix the new header belongs to
+	var matchedPrefix string
+	for _, prefix := range betaHeaderPrefixKnown {
+		if strings.HasPrefix(newHeader, prefix) {
+			matchedPrefix = prefix
+			break
+		}
+	}
+	match := func(candidate string) bool {
+		if matchedPrefix == "" {
+			return candidate == newHeader
+		}
+		return strings.HasPrefix(candidate, matchedPrefix)
+	}
+	for _, headerValue := range existing {
+		for _, candidate := range strings.Split(headerValue, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if match(candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ToolVersionRemap defines a mapping from an unsupported tool version to a supported one.
@@ -384,6 +462,69 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 		"web_fetch_",     // No web fetch on Bedrock
 		"code_execution", // No code execution on Bedrock
 	},
+}
+
+// StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
+// when web_search or web_fetch tools are also present. The Anthropic API auto-injects
+// code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
+// and returns an error if code_execution is also explicitly included.
+// This function strips code_execution only in that case to prevent the
+// "Auto-injecting tools would conflict" error.
+func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
+	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return jsonBody, nil
+	}
+
+	tools := toolsResult.Array()
+	if len(tools) == 0 {
+		return jsonBody, nil
+	}
+
+	// Check if web_search or web_fetch is present — only then does Anthropic
+	// auto-inject code_execution, causing a conflict if it's also explicit.
+	hasWebSearchOrFetch := false
+	for _, tool := range tools {
+		toolType := tool.Get("type").String()
+		if strings.HasPrefix(toolType, "web_search_") || strings.HasPrefix(toolType, "web_fetch_") {
+			hasWebSearchOrFetch = true
+			break
+		}
+	}
+
+	if !hasWebSearchOrFetch {
+		return jsonBody, nil
+	}
+
+	// Collect indices of code_execution tools to strip
+	var indicesToStrip []int
+	for i, tool := range tools {
+		toolType := tool.Get("type").String()
+		if strings.HasPrefix(toolType, "code_execution") {
+			indicesToStrip = append(indicesToStrip, i)
+		}
+	}
+
+	if len(indicesToStrip) == 0 {
+		return jsonBody, nil
+	}
+
+	// If all tools would be stripped, remove the tools key entirely
+	if len(indicesToStrip) == len(tools) {
+		return providerUtils.DeleteJSONField(jsonBody, "tools")
+	}
+
+	// Delete in reverse order to preserve indices
+	var err error
+	for i := len(indicesToStrip) - 1; i >= 0; i-- {
+		path := fmt.Sprintf("tools.%d", indicesToStrip[i])
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to strip auto-injectable tool at index %d: %w", indicesToStrip[i], err)
+		}
+	}
+
+	return jsonBody, nil
 }
 
 // RemapRawToolVersionsForProvider inspects tools in a raw JSON body and remaps
@@ -483,6 +624,26 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 			filtered = append(filtered, h)
 		case strings.HasPrefix(h, AnthropicAdvancedToolUseBetaHeaderPrefix):
 			if !features.AdvancedToolUse {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicInterleavedThinkingBetaHeaderPrefix):
+			if !features.InterleavedThinking {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicSkillsBetaHeaderPrefix):
+			if !features.Skills {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicContext1MBetaHeaderPrefix):
+			if !features.Context1M {
+				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+			}
+			filtered = append(filtered, h)
+		case strings.HasPrefix(h, AnthropicFastModeBetaHeaderPrefix):
+			if !features.FastMode {
 				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
 			}
 			filtered = append(filtered, h)

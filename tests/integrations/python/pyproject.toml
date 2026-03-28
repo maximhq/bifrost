@@ -121,3 +121,6 @@ exclude_lines = [
     "if TYPE_CHECKING:",
 ]
 
+
+[tool.uv]
+exclude-newer = "7 days"

@@ -209,6 +209,7 @@ const (
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
 	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
+	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                 // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
@@ -868,21 +869,21 @@ type BifrostStreamChunk struct {
 // This ensures that only the non-nil embedded struct is marshaled,
 func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 	if bs.BifrostTextCompletionResponse != nil {
-		return Marshal(bs.BifrostTextCompletionResponse)
+		return MarshalSorted(bs.BifrostTextCompletionResponse)
 	} else if bs.BifrostChatResponse != nil {
-		return Marshal(bs.BifrostChatResponse)
+		return MarshalSorted(bs.BifrostChatResponse)
 	} else if bs.BifrostResponsesStreamResponse != nil {
-		return Marshal(bs.BifrostResponsesStreamResponse)
+		return MarshalSorted(bs.BifrostResponsesStreamResponse)
 	} else if bs.BifrostSpeechStreamResponse != nil {
-		return Marshal(bs.BifrostSpeechStreamResponse)
+		return MarshalSorted(bs.BifrostSpeechStreamResponse)
 	} else if bs.BifrostTranscriptionStreamResponse != nil {
-		return Marshal(bs.BifrostTranscriptionStreamResponse)
+		return MarshalSorted(bs.BifrostTranscriptionStreamResponse)
 	} else if bs.BifrostImageGenerationStreamResponse != nil {
-		return Marshal(bs.BifrostImageGenerationStreamResponse)
+		return MarshalSorted(bs.BifrostImageGenerationStreamResponse)
 	} else if bs.BifrostPassthroughResponse != nil {
-		return Marshal(bs.BifrostPassthroughResponse)
+		return MarshalSorted(bs.BifrostPassthroughResponse)
 	} else if bs.BifrostError != nil {
-		return Marshal(bs.BifrostError)
+		return MarshalSorted(bs.BifrostError)
 	}
 	// Return empty object if both are nil (shouldn't happen in practice)
 	return []byte("{}"), nil

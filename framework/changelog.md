@@ -3,3 +3,4 @@
 - refactor: standardize empty array conventions in modelcatalog and tables.
 - feat: add AllowedExtraHeadersJSON column to TableMCPClient
 - feat: add AllowOnAllVirtualKeys column to TableMCPClient
+- feat: add CalendarAligned budget field, GetCalendarPeriodStart and IsCalendarAlignableDuration helpers [@17jmumford](https://github.com/17jmumford)

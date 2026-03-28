@@ -635,6 +635,16 @@
                 ],
                 "type": "text/javascript"
               }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "pm.request.body.raw = JSON.stringify({name: 'Test Customer ' + timestamp, email: 'test@example.com'});"
+                ],
+                "type": "text/javascript"
+              }
             }
           ],
           "request": {
@@ -734,6 +744,16 @@
                   "    pm.collectionVariables.set('team_id', jsonData.team.id);",
                   "  }",
                   "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "pm.request.body.raw = JSON.stringify({name: 'Test Team ' + timestamp});"
                 ],
                 "type": "text/javascript"
               }

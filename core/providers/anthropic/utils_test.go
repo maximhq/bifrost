@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -694,7 +695,7 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			name:     "Vertex skips MCP header",
 			provider: schemas.Vertex,
 			req: &AnthropicMessageRequest{
-				MCPServers: []AnthropicMCPServer{{URL: "http://example.com"}},
+				MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
 			},
 			unexpectHeaders: []string{AnthropicMCPClientBetaHeader},
 		},
@@ -702,7 +703,7 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			name:     "Anthropic gets MCP header",
 			provider: schemas.Anthropic,
 			req: &AnthropicMessageRequest{
-				MCPServers: []AnthropicMCPServer{{URL: "http://example.com"}},
+				MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
 			},
 			expectHeaders: []string{AnthropicMCPClientBetaHeader},
 		},
@@ -725,6 +726,72 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 				},
 			},
 			expectHeaders: []string{AnthropicCompactionBetaHeader},
+		},
+		// Interleaved thinking tests
+		{
+			name:     "Anthropic gets interleaved thinking header for enabled",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(2048)},
+			},
+			expectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
+		},
+		{
+			name:     "Anthropic does not get interleaved thinking header for adaptive",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "adaptive"},
+			},
+			unexpectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
+		},
+		{
+			name:     "Vertex gets interleaved thinking header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(2048)},
+			},
+			expectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
+		},
+		{
+			name:     "Bedrock gets interleaved thinking header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(2048)},
+			},
+			expectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
+		},
+		{
+			name:     "Disabled thinking does not get interleaved thinking header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "disabled"},
+			},
+			unexpectHeaders: []string{AnthropicInterleavedThinkingBetaHeader},
+		},
+		// Fast mode tests
+		{
+			name:     "Anthropic gets fast mode header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Speed: schemas.Ptr("fast"),
+			},
+			expectHeaders: []string{AnthropicFastModeBetaHeader},
+		},
+		{
+			name:     "Bedrock skips fast mode header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Speed: schemas.Ptr("fast"),
+			},
+			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
+		},
+		{
+			name:     "Azure skips fast mode header",
+			provider: schemas.Azure,
+			req: &AnthropicMessageRequest{
+				Speed: schemas.Ptr("fast"),
+			},
+			unexpectHeaders: []string{AnthropicFastModeBetaHeader},
 		},
 	}
 
@@ -762,6 +829,70 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 	}
 }
 
+func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
+	// When a same-prefix header is already set from passthrough, auto-injection should NOT add a second version.
+	t.Run("passthrough_mcp_header_prevents_auto_inject", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		// Simulate passthrough setting an old MCP header
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"anthropic-beta": {AnthropicMCPClientBetaHeaderDeprecated},
+		})
+		// Request has MCP servers, which would normally auto-inject the new header
+		req := &AnthropicMessageRequest{
+			MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
+
+		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		betaHeaders := extraHeaders["anthropic-beta"]
+		// Should only have the old header, not both
+		if len(betaHeaders) != 1 {
+			t.Errorf("expected 1 header, got %d: %v", len(betaHeaders), betaHeaders)
+		}
+		if betaHeaders[0] != AnthropicMCPClientBetaHeaderDeprecated {
+			t.Errorf("expected passthrough header %q, got %q", AnthropicMCPClientBetaHeaderDeprecated, betaHeaders[0])
+		}
+	})
+
+	t.Run("passthrough_computer_use_header_prevents_auto_inject", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		// Simulate passthrough setting an older computer-use header
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"anthropic-beta": {AnthropicComputerUseBetaHeader20250124},
+		})
+		req := &AnthropicMessageRequest{
+			Tools: []AnthropicTool{{
+				Type: schemas.Ptr(AnthropicToolTypeComputer20251124),
+				Name: string(AnthropicToolNameComputer),
+			}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
+
+		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		betaHeaders := extraHeaders["anthropic-beta"]
+		if len(betaHeaders) != 1 {
+			t.Errorf("expected 1 header, got %d: %v", len(betaHeaders), betaHeaders)
+		}
+		if betaHeaders[0] != AnthropicComputerUseBetaHeader20250124 {
+			t.Errorf("expected passthrough header %q, got %q", AnthropicComputerUseBetaHeader20250124, betaHeaders[0])
+		}
+	})
+
+	t.Run("no_passthrough_allows_auto_inject", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		req := &AnthropicMessageRequest{
+			MCPServers: []AnthropicMCPServerV2{{URL: "http://example.com"}},
+		}
+		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
+
+		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		betaHeaders := extraHeaders["anthropic-beta"]
+		if len(betaHeaders) != 1 || betaHeaders[0] != AnthropicMCPClientBetaHeader {
+			t.Errorf("expected [%q], got %v", AnthropicMCPClientBetaHeader, betaHeaders)
+		}
+	})
+}
+
 func TestFilterBetaHeadersForProvider(t *testing.T) {
 	allHeaders := []string{
 		AnthropicComputerUseBetaHeader20251124,
@@ -772,6 +903,10 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		AnthropicContextManagementBetaHeader,
 		AnthropicAdvancedToolUseBetaHeader,
 		AnthropicFilesAPIBetaHeader,
+		AnthropicInterleavedThinkingBetaHeader,
+		AnthropicSkillsBetaHeader,
+		AnthropicContext1MBetaHeader,
+		AnthropicFastModeBetaHeader,
 	}
 
 	t.Run("Anthropic/keeps_all_headers", func(t *testing.T) {
@@ -800,6 +935,8 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicPromptCachingScopeBetaHeader,
 			AnthropicAdvancedToolUseBetaHeader,
 			AnthropicFilesAPIBetaHeader,
+			AnthropicSkillsBetaHeader,
+			AnthropicFastModeBetaHeader,
 		}
 		for _, h := range unsupported {
 			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Vertex)
@@ -814,6 +951,8 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicComputerUseBetaHeader20251124,
 			AnthropicCompactionBetaHeader,
 			AnthropicContextManagementBetaHeader,
+			AnthropicInterleavedThinkingBetaHeader,
+			AnthropicContext1MBetaHeader,
 		}
 		result, err := FilterBetaHeadersForProvider(supported, schemas.Vertex)
 		if err != nil {
@@ -830,6 +969,8 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicPromptCachingScopeBetaHeader,
 			AnthropicAdvancedToolUseBetaHeader,
 			AnthropicFilesAPIBetaHeader,
+			AnthropicSkillsBetaHeader,
+			AnthropicFastModeBetaHeader,
 		}
 		for _, h := range unsupported {
 			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Bedrock)
@@ -858,5 +999,363 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		if len(result) != len(allHeaders) {
 			t.Errorf("expected all headers for unknown provider, got %v", result)
 		}
+	})
+}
+
+func TestStripAutoInjectableTools(t *testing.T) {
+	t.Run("code_execution_without_web_search_preserved", func(t *testing.T) {
+		// code_execution alone should NOT be stripped (no web_search/web_fetch to trigger auto-injection)
+		input := []byte(`{"model":"claude-opus-4-6","tools":[{"type":"custom","name":"my_tool"},{"type":"code_execution_20250825","name":"code_execution"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("code_execution_with_web_search_stripped", func(t *testing.T) {
+		// code_execution should be stripped when web_search is present (auto-injection conflict)
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20260209","name":"web_search"},{"type":"custom","name":"my_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_search" {
+			t.Errorf("expected first tool to be 'web_search', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "my_tool" {
+			t.Errorf("expected second tool to be 'my_tool', got '%s'", arr[1].Get("name").String())
+		}
+	})
+
+	t.Run("code_execution_with_web_fetch_stripped", func(t *testing.T) {
+		// code_execution should be stripped when web_fetch is present
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_fetch_20250305","name":"web_fetch"},{"type":"custom","name":"my_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_fetch" {
+			t.Errorf("expected first tool to be 'web_fetch', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "my_tool" {
+			t.Errorf("expected second tool to be 'my_tool', got '%s'", arr[1].Get("name").String())
+		}
+	})
+
+	t.Run("web_search_alone_preserved", func(t *testing.T) {
+		// web_search without code_execution should be preserved entirely
+		input := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"},{"type":"custom","name":"search"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("web_fetch_alone_preserved", func(t *testing.T) {
+		// web_fetch without code_execution should be preserved entirely
+		input := []byte(`{"tools":[{"type":"web_fetch_20250305","name":"web_fetch"},{"type":"custom","name":"fetch"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools (preserved), got %d", len(arr))
+		}
+	})
+
+	t.Run("preserves_custom_tools_only", func(t *testing.T) {
+		input := []byte(`{"tools":[{"type":"custom","name":"tool_a"},{"type":"custom","name":"tool_b"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 tools, got %d", len(arr))
+		}
+	})
+
+	t.Run("no_tools_key", func(t *testing.T) {
+		input := []byte(`{"model":"claude-opus-4-6","messages":[]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != string(input) {
+			t.Errorf("expected body unchanged, got %s", string(result))
+		}
+	})
+
+	t.Run("empty_tools_array", func(t *testing.T) {
+		input := []byte(`{"tools":[]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result) != string(input) {
+			t.Errorf("expected body unchanged, got %s", string(result))
+		}
+	})
+
+	t.Run("code_execution_and_web_search_only_strips_code_execution", func(t *testing.T) {
+		// When only code_execution + web_search, strip code_execution, keep web_search
+		input := []byte(`{"model":"test","tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"web_search_20250305","name":"web_search"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 1 {
+			t.Fatalf("expected 1 tool, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "web_search" {
+			t.Errorf("expected remaining tool to be 'web_search', got '%s'", arr[0].Get("name").String())
+		}
+	})
+
+	t.Run("strips_code_execution_keeps_web_search_and_custom", func(t *testing.T) {
+		input := []byte(`{"tools":[{"type":"code_execution_20250825","name":"code_execution"},{"type":"custom","name":"my_tool"},{"type":"web_search_20260209","name":"web_search"},{"type":"custom","name":"other_tool"}]}`)
+		result, err := StripAutoInjectableTools(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		tools := providerUtils.GetJSONField(result, "tools")
+		arr := tools.Array()
+		if len(arr) != 3 {
+			t.Fatalf("expected 3 tools, got %d", len(arr))
+		}
+		if arr[0].Get("name").String() != "my_tool" {
+			t.Errorf("expected first tool to be 'my_tool', got '%s'", arr[0].Get("name").String())
+		}
+		if arr[1].Get("name").String() != "web_search" {
+			t.Errorf("expected second tool to be 'web_search', got '%s'", arr[1].Get("name").String())
+		}
+		if arr[2].Get("name").String() != "other_tool" {
+			t.Errorf("expected third tool to be 'other_tool', got '%s'", arr[2].Get("name").String())
+		}
+	})
+}
+
+func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
+	t.Run("mcp_toolset is properly unmarshaled", func(t *testing.T) {
+		data := []byte(`{
+			"type": "mcp_toolset",
+			"mcp_server_name": "example-mcp",
+			"default_config": {"enabled": false},
+			"configs": {
+				"search_events": {"enabled": true},
+				"create_event": {"enabled": true, "defer_loading": true}
+			}
+		}`)
+
+		var tool AnthropicTool
+		if err := sonic.Unmarshal(data, &tool); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+
+		if tool.MCPToolset == nil {
+			t.Fatal("expected MCPToolset to be populated, got nil")
+		}
+		if tool.MCPToolset.Type != "mcp_toolset" {
+			t.Errorf("expected type 'mcp_toolset', got %q", tool.MCPToolset.Type)
+		}
+		if tool.MCPToolset.MCPServerName != "example-mcp" {
+			t.Errorf("expected mcp_server_name 'example-mcp', got %q", tool.MCPToolset.MCPServerName)
+		}
+		if tool.MCPToolset.DefaultConfig == nil || tool.MCPToolset.DefaultConfig.Enabled == nil || *tool.MCPToolset.DefaultConfig.Enabled != false {
+			t.Error("expected default_config.enabled to be false")
+		}
+		if len(tool.MCPToolset.Configs) != 2 {
+			t.Fatalf("expected 2 configs, got %d", len(tool.MCPToolset.Configs))
+		}
+		if tool.MCPToolset.Configs["search_events"] == nil || *tool.MCPToolset.Configs["search_events"].Enabled != true {
+			t.Error("expected search_events to be enabled")
+		}
+		if tool.MCPToolset.Configs["create_event"] == nil || tool.MCPToolset.Configs["create_event"].DeferLoading == nil || *tool.MCPToolset.Configs["create_event"].DeferLoading != true {
+			t.Error("expected create_event defer_loading to be true")
+		}
+	})
+
+	t.Run("regular tool is not affected by mcp_toolset unmarshal", func(t *testing.T) {
+		data := []byte(`{
+			"name": "get_weather",
+			"description": "Get weather info",
+			"input_schema": {"type": "object", "properties": {}}
+		}`)
+
+		var tool AnthropicTool
+		if err := sonic.Unmarshal(data, &tool); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+
+		if tool.MCPToolset != nil {
+			t.Error("expected MCPToolset to be nil for regular tool")
+		}
+		if tool.Name != "get_weather" {
+			t.Errorf("expected name 'get_weather', got %q", tool.Name)
+		}
+	})
+
+	t.Run("mcp_toolset round-trips through marshal/unmarshal", func(t *testing.T) {
+		original := AnthropicTool{
+			MCPToolset: &AnthropicMCPToolsetTool{
+				Type:          "mcp_toolset",
+				MCPServerName: "test-server",
+				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
+				Configs: map[string]*AnthropicMCPToolsetConfig{
+					"tool_a": {Enabled: schemas.Ptr(true)},
+				},
+			},
+		}
+
+		marshaled, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("unexpected marshal error: %v", err)
+		}
+
+		var restored AnthropicTool
+		if err := sonic.Unmarshal(marshaled, &restored); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+
+		if restored.MCPToolset == nil {
+			t.Fatal("expected MCPToolset to be populated after round-trip")
+		}
+		if restored.MCPToolset.MCPServerName != "test-server" {
+			t.Errorf("expected mcp_server_name 'test-server', got %q", restored.MCPToolset.MCPServerName)
+		}
+		if len(restored.MCPToolset.Configs) != 1 {
+			t.Fatalf("expected 1 config, got %d", len(restored.MCPToolset.Configs))
+		}
+	})
+
+	t.Run("tools array with mixed regular and mcp_toolset tools", func(t *testing.T) {
+		data := []byte(`[
+			{"name": "get_weather", "description": "Get weather"},
+			{"type": "mcp_toolset", "mcp_server_name": "my-mcp"},
+			{"type": "computer_20251124", "name": "computer"}
+		]`)
+
+		var tools []AnthropicTool
+		if err := sonic.Unmarshal(data, &tools); err != nil {
+			t.Fatalf("unexpected unmarshal error: %v", err)
+		}
+
+		if len(tools) != 3 {
+			t.Fatalf("expected 3 tools, got %d", len(tools))
+		}
+
+		// First: regular tool
+		if tools[0].Name != "get_weather" {
+			t.Errorf("expected first tool name 'get_weather', got %q", tools[0].Name)
+		}
+		if tools[0].MCPToolset != nil {
+			t.Error("expected first tool MCPToolset to be nil")
+		}
+
+		// Second: mcp_toolset
+		if tools[1].MCPToolset == nil {
+			t.Fatal("expected second tool MCPToolset to be populated")
+		}
+		if tools[1].MCPToolset.MCPServerName != "my-mcp" {
+			t.Errorf("expected mcp_server_name 'my-mcp', got %q", tools[1].MCPToolset.MCPServerName)
+		}
+
+		// Third: typed tool (computer)
+		if tools[2].MCPToolset != nil {
+			t.Error("expected third tool MCPToolset to be nil")
+		}
+	})
+}
+
+func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
+	t.Run("allowlist pattern merges correctly", func(t *testing.T) {
+		bifrostTool := &schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeMCP,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel: "test-server",
+				ServerURL:   schemas.Ptr("https://example.com/mcp"),
+			},
+		}
+
+		toolset := &AnthropicMCPToolsetTool{
+			Type:          "mcp_toolset",
+			MCPServerName: "test-server",
+			DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
+			Configs: map[string]*AnthropicMCPToolsetConfig{
+				"search": {Enabled: schemas.Ptr(true)},
+				"create": {Enabled: schemas.Ptr(true)},
+				"delete": {Enabled: schemas.Ptr(false)},
+			},
+		}
+
+		applyMCPToolsetConfigToBifrostTool(bifrostTool, toolset)
+
+		if bifrostTool.ResponsesToolMCP.AllowedTools == nil {
+			t.Fatal("expected AllowedTools to be set")
+		}
+		allowedNames := bifrostTool.ResponsesToolMCP.AllowedTools.ToolNames
+		if len(allowedNames) != 2 {
+			t.Fatalf("expected 2 allowed tools, got %d: %v", len(allowedNames), allowedNames)
+		}
+		// Check that both "search" and "create" are present (order may vary due to map iteration)
+		found := map[string]bool{}
+		for _, name := range allowedNames {
+			found[name] = true
+		}
+		if !found["search"] || !found["create"] {
+			t.Errorf("expected allowed tools to contain 'search' and 'create', got %v", allowedNames)
+		}
+	})
+
+	t.Run("all enabled by default does not set allowlist", func(t *testing.T) {
+		bifrostTool := &schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeMCP,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel: "test-server",
+			},
+		}
+
+		toolset := &AnthropicMCPToolsetTool{
+			Type:          "mcp_toolset",
+			MCPServerName: "test-server",
+			// No default_config (defaults to enabled=true)
+		}
+
+		applyMCPToolsetConfigToBifrostTool(bifrostTool, toolset)
+
+		if bifrostTool.ResponsesToolMCP.AllowedTools != nil {
+			t.Error("expected AllowedTools to be nil when all tools are enabled by default")
+		}
+	})
+
+	t.Run("nil inputs are handled safely", func(t *testing.T) {
+		// Should not panic
+		applyMCPToolsetConfigToBifrostTool(nil, nil)
+		applyMCPToolsetConfigToBifrostTool(&schemas.ResponsesTool{}, nil)
 	})
 }

@@ -7,4 +7,4 @@
 - refactor: parallelize model listing for providers to speed up startup time.
 - fix: send back accumulated usage in MCP agent mode.
 - feat: MCP edit UI now supports assigning virtual keys with per-tool access control directly from the MCP server edit sheet.
-- feat: adds option to allow MCP clients to run on all virtual keys without explicit assignment.
+- feat: adds option to allow MCP clients to run on all virtual keys without explicit assignments.

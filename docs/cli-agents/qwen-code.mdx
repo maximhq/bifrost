@@ -6,6 +6,10 @@ icon: "q"
 
 [Qwen Code](https://github.com/QwenLM/qwen-code) is Alibaba's powerful coding assistant with advanced reasoning capabilities. By connecting it to Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys and built-in observability.
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Qwen Code, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 ### 1. Install Qwen Code

@@ -321,8 +321,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	if config.Provider == "" || len(config.Keys) == 0 {
-		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
+	if config.Provider == "" && config.Dimension == 1 {
+		logger.Info(PluginLoggerPrefix + " Starting in direct-only mode (dimension=1, no embedding provider)")
+	} else if config.Provider == "" || len(config.Keys) == 0 {
+		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider or keys, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
 		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
@@ -376,6 +378,19 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
+func (plugin *Plugin) clearRequestScopedContext(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(requestIDKey)
+	ctx.ClearValue(requestStorageIDKey)
+	ctx.ClearValue(requestHashKey)
+	ctx.ClearValue(requestParamsHashKey)
+	ctx.ClearValue(requestModelKey)
+	ctx.ClearValue(requestProviderKey)
+	ctx.ClearValue(requestEmbeddingKey)
+	ctx.ClearValue(requestEmbeddingTokensKey)
+	ctx.ClearValue(isCacheHitKey)
+	ctx.ClearValue(cacheHitTypeKey)
+}
+
 // PreLLMHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.
@@ -405,8 +420,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
-	// Clear any stale storage ID from a previously reused context.
-	ctx.ClearValue(requestStorageIDKey)
+	// Clear request-scoped semantic cache state up front in case the context is reused.
+	plugin.clearRequestScopedContext(ctx)
+
+	if !isSemanticCacheSupportedRequestType(req.RequestType) {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for unsupported request type: " + string(req.RequestType))
+		return req, nil, nil
+	}
 
 	if plugin.isConversationHistoryThresholdExceeded(req) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for request with conversation history threshold exceeded")

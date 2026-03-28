@@ -118,6 +118,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
 		RunCompactionTest,
+		RunInterleavedThinkingTest,
+		RunFastModeTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -235,6 +237,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
 		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
 		{"Compaction", testConfig.Scenarios.Compaction},
+		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
+		{"FastMode", testConfig.Scenarios.FastMode},
 	}
 
 	supported := 0

@@ -124,7 +124,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		}
 
 		// Determine max tokens for conversions
-		maxTokens := DefaultCompletionMaxTokens
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
@@ -964,7 +964,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		}
 
 		// Get max tokens for conversions
-		maxTokens := DefaultCompletionMaxTokens
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}

@@ -1143,7 +1143,8 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "description": "Provider to use for generating embeddings",
+                      "minLength": 1,
+                      "description": "Provider to use for generating embeddings. Required for semantic search; omit it for direct hash mode with dimension: 1.",
                       "enum": [
                         "openai",
                         "anthropic",
@@ -1167,14 +1168,14 @@
                     },
                     "keys": {
                       "type": "array",
-                      "description": "API keys for the embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)",
+                      "description": "API keys for the embedding provider. These are injected at runtime for config-driven setups and are not needed for direct caching with dimension: 1.",
                       "items": {
                         "type": "string"
                       }
                     },
                     "embedding_model": {
                       "type": "string",
-                      "description": "Model to use for generating embeddings (optional)"
+                      "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
                     "cleanup_on_shutdown": {
                       "type": "boolean",
@@ -1231,9 +1232,46 @@
                     }
                   },
                   "required": [
-                    "provider",
-                    "keys",
                     "dimension"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "provider",
+                          "embedding_model"
+                        ],
+                        "properties": {
+                          "dimension": {
+                            "type": "integer",
+                            "minimum": 2
+                          }
+                        }
+                      },
+                      "else": {
+                        "not": {
+                          "required": [
+                            "embedding_model"
+                          ]
+                        },
+                        "properties": {
+                          "dimension": {
+                            "const": 1
+                          }
+                        }
+                      }
+                    }
                   ],
                   "additionalProperties": false
                 }

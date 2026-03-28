@@ -237,7 +237,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 			Name: "bifrost_error_requests_total",
 			Help: "Total number of error requests forwarded to upstream providers by Bifrost.",
 		},
-		append(append(defaultBifrostLabels, "reason"), filteredCustomLabels...),
+		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
 	)
 
 	bifrostInputTokensTotal := factory.NewCounterVec(
@@ -469,10 +469,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// Record error and success counts
 		if bifrostErr != nil {
-			// Add reason to label values (create new slice to avoid modifying original)
+			// Add status_code to label values (create new slice to avoid modifying original)
+			statusCode := "unknown"
+			if bifrostErr.StatusCode != nil {
+				statusCode = strconv.Itoa(*bifrostErr.StatusCode)
+			}
 			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-			errorPromLabelValues = append(errorPromLabelValues, bifrostErr.Error.Message)                         // reason
+			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()

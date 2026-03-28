@@ -76,6 +76,7 @@ func TestAzure(t *testing.T) {
 			VideoRemix:            false,
 			VideoList:             false,
 			VideoDelete:           false,
+			InterleavedThinking:  true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

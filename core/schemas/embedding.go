@@ -56,16 +56,16 @@ func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if e.Text != nil {
-		return Marshal(*e.Text)
+		return MarshalSorted(*e.Text)
 	}
 	if e.Texts != nil {
-		return Marshal(e.Texts)
+		return MarshalSorted(e.Texts)
 	}
 	if e.Embedding != nil {
-		return Marshal(e.Embedding)
+		return MarshalSorted(e.Embedding)
 	}
 	if e.Embeddings != nil {
-		return Marshal(e.Embeddings)
+		return MarshalSorted(e.Embeddings)
 	}
 
 	return nil, fmt.Errorf("invalid embedding input")
@@ -116,24 +116,25 @@ type EmbeddingParameters struct {
 type EmbeddingData struct {
 	Index     int             `json:"index"`
 	Object    string          `json:"object"`    // "embedding"
-	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float32 or [][]float32
+	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float64 or [][]float64
 }
 
 type EmbeddingStruct struct {
+	// Embedding responses preserve provider precision in normalized API output.
 	EmbeddingStr     *string
-	EmbeddingArray   []float32
-	Embedding2DArray [][]float32
+	EmbeddingArray   []float64
+	Embedding2DArray [][]float64
 }
 
 func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 	if be.EmbeddingStr != nil {
-		return Marshal(be.EmbeddingStr)
+		return MarshalSorted(be.EmbeddingStr)
 	}
 	if be.EmbeddingArray != nil {
-		return Marshal(be.EmbeddingArray)
+		return MarshalSorted(be.EmbeddingArray)
 	}
 	if be.Embedding2DArray != nil {
-		return Marshal(be.Embedding2DArray)
+		return MarshalSorted(be.Embedding2DArray)
 	}
 	return nil, fmt.Errorf("no embedding found")
 }
@@ -146,19 +147,19 @@ func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// Try to unmarshal as a direct array of float32
-	var arrayContent []float32
+	// Try to unmarshal as a direct array of float64
+	var arrayContent []float64
 	if err := Unmarshal(data, &arrayContent); err == nil {
 		be.EmbeddingArray = arrayContent
 		return nil
 	}
 
-	// Try to unmarshal as a direct 2D array of float32
-	var arrayContent2D [][]float32
+	// Try to unmarshal as a direct 2D array of float64
+	var arrayContent2D [][]float64
 	if err := Unmarshal(data, &arrayContent2D); err == nil {
 		be.Embedding2DArray = arrayContent2D
 		return nil
 	}
 
-	return fmt.Errorf("embedding field is neither a string nor an array of float32 nor a 2D array of float32")
+	return fmt.Errorf("embedding field is neither a string nor an array of float64 nor a 2D array of float64")
 }

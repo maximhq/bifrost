@@ -77,8 +77,27 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
-			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout"}
-			if len(config.ClientConfig.AllowedHeaders) > 0 {
+			// Credentialed responses are sent when the origin is not matched solely by a
+			// wildcard AllowedOrigins — i.e. the origin is localhost or explicitly listed.
+			credentialed := !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+				isLocalhostOrigin(origin) ||
+				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
+
+			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
+				if credentialed {
+					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
+					// wildcard when Access-Control-Allow-Credentials: true is set — browsers
+					// interpret it as a literal header name. For credentialed preflight requests,
+					// reflect back the requested headers instead.
+					if requestedHeaders := string(ctx.Request.Header.Peek("Access-Control-Request-Headers")); requestedHeaders != "" {
+						allowedHeaders = []string{requestedHeaders}
+					}
+					// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
+				} else {
+					allowedHeaders = []string{"*"}
+				}
+			} else if len(config.ClientConfig.AllowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
 				for _, header := range config.ClientConfig.AllowedHeaders {
 					if !slices.Contains(allowedHeaders, header) {
@@ -91,13 +110,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-				// Set Allow-Credentials for credentialed requests. Only skip when wildcard
-				// is configured AND the origin was matched by the wildcard (not by localhost rule
-				// or explicit listing). Localhost origins and explicitly listed origins always
-				// get credentials support since we return the specific origin.
-				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
-					isLocalhostOrigin(origin) ||
-					slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
+				if credentialed {
 					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 				}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
@@ -829,7 +842,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// This is the 32-char trace ID that links all spans in a distributed trace
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
-			traceID := m.tracer.Load().CreateTrace(inheritedTraceID, requestID)			
+			traceID := m.tracer.Load().CreateTrace(inheritedTraceID, requestID)
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
 			// Extract parent span ID from W3C traceparent header (if present)

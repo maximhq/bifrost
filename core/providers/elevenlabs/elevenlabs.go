@@ -677,7 +677,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.AdditionalFormats) > 0 {
-		payload, err := sonic.Marshal(reqBody.AdditionalFormats)
+		payload, err := providerUtils.MarshalSorted(reqBody.AdditionalFormats)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to marshal additional_formats", err, providerName)
 		}
@@ -731,7 +731,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 				}
 			}
 		default:
-			payload, err := sonic.Marshal(v)
+			payload, err := providerUtils.MarshalSorted(v)
 			if err != nil {
 				return providerUtils.NewBifrostOperationError("failed to marshal webhook_metadata", err, providerName)
 			}

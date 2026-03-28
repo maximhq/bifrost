@@ -1,0 +1,146 @@
+---
+title: "Weaviate"
+description: "Weaviate vector database integration for semantic caching in Bifrost."
+icon: "database"
+---
+
+## Weaviate
+
+Weaviate is a production-ready vector database solution that provides advanced querying capabilities, gRPC support for high performance, and flexible schema management for production deployments.
+
+### Key Features
+
+- **gRPC Support**: Enhanced performance with gRPC connections
+- **Advanced Filtering**: Complex query operations with multiple conditions
+- **Schema Management**: Flexible schema definition for different data types
+- **Cloud & Self-Hosted**: Support for both Weaviate Cloud and self-hosted deployments
+- **Scalable Storage**: Handle millions of vectors with efficient indexing
+
+### Setup & Installation
+
+**Weaviate Cloud:**
+- Sign up at [cloud.weaviate.io](https://cloud.weaviate.io)
+- Create a new cluster
+- Get your API key and cluster URL
+
+**Local Weaviate:**
+```bash
+# Using Docker
+docker run -d \
+  --name weaviate \
+  -p 8080:8080 \
+  -e QUERY_DEFAULTS_LIMIT=25 \
+  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED='true' \
+  -e PERSISTENCE_DATA_PATH='/var/lib/weaviate' \
+  semitechnologies/weaviate:latest
+```
+
+### Configuration Options
+
+<Tabs group="weaviate-config">
+
+<Tab title="Go SDK">
+
+```go
+// Configure Weaviate vector store
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme: "http",           // "http" for local, "https" for cloud
+        Host:   "localhost:8080", // Your Weaviate host
+        APIKey: "your-weaviate-api-key", // Required for Weaviate Cloud; optional for local/self-hosted
+
+        // Enable gRPC for improved performance (optional)
+        GrpcConfig: &vectorstore.WeaviateGrpcConfig{
+            Host:    "localhost:50051", // gRPC port
+            Secured: false,             // true for TLS
+        },
+    },
+}
+
+// Create vector store
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+if err != nil {
+    log.Fatal("Failed to create vector store:", err)
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+**Local Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:8080"
+    }
+  }
+}
+```
+
+**Cloud Setup with gRPC:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "https",
+      "host": "your-weaviate-host",
+      "api_key": "your-weaviate-api-key",
+      "grpc_config": {
+        "host": "your-weaviate-grpc-host",
+        "secured": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+gRPC host should include the port. If no port is specified, port 80 is used for insecured connections and port 443 for secured connections.
+</Note>
+
+### Advanced Features
+
+**gRPC Performance Optimization:**
+Enable gRPC for better performance in production:
+
+```go
+vectorConfig := &vectorstore.Config{
+    Type: vectorstore.VectorStoreTypeWeaviate,
+    Config: vectorstore.WeaviateConfig{
+        Scheme: "https",
+        Host:   "your-weaviate-host",
+        APIKey: "your-api-key",
+
+        // Enable gRPC for better performance
+        GrpcConfig: &vectorstore.WeaviateGrpcConfig{
+            Host:    "your-weaviate-grpc-host:443",
+            Secured: true,
+        },
+    },
+}
+```
+
+### Production Considerations
+
+<Info>
+**Performance**: For production environments, consider using gRPC configuration for better performance and enable appropriate authentication mechanisms for your Weaviate deployment.
+</Info>
+
+<Warning>
+**Authentication**: Always use API keys for Weaviate Cloud deployments and configure proper authentication for self-hosted instances in production.
+</Warning>
+
+For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).

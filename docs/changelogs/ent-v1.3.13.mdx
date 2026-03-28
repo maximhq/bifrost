@@ -1,0 +1,86 @@
+---
+title: "v1.3.13"
+description: "v1.3.13 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.13">
+
+## Changelog
+
+This release upgrades the base OSS version from v1.4.16 to v1.4.17, bringing denylist model support, numerous streaming and provider fixes, and WebSocket concurrency safety. On the enterprise side, the Datadog span type for LLM calls is updated to `llm.call` for correct Datadog LLM Observability categorization.
+
+## ✨ Features
+
+- **Denylist Models** — Provider keys now support a `blacklisted_models` field to exclude specific models from routing and filtered list-models ; denylist takes precedence over the `models` allow list
+
+## 🐞 Fixed
+
+- **Datadog LLM Span Type** — Changed Datadog span type for LLM calls from `llm` to `llm.call` for proper Datadog LLM Observability integration
+- **MCP Gateway Headers** — Fixed support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` headers to filter MCP tools/list response
+- **Bedrock Duplicate Events** — Fixed duplicate `content_block_stop` events in Bedrock streaming responses
+- **Reasoning Content Marshaling** — Fixed `reasoning_content` JSON tag in OpenAI response types
+- **OTEL Streaming Traces** — Fixed response capture in OTEL tracing for streaming calls
+- **Broken Pipe Handling** — Added broken pipe detection to connection pool error handler
+- **Cache Token Streaming** — Fixed cache token capture for streaming calls across Anthropic and Bedrock providers
+- **Vertex Embedding URL** — Fixed global region URL construction in Vertex embedding method
+- **Bedrock Reasoning Merge** — Fixed reasoning content merge logic for Bedrock provider
+- **Bedrock HTTP/2 Toggle** — Fixed enforce HTTP/2 toggle behavior for Bedrock provider
+- **Codex Store Parameter** — Fixed `store` parameter handling for Codex conversations
+- **Gemini Duplicate Text** — Skipped `OutputTextDone` events to prevent duplicate text in Gemini GenAI streaming
+- **Gemini Thought Signatures** — Handled missing thought signatures in Gemini provider
+- **Replicate Model Slugs** — Refined Replicate model slug resolution in model catalog
+- **Logging Default** — Kept logging enabled by default for new configurations
+- **Gin Migration Deadlocks** — Moved all gin migrations to Go to avoid deadlocks
+- **WebSocket Concurrent Writes** — Fixed concurrent write safety in WebSocket Responses API sessions
+- **Persist Store Config** — Persisted store raw request/response config at provider level
+
+## 📀 Base OSS version
+
+`transports/v1.4.17`
+
+## 🗺️ Helm chart version
+
+2.0.14
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```go
+cloud.google.com/go/bigquery v1.73.1
+github.com/DataDog/datadog-go/v5 v5.6.0
+github.com/DataDog/dd-trace-go/v2 v2.4.0
+github.com/aws/aws-sdk-go-v2/config v1.32.11
+github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+github.com/bytedance/sonic v1.15.0
+github.com/coreos/go-oidc/v3 v3.12.0
+github.com/fasthttp/router v1.5.4
+github.com/golang-jwt/jwt/v5 v5.3.0
+github.com/google/cel-go v0.26.1
+github.com/google/uuid v1.6.0
+github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+github.com/grandcat/zeroconf v1.0.0
+github.com/hashicorp/consul/api v1.22.0
+github.com/hashicorp/memberlist v0.5.4
+github.com/maximhq/bifrost/core v1.4.14
+github.com/maximhq/bifrost/framework v1.2.33
+github.com/maximhq/bifrost/plugins/governance v1.4.33
+github.com/maximhq/bifrost/plugins/logging v1.4.33
+github.com/maximhq/bifrost/transports v1.4.17
+github.com/nakabonne/tstorage v0.3.6
+github.com/stretchr/testify v1.11.1
+github.com/testcontainers/testcontainers-go v0.40.0
+github.com/tetratelabs/wazero v1.11.0
+github.com/valyala/fasthttp v1.68.0
+go.etcd.io/etcd/client/v3 v3.6.6
+golang.org/x/crypto v0.49.0
+golang.org/x/oauth2 v0.35.0
+google.golang.org/api v0.265.0
+google.golang.org/protobuf v1.36.11
+gorm.io/driver/sqlite v1.6.0
+gorm.io/gorm v1.31.1
+k8s.io/api v0.34.1
+k8s.io/apimachinery v0.34.1
+k8s.io/client-go v0.34.1
+```
+
+</Update>

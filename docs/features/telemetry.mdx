@@ -49,7 +49,7 @@ These metrics track requests forwarded to AI providers:
 |--------|------|-------------|---------|
 | `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers | Base Labels, custom labels |
 | `bifrost_success_requests_total` | Counter | Total successful requests to upstream providers | Base Labels, custom labels |
-| `bifrost_error_requests_total` | Counter | Total failed requests to upstream providers | Base Labels, `reason`, custom labels |
+| `bifrost_error_requests_total` | Counter | Total failed requests to upstream providers | Base Labels, `status_code`, custom labels |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests | Base Labels, `is_success`, custom labels |
 | `bifrost_input_tokens_total` | Counter | Total input tokens sent to upstream providers | Base Labels, custom labels |
 | `bifrost_output_tokens_total` | Counter | Total output tokens received from upstream providers | Base Labels, custom labels |

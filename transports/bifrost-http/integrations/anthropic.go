@@ -183,6 +183,22 @@ func hasPromptCachingScopeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
+func hasFastModeBetaHeader(headers map[string][]string) bool {
+	for k, v := range headers {
+		if strings.ToLower(k) != "anthropic-beta" {
+			continue
+		}
+		for _, headerValue := range v {
+			for beta := range strings.SplitSeq(headerValue, ",") {
+				if strings.HasPrefix(strings.TrimSpace(beta), anthropic.AnthropicFastModeBetaHeaderPrefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
 // Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
 func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
@@ -213,7 +229,9 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
 					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
 					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) {
+					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) {
 					continue
 				}
 				filteredBetas = append(filteredBetas, beta)
@@ -372,7 +390,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && hasPromptCachingScopeBetaHeader(headers) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}

@@ -5483,7 +5483,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		openAIReq.CompletionWindow = "24h"
 	}
 
-	jsonData, err := sonic.Marshal(openAIReq)
+	jsonData, err := providerUtils.MarshalSorted(openAIReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
@@ -5969,7 +5969,7 @@ func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key
 		}
 	}
 
-	jsonBody, err := sonic.Marshal(reqBody)
+	jsonBody, err := providerUtils.MarshalSorted(reqBody)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}

@@ -26,8 +26,6 @@ export default function MCPLogsPage() {
 	const [fetchingStats, setFetchingStats] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
-	const [selectedLog, setSelectedLog] = useState<MCPToolLogEntry | null>(null);
-
 	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
 
 	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
@@ -62,11 +60,19 @@ export default function MCPLogsPage() {
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
 			live_enabled: parseAsBoolean.withDefault(true),
+			selected_log: parseAsString.withDefault(""),
 		},
 		{
 			history: "push",
 			shallow: false,
 		},
+	);
+
+	// Derive selectedLog from URL param
+	const selectedLogId = urlState.selected_log || null;
+	const selectedLog = useMemo(
+		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
+		[selectedLogId, logs],
 	);
 
 	// Refresh time range defaults on page focus/visibility
@@ -196,13 +202,16 @@ export default function MCPLogsPage() {
 				await deleteLogs({ ids: [log.id] }).unwrap();
 				setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
 				setTotalItems((prev) => prev - 1);
+				if (urlState.selected_log === log.id) {
+					setUrlState({ selected_log: "" });
+				}
 			} catch (err) {
 				const errorMessage = getErrorMessage(err);
 				setError(errorMessage);
 				throw new Error(errorMessage);
 			}
 		},
-		[deleteLogs, hasDeleteAccess],
+		[deleteLogs, hasDeleteAccess, urlState.selected_log, setUrlState],
 	);
 
 	// Ref to track latest state for WebSocket callbacks
@@ -263,14 +272,7 @@ export default function MCPLogsPage() {
 					return updatedLogs;
 				});
 
-				// Update selected log if it matches
-				setSelectedLog((prevSelectedLog) => {
-					if (prevSelectedLog && prevSelectedLog.id === log.id) {
-						return log;
-					}
-					return prevSelectedLog;
-				});
-
+	
 				setTotalItems((prev: number) => prev + 1);
 			}
 		} else if (operation === "update") {
@@ -299,14 +301,7 @@ export default function MCPLogsPage() {
 					return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog));
 				});
 
-				// Update selected log if it matches
-				setSelectedLog((prevSelectedLog) => {
-					if (prevSelectedLog && prevSelectedLog.id === log.id) {
-						return log;
-					}
-					return prevSelectedLog;
-				});
-
+	
 				// Update stats for completed requests
 				if (log.status === "success" || log.status === "error") {
 					setStats((prevStats) => {
@@ -454,6 +449,59 @@ export default function MCPLogsPage() {
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
+	// Navigation for log detail sheet
+	const selectedLogIndex = useMemo(
+		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
+		[selectedLogId, logs],
+	);
+
+	const handleLogNavigate = useCallback(
+		(direction: "prev" | "next") => {
+			const replaceHistory = { history: "replace" as const };
+			const currentLogId = selectedLogId || "";
+			if (direction === "prev") {
+				if (selectedLogIndex > 0) {
+					setUrlState({ selected_log: logs[selectedLogIndex - 1].id }, replaceHistory);
+				} else if (pagination.offset > 0) {
+					const newOffset = Math.max(0, pagination.offset - pagination.limit);
+					setUrlState({ offset: newOffset, selected_log: "" }, replaceHistory);
+					triggerGetLogs({
+						filters,
+						pagination: { ...pagination, offset: newOffset },
+					}).then((result) => {
+						const pageLogs = result.data?.logs;
+						if (pageLogs?.length) {
+							setUrlState({ selected_log: pageLogs[pageLogs.length - 1].id }, replaceHistory);
+						} else if (result.error) {
+							setUrlState({ offset: pagination.offset, selected_log: currentLogId }, replaceHistory);
+							setError(getErrorMessage(result.error));
+						}
+					});
+				}
+			} else {
+				if (selectedLogIndex >= 0 && selectedLogIndex < logs.length - 1) {
+					setUrlState({ selected_log: logs[selectedLogIndex + 1].id }, replaceHistory);
+				} else if (pagination.offset + pagination.limit < totalItems) {
+					const newOffset = pagination.offset + pagination.limit;
+					setUrlState({ offset: newOffset, selected_log: "" }, replaceHistory);
+					triggerGetLogs({
+						filters,
+						pagination: { ...pagination, offset: newOffset },
+					}).then((result) => {
+						const pageLogs = result.data?.logs;
+						if (pageLogs?.length) {
+							setUrlState({ selected_log: pageLogs[0].id }, replaceHistory);
+						} else if (result.error) {
+							setUrlState({ offset: pagination.offset, selected_log: currentLogId }, replaceHistory);
+							setError(getErrorMessage(result.error));
+						}
+					});
+				}
+			}
+		},
+		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
+	);
+
 	return (
 		<div className="dark:bg-card bg-white">
 			{initialLoading ? (
@@ -509,7 +557,7 @@ export default function MCPLogsPage() {
 							onPaginationChange={setPagination}
 							onRowClick={(row, columnId) => {
 								if (columnId === "actions") return;
-								setSelectedLog(row);
+								setUrlState({ selected_log: row.id }, { history: "replace" });
 							}}
 							isSocketConnected={isSocketConnected}
 							liveEnabled={liveEnabled}
@@ -522,9 +570,12 @@ export default function MCPLogsPage() {
 					{/* Log Detail Sheet */}
 					<MCPLogDetailSheet
 						log={selectedLog}
-						open={selectedLog !== null}
-						onOpenChange={(open) => !open && setSelectedLog(null)}
+						open={selectedLogId !== null}
+						onOpenChange={(open) => !open && setUrlState({ selected_log: "" }, { history: "replace" })}
 						handleDelete={handleDelete}
+						onNavigate={handleLogNavigate}
+						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
+						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 					/>
 				</div>
 			)}

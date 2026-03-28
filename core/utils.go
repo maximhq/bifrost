@@ -49,6 +49,8 @@ var rateLimitPatterns = []string{
 	"api rate limit",
 	"usage limit",
 	"concurrent requests limit",
+	"burst_rate",
+	"rate increased",
 }
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
