@@ -1163,7 +1163,7 @@
                     },
                     "embedding_model": {
                       "type": "string",
-                      "description": "Model to use for generating embeddings (optional)"
+                      "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
                     "cleanup_on_shutdown": {
                       "type": "boolean",
@@ -1248,6 +1248,11 @@
                         }
                       },
                       "else": {
+                        "not": {
+                          "required": [
+                            "embedding_model"
+                          ]
+                        },
                         "properties": {
                           "dimension": {
                             "const": 1

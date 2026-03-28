@@ -9,14 +9,15 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetProvidersQuery, useUpdatePluginMutation } from "@/lib/store";
-import { CacheConfig, ModelProviderName } from "@/lib/types/config";
+import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
+import { cacheConfigSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-const defaultCacheConfig: CacheConfig = {
+const defaultCacheConfig: EditorCacheConfig = {
 	ttl_seconds: 300,
 	threshold: 0.8,
 	conversation_history_threshold: 3,
@@ -25,15 +26,60 @@ const defaultCacheConfig: CacheConfig = {
 	cache_by_provider: true,
 };
 
+const toEditorCacheConfig = (config?: Partial<CacheConfig>): EditorCacheConfig => ({
+	...defaultCacheConfig,
+	...config,
+});
+
+const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
+	const normalized: Record<string, unknown> = {
+		ttl_seconds: config.ttl_seconds,
+		threshold: config.threshold,
+		cache_by_model: config.cache_by_model,
+		cache_by_provider: config.cache_by_provider,
+	};
+
+	if (config.conversation_history_threshold !== undefined) {
+		normalized.conversation_history_threshold = config.conversation_history_threshold;
+	}
+	if (config.exclude_system_prompt !== undefined) {
+		normalized.exclude_system_prompt = config.exclude_system_prompt;
+	}
+	if (config.created_at !== undefined) {
+		normalized.created_at = config.created_at;
+	}
+	if (config.updated_at !== undefined) {
+		normalized.updated_at = config.updated_at;
+	}
+	if (config.keys !== undefined) {
+		normalized.keys = config.keys;
+	}
+
+	const provider = config.provider?.trim();
+	const embeddingModel = config.embedding_model?.trim();
+
+	if (provider) {
+		normalized.provider = provider;
+	}
+	if (embeddingModel) {
+		normalized.embedding_model = embeddingModel;
+	}
+	if (config.dimension !== undefined) {
+		normalized.dimension = config.dimension;
+	}
+
+	return normalized;
+};
+
 interface PluginsFormProps {
 	isVectorStoreEnabled: boolean;
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
-	const [cacheConfig, setCacheConfig] = useState<CacheConfig>(defaultCacheConfig);
+	const [cacheConfig, setCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [originalCacheEnabled, setOriginalCacheEnabled] = useState<boolean>(false);
-	const [serverCacheConfig, setServerCacheConfig] = useState<CacheConfig>(defaultCacheConfig);
+	const [serverCacheConfig, setServerCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [serverCacheEnabled, setServerCacheEnabled] = useState<boolean>(false);
 
 	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
@@ -61,7 +107,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	// Initialize cache config from plugin data
 	useEffect(() => {
 		if (semanticCachePlugin?.config) {
-			const config = { ...defaultCacheConfig, ...semanticCachePlugin.config };
+			const config = toEditorCacheConfig(semanticCachePlugin.config as Partial<CacheConfig>);
 			setCacheConfig(config);
 			setServerCacheConfig(config);
 			setOriginalCacheEnabled(semanticCachePlugin.enabled);
@@ -103,7 +149,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	};
 
 	// Update cache config locally
-	const updateCacheConfigLocal = (updates: Partial<CacheConfig>) => {
+	const updateCacheConfigLocal = (updates: Partial<EditorCacheConfig>) => {
 		setCacheConfig((prev) => ({ ...prev, ...updates }));
 	};
 
@@ -114,25 +160,36 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			return
 		}
 
+		const parseResult = cacheConfigSchema.safeParse(normalizeCacheConfigForSave(cacheConfig));
+		if (!parseResult.success) {
+			const firstIssue = parseResult.error.issues[0]?.message ?? "Semantic cache configuration is invalid."
+			toast.error(firstIssue)
+			return
+		}
+
+		const savedConfig = parseResult.data as CacheConfig;
+
 		try {
 			if (semanticCachePlugin) {
 				// Update existing plugin
 				await updatePlugin({
 					name: SEMANTIC_CACHE_PLUGIN,
-					data: { enabled: originalCacheEnabled, config: cacheConfig },
+					data: { enabled: originalCacheEnabled, config: savedConfig },
 				}).unwrap();
 			} else {
 				// Create new plugin
 				await createPlugin({
 					name: SEMANTIC_CACHE_PLUGIN,
 					enabled: originalCacheEnabled,
-					config: cacheConfig,
+					config: savedConfig,
 					path: "",
 				}).unwrap();
 			}
 			toast.success("Plugin configuration updated successfully");
 			// Update server state to match current state
-			setServerCacheConfig(cacheConfig);
+			const normalizedConfig = toEditorCacheConfig(savedConfig);
+			setCacheConfig(normalizedConfig);
+			setServerCacheConfig(normalizedConfig);
 			setServerCacheEnabled(originalCacheEnabled);
 		} catch (error) {
 			const errorMessage = getErrorMessage(error);

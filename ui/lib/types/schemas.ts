@@ -597,20 +597,30 @@ export const updateProviderRequestSchema = z.object({
 });
 
 // Cache config schema
-export const cacheConfigSchema = z.object({
-	provider: modelProviderNameSchema.optional(),
-	keys: z.array(modelProviderKeySchema).optional(),
-	embedding_model: z.string().min(1, "Embedding model is required").optional(),
-	dimension: z.number().min(1, "Dimension must be at least 1"),
-	ttl_seconds: z.number().min(1).default(3600),
+const baseCacheConfigSchema = z.object({
+	ttl_seconds: z.number().int().min(1).default(3600),
 	threshold: z.number().min(0).max(1).default(0.8),
-	conversation_history_threshold: z.number().min(0).max(1).optional(),
+	conversation_history_threshold: z.number().int().min(0).optional(),
 	exclude_system_prompt: z.boolean().optional(),
 	cache_by_model: z.boolean().default(false),
 	cache_by_provider: z.boolean().default(false),
 	created_at: z.string().optional(),
 	updated_at: z.string().optional(),
 });
+
+const directCacheConfigSchema = baseCacheConfigSchema.extend({
+	dimension: z.literal(1),
+	keys: z.array(modelProviderKeySchema).optional(),
+}).strict();
+
+const providerBackedCacheConfigSchema = baseCacheConfigSchema.extend({
+	provider: modelProviderNameSchema,
+	keys: z.array(modelProviderKeySchema).optional(),
+	embedding_model: z.string().min(1, "Embedding model is required"),
+	dimension: z.number().int().min(2, "Dimension must be greater than 1 for provider-backed semantic cache"),
+}).strict();
+
+export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
 // Core config schema
 export const coreConfigSchema = z.object({

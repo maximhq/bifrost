@@ -1127,6 +1127,26 @@ func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) 
 	}
 }
 
+func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
+	invalidConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"dimension": 1,
+					"embedding_model": "text-embedding-3-small"
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected direct-only semantic cache config with embedding_model to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_SemanticCachePlugin_DimensionOneWithProviderInvalid(t *testing.T) {
 	invalidConfig := `{
 		"plugins": [
