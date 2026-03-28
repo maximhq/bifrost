@@ -39,7 +39,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		} else {
 			// Add max_tokens if not present
 			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", anthropic.AnthropicDefaultMaxTokens)
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(deployment, anthropic.AnthropicDefaultMaxTokens))
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}

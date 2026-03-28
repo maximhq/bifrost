@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -205,6 +208,23 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
+		// Register a cache miss handler so that on first request for a model,
+		// the cache lazily loads its parameters from the database.
+		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
+			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			params, err := configStore.GetModelParameters(missCtx, model)
+			if err != nil || params == nil {
+				return nil
+			}
+			var p struct {
+				MaxOutputTokens *int `json:"max_output_tokens"`
+			}
+			if err := json.Unmarshal([]byte(params.Data), &p); err != nil || p.MaxOutputTokens == nil {
+				return nil
+			}
+			return &providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		})
 		if mc.distributedLockManager == nil {
 			if err := mc.loadPricingFromDatabase(ctx); err != nil {
 				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)

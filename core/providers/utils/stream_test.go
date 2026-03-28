@@ -75,15 +75,21 @@ func TestCheckFirstStreamChunk_EmptyStream(t *testing.T) {
 	stream := make(chan *schemas.BifrostStreamChunk)
 	close(stream)
 
-	wrapped, _, err := CheckFirstStreamChunkForError(stream)
+	wrapped, drainDone, err := CheckFirstStreamChunkForError(stream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Wrapped channel should be closed
-	_, ok := <-wrapped
-	if ok {
-		t.Error("expected wrapped channel to be closed")
+	// Empty stream should return nil channel
+	if wrapped != nil {
+		t.Error("expected nil channel for empty stream")
+	}
+
+	// drainDone should be already closed
+	select {
+	case <-drainDone:
+	default:
+		t.Error("expected drainDone to be closed for empty stream")
 	}
 }
 
@@ -151,6 +157,11 @@ func TestCheckFirstStreamChunk_ErrorDrainsSource(t *testing.T) {
 	if err.Error.Message != "rate limit error" {
 		t.Errorf("unexpected error message: %s", err.Error.Message)
 	}
+	if drainDone == nil {
+		t.Fatal("expected drainDone channel, got nil")
+	}
+	// Wait for drain to complete — verifies the channel signals properly
+	<-drainDone
 }
 
 func TestCheckFirstStreamChunk_ErrorWithEmptyMessage(t *testing.T) {

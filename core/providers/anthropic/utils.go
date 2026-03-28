@@ -161,7 +161,11 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		}
 		// Add max_tokens if not present
 		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", AnthropicDefaultMaxTokens)
+			defaultMaxTokens := AnthropicDefaultMaxTokens
+			if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+				defaultMaxTokens = providerUtils.GetMaxOutputTokensOrDefault(modelResult.String(), AnthropicDefaultMaxTokens)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}

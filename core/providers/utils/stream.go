@@ -8,26 +8,28 @@ import (
 // errors returned inside HTTP 200 SSE streams (e.g., providers that send rate limit
 // errors as SSE events instead of HTTP 429).
 //
-// If the first chunk is an error, it drains the source channel (so the provider
-// goroutine can exit cleanly) and returns the error for synchronous handling,
-// enabling retries and fallbacks.
+// If the first chunk is an error, it drains the source channel in the background
+// (so the provider goroutine can exit cleanly) and returns the error for synchronous
+// handling, enabling retries and fallbacks. The returned drainDone channel is closed
+// once the drain completes — callers must wait on it before releasing any resources
+// (e.g., plugin pipelines) that the provider goroutine's postHookRunner may still reference.
 //
 // If the first chunk is valid data, it returns a wrapped channel that re-emits
-// the first chunk followed by all remaining chunks from the source.
+// the first chunk followed by all remaining chunks from the source. drainDone is
+// closed when the wrapper goroutine finishes forwarding the source stream.
 //
 // If the source channel is closed immediately (empty stream), it returns a
-// closed channel with nil error.
+// nil channel with nil error. drainDone is already closed.
 func CheckFirstStreamChunkForError(
 	stream chan *schemas.BifrostStreamChunk,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	firstChunk, ok := <-stream
 	if !ok {
-		// Channel closed immediately (empty stream)
-		ch := make(chan *schemas.BifrostStreamChunk)
-		close(ch)
+		// Channel closed immediately (empty stream) — return nil so callers
+		// can distinguish this from a live stream channel.
 		done := make(chan struct{})
 		close(done)
-		return ch, done, nil
+		return nil, done, nil
 	}
 
 	// Check if first chunk is an error

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
@@ -338,6 +339,20 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 		if err := mc.configStore.UpdateConfig(ctx, config); err != nil {
 			mc.logger.Warn("model-parameters-sync: failed to update last model parameters sync time: %v", err)
 		}
+	}
+
+	// Populate the in-memory model params cache for provider-level lookups
+	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
+	for model, rawData := range paramsData {
+		var p struct {
+			MaxOutputTokens *int `json:"max_output_tokens"`
+		}
+		if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
+			modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		}
+	}
+	if len(modelParamsEntries) > 0 {
+		providerUtils.BulkSetModelParams(modelParamsEntries)
 	}
 
 	mc.logger.Info("model-parameters-sync: successfully synced %d model parameters records", len(paramsData))

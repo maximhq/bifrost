@@ -105,7 +105,7 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
 			// Estimate effort from max_tokens
 			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := DefaultCompletionMaxTokens
+			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
 			if req.ChatParameters.MaxCompletionTokens != nil {
 				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
 			}

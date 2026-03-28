@@ -4818,7 +4818,14 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
-		if _, isStreamChan := any(result).(chan *schemas.BifrostStreamChunk); isStreamChan {
+		// Only defer for successful stream setup; error paths must end the span synchronously
+		isStreamChan := false
+		if bifrostError == nil {
+			if ch, ok := any(result).(chan *schemas.BifrostStreamChunk); ok && ch != nil {
+				isStreamChan = true
+			}
+		}
+		if isStreamChan {
 			// For streaming requests, store the span handle in TraceStore keyed by trace ID
 			// This allows the provider's streaming goroutine to retrieve it later
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
