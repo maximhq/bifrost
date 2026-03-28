@@ -10,6 +10,7 @@ import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
 import { ModelParams } from "@/lib/types/prompts";
+import PromptDeploymentView from "@enterprise/components/prompt-deployments/promptDeploymentView";
 import { useCallback, useMemo } from "react";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { usePromptContext } from "../context";
@@ -185,6 +186,8 @@ export function SettingsPanel() {
 							</div>
 						</>
 					)}
+
+					<PromptDeploymentView />
 				</div>
 			</ScrollArea>
 		</div>

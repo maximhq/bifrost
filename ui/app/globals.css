@@ -3,6 +3,7 @@
 
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
+@source "../../../bifrost-enterprise/ui/**/*.tsx";
 
 @custom-variant dark (&:is(.dark *));
 
