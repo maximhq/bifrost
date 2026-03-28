@@ -49,9 +49,9 @@ A fork of [maximhq/bifrost](https://github.com/maximhq/bifrost) (Go, Apache 2.0)
 - [ ] **PROV-03**: Config.json supports `type:instance` provider naming
 - [ ] **PROV-04**: API endpoints (`/api/providers`) support CRUD for named instances
 - [ ] **PROV-05**: Web UI displays named instances correctly
-- [ ] **AUTH-01**: Generic OIDC provider for Keycloak SSO (discovery, token validation, user claims)
-- [ ] **AUTH-02**: OIDC user claims (sub, email, groups) map to Bifrost user/customer/team
-- [ ] **AUTH-03**: Config.json supports OIDC provider configuration (server URL, client ID/secret, scopes)
+- ✓ **AUTH-01**: Generic OIDC provider for Keycloak SSO (discovery, token validation, user claims) — Validated in Phase 2
+- ✓ **AUTH-02**: OIDC user claims (sub, email, groups) map to Bifrost user/customer/team — Validated in Phase 2
+- ✓ **AUTH-03**: Config.json supports OIDC provider configuration (server URL, client ID/secret, scopes) — Validated in Phase 2
 - [ ] **DEPLOY-01**: Docker image built and pushed to Harbor/GHCR from our fork
 - [ ] **DEPLOY-02**: infra-ctrl manifests updated to use our image with named providers + OIDC config
 
@@ -68,8 +68,11 @@ A fork of [maximhq/bifrost](https://github.com/maximhq/bifrost) (Go, Apache 2.0)
 |----------|-----------|---------|
 | Fork Bifrost, not build from scratch | Bifrost has 95% of what we need. Two targeted Go changes vs. building a full gateway | Fork |
 | Named instances via `type:instance` key | Minimal change to provider registry. Backward-compatible (no `:` = default instance) | Pending |
-| Reference oauth2-proxy for OIDC | Battle-tested Go OIDC implementation, MIT licensed, Keycloak-specific provider | Pending |
+| Reference oauth2-proxy for OIDC | Battle-tested Go OIDC implementation, MIT licensed, Keycloak-specific provider | Done (Phase 2) |
 | Deploy from our own Docker image | Need to control the binary. Push to Harbor/GHCR, deploy via infra-ctrl | Pending |
+| go.work workspace strategy | Keep maximhq/bifrost import paths, use go.work for dev — minimizes upstream merge conflicts | Done (Phase 2) |
+| OIDC in new files only | framework/oidc/ + handlers/oidc.go — never modify existing auth files to minimize upstream diff | Done (Phase 2) |
+| singleflight for JWKS refresh | Prevents concurrent JWKS fetch storms on key rotation | Done (Phase 2) |
 | Skip Bifrost clustering for v1 | Single replica is fine for eval. Add clustering later if needed | Skip |
 
 ## Constraints
@@ -97,4 +100,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-28 after initialization*
+*Last updated: 2026-03-28 after Phase 2 completion*
