@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Named Provider Instances** - Configure multiple OpenAI-compatible backends via CustomProviderConfig using upstream Bifrost image
 - [ ] **Phase 2: Fork and OIDC Authentication** - Establish Bifrost fork with Go workspace strategy and implement Keycloak OIDC end-to-end
-- [ ] **Phase 3: Production Deployment** - Deploy forked image to dev/staging/prod with Keycloak client and infra-ctrl manifests
+- [ ] **Phase 3: Production Deployment** - Deploy forked image to dev/prod with Keycloak client and infra-ctrl manifests
 
 ## Phase Details
 
@@ -60,10 +60,11 @@ Plans:
   2. infra-ctrl manifests reference the fork image with CustomProviderConfig and OIDC configuration
   3. A Keycloak user from the stragixlabs realm can authenticate to Bifrost and make an LLM request that is rate-limited by their org
   4. Keycloak client for Bifrost exists in Pulumi with correct redirect URIs and client secret in Vault
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md -- Keycloak client in Pulumi + dev overlay: image swap, OIDC config, ExternalSecret, network policy
+- [ ] 03-02-PLAN.md -- Prod overlay: copy dev with environment-specific adjustments (Keycloak URL, Tailscale hostname, labels)
 
 ## Progress
 
@@ -73,5 +74,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Named Provider Instances | 0/1 | Planning complete | - |
-| 2. Fork and OIDC Authentication | 0/4 | Planning complete | - |
-| 3. Production Deployment | 0/0 | Not started | - |
+| 2. Fork and OIDC Authentication | 4/4 | Complete | 2026-03-28 |
+| 3. Production Deployment | 0/2 | Planning complete | - |
