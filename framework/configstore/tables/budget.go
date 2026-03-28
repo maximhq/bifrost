@@ -30,6 +30,30 @@ type TableBudget struct {
 // TableName sets the table name for each model
 func (TableBudget) TableName() string { return "governance_budgets" }
 
+// TableVirtualKeyBudget is a junction table for VK-level multi-budget support
+type TableVirtualKeyBudget struct {
+	ID           uint        `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID string      `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_budget" json:"virtual_key_id"`
+	BudgetID     string      `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_budget" json:"budget_id"`
+	Budget       TableBudget `gorm:"foreignKey:BudgetID;constraint:OnDelete:CASCADE" json:"budget"`
+}
+
+// TableName for TableVirtualKeyBudget
+func (TableVirtualKeyBudget) TableName() string { return "governance_virtual_key_budgets" }
+
+// TableVirtualKeyProviderConfigBudget is a junction table for provider-config-level multi-budget support
+type TableVirtualKeyProviderConfigBudget struct {
+	ID               uint        `gorm:"primaryKey;autoIncrement" json:"id"`
+	ProviderConfigID uint        `gorm:"not null;uniqueIndex:idx_pc_budget" json:"provider_config_id"`
+	BudgetID         string      `gorm:"type:varchar(255);not null;uniqueIndex:idx_pc_budget" json:"budget_id"`
+	Budget           TableBudget `gorm:"foreignKey:BudgetID;constraint:OnDelete:CASCADE" json:"budget"`
+}
+
+// TableName for TableVirtualKeyProviderConfigBudget
+func (TableVirtualKeyProviderConfigBudget) TableName() string {
+	return "governance_virtual_key_provider_config_budgets"
+}
+
 // BeforeSave hook for Budget to validate reset duration format and max limit
 func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")

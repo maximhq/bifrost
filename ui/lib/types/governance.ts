@@ -92,6 +92,7 @@ export interface VirtualKeyProviderConfig {
 	allowed_models: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
@@ -135,6 +136,7 @@ export interface VirtualKeyProviderConfigRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -145,6 +147,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	weight?: number | null;
 	allowed_models?: string[];
 	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -158,6 +161,7 @@ export interface CreateVirtualKeyRequest {
 	team_id?: string;
 	customer_id?: string;
 	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 }
@@ -170,6 +174,7 @@ export interface UpdateVirtualKeyRequest {
 	team_id?: string;
 	customer_id?: string;
 	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 }

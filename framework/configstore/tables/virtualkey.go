@@ -36,7 +36,8 @@ type TableVirtualKeyProviderConfig struct {
 	// Relationships
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
-	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Used when AllowAllKeys is false; empty means no keys allowed
+	Budgets   []TableBudget   `gorm:"many2many:governance_virtual_key_provider_config_budgets;joinForeignKey:ProviderConfigID;joinReferences:BudgetID" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
+	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"`                                             // Empty means all keys allowed for this provider
 }
 
 // TableName sets the table name for each model
@@ -221,6 +222,7 @@ type TableVirtualKey struct {
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
+	Budgets   []TableBudget   `gorm:"many2many:governance_virtual_key_budgets;joinForeignKey:VirtualKeyID;joinReferences:BudgetID" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

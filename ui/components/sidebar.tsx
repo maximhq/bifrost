@@ -412,6 +412,7 @@ export default function AppSidebar() {
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
@@ -606,6 +607,13 @@ export default function AppSidebar() {
 						hasAccess: hasRbacAccess,
 					},
 					{
+						title: "Access Profiles",
+						url: "/workspace/governance/access-profiles",
+						icon: ShieldCheck,
+						description: "Manage access profiles for roles",
+						hasAccess: hasAccessProfilesAccess,
+					},
+					{
 						title: "Audit Logs",
 						url: "/workspace/audit-logs",
 						icon: ScrollText,
@@ -765,6 +773,7 @@ export default function AppSidebar() {
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
 			hasPromptDeploymentStrategyAccess,
+			hasAccessProfilesAccess,
 			isDbConnected,
 		],
 	);
