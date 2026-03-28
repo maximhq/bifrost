@@ -181,8 +181,9 @@ func TestBedrock(t *testing.T) {
 		PromptCachingModel:  "claude-4.5-sonnet",
 		ImageEditModel:      "amazon.nova-canvas-v1:0",
 		ImageVariationModel: "amazon.nova-canvas-v1:0",
-		BatchExtraParams:    batchExtraParams,
-		FileExtraParams:     fileExtraParams,
+		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
+		BatchExtraParams:        batchExtraParams,
+		FileExtraParams:         fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -219,6 +220,7 @@ func TestBedrock(t *testing.T) {
 			ImageEdit:             true,
 			ImageVariation:        true,
 			StructuredOutputs:     true,
+			InterleavedThinking:  true,
 		},
 	}
 

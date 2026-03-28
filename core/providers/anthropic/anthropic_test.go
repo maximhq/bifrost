@@ -69,7 +69,9 @@ func TestAnthropic(t *testing.T) {
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
 			PassthroughAPI:        true,
-			Compaction:            true,
+			Compaction:          true,
+			InterleavedThinking: true,
+			FastMode:            false, // Enable when test API key has Opus 4.6 access
 		},
 	}
 

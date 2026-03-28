@@ -42,7 +42,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if ok {
 			delete(anthropicReq.ExtraParams, "top_k")
 			anthropicReq.TopK = topK
-
+		}
+		if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+			delete(anthropicReq.ExtraParams, "speed")
+			anthropicReq.Speed = speed
 		}
 		// extract inference_geo and context management
 		if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {

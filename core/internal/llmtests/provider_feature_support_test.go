@@ -466,40 +466,40 @@ func TestProviderBetaHeaderInjection(t *testing.T) {
 			provider: schemas.Anthropic,
 			setupReq: func() *anthropic.AnthropicMessageRequest {
 				return &anthropic.AnthropicMessageRequest{
-					MCPServers: []anthropic.AnthropicMCPServer{{URL: "http://example.com"}},
+					MCPServers: []anthropic.AnthropicMCPServerV2{{URL: "https://example.com"}},
 				}
 			},
-			expectHeaders: []string{"mcp-client-2025-04-04"},
+			expectHeaders: []string{"mcp-client-2025-11-20"},
 		},
 		{
 			name:     "Vertex/mcp_header_skipped",
 			provider: schemas.Vertex,
 			setupReq: func() *anthropic.AnthropicMessageRequest {
 				return &anthropic.AnthropicMessageRequest{
-					MCPServers: []anthropic.AnthropicMCPServer{{URL: "http://example.com"}},
+					MCPServers: []anthropic.AnthropicMCPServerV2{{URL: "https://example.com"}},
 				}
 			},
-			unexpectHeaders: []string{"mcp-client-2025-04-04"},
+			unexpectHeaders: []string{"mcp-client-2025-11-20"},
 		},
 		{
 			name:     "Bedrock/mcp_header_skipped",
 			provider: schemas.Bedrock,
 			setupReq: func() *anthropic.AnthropicMessageRequest {
 				return &anthropic.AnthropicMessageRequest{
-					MCPServers: []anthropic.AnthropicMCPServer{{URL: "http://example.com"}},
+					MCPServers: []anthropic.AnthropicMCPServerV2{{URL: "https://example.com"}},
 				}
 			},
-			unexpectHeaders: []string{"mcp-client-2025-04-04"},
+			unexpectHeaders: []string{"mcp-client-2025-11-20"},
 		},
 		{
 			name:     "Azure/mcp_header_added",
 			provider: schemas.Azure,
 			setupReq: func() *anthropic.AnthropicMessageRequest {
 				return &anthropic.AnthropicMessageRequest{
-					MCPServers: []anthropic.AnthropicMCPServer{{URL: "http://example.com"}},
+					MCPServers: []anthropic.AnthropicMCPServerV2{{URL: "https://example.com"}},
 				}
 			},
-			expectHeaders: []string{"mcp-client-2025-04-04"},
+			expectHeaders: []string{"mcp-client-2025-11-20"},
 		},
 
 		// ── Compaction header (supported on all providers) ──
@@ -726,7 +726,7 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 			},
 			expectedWebSearchType: "web_search_20250305", // Vertex does NOT get dynamic filtering
 			expectedBetaHeaders:   nil,                   // no beta headers for basic web search
-			unexpectedBetaHeaders: []string{"structured-outputs-2025-11-13", "mcp-client-2025-04-04", "prompt-caching-scope-2026-01-05"},
+			unexpectedBetaHeaders: []string{"structured-outputs-2025-11-13", "mcp-client-2025-11-20", "prompt-caching-scope-2026-01-05"},
 		},
 		{
 			name:     "Vertex/web_search_with_compaction_gets_compaction_header",
@@ -807,7 +807,7 @@ func TestProviderAnthropicRequestPipeline(t *testing.T) {
 				},
 			},
 			expectedBetaHeaders:   []string{"computer-use-2025-11-24"},
-			unexpectedBetaHeaders: []string{"mcp-client-2025-04-04", "prompt-caching-scope-2026-01-05"},
+			unexpectedBetaHeaders: []string{"mcp-client-2025-11-20", "prompt-caching-scope-2026-01-05"},
 		},
 	}
 

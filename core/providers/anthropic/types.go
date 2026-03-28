@@ -23,14 +23,26 @@ const (
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
 	// AnthropicAdvancedToolUseBetaHeader is required for defer_loading, input_examples, and allowed_callers.
 	AnthropicAdvancedToolUseBetaHeader = "advanced-tool-use-2025-11-20"
-	// AnthropicMCPClientBetaHeader is required for MCP servers.
-	AnthropicMCPClientBetaHeader = "mcp-client-2025-04-04"
+	// AnthropicMCPClientBetaHeader is required for MCP servers (current version).
+	AnthropicMCPClientBetaHeader = "mcp-client-2025-11-20"
+	// AnthropicMCPClientBetaHeaderDeprecated is the previous MCP beta header (kept for fallback).
+	AnthropicMCPClientBetaHeaderDeprecated = "mcp-client-2025-04-04"
 	// AnthropicPromptCachingScopeBetaHeader is required for prompt caching scope.
 	AnthropicPromptCachingScopeBetaHeader = "prompt-caching-scope-2026-01-05"
 	// AnthropicCompactionBetaHeader is required for compaction.
 	AnthropicCompactionBetaHeader = "compact-2026-01-12"
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
+	// AnthropicInterleavedThinkingBetaHeader is required for interleaved thinking between tool calls.
+	// Deprecated on Opus 4.6/Sonnet 4.6 (use adaptive thinking); active on older Claude 4 models.
+	AnthropicInterleavedThinkingBetaHeader = "interleaved-thinking-2025-05-14"
+	// AnthropicSkillsBetaHeader is required for Agent Skills (also requires code-execution + files-api headers).
+	AnthropicSkillsBetaHeader = "skills-2025-10-02"
+	// AnthropicContext1MBetaHeader is required for 1M context window on Sonnet 4.5 and Sonnet 4.
+	// GA on Opus 4.6 and Sonnet 4.6 (no header needed).
+	AnthropicContext1MBetaHeader = "context-1m-2025-08-07"
+	// AnthropicFastModeBetaHeader is required for fast mode on Opus 4.6 (research preview).
+	AnthropicFastModeBetaHeader = "fast-mode-2026-02-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -38,13 +50,17 @@ const (
 	// computer_20250124 (all other supported models) uses the older beta header.
 	AnthropicComputerUseBetaHeader20250124 = "computer-use-2025-01-24"
 
-	// Prefixes for Vertex-unsupported beta headers (version-bump proof).
-	// Use these with strings.HasPrefix when filtering headers for Vertex AI,
+	// Prefixes for beta headers (version-bump proof).
+	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
 	AnthropicAdvancedToolUseBetaHeaderPrefix    = "advanced-tool-use-"
 	AnthropicStructuredOutputsBetaHeaderPrefix  = "structured-outputs-"
 	AnthropicPromptCachingScopeBetaHeaderPrefix = "prompt-caching-scope-"
 	AnthropicMCPClientBetaHeaderPrefix          = "mcp-client-"
+	AnthropicInterleavedThinkingBetaHeaderPrefix = "interleaved-thinking-"
+	AnthropicSkillsBetaHeaderPrefix              = "skills-"
+	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
+	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -65,9 +81,13 @@ type ProviderFeatureSupport struct {
 	PromptCachingScope bool // prompt caching scope
 	Compaction         bool // server-side context compaction
 	ContextEditing     bool // context editing (clear_tool_uses, clear_thinking)
-	FilesAPI           bool // Files API
-	FileSearch         bool // file_search server tool (OpenAI-only)
-	ImageGeneration    bool // image_generation server tool (OpenAI-only)
+	FilesAPI            bool // Files API
+	InterleavedThinking bool // interleaved thinking between tool calls
+	Skills              bool // Agent Skills
+	Context1M           bool // 1M context window beta (for Sonnet 4.5/4 only)
+	FastMode            bool // fast mode (Opus 4.6 only, research preview)
+	FileSearch          bool // file_search server tool (OpenAI-only)
+	ImageGeneration     bool // image_generation server tool (OpenAI-only)
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -77,21 +97,25 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
+		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
 	},
 	schemas.Vertex: {
 		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		Compaction: true, ContextEditing: true,
+		InterleavedThinking: true, Context1M: true,
 	},
 	schemas.Bedrock: {
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		StructuredOutputs: true, Compaction: true, ContextEditing: true,
+		InterleavedThinking: true, Context1M: true,
 	},
 	schemas.Azure: {
 		WebSearch: true, WebSearchDynamic: true, WebFetch: true, CodeExecution: true,
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
+		InterleavedThinking: true, Skills: true, Context1M: true,
 	},
 }
 
@@ -145,10 +169,11 @@ type AnthropicMessageRequest struct {
 	Stream            *bool                  `json:"stream,omitempty"`
 	Tools             []AnthropicTool        `json:"tools,omitempty"`
 	ToolChoice        *AnthropicToolChoice   `json:"tool_choice,omitempty"`
-	MCPServers        []AnthropicMCPServer   `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
+	MCPServers        []AnthropicMCPServerV2 `json:"mcp_servers,omitempty"` // Simplified server definitions (mcp-client-2025-11-20)
 	Thinking          *AnthropicThinking     `json:"thinking,omitempty"`
 	OutputFormat      json.RawMessage        `json:"output_format,omitempty"` // Beta: requires header "anthropic-beta": "structured-outputs-2025-11-13" (json.RawMessage preserves key ordering)
 	OutputConfig      *AnthropicOutputConfig `json:"output_config,omitempty"` // GA: structured outputs without beta header
+	Speed             *string                `json:"speed,omitempty"`         // "fast" for fast mode (Opus 4.6 only, requires fast-mode beta header)
 	ServiceTier       *string                `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 	InferenceGeo      *string                `json:"inference_geo,omitempty"` // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
@@ -423,6 +448,7 @@ var anthropicMessageRequestKnownFields = map[string]bool{
 	"thinking":           true,
 	"output_format":      true,
 	"output_config":      true,
+	"speed":              true,
 	"service_tier":       true,
 	"inference_geo":      true,
 	"context_management": true,
@@ -900,6 +926,41 @@ type AnthropicTool struct {
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch
 	*AnthropicToolWebFetch
+
+	// MCP toolset (mcp-client-2025-11-20 format) — embedded when Type is nil and MCPToolset is set
+	MCPToolset *AnthropicMCPToolsetTool `json:"-"` // Serialized via custom MarshalJSON
+}
+
+// MarshalJSON implements custom JSON marshaling for AnthropicTool.
+// When MCPToolset is set, serializes as an mcp_toolset tool instead of a regular tool.
+func (t AnthropicTool) MarshalJSON() ([]byte, error) {
+	if t.MCPToolset != nil {
+		return providerUtils.MarshalSorted(t.MCPToolset)
+	}
+	// Use an alias to avoid infinite recursion
+	type Alias AnthropicTool
+	return providerUtils.MarshalSorted((Alias)(t))
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for AnthropicTool.
+// Detects "type": "mcp_toolset" entries and populates the MCPToolset field,
+// which would otherwise be skipped due to the json:"-" tag.
+func (t *AnthropicTool) UnmarshalJSON(data []byte) error {
+	// Peek at the type field to detect mcp_toolset entries
+	var peek struct {
+		Type string `json:"type"`
+	}
+	if err := sonic.Unmarshal(data, &peek); err == nil && peek.Type == "mcp_toolset" {
+		var toolset AnthropicMCPToolsetTool
+		if err := sonic.Unmarshal(data, &toolset); err != nil {
+			return err
+		}
+		t.MCPToolset = &toolset
+		return nil
+	}
+	// Default unmarshaling for all other tool types
+	type Alias AnthropicTool
+	return sonic.Unmarshal(data, (*Alias)(t))
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format
@@ -918,17 +979,44 @@ type AnthropicToolContent struct {
 	PageAge          *string `json:"page_age,omitempty"`
 }
 
+// AnthropicMCPServer represents an MCP server definition (deprecated mcp-client-2025-04-04 format).
+// Kept for backward-compatible response parsing.
 type AnthropicMCPServer struct {
 	Type               string                  `json:"type"`
 	URL                string                  `json:"url"`
 	Name               string                  `json:"name"`
 	AuthorizationToken *string                 `json:"authorization_token,omitempty"`
-	ToolConfiguration  *AnthropicMCPToolConfig `json:"tool_configuration,omitempty"`
+	ToolConfiguration  *AnthropicMCPToolConfig `json:"tool_configuration,omitempty"` // Deprecated: use AnthropicMCPToolsetTool in tools[] instead
 }
 
 type AnthropicMCPToolConfig struct {
 	Enabled      bool     `json:"enabled"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+}
+
+// AnthropicMCPServerV2 represents a simplified MCP server for mcp-client-2025-11-20 format.
+// Tool configuration is now in AnthropicMCPToolsetTool in the tools[] array.
+type AnthropicMCPServerV2 struct {
+	Type               string  `json:"type"`                         // "url"
+	URL                string  `json:"url"`                          // Server endpoint (must be https://)
+	Name               string  `json:"name"`                         // Unique server name
+	AuthorizationToken *string `json:"authorization_token,omitempty"` // OAuth token
+}
+
+// AnthropicMCPToolsetTool represents the new mcp_toolset tool type (mcp-client-2025-11-20).
+// Lives in the tools[] array and references an MCP server by name.
+type AnthropicMCPToolsetTool struct {
+	Type          string                                    `json:"type"`            // "mcp_toolset"
+	MCPServerName string                                    `json:"mcp_server_name"` // Must match a server in mcp_servers[]
+	DefaultConfig *AnthropicMCPToolsetConfig                `json:"default_config,omitempty"`
+	Configs       map[string]*AnthropicMCPToolsetConfig     `json:"configs,omitempty"`
+	CacheControl  *schemas.CacheControl                     `json:"cache_control,omitempty"`
+}
+
+// AnthropicMCPToolsetConfig configures individual MCP tools or provides defaults.
+type AnthropicMCPToolsetConfig struct {
+	Enabled      *bool `json:"enabled,omitempty"`
+	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
 // ==================== RESPONSE TYPES ====================

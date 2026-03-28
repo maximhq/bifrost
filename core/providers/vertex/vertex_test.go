@@ -67,7 +67,8 @@ func TestVertex(t *testing.T) {
 			PromptCaching:         true,
 			ListModels:            false,
 			CountTokens:           true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			InterleavedThinking:  true,
 		},
 	}
 

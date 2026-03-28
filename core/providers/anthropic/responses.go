@@ -2133,6 +2133,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
+	if req.Speed != nil {
+		params.ExtraParams["speed"] = *req.Speed
+	}
 	if req.StopSequences != nil {
 		params.ExtraParams["stop"] = req.StopSequences
 	}
@@ -2225,10 +2228,24 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 
 	if req.MCPServers != nil {
+		// Build a map of mcp_toolset configs from tools[] keyed by mcp_server_name
+		toolsetByServer := make(map[string]*AnthropicMCPToolsetTool)
+		if req.Tools != nil {
+			for i := range req.Tools {
+				if req.Tools[i].MCPToolset != nil {
+					toolsetByServer[req.Tools[i].MCPToolset.MCPServerName] = req.Tools[i].MCPToolset
+				}
+			}
+		}
+
 		var bifrostMCPTools []schemas.ResponsesTool
 		for _, mcpServer := range req.MCPServers {
-			bifrostMCPTool := convertAnthropicMCPServerToBifrostTool(&mcpServer)
+			bifrostMCPTool := convertAnthropicMCPServerV2ToBifrostTool(&mcpServer)
 			if bifrostMCPTool != nil {
+				// Merge mcp_toolset configs (allowed tools) if present
+				if toolset, ok := toolsetByServer[mcpServer.Name]; ok {
+					applyMCPToolsetConfigToBifrostTool(bifrostMCPTool, toolset)
+				}
 				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
 			}
 		}
@@ -2420,6 +2437,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
 				anthropicReq.TopK = topK
+			}
+			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+				delete(anthropicReq.ExtraParams, "speed")
+				anthropicReq.Speed = speed
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(anthropicReq.ExtraParams, "stop")
@@ -4516,6 +4537,11 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		return nil
 	}
 
+	// Skip mcp_toolset entries — these are merged with mcp_servers in ToBifrostResponsesRequest
+	if tool.MCPToolset != nil {
+		return nil
+	}
+
 	// Handle special tool types first
 	if tool.Type != nil {
 		switch *tool.Type {
@@ -4742,7 +4768,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
 // web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
-func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServer) {
+func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2) {
 	// Check if web search or web fetch is present — when they are, Anthropic
 	// auto-injects code_execution so we must skip it to avoid conflicts.
 	hasWebSearchOrFetch := false
@@ -4754,12 +4780,15 @@ func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool,
 	}
 
 	anthropicTools := []AnthropicTool{}
-	mcpServers := []AnthropicMCPServer{}
+	mcpServers := []AnthropicMCPServerV2{}
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
-			mcpServer := convertBifrostMCPToolToAnthropicServer(&tool)
-			if mcpServer != nil {
-				mcpServers = append(mcpServers, *mcpServer)
+			server, toolset := convertBifrostMCPToolToAnthropicNew(&tool)
+			if server != nil {
+				mcpServers = append(mcpServers, *server)
+			}
+			if toolset != nil {
+				anthropicTools = append(anthropicTools, AnthropicTool{MCPToolset: toolset})
 			}
 			continue
 		}
@@ -5145,7 +5174,66 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 }
 
 // Helper functions for MCP tool/server conversion
-// convertAnthropicMCPServerToBifrostTool converts a single Anthropic MCP server to a Bifrost ResponsesTool
+// convertAnthropicMCPServerV2ToBifrostTool converts a new-format MCP server to a Bifrost ResponsesTool.
+func convertAnthropicMCPServerV2ToBifrostTool(mcpServer *AnthropicMCPServerV2) *schemas.ResponsesTool {
+	if mcpServer == nil {
+		return nil
+	}
+
+	bifrostTool := &schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeMCP,
+		ResponsesToolMCP: &schemas.ResponsesToolMCP{
+			ServerLabel: mcpServer.Name,
+		},
+	}
+
+	if mcpServer.URL != "" {
+		bifrostTool.ResponsesToolMCP.ServerURL = schemas.Ptr(mcpServer.URL)
+	}
+	if mcpServer.AuthorizationToken != nil {
+		bifrostTool.ResponsesToolMCP.Authorization = mcpServer.AuthorizationToken
+	}
+
+	return bifrostTool
+}
+
+// applyMCPToolsetConfigToBifrostTool merges mcp_toolset tool configs (from tools[]) into a Bifrost MCP tool.
+// Extracts the allowlist pattern: tools explicitly enabled in configs while default_config has enabled=false.
+func applyMCPToolsetConfigToBifrostTool(bifrostTool *schemas.ResponsesTool, toolset *AnthropicMCPToolsetTool) {
+	if bifrostTool == nil || bifrostTool.ResponsesToolMCP == nil || toolset == nil {
+		return
+	}
+
+	// Extract allowed tools from the allowlist pattern:
+	// default_config.enabled=false + individual tools enabled in configs
+	if toolset.Configs != nil {
+		defaultEnabled := true
+		if toolset.DefaultConfig != nil && toolset.DefaultConfig.Enabled != nil {
+			defaultEnabled = *toolset.DefaultConfig.Enabled
+		}
+
+		if !defaultEnabled {
+			// Allowlist pattern: collect explicitly enabled tools.
+			// Keep an empty allowlist to preserve the "deny all" case.
+			allowedTools := make([]string, 0, len(toolset.Configs))
+			for toolName, config := range toolset.Configs {
+				if config != nil && config.Enabled != nil && *config.Enabled {
+					allowedTools = append(allowedTools, toolName)
+				}
+			}
+			bifrostTool.ResponsesToolMCP.AllowedTools = &schemas.ResponsesToolMCPAllowedTools{
+				ToolNames: allowedTools,
+			}
+		}
+	}
+
+	// Apply cache control if present
+	if toolset.CacheControl != nil {
+		bifrostTool.CacheControl = toolset.CacheControl
+	}
+}
+
+// convertAnthropicMCPServerToBifrostTool converts a deprecated-format Anthropic MCP server to a Bifrost ResponsesTool.
 func convertAnthropicMCPServerToBifrostTool(mcpServer *AnthropicMCPServer) *schemas.ResponsesTool {
 	if mcpServer == nil {
 		return nil
@@ -5178,7 +5266,49 @@ func convertAnthropicMCPServerToBifrostTool(mcpServer *AnthropicMCPServer) *sche
 	return bifrostTool
 }
 
-// convertBifrostMCPToolToAnthropicServer converts a Bifrost MCP tool back to an Anthropic MCP server
+// convertBifrostMCPToolToAnthropicNew converts a Bifrost MCP tool to the new mcp-client-2025-11-20 format.
+// Returns both a simplified server entry (for mcp_servers[]) and a toolset entry (for tools[]).
+func convertBifrostMCPToolToAnthropicNew(tool *schemas.ResponsesTool) (*AnthropicMCPServerV2, *AnthropicMCPToolsetTool) {
+	if tool == nil || tool.Type != schemas.ResponsesToolTypeMCP || tool.ResponsesToolMCP == nil {
+		return nil, nil
+	}
+
+	// Build simplified server (no tool_configuration)
+	server := &AnthropicMCPServerV2{
+		Type: "url",
+		Name: tool.ResponsesToolMCP.ServerLabel,
+	}
+	if tool.ResponsesToolMCP.ServerURL != nil {
+		server.URL = *tool.ResponsesToolMCP.ServerURL
+	}
+	if tool.ResponsesToolMCP.Authorization != nil {
+		server.AuthorizationToken = tool.ResponsesToolMCP.Authorization
+	}
+
+	// Build toolset tool (references server by name)
+	toolset := &AnthropicMCPToolsetTool{
+		Type:          "mcp_toolset",
+		MCPServerName: tool.ResponsesToolMCP.ServerLabel,
+		CacheControl:  tool.CacheControl,
+	}
+
+	// Convert allowed tools to per-tool configs
+	if tool.ResponsesToolMCP.AllowedTools != nil {
+		// Allowlist pattern: default disabled, specific tools enabled
+		toolset.DefaultConfig = &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)}
+		if len(tool.ResponsesToolMCP.AllowedTools.ToolNames) > 0 {
+			toolset.Configs = make(map[string]*AnthropicMCPToolsetConfig, len(tool.ResponsesToolMCP.AllowedTools.ToolNames))
+			for _, toolName := range tool.ResponsesToolMCP.AllowedTools.ToolNames {
+				toolset.Configs[toolName] = &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(true)}
+			}
+		}
+	}
+
+	return server, toolset
+}
+
+// convertBifrostMCPToolToAnthropicServer converts a Bifrost MCP tool to the deprecated mcp-client-2025-04-04 format.
+// Kept for backward compatibility.
 func convertBifrostMCPToolToAnthropicServer(tool *schemas.ResponsesTool) *AnthropicMCPServer {
 	if tool == nil || tool.Type != schemas.ResponsesToolTypeMCP || tool.ResponsesToolMCP == nil {
 		return nil
