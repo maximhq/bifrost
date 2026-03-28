@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	oidcpkg "github.com/maximhq/bifrost/framework/oidc"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -1297,11 +1299,36 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	// Initialize OIDC provider if configured (D-20: optional, backward-compatible)
+	var oidcProvider *oidcpkg.OIDCProvider
+	if len(s.Config.OIDCConfigRaw) > 0 {
+		var oidcConfig oidcpkg.OIDCConfig
+		if jsonErr := json.Unmarshal(s.Config.OIDCConfigRaw, &oidcConfig); jsonErr != nil {
+			return fmt.Errorf("failed to parse OIDC config: %v", jsonErr)
+		}
+		var oidcErr error
+		oidcProvider, oidcErr = oidcpkg.NewOIDCProvider(&oidcConfig)
+		if oidcErr != nil {
+			// D-04: Fail loud at startup if OIDC is configured but discovery fails
+			return fmt.Errorf("OIDC initialization failed: %v", oidcErr)
+		}
+		logger.Info("OIDC authentication enabled for issuer: %s", oidcConfig.IssuerURL)
+	}
+
 	// Initialize routes
 	s.Router = router.New()
 	commonMiddlewares := s.PrepareCommonMiddlewares()
 	apiMiddlewares := commonMiddlewares
 	inferenceMiddlewares := commonMiddlewares
+
+	// Add OIDC middleware BEFORE AuthMiddleware if configured (D-02)
+	// Passes configStore for governance entity resolution (D-08: Customer/Team lookup)
+	if oidcProvider != nil && s.Config.ConfigStore != nil {
+		oidcMW := handlers.OIDCMiddleware(oidcProvider, s.Config.ConfigStore)
+		apiMiddlewares = append(apiMiddlewares, oidcMW)
+		inferenceMiddlewares = append(inferenceMiddlewares, oidcMW)
+	}
+
 	if s.Config.ConfigStore == nil {
 		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
 	} else {

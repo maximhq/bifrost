@@ -131,6 +131,7 @@ type ConfigData struct {
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	OIDCConfig        json.RawMessage                       `json:"oidc,omitempty"`
 }
 
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
@@ -151,6 +152,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		OIDCConfig        json.RawMessage                       `json:"oidc,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -167,6 +169,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
+	cd.OIDCConfig = temp.OIDCConfig
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -311,6 +314,10 @@ type Config struct {
 
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
+
+	// OIDCConfigRaw holds the raw JSON for OIDC configuration (parsed in server.go Bootstrap).
+	// nil means OIDC is not configured (backward-compatible with upstream Bifrost).
+	OIDCConfigRaw json.RawMessage
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
@@ -468,6 +475,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadGovernanceConfig(ctx, config, &configData)
 	// 8. Auth config
 	loadAuthConfig(ctx, config, &configData)
+	// 8.5. OIDC config (raw JSON, parsed in server.go Bootstrap)
+	if len(configData.OIDCConfig) > 0 {
+		config.OIDCConfigRaw = configData.OIDCConfig
+	}
 	// 9. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 10. Framework config and pricing manager
