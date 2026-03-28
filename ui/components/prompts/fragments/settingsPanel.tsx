@@ -12,6 +12,7 @@ import { ModelProviderName } from "@/lib/types/config";
 import { usePromptContext } from "../context";
 import { VariablesTableView } from "../components/variablesTableView";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
+import PromptDeploymentView from "@enterprise/components/prompt-deployments/promptDeploymentView";
 
 export function SettingsPanel() {
 	const {
@@ -185,6 +186,8 @@ export function SettingsPanel() {
 							</div>
 						</>
 					)}
+
+					<PromptDeploymentView />
 				</div>
 			</ScrollArea>
 		</div>
