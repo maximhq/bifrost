@@ -151,7 +151,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 	return (
 		<Sheet open={open} onOpenChange={handleClose}>
-			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8">
 				<SheetHeader className="p-0 flex flex-col items-start">
 					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
 					<SheetDescription>

@@ -518,6 +518,10 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
+func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
 	return nil
 }
@@ -630,6 +634,10 @@ func (m *MockConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCusto
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetCustomersPaginated(ctx context.Context, params configstore.CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error {
 	if m.governanceConfig == nil {
 		m.governanceConfig = &configstore.GovernanceConfig{}
@@ -653,6 +661,10 @@ func (m *MockConfigStore) GetTeam(ctx context.Context, id string) (*tables.Table
 
 func (m *MockConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) GetTeamsPaginated(ctx context.Context, params configstore.TeamsQueryParams) ([]tables.TableTeam, int64, error) {
+	return nil, 0, nil
 }
 
 func (m *MockConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
@@ -890,6 +902,10 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetModelConfigsPaginated(ctx context.Context, params configstore.ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	return nil, nil
 }
@@ -1023,6 +1039,10 @@ func (m *MockConfigStore) GetRedactedRoutingRules(ctx context.Context, ids []str
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetRoutingRulesPaginated(ctx context.Context, params configstore.RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
 	return nil
 }
@@ -1131,7 +1151,7 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 func makeClientConfig(initialPoolSize int, enableLogging bool) *configstore.ClientConfig {
 	return &configstore.ClientConfig{
 		InitialPoolSize:      initialPoolSize,
-		EnableLogging:        enableLogging,
+		EnableLogging:        schemas.Ptr(enableLogging),
 		MaxRequestBodySizeMB: 10,
 		PrometheusLabels:     []string{"label1"},
 		AllowedOrigins:       []string{"http://localhost:3000"},
@@ -1216,7 +1236,7 @@ func makeConfigDataWithProvidersAndDir(providers map[string]configstore.Provider
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		},
@@ -1242,7 +1262,7 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		},
@@ -1270,7 +1290,7 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 	if client == nil {
 		client = &configstore.ClientConfig{
 			InitialPoolSize:      10,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			MaxRequestBodySizeMB: 100,
 			AllowedOrigins:       []string{"*"},
 		}
@@ -1436,7 +1456,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	// Create config file with client config
 	fileClientConfig := &configstore.ClientConfig{
 		InitialPoolSize:       20,
-		EnableLogging:         true,
+		EnableLogging:         new(true),
 		PrometheusLabels:      []string{"file-label"},
 		AllowedOrigins:        []string{"http://file-origin.com"},
 		MaxRequestBodySizeMB:  15,
@@ -1452,7 +1472,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	mockStore := NewMockConfigStore()
 	mockStore.clientConfig = &configstore.ClientConfig{
 		InitialPoolSize:      10,
-		EnableLogging:        false,
+		EnableLogging:        new(false),
 		PrometheusLabels:     []string{"db-label"},
 		MaxRequestBodySizeMB: 5,
 		// AllowedOrigins is empty in DB
@@ -1488,7 +1508,9 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 	}
 
 	// Boolean fields: file true overrides DB false
-	if !mergedConfig.EnableLogging && fileClientConfig.EnableLogging {
+	mergedLogging := mergedConfig.EnableLogging == nil || *mergedConfig.EnableLogging
+	fileLogging := fileClientConfig.EnableLogging != nil && *fileClientConfig.EnableLogging
+	if !mergedLogging && fileLogging {
 		mergedConfig.EnableLogging = fileClientConfig.EnableLogging
 	}
 	if !mergedConfig.DisableContentLogging && fileClientConfig.DisableContentLogging {
@@ -1512,7 +1534,7 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 		t.Errorf("Expected MaxRequestBodySizeMB to be 5 (from DB), got %d", mergedConfig.MaxRequestBodySizeMB)
 	}
 
-	if !mergedConfig.EnableLogging {
+	if mergedConfig.EnableLogging == nil || !*mergedConfig.EnableLogging {
 		t.Error("Expected EnableLogging to be true (file true overrides DB false)")
 	}
 
@@ -7223,7 +7245,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify provider exists in memory
 	if _, exists := config.Providers[schemas.OpenAI]; !exists {
@@ -7265,14 +7287,14 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 	// Get the hash from first load
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	firstHash := dbProviders1[schemas.OpenAI].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is still the same
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7308,7 +7330,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	// Get original hash
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	originalHash := dbProviders1[schemas.OpenAI].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change the BaseURL
 	providers2 := map[string]configstore.ProviderConfig{
@@ -7322,7 +7344,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash changed
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7381,14 +7403,14 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add Anthropic to DB: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (no Anthropic) - should preserve DB-added provider
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both providers exist
 	if _, exists := config2.Providers[schemas.OpenAI]; !exists {
@@ -7434,14 +7456,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to update provider in DB: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB changes since hash matches
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7483,7 +7505,7 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify the key exists
 	dbProviders, _ := config.ConfigStore.GetProvidersConfig(ctx)
@@ -7522,14 +7544,14 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	// Get original key ID
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	originalKeyID := dbProviders1[schemas.OpenAI].Keys[0].ID
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify key ID is preserved (same key, not recreated)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7583,14 +7605,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (still has only file-key)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both keys exist (dashboard-added key preserved)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7641,7 +7663,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	if dbProviders1[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-original-123" {
 		t.Errorf("Expected original key value, got %v", dbProviders1[schemas.OpenAI].Keys[0].Value)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change key value AND network config to trigger hash mismatch
 	providers2 := map[string]configstore.ProviderConfig{
@@ -7660,7 +7682,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// When hash mismatches (provider config changed), file key value should be synced
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7715,14 +7737,14 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add third key: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (still has key-1 and key-2)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify all three keys exist
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7765,7 +7787,7 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify virtual key exists in DB
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -7809,14 +7831,14 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 	// Get original hash
 	dbVK1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
 	originalHash := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
 	dbVK2 := verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -7853,7 +7875,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected name 'original-name', got '%s'", dbVK1.Name)
 	}
 	originalHash := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change VK name and description
 	vks2 := []tables.TableVirtualKey{
@@ -7873,7 +7895,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify name was updated
 	dbVK2 := verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -7923,14 +7945,14 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create dashboard VK: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (only has vk-file)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-file")
@@ -7983,7 +8005,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists with hash
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8047,7 +8069,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 
 	// Verify initial VK exists
 	verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 2: Update config.json to add a NEW VK with ProviderConfigs
 	vks2 := []tables.TableVirtualKey{
@@ -8075,7 +8097,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -8159,7 +8181,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 
 	// Verify initial VK exists
 	verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 2: Update config.json to add a NEW VK with ProviderConfigs that reference the existing key
 	// The key reference uses the TableKey from DB which has the proper uint ID
@@ -8191,7 +8213,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -8337,7 +8359,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8409,7 +8431,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8717,7 +8739,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify providers
 	verifyProviderInDB(t, config.ConfigStore, schemas.OpenAI, 2)
@@ -8782,14 +8804,14 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 	providerHash1 := dbProviders1[schemas.OpenAI].ConfigHash
 	dbVK1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
 	vkHash1 := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hashes are unchanged (no writes needed)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -8840,7 +8862,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	vk1Hash1 := dbVK1_1.ConfigHash
 	dbVK2_1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-2")
 	vk2Hash1 := dbVK2_1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change only OpenAI and vk-1
 	providers2 := map[string]configstore.ProviderConfig{
@@ -8864,7 +8886,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify OpenAI hash changed (config changed)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -8951,14 +8973,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create dashboard VK: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with SAME config.json (unchanged)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify dashboard-added key is preserved
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -9226,7 +9248,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 		t.Logf("✓ MCP config created successfully with MCPClientID: %d", mcpConfigs[0].MCPClientID)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 }
 
 // TestSQLite_VKMCPConfig_Reconciliation tests MCP config reconciliation on hash mismatch.
@@ -9315,7 +9337,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		t.Fatalf("Failed to update VK hash: %v", err)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json with a NEW MCP config (different client)
 	// This triggers hash mismatch and reconciliation
@@ -9343,7 +9365,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify MCP configs after reconciliation
 	mcpConfigs, err := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
@@ -9476,7 +9498,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	}
 	t.Logf("✓ Dashboard added anthropic provider config, now have 2 configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 4: Modify config.json - change openai weight (causes hash mismatch)
 	vks2 := []tables.TableVirtualKey{
@@ -9504,7 +9526,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// CRITICAL ASSERTION: Dashboard-added "anthropic" config should be DELETED (file is source of truth)
 	providerConfigs3, err := config2.ConfigStore.GetVirtualKeyProviderConfigs(ctx, "vk-1")
@@ -9652,7 +9674,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	}
 	t.Logf("✓ Dashboard added MCP config for client 2, now have 2 MCP configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 4: Modify config.json - change tools for client 1 (causes hash mismatch)
 	vks2 := []tables.TableVirtualKey{
@@ -9679,7 +9701,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// CRITICAL ASSERTION: Dashboard-added MCP config for client 2 should be DELETED (file is source of truth)
 	mcpConfigs2, err := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
@@ -9773,7 +9795,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 	t.Log("✓ Initial state: No MCP configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json to ADD MCP configs
 	vks2 := []tables.TableVirtualKey{
@@ -9804,7 +9826,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 	t.Logf("✓ After add: %d MCP configs", len(mcpConfigs))
 
-	config2.ConfigStore.Close(ctx)
+	config2.Close(ctx)
 
 	// Update config.json to remove one MCP config from the file
 	// With file-is-source-of-truth, configs ARE deleted when removed from file (hash change)
@@ -9829,7 +9851,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
-	defer config3.ConfigStore.Close(ctx)
+	defer config3.Close(ctx)
 
 	mcpConfigs, _ = config3.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
 	// Only client1 config should remain (file is source of truth)
@@ -9907,7 +9929,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	}
 	config1.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &mcpConfigToCreate)
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json with different tools for same MCP client
 	vks := []tables.TableVirtualKey{
@@ -9930,7 +9952,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	mcpConfigs, _ := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
 	if len(mcpConfigs) != 1 {
@@ -9979,7 +10001,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Create config.json with VK having both provider and MCP configs
 	vks := []tables.TableVirtualKey{
@@ -10012,7 +10034,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify VK exists
 	vk, err := config2.ConfigStore.GetVirtualKey(ctx, "vk-1")
@@ -10119,7 +10141,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	}
 	t.Logf("MCP clients created: WeatherService ID=%d, CalendarService ID=%d", weatherClient.ID, calendarClient.ID)
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Now create config.json with virtual key using mcp_client_name (not mcp_client_id)
 	// This simulates the real-world scenario where config.json uses human-readable names
@@ -10202,7 +10224,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig with mcp_client_name failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify VK was created
 	vk, err := config2.ConfigStore.GetVirtualKey(ctx, "vk-with-mcp-names")
@@ -10321,7 +10343,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig should not fail when MCP client name is not found: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK was still created
 	vk, err := config.ConfigStore.GetVirtualKey(ctx, "vk-missing-mcp")
@@ -11089,7 +11111,7 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify budget in memory
 	if config.GovernanceConfig == nil || len(config.GovernanceConfig.Budgets) != 1 {
@@ -11136,14 +11158,14 @@ func TestSQLite_Budget_HashMatch_DBPreserved(t *testing.T) {
 	// Get hash from first load
 	gov1, _ := config1.ConfigStore.GetGovernanceConfig(ctx)
 	firstHash := gov1.Budgets[0].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load - same config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Budgets[0].ConfigHash != firstHash {
@@ -11171,7 +11193,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file with different MaxLimit
 	configData.Governance.Budgets[0].MaxLimit = 200.0
@@ -11182,7 +11204,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Budgets[0].MaxLimit != 200.0 {
@@ -11220,14 +11242,14 @@ func TestSQLite_Budget_DBOnly_Preserved(t *testing.T) {
 	if err := config1.ConfigStore.CreateBudget(ctx, dashboardBudget); err != nil {
 		t.Fatalf("Failed to create dashboard budget: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Reload - dashboard budget should be preserved
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if len(gov2.Budgets) != 2 {
@@ -11361,7 +11383,7 @@ func TestSQLite_RateLimit_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify in DB
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
@@ -11399,7 +11421,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file
 	newTokenMax := int64(2000)
@@ -11411,7 +11433,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if *gov2.RateLimits[0].TokenMaxLimit != 2000 {
@@ -11504,7 +11526,7 @@ func TestSQLite_Customer_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
 	if err != nil {
@@ -11538,7 +11560,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file
 	configData.Governance.Customers[0].Name = "Updated Customer"
@@ -11548,7 +11570,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Customers[0].Name != "Updated Customer" {
@@ -11679,7 +11701,7 @@ func TestSQLite_Team_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
 	if err != nil {
@@ -11714,7 +11736,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file with different Name (which affects hash)
 	configData.Governance.Teams[0].Name = "Updated Team"
@@ -11724,7 +11746,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Teams[0].Name != "Updated Team" {
@@ -11918,6 +11940,350 @@ func TestGeneratePluginHash(t *testing.T) {
 }
 
 // ===================================================================================
+// PLUGIN SEQUENCING TESTS
+// ===================================================================================
+
+// mockPlugin is a minimal BasePlugin implementation for ordering tests.
+type mockPlugin struct {
+	name string
+}
+
+func (p *mockPlugin) GetName() string { return p.name }
+func (p *mockPlugin) Cleanup() error  { return nil }
+
+// mockLLMPlugin extends mockPlugin with LLMPlugin interface for cache rebuild tests.
+type mockLLMPlugin struct {
+	mockPlugin
+}
+
+func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *mockLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// newTestConfigForPlugins creates a minimal Config suitable for plugin ordering tests.
+func newTestConfigForPlugins() *Config {
+	initTestLogger()
+	return &Config{}
+}
+
+// TestSetPluginOrderInfo_Defaults verifies that nil placement defaults to "post_builtin" and nil order defaults to 0.
+func TestSetPluginOrderInfo_Defaults(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// nil placement → post_builtin, nil order → 0
+	config.SetPluginOrderInfo("plugin-a", nil, nil)
+	info := config.pluginOrderMap["plugin-a"]
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, info.Placement, "nil placement should default to post_builtin")
+	require.Equal(t, 0, info.Order, "nil order should default to 0")
+
+	// Explicit values are preserved
+	config.SetPluginOrderInfo("plugin-b", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(5))
+	info = config.pluginOrderMap["plugin-b"]
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, info.Placement)
+	require.Equal(t, 5, info.Order)
+
+	// Explicit builtin placement
+	config.SetPluginOrderInfo("plugin-c", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(1))
+	info = config.pluginOrderMap["plugin-c"]
+	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
+	require.Equal(t, 1, info.Order)
+}
+
+// TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.
+func TestSortAndRebuildPlugins_PlacementGroups(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register plugins in deliberately wrong order: post, builtin, pre, post, pre
+	plugins := []struct {
+		name      string
+		placement schemas.PluginPlacement
+		order     int
+	}{
+		{"post-1", schemas.PluginPlacementPostBuiltin, 0},
+		{"builtin-1", schemas.PluginPlacementBuiltin, 1},
+		{"pre-1", schemas.PluginPlacementPreBuiltin, 0},
+		{"post-2", schemas.PluginPlacementPostBuiltin, 1},
+		{"pre-2", schemas.PluginPlacementPreBuiltin, 1},
+	}
+	for _, p := range plugins {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: p.name}))
+		config.SetPluginOrderInfo(p.name, schemas.Ptr(p.placement), schemas.Ptr(p.order))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	expected := []string{"pre-1", "pre-2", "builtin-1", "post-1", "post-2"}
+	require.Equal(t, expected, got, "plugins should be sorted: pre_builtin → builtin → post_builtin")
+}
+
+// TestSortAndRebuildPlugins_OrderWithinGroup verifies that within a group, lower order comes first.
+func TestSortAndRebuildPlugins_OrderWithinGroup(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	names := []string{"plugin-order-2", "plugin-order-0", "plugin-order-1"}
+	orders := []int{2, 0, 1}
+	for i, name := range names {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: name}))
+		config.SetPluginOrderInfo(name, schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(orders[i]))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	expected := []string{"plugin-order-0", "plugin-order-1", "plugin-order-2"}
+	require.Equal(t, expected, got, "within same placement group, plugins should sort by ascending order")
+}
+
+// TestSortAndRebuildPlugins_StableSort verifies that plugins with same placement and order
+// preserve their registration order (stable sort).
+func TestSortAndRebuildPlugins_StableSort(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register 3 plugins with identical placement and order
+	names := []string{"alpha", "beta", "gamma"}
+	for _, name := range names {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: name}))
+		config.SetPluginOrderInfo(name, schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	require.Equal(t, names, got, "same placement+order should preserve registration order")
+}
+
+// TestSortAndRebuildPlugins_UnknownPlacement verifies that plugins with unknown placement
+// get default rank (treated as post_builtin, not pre_builtin).
+func TestSortAndRebuildPlugins_UnknownPlacement(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register a pre_builtin, a post_builtin, and one with an invalid placement
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "pre"}))
+	config.SetPluginOrderInfo("pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "post"}))
+	config.SetPluginOrderInfo("post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "unknown"}))
+	// Directly manipulate pluginOrderMap to simulate an invalid placement
+	config.pluginOrderMap["unknown"] = pluginOrderInfo{Placement: "invalid_placement", Order: 0}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	require.Equal(t, "pre", got[0], "pre_builtin should be first")
+	// "unknown" should NOT be before "pre" (i.e., unknown placement should not get rank 0)
+	require.Equal(t, "unknown", got[len(got)-1], "unknown placement should sort to the end (default rank)")
+}
+
+// TestLoadDefaultPlugins_PreservesPlacementAndOrder is the primary regression test:
+// verifies that loading plugins from store correctly maps Placement and Order from DB rows.
+func TestLoadDefaultPlugins_PreservesPlacementAndOrder(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	order2 := 2
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order5 := 5
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-pre",
+				Enabled:   true,
+				Placement: &preBuiltin,
+				Order:     &order2,
+			},
+			{
+				Name:      "plugin-post",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order5,
+			},
+			{
+				Name:    "plugin-nil",
+				Enabled: true,
+				// Placement and Order intentionally nil
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{})
+	require.Len(t, config.PluginConfigs, 3)
+
+	// Verify pre_builtin plugin
+	require.NotNil(t, config.PluginConfigs[0].Placement, "Placement should not be nil for plugin-pre")
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, *config.PluginConfigs[0].Placement)
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, 2, *config.PluginConfigs[0].Order)
+
+	// Verify post_builtin plugin
+	require.NotNil(t, config.PluginConfigs[1].Placement, "Placement should not be nil for plugin-post")
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[1].Placement)
+	require.NotNil(t, config.PluginConfigs[1].Order)
+	require.Equal(t, 5, *config.PluginConfigs[1].Order)
+
+	// Verify nil placement/order are preserved as nil (not silently defaulted here)
+	require.Nil(t, config.PluginConfigs[2].Placement, "nil Placement in DB should stay nil in PluginConfig")
+	require.Nil(t, config.PluginConfigs[2].Order, "nil Order in DB should stay nil in PluginConfig")
+}
+
+// TestGetPluginOrder_MatchesSortedOrder verifies GetPluginOrder returns names
+// in the same order as the sorted BasePlugins.
+func TestGetPluginOrder_MatchesSortedOrder(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register in reverse order
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "c-post"}))
+	config.SetPluginOrderInfo("c-post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "a-pre"}))
+	config.SetPluginOrderInfo("a-pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "b-builtin"}))
+	config.SetPluginOrderInfo("b-builtin", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(0))
+
+	config.SortAndRebuildPlugins()
+
+	order := config.GetPluginOrder()
+	require.Equal(t, []string{"a-pre", "b-builtin", "c-post"}, order)
+
+	// Also verify BasePlugins directly matches
+	basePlugins := config.BasePlugins.Load()
+	require.NotNil(t, basePlugins)
+	for i, name := range order {
+		require.Equal(t, name, (*basePlugins)[i].GetName(), "BasePlugins[%d] should match GetPluginOrder[%d]", i, i)
+	}
+}
+
+// TestSortAndRebuildPlugins_RebuildsCaches verifies that LLMPlugins interface cache
+// is rebuilt in the correct sorted order after SortAndRebuildPlugins.
+func TestSortAndRebuildPlugins_RebuildsCaches(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register LLM plugins in reverse order
+	require.NoError(t, config.ReloadPlugin(&mockLLMPlugin{mockPlugin{name: "llm-post"}}))
+	config.SetPluginOrderInfo("llm-post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockLLMPlugin{mockPlugin{name: "llm-pre"}}))
+	config.SetPluginOrderInfo("llm-pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	config.SortAndRebuildPlugins()
+
+	// Verify LLMPlugins cache is sorted
+	llmPlugins := config.LLMPlugins.Load()
+	require.NotNil(t, llmPlugins)
+	require.Len(t, *llmPlugins, 2)
+	require.Equal(t, "llm-pre", (*llmPlugins)[0].GetName(), "LLM cache should have pre_builtin first")
+	require.Equal(t, "llm-post", (*llmPlugins)[1].GetName(), "LLM cache should have post_builtin second")
+}
+
+// TestMergePluginsFromFile_PlacementChange verifies that mergePlugins
+// replaces a plugin when its placement or order changes, even without a version bump.
+func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+	order1 := 1
+	version1 := int16(1)
+
+	// Simulate DB state: plugin-a is post_builtin with order 0
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Version:   1,
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{})
+	require.Len(t, config.PluginConfigs, 1)
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[0].Placement)
+
+	// Config file says plugin-a should be pre_builtin with order 1, same version
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Version:   &version1,
+				Placement: &preBuiltin,
+				Order:     &order1,
+			},
+		},
+	}
+
+	mergePlugins(context.Background(), config, configData)
+
+	// Should have been replaced because placement changed
+	require.Len(t, config.PluginConfigs, 1)
+	require.NotNil(t, config.PluginConfigs[0].Placement)
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, *config.PluginConfigs[0].Placement, "placement should be updated from file")
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, 1, *config.PluginConfigs[0].Order, "order should be updated from file")
+}
+
+// TestMergePluginsFromFile_NoChangeSkipsMerge verifies that mergePlugins
+// does NOT replace a plugin when version, placement, and order are all unchanged.
+func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
+	initTestLogger()
+
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+	version1 := int16(1)
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Version:   1,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:    map[string]any{"setting": "db-value"},
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{})
+
+	// Config file has same version, placement, order but different config value
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Version:   &version1,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Config:    map[string]any{"setting": "file-value"},
+			},
+		},
+	}
+
+	mergePlugins(context.Background(), config, configData)
+
+	// Should NOT have been replaced (version and placement unchanged)
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
+}
+
+// ===================================================================================
 // CLIENT CONFIG HASH TESTS
 // ===================================================================================
 
@@ -11929,7 +12295,7 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		DropExcessRequests:      true,
 		InitialPoolSize:         300,
 		PrometheusLabels:        []string{"label1", "label2"},
-		EnableLogging:           true,
+		EnableLogging:           new(true),
 		DisableContentLogging:   false,
 		LogRetentionDays:        30,
 		EnforceAuthOnInference: false,
@@ -11979,7 +12345,7 @@ func TestGenerateClientConfigHash(t *testing.T) {
 
 	// Different EnableLogging should produce different hash
 	cc5 := cc1
-	cc5.EnableLogging = false
+	cc5.EnableLogging = new(false)
 	hash5, _ := cc5.GenerateClientConfigHash()
 	if hash1 == hash5 {
 		t.Error("Different EnableLogging should produce different hash")
@@ -12109,7 +12475,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	if gov1.Teams[0].ConfigHash == "" {
 		t.Error("Team hash not set")
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update all entities in config file
 	configData.Governance.Budgets[0].MaxLimit = 200.0
@@ -12124,7 +12490,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 
@@ -12188,14 +12554,14 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 		t.Fatalf("Failed to create dashboard team: %v", err)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Reload - all dashboard entities should be preserved
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 
@@ -12978,7 +13344,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DropExcessRequests:      true,
 			InitialPoolSize:         300,
 			PrometheusLabels:        labels,
-			EnableLogging:           true,
+			EnableLogging:           new(true),
 			DisableContentLogging:   false,
 			LogRetentionDays:        30,
 			EnforceAuthOnInference: false,
@@ -13039,7 +13405,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DropExcessRequests:   true,
 			InitialPoolSize:      300,
 			AllowedOrigins:       origins,
-			EnableLogging:        true,
+			EnableLogging:        new(true),
 			LogRetentionDays:     30,
 			MaxRequestBodySizeMB: 100,
 		}
@@ -13107,7 +13473,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	openaiConfig, exists := config.Providers[schemas.OpenAI]
 	if !exists {
@@ -13144,7 +13510,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	openaiConfig, exists := config.Providers[schemas.OpenAI]
 	if !exists {
@@ -13184,14 +13550,14 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	if config1.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
 		t.Errorf("First load: Expected weight 0, got %f", config1.Providers[schemas.OpenAI].Keys[0].Weight)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load - reads from DB
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	if config2.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
 		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
@@ -13237,7 +13603,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify virtual key exists and has provider config with weight=0
 	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
@@ -13310,14 +13676,14 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	if *vk1.ProviderConfigs[0].Weight != 0 {
 		t.Errorf("First load: Expected provider config weight 0, got %f", *vk1.ProviderConfigs[0].Weight)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load from DB
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	vk2 := config2.GovernanceConfig.VirtualKeys[0]
 	if len(vk2.ProviderConfigs) == 0 {
@@ -13502,7 +13868,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Close first config before second load
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Update config with Enabled=false
 	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
@@ -13525,7 +13891,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify Enabled changed to false in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
@@ -13665,7 +14031,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	defer config1.ConfigStore.Close(context.Background())
+	defer config1.Close(context.Background())
 
 	// Verify initial state in the in-memory config
 	openaiConfig1 := config1.Providers[schemas.OpenAI]
@@ -13694,7 +14060,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify UseForBatchAPI changed to true in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
@@ -13950,7 +14316,7 @@ func TestSQLite_VKProviderConfig_BudgetAndRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	// Verify the governance config has the VK with provider configs
 	if config.GovernanceConfig == nil {
@@ -14318,7 +14684,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	defer config1.ConfigStore.Close(context.Background())
+	defer config1.Close(context.Background())
 
 	// Verify initial state
 	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
@@ -14354,7 +14720,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify Region changed
 	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
@@ -14368,7 +14734,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
-	defer config3.ConfigStore.Close(context.Background())
+	defer config3.Close(context.Background())
 
 	providers3, _ := config3.ConfigStore.GetProvidersConfig(context.Background())
 	vertexConfig3 := providers3[schemas.Vertex]
@@ -14406,7 +14772,7 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	// Verify Vertex provider was created
 	providers, _ := config.ConfigStore.GetProvidersConfig(context.Background())
@@ -14462,14 +14828,14 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	vertexConfig := providers1[schemas.Vertex]
 	vertexConfig.Keys[0].VertexKeyConfig.AuthCredentials = *schemas.NewEnvVar(`{"type":"service_account","edited":true}`)
 	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1)
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Reload with same config file - DB value should be preserved since hash matches
 	config2, err := LoadConfig(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Note: With hash-based reconciliation, when the file hash doesn't change,
 	// the DB values are preserved. Since we modified the DB but not the file,
@@ -14513,7 +14879,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Update config file with different ProjectID
 	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
@@ -14538,7 +14904,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify file value wins
 	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
@@ -15563,7 +15929,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15600,7 +15966,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15629,7 +15995,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15659,7 +16025,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify file config overwrote DB config
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15697,7 +16063,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify the DB hash was reused (not re-hashed) since values match
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15717,7 +16083,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			AuthConfig: nil,
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify no auth config was stored
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
@@ -15739,7 +16105,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -15768,7 +16134,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -15800,7 +16166,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -15835,7 +16201,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
@@ -15874,7 +16240,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify sessions were flushed because password changed
 		require.True(t, mockStore.flushSessionsCalled, "sessions should be flushed when password changes")
@@ -15913,7 +16279,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 			},
 		}
 
-		loadAuthConfigFromFile(ctx, config, configData)
+		loadAuthConfig(ctx, config, configData)
 
 		// Verify sessions were NOT flushed because password did not change
 		require.False(t, mockStore.flushSessionsCalled, "sessions should not be flushed when password matches")
@@ -16295,4 +16661,607 @@ func TestSQLite_GetVirtualKeysPaginated(t *testing.T) {
 		require.Equal(t, int64(5), totalCount)
 		require.Len(t, results, 5) // all 5, since <100
 	})
+}
+
+// =============================================================================
+// LoadConfig Permutation Tests
+// =============================================================================
+// These tests cover all permutations of:
+//   - config.json present / absent
+//   - Each config section present / absent in config.json
+//   - DB data present / absent (first run vs subsequent runs)
+//
+// They exercise LoadConfig() as the public entry point and verify
+// both in-memory state and DB persistence.
+// =============================================================================
+
+// makeMinimalConfigData creates a ConfigData with only config_store configured (SQLite)
+func makeMinimalConfigData(tempDir string) *ConfigData {
+	dbPath := filepath.Join(tempDir, "config.db")
+	return &ConfigData{
+		ConfigStoreConfig: &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config: &configstore.SQLiteConfig{
+				Path: dbPath,
+			},
+		},
+	}
+}
+
+// assertDefaultClientConfigValues checks that client config matches DefaultClientConfig
+func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) {
+	t.Helper()
+	require.Equal(t, false, cc.DropExcessRequests, "DropExcessRequests should default to false")
+	require.Equal(t, schemas.DefaultInitialPoolSize, cc.InitialPoolSize, "InitialPoolSize should match default")
+	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
+	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
+	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, false, cc.AllowDirectKeys, "AllowDirectKeys should default to false")
+	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
+	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
+	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
+	require.Equal(t, 30, cc.MCPToolExecutionTimeout, "MCPToolExecutionTimeout should default to 30")
+	require.Equal(t, false, cc.EnableLiteLLMFallbacks, "EnableLiteLLMFallbacks should default to false")
+	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
+}
+
+// TestLoadConfig_NoConfigFile_FreshStart tests LoadConfig with no config.json and no existing DB
+func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify config store was created (default SQLite)
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be created by default")
+
+	// Verify default client config
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+
+	// HeaderMatcher is nil when no header filter is configured (DefaultClientConfig has nil HeaderFilterConfig)
+	// This is expected behavior - it's only set when HeaderFilterConfig is non-nil
+
+	// Verify providers map initialized (may be empty or auto-detected from env)
+	require.NotNil(t, config.Providers, "Providers map should be initialized")
+
+	// Verify governance/MCP are nil or empty (no config file)
+	// MCP and governance may be nil when no config and no DB data
+	// Plugins should be empty
+	require.Empty(t, config.PluginConfigs, "PluginConfigs should be empty with no config")
+
+	// Verify WebSocket defaults
+	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
+
+	// Verify KV store initialized
+	require.NotNil(t, config.KVStore, "KVStore should be initialized")
+}
+
+// TestLoadConfig_NoConfigFile_ExistingDB tests LoadConfig with no config.json but existing DB from previous run
+func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// First run: create a config.json to populate the DB
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config1)
+
+	// Verify first load populated DB
+	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 1, "DB should have 1 provider after first load")
+	config1.Close(ctx)
+
+	// Remove config.json to simulate "no config file" on second run
+	require.NoError(t, os.Remove(filepath.Join(tempDir, "config.json")))
+
+	// Second run: no config.json, but DB has data
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify DB data was loaded (provider preserved from first run)
+	require.Len(t, config2.Providers, 1, "Provider from DB should be preserved")
+	_, hasOpenAI := config2.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI provider should be loaded from DB")
+
+	// Verify governance loaded from DB
+	require.NotNil(t, config2.GovernanceConfig, "GovernanceConfig should be loaded from DB")
+	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget from DB should be preserved")
+}
+
+// TestLoadConfig_FullConfigFile_FreshDB tests LoadConfig with all sections in config.json
+func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-openai-123"),
+		"anthropic": {
+			Keys: []schemas.Key{
+				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewEnvVar("sk-anthropic-123"), Weight: 1},
+			},
+		},
+	}
+
+	budgetID := "budget-1"
+	governance := &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: budgetID, MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+		VirtualKeys: []tables.TableVirtualKey{
+			makeVirtualKey("vk-1", "test-vk", "vk_test123"),
+		},
+	}
+
+	clientConfig := makeClientConfig(20, true)
+	configData := makeConfigDataFullWithDir(clientConfig, providers, governance, tempDir)
+
+	// Add plugins
+	pluginVersion := int16(1)
+	configData.Plugins = []*schemas.PluginConfig{
+		{Name: "test-plugin", Enabled: true, Version: &pluginVersion},
+	}
+
+	// Add MCP
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: uuid.NewString(), Name: "mcp_client_1", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewEnvVar("http://localhost:8080")},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify all sections loaded
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be initialized")
+	require.Equal(t, 20, config.ClientConfig.InitialPoolSize, "Client config InitialPoolSize from file")
+	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
+	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
+	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
+	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
+	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
+	require.Equal(t, "test-plugin", config.PluginConfigs[0].Name)
+
+	// Verify persisted to DB
+	dbProviders, err := config.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, dbProviders, 2, "DB should have 2 providers")
+
+	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
+	require.Equal(t, "test-vk", dbVK.Name)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyProviders tests config.json with only providers section
+func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Providers = map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify providers loaded from file
+	require.Len(t, config.Providers, 1, "Should have 1 provider from file")
+	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI should be loaded from file")
+
+	// Verify client config gets defaults (no client in file)
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+
+	// Verify other sections are nil/empty
+	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
+
+	// Verify WebSocket defaults applied
+	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyClient tests config.json with only client section
+func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize:      50,
+		EnableLogging:        new(false),
+		MaxRequestBodySizeMB: 200,
+		AllowedOrigins:       []string{"http://example.com"},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify client config from file
+	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
+	require.NotNil(t, config.ClientConfig.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, false, *config.ClientConfig.EnableLogging, "EnableLogging from file")
+	require.Equal(t, 200, config.ClientConfig.MaxRequestBodySizeMB, "MaxRequestBodySizeMB from file")
+
+	// Verify providers auto-detected (no providers in file)
+	// (may be empty if no env vars set, that's fine)
+	require.NotNil(t, config.Providers, "Providers map should be initialized")
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyGovernance tests config.json with only governance section
+func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 500.0, ResetDuration: "1M"},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify governance loaded from file
+	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
+	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
+	require.Equal(t, 500.0, config.GovernanceConfig.Budgets[0].MaxLimit)
+
+	// Verify client config gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyPlugins tests config.json with only plugins section
+func TestLoadConfig_PartialConfigFile_OnlyPlugins(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	pluginVersion := int16(1)
+	configData := makeMinimalConfigData(tempDir)
+	configData.Plugins = []*schemas.PluginConfig{
+		{Name: "my-plugin", Enabled: true, Version: &pluginVersion},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify plugins loaded from file
+	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
+	require.Equal(t, "my-plugin", config.PluginConfigs[0].Name)
+
+	// Verify client gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_OnlyMCP tests config.json with only MCP section
+func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.MCP = &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{ID: uuid.NewString(), Name: "mcp_test", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewEnvVar("http://localhost:9090")},
+		},
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify MCP loaded from file
+	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
+	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Equal(t, "mcp_test", config.MCPConfig.ClientConfigs[0].Name)
+
+	// Verify client gets defaults
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialConfigFile_ClientAndProviders tests the most common minimal config
+func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize:      100,
+		EnableLogging:        new(true),
+		MaxRequestBodySizeMB: 50,
+		AllowedOrigins:       []string{"*"},
+	}
+	configData.Providers = map[string]configstore.ProviderConfig{
+		"openai":    makeProviderConfig("openai-key", "sk-openai-abc"),
+		"anthropic": makeProviderConfig("anthropic-key", "sk-anthropic-def"),
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify both sections loaded
+	require.Equal(t, 100, config.ClientConfig.InitialPoolSize)
+	require.Len(t, config.Providers, 2, "Should have 2 providers")
+
+	// Verify other sections empty/nil
+	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
+}
+
+// TestLoadConfig_ConfigFile_NoConfigStoreSection tests config.json without config_store section
+func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// Create config.json without config_store section
+	configData := &ConfigData{
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeProviderConfig("openai-key", "sk-test-123"),
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// ConfigStore should be created as default SQLite when config_store section is absent
+	require.NotNil(t, config.ConfigStore, "ConfigStore should be created as default SQLite when section is absent")
+
+	// Verify providers are loaded into memory
+	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.True(t, hasOpenAI, "OpenAI should be loaded")
+}
+
+// TestLoadConfig_ConfigFile_ConfigStoreDisabled tests config.json with config_store explicitly disabled
+func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := &ConfigData{
+		ConfigStoreConfig: &configstore.Config{
+			Enabled: false,
+		},
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeProviderConfig("openai-key", "sk-test-456"),
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// ConfigStore should be nil when explicitly disabled
+	require.Nil(t, config.ConfigStore, "ConfigStore should be nil when disabled")
+
+	// Providers should still be loaded into memory
+	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+}
+
+// TestLoadConfig_NoConfigFile_SecondRun tests that DB data persists across runs without config.json
+func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// Clear auto-detect environment variables to ensure deterministic test behavior
+	autoDetectEnvVars := []string{"OPENAI_API_KEY", "OPENAI_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "MISTRAL_API_KEY", "MISTRAL_KEY"}
+	for _, envVar := range autoDetectEnvVars {
+		if orig := os.Getenv(envVar); orig != "" {
+			t.Setenv(envVar, "")
+		}
+	}
+
+	// First run: no config.json -> auto-detect and create defaults
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config1)
+
+	// Manually add a provider to DB to simulate dashboard addition
+	testProvider := configstore.ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewEnvVar("sk-manual-123"), Weight: 1},
+		},
+	}
+	err = config1.ConfigStore.AddProvider(ctx, schemas.OpenAI, testProvider)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	// Second run: still no config.json -> should load from DB
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify the manually added provider is preserved from DB
+	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	_, hasOpenAI := dbProviders[schemas.OpenAI]
+	require.True(t, hasOpenAI, "Provider added via dashboard should be preserved in DB")
+}
+
+// TestLoadConfig_PartialConfigFile_WithExistingDB tests partial config.json update with existing DB
+func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// First run: full config.json
+	providers1 := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewEnvVar("test-openai-key"), Weight: 1},
+			},
+		},
+		"anthropic": {
+			Keys: []schemas.Key{
+				{ID: "anthropic-key-1", Name: "anthropic-key", Value: *schemas.NewEnvVar("test-anthropic-key"), Weight: 1},
+			},
+		},
+	}
+	governance1 := &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "budget-1", MaxLimit: 100.0, ResetDuration: "1M"},
+		},
+	}
+	configData1 := makeConfigDataFullWithDir(nil, providers1, governance1, tempDir)
+	createConfigFile(t, tempDir, configData1)
+
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.Len(t, config1.Providers, 2, "Should have 2 providers from first load")
+	require.NotNil(t, config1.GovernanceConfig)
+	config1.Close(ctx)
+
+	// Second run: config.json with only changed providers (no governance section)
+	configData2 := makeMinimalConfigData(tempDir)
+	configData2.Providers = map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewEnvVar("test-openai-key-updated"), Weight: 1},
+			},
+		},
+	}
+	// Note: no governance section in this config.json
+	createConfigFile(t, tempDir, configData2)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config2)
+	defer config2.Close(ctx)
+
+	// Verify providers updated (only openai now from file)
+	require.Contains(t, config2.Providers, schemas.OpenAI, "OpenAI should be present")
+
+	// Verify governance preserved from DB (not wiped by missing section in file)
+	require.NotNil(t, config2.GovernanceConfig, "Governance should be preserved from DB")
+	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget should be preserved from DB")
+
+	_, hasAnthropic := config2.Providers[schemas.Anthropic]
+	require.True(t, hasAnthropic, "Anthropic should be preserved from DB")
+}
+
+// TestLoadConfig_WebSocket_Defaults tests WebSocket default handling
+func TestLoadConfig_WebSocket_Defaults(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	t.Run("no websocket section gets defaults", func(t *testing.T) {
+		configData := makeMinimalConfigData(tempDir)
+		createConfigFile(t, tempDir, configData)
+
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		defer config.Close(ctx)
+
+		require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should be set with defaults")
+	})
+}
+
+// TestLoadConfig_DefaultClientConfig_Values tests that all DefaultClientConfig values are correct
+func TestLoadConfig_DefaultClientConfig_Values(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	// No config.json -> defaults applied
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	assertDefaultClientConfigValues(t, config.ClientConfig)
+}
+
+// TestLoadConfig_PartialClientConfig_DefaultsFillGaps tests that missing client fields get defaults
+func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	configData := makeMinimalConfigData(tempDir)
+	// Only set InitialPoolSize, leave MaxRequestBodySizeMB as 0 (should get default)
+	configData.Client = &configstore.ClientConfig{
+		InitialPoolSize: 50,
+		EnableLogging:   new(true),
+		AllowedOrigins:  []string{"http://myapp.com"},
+		// MaxRequestBodySizeMB is 0 -> should get default 100
+	}
+
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// Verify explicit values from file
+	require.Equal(t, 50, config.ClientConfig.InitialPoolSize, "InitialPoolSize from file")
+	require.NotNil(t, config.ClientConfig.EnableLogging, "EnableLogging should not be nil")
+	require.Equal(t, true, *config.ClientConfig.EnableLogging, "EnableLogging from file")
+
+	// Verify zero-value fields get defaults
+	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,
+		"MaxRequestBodySizeMB should get default when zero in file")
 }

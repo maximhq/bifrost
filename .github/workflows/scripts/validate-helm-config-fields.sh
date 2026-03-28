@@ -439,16 +439,22 @@ bifrost:
         description: "Redirect GPT models to Azure"
         enabled: true
         cel_expression: "request.model.startsWith('gpt-')"
-        provider: "azure"
-        model: "gpt-4o"
-        fallbacks:
-          - "openai"
+        targets:
+          - provider: "azure"
+            model: "gpt-4o"
+            weight: 0.8
+          - provider: "openai"
+            model: "gpt-4o"
+            weight: 0.2
         scope: "global"
         priority: 10
       - id: "route-2"
         name: "Team-scoped route"
         enabled: true
         cel_expression: "true"
+        targets:
+          - provider: "openai"
+            weight: 1
         scope: "team"
         scope_id: "team-1"
         priority: 0
@@ -513,13 +519,17 @@ assert_field_value 'governance.routing_rules[0].name' '.governance.routing_rules
 assert_field_value 'governance.routing_rules[0].description' '.governance.routing_rules.[0].description' '"Redirect GPT models to Azure"'
 assert_field_value 'governance.routing_rules[0].enabled' '.governance.routing_rules.[0].enabled' 'true'
 assert_field_value 'governance.routing_rules[0].cel_expression' '.governance.routing_rules.[0].cel_expression' '"request.model.startsWith('\''gpt-'\'')"'
-assert_field_value 'governance.routing_rules[0].provider' '.governance.routing_rules.[0].provider' '"azure"'
-assert_field_value 'governance.routing_rules[0].model' '.governance.routing_rules.[0].model' '"gpt-4o"'
-assert_field 'governance.routing_rules[0].fallbacks' '.governance.routing_rules.[0].fallbacks'
+assert_field 'governance.routing_rules[0].targets' '.governance.routing_rules.[0].targets'
+assert_field_value 'governance.routing_rules[0].targets[0].provider' '.governance.routing_rules.[0].targets.[0].provider' '"azure"'
+assert_field_value 'governance.routing_rules[0].targets[0].model' '.governance.routing_rules.[0].targets.[0].model' '"gpt-4o"'
+assert_field_value 'governance.routing_rules[0].targets[0].weight' '.governance.routing_rules.[0].targets.[0].weight' '0.8'
+assert_field_value 'governance.routing_rules[0].targets[1].provider' '.governance.routing_rules.[0].targets.[1].provider' '"openai"'
+assert_field_value 'governance.routing_rules[0].targets[1].weight' '.governance.routing_rules.[0].targets.[1].weight' '0.2'
 assert_field_value 'governance.routing_rules[0].scope' '.governance.routing_rules.[0].scope' '"global"'
 assert_field_value 'governance.routing_rules[0].priority' '.governance.routing_rules.[0].priority' '10'
 assert_field_value 'governance.routing_rules[1].scope' '.governance.routing_rules.[1].scope' '"team"'
 assert_field_value 'governance.routing_rules[1].scope_id' '.governance.routing_rules.[1].scope_id' '"team-1"'
+assert_field 'governance.routing_rules[1].targets' '.governance.routing_rules.[1].targets'
 
 # Model configs (Gap 5a)
 assert_field 'governance.model_configs' '.governance.model_configs'

@@ -8,6 +8,7 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	calendar_aligned?: boolean; // When true, resets at clean calendar boundaries (day/week/month/year start)
 }
 
 export interface RateLimit {
@@ -201,11 +202,13 @@ export interface UpdateCustomerRequest {
 export interface CreateBudgetRequest {
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	calendar_aligned?: boolean; // Snap resets to calendar boundaries (day/week/month/year)
 }
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
+	calendar_aligned?: boolean; // When switching to true, current usage is reset to 0
 }
 
 export interface CreateRateLimitRequest {
@@ -246,14 +249,33 @@ export interface GetVirtualKeysResponse {
 	offset: number;
 }
 
+export interface GetTeamsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
+}
+
 export interface GetTeamsResponse {
 	teams: Team[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface GetCustomersParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
 }
 
 export interface GetCustomersResponse {
 	customers: Customer[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetBudgetsResponse {
@@ -327,10 +349,19 @@ export interface UpdateModelConfigRequest {
 	rate_limit?: UpdateRateLimitRequest;
 }
 
+export interface GetModelConfigsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 // Response types for model configs
 export interface GetModelConfigsResponse {
 	model_configs: ModelConfig[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Provider governance - for extending provider with budget/rate limit

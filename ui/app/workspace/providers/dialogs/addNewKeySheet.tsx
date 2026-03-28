@@ -28,7 +28,12 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyIndex, pro
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8" data-testid="key-form">
+			<SheetContent
+				className="custom-scrollbar p-8"
+				data-testid="key-form"
+				onInteractOutside={(e) => e.preventDefault()}
+				onEscapeKeyDown={(e) => e.preventDefault()}
+			>
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

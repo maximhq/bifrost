@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -74,13 +73,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				if structuredOutputToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && contentBlock.ToolUse.Name == structuredOutputToolName {
 					// This is structured output - set contentStr and skip adding to toolCalls
 					if contentBlock.ToolUse.Input != nil {
-						if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-							jsonStr := string(argBytes)
-							contentStr = &jsonStr
-						} else {
-							jsonStr := fmt.Sprintf("%v", contentBlock.ToolUse.Input)
-							contentStr = &jsonStr
-						}
+						jsonStr := string(contentBlock.ToolUse.Input)
+						contentStr = &jsonStr
 					}
 					continue // Skip adding to toolCalls
 				}
@@ -88,11 +82,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				// Regular tool call processing
 				var arguments string
 				if contentBlock.ToolUse.Input != nil {
-					if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-						arguments = string(argBytes)
-					} else {
-						arguments = fmt.Sprintf("%v", contentBlock.ToolUse.Input)
-					}
+					arguments = string(contentBlock.ToolUse.Input)
 				} else {
 					arguments = "{}"
 				}
@@ -204,7 +194,9 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 			assistantMessage = &schemas.ChatAssistantMessage{}
 		}
 		assistantMessage.ReasoningDetails = reasoningDetails
-		assistantMessage.Reasoning = schemas.Ptr(reasoningText)
+		if reasoningText != "" {
+			assistantMessage.Reasoning = new(reasoningText)
+		}
 	}
 
 	// Create the response choice

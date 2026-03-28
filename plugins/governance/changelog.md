@@ -1,2 +1,1 @@
-- feat: routing rules now support multiple weighted targets for probabilistic routing
-- feat: target-level key pinning: each entry in `targets[]` can specify `key_id` to pin a specific API key for that target, bypassing load-balanced key selection
+[feat]: snap LastReset to calendar boundary for calendar-aligned budgets [@17jmumford](https://github.com/17jmumford)

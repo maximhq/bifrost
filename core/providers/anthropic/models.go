@@ -3,10 +3,11 @@ package anthropic
 import (
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -40,17 +41,26 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 				continue
 			}
 		}
+		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, modelID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:      string(providerKey) + "/" + modelID,
-			Name:    schemas.Ptr(model.DisplayName),
-			Created: schemas.Ptr(model.CreatedAt.Unix()),
+			ID:              string(providerKey) + "/" + modelID,
+			Name:            schemas.Ptr(model.DisplayName),
+			Created:         schemas.Ptr(model.CreatedAt.Unix()),
+			MaxInputTokens:  model.MaxInputTokens,
+			MaxOutputTokens: model.MaxTokens,
+			ProviderExtra:   model.Capabilities,
 		})
 		includedModels[modelID] = true
 	}
 
-	// Backfill allowed models that were not in the response
+	// Backfill allowed models that were not in the response (skip blacklisted; blacklist wins over allow list)
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
@@ -77,10 +87,18 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 	if response.LastID != nil {
 		anthropicResponse.LastID = response.LastID
 	}
+	if response.HasMore != nil {
+		anthropicResponse.HasMore = *response.HasMore
+	}
 
 	for _, model := range response.Data {
+		_, modelID := schemas.ParseModelString(model.ID, schemas.Anthropic)
 		anthropicModel := AnthropicModel{
-			ID: model.ID,
+			ID:             modelID,
+			Type:           "model",
+			MaxInputTokens: model.MaxInputTokens,
+			MaxTokens:      model.MaxOutputTokens,
+			Capabilities:   model.ProviderExtra,
 		}
 		if model.Name != nil {
 			anthropicModel.DisplayName = *model.Name

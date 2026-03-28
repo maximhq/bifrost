@@ -21,6 +21,7 @@ type TableProvider struct {
 	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
 	PricingOverridesJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized []schemas.ProviderPricingOverride
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
@@ -38,6 +39,7 @@ type TableProvider struct {
 
 	// Custom provider fields
 	CustomProviderConfig *schemas.CustomProviderConfig     `gorm:"-" json:"custom_provider_config,omitempty"`
+	OpenAIConfig         *schemas.OpenAIConfig             `gorm:"-" json:"openai_config,omitempty"`
 	PricingOverrides     []schemas.ProviderPricingOverride `gorm:"-" json:"pricing_overrides,omitempty"`
 
 	// Foreign keys
@@ -99,6 +101,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfigJSON = string(data)
+	}
+	if p.OpenAIConfig != nil {
+		data, err := json.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return err
+		}
+		p.OpenAIConfigJSON = string(data)
+	} else {
+		p.OpenAIConfigJSON = ""
 	}
 	if p.PricingOverrides != nil {
 		data, err := json.Marshal(p.PricingOverrides)
@@ -171,6 +182,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfig = &customConfig
+	}
+
+	if p.OpenAIConfigJSON != "" {
+		var openaiConfig schemas.OpenAIConfig
+		if err := json.Unmarshal([]byte(p.OpenAIConfigJSON), &openaiConfig); err != nil {
+			return err
+		}
+		p.OpenAIConfig = &openaiConfig
 	}
 
 	if p.PricingOverridesJSON != "" {

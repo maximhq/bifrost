@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -15,7 +15,7 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean) => {
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -45,6 +45,12 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		id: "debugging",
 		label: "Debugging",
 	});
+	if (isOpenAI) {
+		tabs.push({
+			id: "openai-config",
+			label: "OpenAI Config",
+		});
+	}
 	return tabs;
 };
 
@@ -52,10 +58,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
+	const isOpenAI = provider.name === "openai";
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess);
-	}, [hasCustomProviderConfig, hasGovernanceAccess]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -74,7 +81,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8 sm:max-w-[50%]">
+			<SheetContent className="custom-scrollbar p-8 sm:max-w-[50%]">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
@@ -90,7 +97,12 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
 							<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
 								{tabs.map((tab) => (
-									<TabsTrigger key={tab.id} value={tab.id} data-testid={`provider-tab-${tab.id}`} className="flex-none px-3 whitespace-nowrap">
+									<TabsTrigger
+										key={tab.id}
+										value={tab.id}
+										data-testid={`provider-tab-${tab.id}`}
+										className="flex-none px-3 whitespace-nowrap"
+									>
 										{tab.label}
 									</TabsTrigger>
 								))}
@@ -98,6 +110,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</div>
 						<TabsContent value="api-structure">
 							<ApiStructureFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="openai-config">
+							<OpenAIConfigFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="network">
 							<NetworkFormFragment provider={provider} />

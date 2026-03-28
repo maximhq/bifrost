@@ -912,6 +912,19 @@
             "description": "Version of the plugin (default: 1). Increment in this number will force a reload of the plugin and DB update.",
             "optional": true,
             "default": 1
+          },
+          "placement": {
+            "type": "string",
+            "enum": ["pre_builtin", "post_builtin"],
+            "description": "Whether this plugin runs before or after built-in plugins. Default: post_builtin",
+            "optional": true,
+            "default": "post_builtin"
+          },
+          "order": {
+            "type": "integer",
+            "description": "Position within placement group. Lower values execute earlier. Default: 0",
+            "optional": true,
+            "default": 0
           }
         },
         "allOf": [
@@ -1118,7 +1131,8 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "description": "Provider to use for generating embeddings",
+                      "minLength": 1,
+                      "description": "Provider to use for generating embeddings. Required for semantic search; omit it for direct hash mode with dimension: 1.",
                       "enum": [
                         "openai",
                         "anthropic",
@@ -1142,14 +1156,14 @@
                     },
                     "keys": {
                       "type": "array",
-                      "description": "API keys for the embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)",
+                      "description": "API keys for the embedding provider. These are injected at runtime for config-driven setups and are not needed for direct caching with dimension: 1.",
                       "items": {
                         "type": "string"
                       }
                     },
                     "embedding_model": {
                       "type": "string",
-                      "description": "Model to use for generating embeddings (optional)"
+                      "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
                     "cleanup_on_shutdown": {
                       "type": "boolean",
@@ -1206,9 +1220,46 @@
                     }
                   },
                   "required": [
-                    "provider",
-                    "keys",
                     "dimension"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "provider",
+                          "embedding_model"
+                        ],
+                        "properties": {
+                          "dimension": {
+                            "type": "integer",
+                            "minimum": 2
+                          }
+                        }
+                      },
+                      "else": {
+                        "not": {
+                          "required": [
+                            "embedding_model"
+                          ]
+                        },
+                        "properties": {
+                          "dimension": {
+                            "const": 1
+                          }
+                        }
+                      }
+                    }
                   ],
                   "additionalProperties": false
                 }
@@ -1988,6 +2039,18 @@
         "ca_cert_pem": {
           "type": "string",
           "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+        },
+        "stream_idle_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600,
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+        },
+        "max_conns_per_host": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
         }
       },
       "additionalProperties": false
@@ -3134,6 +3197,12 @@
         "clientSecret": {
           "type": "string",
           "description": "Client secret (optional, required for token revocation)"
+        },
+        "cloud": {
+          "type": "string",
+          "enum": ["commercial", "gcc-high", "dod"],
+          "default": "commercial",
+          "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
         "audience": {
           "type": "string",

@@ -1,12 +1,22 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
+import { cn } from "@/lib/utils";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { MCPLogFilters } from "./filters";
+
+const COLUMN_LABELS: Record<string, string> = {
+	timestamp: "Time",
+	tool_name: "Tool Name",
+	server_label: "Server",
+	latency: "Latency",
+	cost: "Cost",
+};
 
 interface DataTableProps {
 	columns: ColumnDef<MCPToolLogEntry>[];
@@ -38,10 +48,45 @@ export function MCPLogsDataTable({
 	isSocketConnected,
 	liveEnabled,
 	onLiveToggle,
-	fetchLogs,
-	fetchStats,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
+
+	// Derive all column IDs from column definitions
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
+
+	// Column config: order, visibility, pinning — persisted in URL
+	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
+		columnIds,
+		paramName: "mcp_cols",
+		fixedColumns: { left: [], right: [] },
+	});
+
+	// Measure actual header cell widths for pixel-perfect pin offsets
+	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
+	const pinOffsets = usePinOffsets(headerCellRefs, columnPinning);
+
+	// Shadow on the edge of pinned groups
+	const lastLeftPinId = columnPinning.left?.at(-1);
+	const firstRightPinId = columnPinning.right?.at(0);
+
+	// Handle native drag-and-drop reorder
+	const handleColumnDrop = useCallback(
+		(draggedId: string, targetId: string) => {
+			const newEntries = [...entries];
+			const draggedIdx = newEntries.findIndex((e) => e.id === draggedId);
+			const targetIdx = newEntries.findIndex((e) => e.id === targetId);
+			if (draggedIdx === -1 || targetIdx === -1) return;
+			const [moved] = newEntries.splice(draggedIdx, 1);
+			newEntries.splice(targetIdx, 0, moved);
+			reorder(newEntries);
+		},
+		[entries, reorder],
+	);
 
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
 		const newSorting = typeof updaterOrValue === "function" ? updaterOrValue(sorting) : updaterOrValue;
@@ -66,6 +111,9 @@ export function MCPLogsDataTable({
 		pageCount: Math.ceil(totalItems / pagination.limit),
 		state: {
 			sorting,
+			columnOrder,
+			columnVisibility,
+			columnPinning,
 		},
 		onSortingChange: handleSortingChange,
 	});
@@ -89,20 +137,45 @@ export function MCPLogsDataTable({
 
 	return (
 		<div className="space-y-2">
-			<MCPLogFilters filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
+			<div className="flex items-center gap-2">
+				<div className="flex-1">
+					<MCPLogFilters filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
+				</div>
+				<ColumnConfigDropdown
+					entries={entries}
+					labels={COLUMN_LABELS}
+					onToggleVisibility={toggleVisibility}
+					onReset={reset}
+				/>
+			</div>
 			<div className="max-h-[calc(100vh-16.5rem)] rounded-sm border">
 				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
-					<TableHeader className="px-2">
+					<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a] px-2 [&_tr]:border-b")}>
 						{table.getHeaderGroups().map((headerGroup) => (
-							<TableRow key={headerGroup.id}>
+							<tr
+								key={headerGroup.id}
+								className="hover:bg-muted/50 dark:hover:bg-muted/75 data-[state=selected]:bg-muted border-b transition-colors"
+							>
 								{headerGroup.headers.map((header) => (
-									<TableHead key={header.id}>
-										{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-									</TableHead>
+									<DraggableColumnHeader
+										key={header.id}
+										header={header}
+										isConfigurable={!fixedColumnIds.has(header.column.id)}
+										pinStyle={buildPinStyle(header.column, pinOffsets)}
+										pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+										className={cn(
+											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+										)}
+										onHide={toggleVisibility}
+										onPin={togglePin}
+										onDrop={handleColumnDrop}
+										cellRef={setHeaderCellRef(header.column.id)}
+									/>
 								))}
-							</TableRow>
+							</tr>
 						))}
-					</TableHeader>
+					</thead>
 					<TableBody>
 						{loading ? (
 							<TableRow>
@@ -139,12 +212,25 @@ export function MCPLogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer">
-											{row.getVisibleCells().map((cell) => (
-												<TableCell onClick={() => onRowClick?.(row.original, cell.column.id)} key={cell.id}>
-													{flexRender(cell.column.columnDef.cell, cell.getContext())}
-												</TableCell>
-											))}
+										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+											{row.getVisibleCells().map((cell) => {
+												const pinned = cell.column.getIsPinned();
+												return (
+													<TableCell
+														onClick={() => onRowClick?.(row.original, cell.column.id)}
+														key={cell.id}
+														style={buildPinStyle(cell.column, pinOffsets)}
+														className={cn(
+															pinned && "bg-card",
+															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+															"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+														)}
+													>
+														{flexRender(cell.column.columnDef.cell, cell.getContext())}
+													</TableCell>
+												);
+											})}
 										</TableRow>
 									))
 								) : (

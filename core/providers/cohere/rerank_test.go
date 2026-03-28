@@ -1,6 +1,7 @@
 package cohere
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -15,18 +16,12 @@ func TestCohereRerankResponseToBifrostRerankResponse(t *testing.T) {
 			{
 				Index:          1,
 				RelevanceScore: 0.62,
-				Document: map[string]interface{}{
-					"text":  "provider-doc-1",
-					"id":    "doc-1",
-					"topic": "geography",
-				},
+				Document: json.RawMessage(`{"text":"provider-doc-1","id":"doc-1","topic":"geography"}`),
 			},
 			{
 				Index:          0,
 				RelevanceScore: 0.91,
-				Document: map[string]interface{}{
-					"text": "provider-doc-0",
-				},
+				Document: json.RawMessage(`{"text":"provider-doc-0"}`),
 			},
 		},
 	}).ToBifrostRerankResponse(nil, false)
@@ -56,16 +51,12 @@ func TestCohereRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T
 			{
 				Index:          1,
 				RelevanceScore: 0.62,
-				Document: map[string]interface{}{
-					"text": "provider-doc-1",
-				},
+				Document: json.RawMessage(`{"text":"provider-doc-1"}`),
 			},
 			{
 				Index:          0,
 				RelevanceScore: 0.91,
-				Document: map[string]interface{}{
-					"text": "provider-doc-0",
-				},
+				Document: json.RawMessage(`{"text":"provider-doc-0"}`),
 			},
 		},
 	}).ToBifrostRerankResponse(requestDocs, true)

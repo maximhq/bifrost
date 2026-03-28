@@ -8,6 +8,10 @@ icon: "codepen"
 
 ![Opencode with Bifrost](../media/opencode-with-bifrost.png)
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with OpenCode, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 ### 1. Configure OpenCode to work with Bifrost
@@ -50,7 +54,7 @@ Route Anthropic models through Bifrost's Anthropic endpoint:
     "anthropic": {
       "name": "Bifrost",
       "options": {
-        "baseURL": "http://localhost:8080/anthropic",
+        "baseURL": "http://localhost:8080/anthropic/v1",
         "apiKey": "your-bifrost-key"
       },
       "models": {

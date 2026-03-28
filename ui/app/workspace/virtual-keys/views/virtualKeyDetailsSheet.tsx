@@ -41,7 +41,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8 sm:max-w-2xl">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl">
 				<SheetHeader className="p-0 flex flex-col items-start">
 					<SheetTitle>{virtualKey.name}</SheetTitle>
 					<SheetDescription>{virtualKey.description || "Virtual key details and usage information"}</SheetDescription>

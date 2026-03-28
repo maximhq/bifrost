@@ -20,7 +20,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	messages := bifrostReq.Input
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: AnthropicDefaultMaxTokens,
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// Convert parameters
@@ -42,7 +42,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if ok {
 			delete(anthropicReq.ExtraParams, "top_k")
 			anthropicReq.TopK = topK
-
+		}
+		if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+			delete(anthropicReq.ExtraParams, "speed")
+			anthropicReq.Speed = speed
 		}
 		// extract inference_geo and context management
 		if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
@@ -53,9 +56,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
 				delete(anthropicReq.ExtraParams, "context_management")
 				anthropicReq.ContextManagement = cm
-			} else if data, err := json.Marshal(cmVal); err == nil {
+			} else if data, err := providerUtils.MarshalSorted(cmVal); err == nil {
 				var cm ContextManagement
-				if json.Unmarshal(data, &cm) == nil {
+				if sonic.Unmarshal(data, &cm) == nil {
 					delete(anthropicReq.ExtraParams, "context_management")
 					anthropicReq.ContextManagement = &cm
 				}
@@ -132,6 +135,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						Default:  tool.Function.Parameters.Default,
 						Nullable: tool.Function.Parameters.Nullable,
 					}
+				}
+
+				if anthropicTool.InputSchema != nil {
+					anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
 				}
 
 				if tool.CacheControl != nil {
@@ -367,11 +374,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						Name: toolCall.Function.Name,
 					}
 
-					// Parse arguments JSON to interface{}
+					// Preserve original key ordering of tool arguments for prompt caching.
+					// Using json.RawMessage avoids the map[string]interface{} round-trip
+					// that would destroy key order.
 					if toolCall.Function.Arguments != "" {
-						var input interface{}
-						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err == nil {
-							toolUse.Input = input
+						if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
+							toolUse.Input = json.RawMessage(compacted)
+						} else {
+							// Preserve original payload instead of silently dropping args.
+							toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
 						}
 					}
 
@@ -449,7 +460,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 						// This is a structured output tool - convert to text content
 						var jsonStr string
 						if c.Input != nil {
-							if argBytes, err := sonic.Marshal(c.Input); err == nil {
+							if argBytes, err := providerUtils.MarshalSorted(c.Input); err == nil {
 								jsonStr = string(argBytes)
 							} else {
 								jsonStr = fmt.Sprintf("%v", c.Input)
@@ -467,7 +478,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 
 					// Marshal the input to JSON string
 					if c.Input != nil {
-						args, err := json.Marshal(c.Input)
+						args, err := providerUtils.MarshalSorted(c.Input)
 						if err != nil {
 							function.Arguments = fmt.Sprintf("%v", c.Input)
 						} else {
@@ -659,21 +670,24 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		// Add tool calls as tool_use content
 		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil && choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-				// Parse arguments JSON string back to map
-				var input map[string]interface{}
+				// Parse arguments JSON string to raw message
+				var inputRaw json.RawMessage
 				if toolCall.Function.Arguments != "" {
-					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-						input = map[string]interface{}{}
+					// Validate it's valid JSON, otherwise use empty object
+					if json.Valid([]byte(toolCall.Function.Arguments)) {
+						inputRaw = json.RawMessage(toolCall.Function.Arguments)
+					} else {
+						inputRaw = json.RawMessage("{}")
 					}
 				} else {
-					input = map[string]interface{}{}
+					inputRaw = json.RawMessage("{}")
 				}
 
 				content = append(content, AnthropicContentBlock{
 					Type:  AnthropicContentBlockTypeToolUse,
 					ID:    toolCall.ID,
 					Name:  toolCall.Function.Name,
-					Input: input,
+					Input: inputRaw,
 				})
 			}
 		}
@@ -1049,7 +1063,7 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 	}
 
 	// Marshal to JSON and format as SSE
-	jsonData, err := json.Marshal(streamResp)
+	jsonData, err := providerUtils.MarshalSorted(streamResp)
 	if err != nil {
 		return ""
 	}
@@ -1065,7 +1079,7 @@ func ToAnthropicChatStreamError(bifrostErr *schemas.BifrostError) string {
 		return ""
 	}
 	// Marshal to JSON
-	jsonData, err := json.Marshal(errorResp)
+	jsonData, err := providerUtils.MarshalSorted(errorResp)
 	if err != nil {
 		return ""
 	}

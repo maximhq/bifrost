@@ -38,9 +38,9 @@ type Config struct {
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
-	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
+	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
+	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -118,6 +118,7 @@ type StreamChunk struct {
 // StreamAccumulator manages accumulation of streaming chunks for caching
 type StreamAccumulator struct {
 	RequestID      string                 // The request ID
+	StorageID      string                 // The final cache entry ID
 	Chunks         []*StreamChunk         // All chunks for this stream
 	IsComplete     bool                   // Whether the stream is complete
 	HasError       bool                   // Whether any chunk in the stream had an error
@@ -248,6 +249,7 @@ const (
 
 	// context keys for internal usage
 	requestIDKey              schemas.BifrostContextKey = "semantic_cache_request_id"
+	requestStorageIDKey       schemas.BifrostContextKey = "semantic_cache_request_storage_id"
 	requestHashKey            schemas.BifrostContextKey = "semantic_cache_request_hash"
 	requestEmbeddingKey       schemas.BifrostContextKey = "semantic_cache_embedding"
 	requestEmbeddingTokensKey schemas.BifrostContextKey = "semantic_cache_embedding_tokens"
@@ -319,8 +321,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	if config.Provider == "" || len(config.Keys) == 0 {
-		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
+	if config.Provider == "" && config.Dimension == 1 {
+		logger.Info(PluginLoggerPrefix + " Starting in direct-only mode (dimension=1, no embedding provider)")
+	} else if config.Provider == "" || len(config.Keys) == 0 {
+		logger.Warn(PluginLoggerPrefix + " Incomplete semantic mode config: missing provider or keys, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
 		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
@@ -374,6 +378,19 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
+func (plugin *Plugin) clearRequestScopedContext(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(requestIDKey)
+	ctx.ClearValue(requestStorageIDKey)
+	ctx.ClearValue(requestHashKey)
+	ctx.ClearValue(requestParamsHashKey)
+	ctx.ClearValue(requestModelKey)
+	ctx.ClearValue(requestProviderKey)
+	ctx.ClearValue(requestEmbeddingKey)
+	ctx.ClearValue(requestEmbeddingTokensKey)
+	ctx.ClearValue(isCacheHitKey)
+	ctx.ClearValue(cacheHitTypeKey)
+}
+
 // PreLLMHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.
@@ -403,6 +420,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	}
 
+	// Clear request-scoped semantic cache state up front in case the context is reused.
+	plugin.clearRequestScopedContext(ctx)
+
+	if !isSemanticCacheSupportedRequestType(req.RequestType) {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for unsupported request type: " + string(req.RequestType))
+		return req, nil, nil
+	}
+
 	if plugin.isConversationHistoryThresholdExceeded(req) {
 		plugin.logger.Debug(PluginLoggerPrefix + " Skipping caching for request with conversation history threshold exceeded")
 		return req, nil, nil
@@ -430,7 +455,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	if performDirectSearch {
 		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
 		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
+			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			// Don't return - continue to semantic search fallback
 			shortCircuit = nil // Ensure we don't use an invalid shortCircuit
 		}
@@ -456,6 +481,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		// Try semantic search as fallback
 		shortCircuit, err := plugin.performSemanticSearch(ctx, req, cacheKey)
 		if err != nil {
+			plugin.logger.Debug(PluginLoggerPrefix + " Semantic search skipped: " + err.Error() + " (" + describeRequestShape(req) + ")")
 			return req, nil, nil
 		}
 
@@ -559,6 +585,13 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	requestID, ok := ctx.Value(requestIDKey).(string)
 	if !ok {
 		return res, nil, nil
+	}
+	storageID := requestID
+	// When direct lookup prepared a deterministic storage ID, reuse it here so
+	// default-mode traffic warms the GetChunk fast path instead of only the
+	// legacy search path.
+	if v, ok := ctx.Value(requestStorageIDKey).(string); ok && v != "" {
+		storageID = v
 	}
 	// Check cache type to optimize embedding handling
 	var embedding []float32
@@ -687,11 +720,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		}
 
 		if bifrost.IsStreamRequestType(requestType) {
-			if err := plugin.addStreamingResponse(cacheCtx, requestID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
+			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
 				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
 			}
 		} else {
-			if err := plugin.addSingleResponse(cacheCtx, requestID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			if err := plugin.addSingleResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 				plugin.logger.Warn("%s Failed to cache single response: %v", PluginLoggerPrefix, err)
 			}
 		}

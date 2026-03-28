@@ -48,7 +48,6 @@
 package integrations
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -611,7 +610,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		var rawBody []byte
 
 		// Execute the request through Bifrost
-		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderFilterConfig())
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher())
 
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
@@ -844,20 +843,25 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 	switch {
 	case bifrostReq.ListModelsRequest != nil:
-		// Get provider from header - if not set or "all", list from all providers
-		// Otherwise, list models from the specified provider
+		// Determine provider: explicit header overrides request field; otherwise
+		// fall back to the request field and finally to list-all behavior.
 		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-list-models-provider")))
+		switch listModelsProvider {
+		case "":
+			// keep any provider already set on the request
+		case "all":
+			bifrostReq.ListModelsRequest.Provider = ""
+		default:
+			bifrostReq.ListModelsRequest.Provider = schemas.ModelProvider(listModelsProvider)
+		}
 
 		var listModelsResponse *schemas.BifrostListModelsResponse
 		var bifrostErr *schemas.BifrostError
 
-		if listModelsProvider == "" || listModelsProvider == "all" {
-			// No specific provider requested - list from all providers
-			listModelsResponse, bifrostErr = g.client.ListAllModels(bifrostCtx, bifrostReq.ListModelsRequest)
-		} else {
-			// Specific provider requested - override the provider in the request
-			bifrostReq.ListModelsRequest.Provider = schemas.ModelProvider(listModelsProvider)
+		if bifrostReq.ListModelsRequest.Provider != "" {
 			listModelsResponse, bifrostErr = g.client.ListModelsRequest(bifrostCtx, bifrostReq.ListModelsRequest)
+		} else {
+			listModelsResponse, bifrostErr = g.client.ListAllModels(bifrostCtx, bifrostReq.ListModelsRequest)
 		}
 
 		if bifrostErr != nil {
@@ -2280,11 +2284,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
 
-	// Use streaming response writer
-	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+	// Use SSEStreamReader to bypass fasthttp's internal pipe (fasthttputil.PipeConns)
+	// which batches multiple SSE events into single TCP segments.
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	// Producer goroutine: processes the stream channel, formats events, sends to reader
+	go func() {
 		defer func() {
 			schemas.ReleaseHTTPRequest(httpReq)
-			w.Flush()
+			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
@@ -2311,13 +2320,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 			// Note: We no longer check ctx.Done() here because fasthttp.RequestCtx.Done()
 			// only closes when the whole server shuts down, not when an individual client disconnects.
-			// Client disconnects are detected via write errors, which trigger the defer cancel() above.
+			// Client disconnects are detected via write errors on reader.Send(), which returns false.
 
 			// Handle errors
 			if chunk.BifrostError != nil {
 				var errorResponse interface{}
-				var errorJSON []byte
-				var err error
 
 				// Use stream error converter if available, otherwise fallback to regular error converter
 				if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
@@ -2338,16 +2345,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				if sseErrorString, ok := errorResponse.(string); ok {
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
-					// Example: "event: error\ndata: {...}\n\n"
-					if _, err := fmt.Fprint(w, sseErrorString); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
-					}
+					reader.Send([]byte(sseErrorString))
 				} else {
 					// STANDARD SSE FORMAT: The converter returned an object
-					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
-					// Used by most providers (OpenAI, Google, etc.)
-					errorJSON, err = sonic.Marshal(errorResponse)
+					errorJSON, err := sonic.Marshal(errorResponse)
 					if err != nil {
 						// Fallback to basic error if marshaling fails
 						basicError := map[string]interface{}{
@@ -2357,23 +2358,15 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							},
 						}
 						if errorJSON, err = sonic.Marshal(basicError); err != nil {
-							cancel() // Can't send error (client likely disconnected), cancel upstream stream
+							cancel()
 							return
 						}
 					}
 
 					// Send error as SSE data
-					if _, err := fmt.Fprintf(w, "data: %s\n\n", errorJSON); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
-					}
+					reader.SendEvent("", errorJSON)
 				}
 
-				// Flush and return on error
-				if err := w.Flush(); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
-					return
-				}
 				return // End stream on error, Bifrost handles cleanup internally
 			} else {
 				// Allow plugins to modify/filter the chunk via StreamChunkInterceptor
@@ -2387,12 +2380,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 								cancel()
 								return
 							}
-							// Return error event and stopping the streaming
-							if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", errorJSON); err != nil {
-								cancel()
-								return
-							}
-							_ = w.Flush()
+							// Return error event and stop streaming
+							reader.SendError(errorJSON)
 							cancel()
 							return
 						}
@@ -2439,18 +2428,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					continue
 				}
 
-				if eventType != "" {
-					// OPENAI RESPONSES FORMAT: Use event: and data: lines for OpenAI responses API compatibility
-					if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
-					}
-				}
 				// Handle Bedrock Event Stream format
 				if config.Type == RouteConfigTypeBedrock && eventStreamEncoder != nil {
 					// We need to cast to BedrockStreamEvent to determine event type and structure
 					if bedrockEvent, ok := convertedResponse.(*bedrock.BedrockStreamEvent); ok {
-						// Passing it to interceptor to modify the event
 						// Convert to sequence of specific Bedrock events
 						events := bedrockEvent.ToEncodedEvents()
 
@@ -2482,54 +2463,55 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 								Payload: jsonData,
 							}
 
-							if err := eventStreamEncoder.Encode(w, message); err != nil {
+							var msgBuf bytes.Buffer
+							if err := eventStreamEncoder.Encode(&msgBuf, message); err != nil {
 								g.logger.Warn("[Bedrock Stream] Failed to encode message: %v", err)
 								cancel()
 								return
 							}
 
-							// Flush each message to ensure proper delivery
-							if err := w.Flush(); err != nil {
-								g.logger.Warn("[Bedrock Stream] Failed to flush writer: %v", err)
+							if !reader.Send(msgBuf.Bytes()) {
+								g.logger.Warn("[Bedrock Stream] Client disconnected")
 								cancel()
 								return
 							}
 						}
 					}
-					// Continue to next chunk (we handled flushing internally)
+					// Continue to next chunk (we handled sending internally)
 					continue
-				} else if sseString, ok := convertedResponse.(string); ok {
-					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
-					// This is used by providers like Anthropic that need custom event types
-					// Example: "event: content_block_delta\ndata: {...}\n\n"
-					if !strings.HasPrefix(sseString, "data: ") && !strings.HasPrefix(sseString, "event: ") {
-						sseString = fmt.Sprintf("data: %s\n\n", sseString)
-					}
-					if _, err := fmt.Fprint(w, sseString); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
+				}
+
+				// Build and send SSE event
+				var buf []byte
+				var sent bool
+				if sseString, ok := convertedResponse.(string); ok {
+					if strings.HasPrefix(sseString, "data: ") || strings.HasPrefix(sseString, "event: ") {
+						// Pre-formatted SSE string (e.g. Anthropic custom event types)
+						if eventType != "" {
+							// Prepend event type line to pre-formatted data
+							buf = make([]byte, 0, 7+len(eventType)+1+len(sseString))
+							buf = append(buf, "event: "...)
+							buf = append(buf, eventType...)
+							buf = append(buf, '\n')
+							buf = append(buf, sseString...)
+							sent = reader.Send(buf)
+						} else {
+							sent = reader.Send([]byte(sseString))
+						}
+					} else {
+						sent = reader.SendEvent(eventType, []byte(sseString))
 					}
 				} else {
-					// STANDARD SSE FORMAT: The converter returned an object
-					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
-					// Used by most providers (OpenAI chat/completions, Google, etc.)
 					responseJSON, err := sonic.Marshal(convertedResponse)
 					if err != nil {
-						// Log JSON marshaling error but continue processing
 						g.logger.Warn("Failed to marshal streaming response: %v", err)
 						continue
 					}
-
-					// Send as SSE data
-					if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
-						return
-					}
+					sent = reader.SendEvent(eventType, responseJSON)
 				}
 
-				// Flush immediately to send the chunk
-				if err := w.Flush(); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
+				if !sent {
+					cancel() // Client disconnected, cancel upstream stream
 					return
 				}
 			}
@@ -2541,13 +2523,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		//   - Bedrock: uses AWS Event Stream format rather than SSE with [DONE].
 		// Bifrost handles any additional cleanup internally on normal stream completion.
 		if shouldSendDoneMarker && config.Type != RouteConfigTypeGenAI && config.Type != RouteConfigTypeBedrock {
-			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-				g.logger.Warn("Failed to write SSE done marker: %v", err)
+			if !reader.SendDone() {
+				g.logger.Warn("Failed to write SSE done marker: client disconnected")
 				cancel()
-				return // End stream on error, Bifrost handles cleanup internally
+				return
 			}
 		}
-	})
+	}()
 }
 
 // extractPassthroughModel extracts the model from the passthrough request path and/or body.
@@ -2653,7 +2635,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return true
 	})
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderMatcher())
 	if directKey := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)); directKey != nil {
 		if key, ok := directKey.(schemas.Key); ok {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
@@ -2775,6 +2757,9 @@ func (g *GenericRouter) handlePassthroughStream(
 		return
 	}
 
+	// Skip post-hook body materialization — ctx.Response.Body() would buffer the entire stream.
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
 	ctx.SetStatusCode(passthroughResp.StatusCode)
 	ctx.SetConnectionClose()
 	for k, v := range passthroughResp.Headers {
@@ -2786,19 +2771,19 @@ func (g *GenericRouter) handlePassthroughStream(
 		}
 	}
 
-	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
+	reader := lib.NewSSEStreamReader()
+	ctx.Response.SetBodyStream(reader, -1)
+
+	go func() {
 		defer func() {
-			w.Flush()
+			reader.Done()
 			cancel()
 		}()
 
 		// Write the first chunk's data.
 		if len(passthroughResp.Body) > 0 {
-			if _, err := w.Write(passthroughResp.Body); err != nil {
-				cancel()
-				return
-			}
-			if err := w.Flush(); err != nil {
+			if !reader.Send(passthroughResp.Body) {
 				cancel()
 				return
 			}
@@ -2812,15 +2797,11 @@ func (g *GenericRouter) handlePassthroughStream(
 				break
 			}
 			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) > 0 {
-				if _, err := w.Write(chunk.BifrostPassthroughResponse.Body); err != nil {
-					cancel()
-					return
-				}
-				if err := w.Flush(); err != nil {
+				if !reader.Send(chunk.BifrostPassthroughResponse.Body) {
 					cancel()
 					return
 				}
 			}
 		}
-	})
+	}()
 }

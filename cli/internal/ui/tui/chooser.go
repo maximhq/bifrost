@@ -33,33 +33,36 @@ type HarnessOption struct {
 
 // ChooserConfig holds the initial values and callbacks for the interactive chooser TUI.
 type ChooserConfig struct {
-	Version      string
-	Commit       string
-	ConfigSrc    string
-	Message      string
-	BaseURL      string
-	VirtualKey   string
-	Harness      string
-	Model        string
-	Worktree     string
-	Harnesses    []HarnessOption
-	AfterSession bool // true when returning from a harness session; blocks input until ready
-	ReservedRows int  // rows reserved by the tab bar; subtracted from the available height
-	FetchModels  func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
-	Notify       func(message string, isError bool)
-	Input        io.Reader // optional stdin override; when nil, os.Stdin is used
+	Version       string
+	Commit        string
+	ConfigSrc     string
+	Message       string
+	UpdateVersion string
+	BaseURL       string
+	VirtualKey    string
+	Harness       string
+	Model         string
+	Worktree      string
+	Harnesses     []HarnessOption
+	AfterSession  bool // true when returning from a harness session; blocks input until ready
+	ReservedRows  int              // rows reserved by the tab bar; subtracted from the available height
+	TabBarLine    func() string    // returns the current tab bar content; rendered as the last line
+	FetchModels   func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
+	Notify        func(message string, isError bool)
+	Input         io.Reader // optional stdin override; when nil, os.Stdin is used
 }
 
 // ChooserResult holds the user's selections after the chooser TUI completes.
 type ChooserResult struct {
-	Quit           bool
-	BackToTabs     bool // true when the user pressed Ctrl+B to return to tab command mode
-	InstallHarness bool // true when user selected a harness that needs installation
-	BaseURL        string
-	VirtualKey     string
-	Harness        string
-	Model          string
-	Worktree       string
+	Quit            bool
+	BackToTabs      bool // true when the user pressed Ctrl+B to return to tab command mode
+	UpdateRequested bool
+	InstallHarness  bool // true when user selected a harness that needs installation
+	BaseURL         string
+	VirtualKey      string
+	Harness         string
+	Model           string
+	Worktree        string
 }
 
 type chooserPhase int
@@ -88,6 +91,7 @@ type chooserModel struct {
 	backToTabs      bool
 	done            bool
 	installHarness  bool
+	updateRequested bool
 	returnToSummary bool
 
 	width  int
@@ -136,6 +140,9 @@ func RunChooser(cfg ChooserConfig) (ChooserResult, error) {
 	}
 	if fm.backToTabs {
 		return ChooserResult{BackToTabs: true}, nil
+	}
+	if fm.updateRequested {
+		return ChooserResult{UpdateRequested: true}, nil
 	}
 	if fm.quit {
 		return ChooserResult{Quit: true}, nil
@@ -250,7 +257,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.height < 10 {
 			m.height = 10
 		}
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tea.KeyMsg:
 		if m.warming {
@@ -263,6 +270,15 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if s == "ctrl+b" {
 			m.backToTabs = true
+			return m, tea.Quit
+		}
+		canTriggerUpdate := strings.TrimSpace(m.cfg.UpdateVersion) != "" &&
+			m.phase != phaseBaseURL &&
+			m.phase != phaseVirtualKey &&
+			m.phase != phaseModel &&
+			m.phase != phaseWorktree
+		if canTriggerUpdate && (s == "y" || s == "Y") {
+			m.updateRequested = true
 			return m, tea.Quit
 		}
 		// Only handle 'q' as quit when not in a text input phase
@@ -602,6 +618,12 @@ func (m chooserModel) View() string {
 		body.WriteString(hint.Render(m.message))
 		body.WriteString("\n\n")
 	}
+	if updateVersion := strings.TrimSpace(m.cfg.UpdateVersion); updateVersion != "" {
+		body.WriteString(accent.Render("Update available: "))
+		body.WriteString(hint.Render("bifrost " + updateVersion + "  "))
+		body.WriteString(accent.Render("press y to update now"))
+		body.WriteString("\n\n")
+	}
 	if m.loadErr != "" && m.cfg.Notify == nil {
 		body.WriteString(errorStyle.Render(m.loadErr))
 		body.WriteString("\n\n")
@@ -784,9 +806,7 @@ func (m chooserModel) View() string {
 	}
 
 	logoLines := strings.Count(logoBlock, "\n") + 1
-	metaLines := 1
 	contentLines := strings.Count(contentStr, "\n") + 1
-	gapLines := 2 // gap between meta and content
 
 	// Calculate how many lines the footer will occupy after wrapping
 	footerLines := 1
@@ -794,14 +814,14 @@ func (m chooserModel) View() string {
 		footerLines = strings.Count(wrapFooter(footer, w), "\n") + 1
 	}
 
-	statusLines := 0
-
-	bodyHeight := logoLines + metaLines + gapLines + contentLines
-	topPad := (h - bodyHeight - footerLines - statusLines) / 2
+	// Actual rendered lines between topPad and bottomPad:
+	//   logoLines + 1 (meta) + 1 (blank gap line) + contentLines
+	bodyHeight := logoLines + 2 + contentLines
+	topPad := (h - bodyHeight - footerLines) / 2
 	if topPad < 0 {
 		topPad = 0
 	}
-	bottomPad := h - topPad - bodyHeight - footerLines - statusLines
+	bottomPad := h - topPad - bodyHeight - footerLines
 	if bottomPad < 1 {
 		bottomPad = 1
 	}
@@ -818,12 +838,21 @@ func (m chooserModel) View() string {
 	out.WriteString(centeredMeta)
 	out.WriteString("\n\n")
 	out.WriteString(contentStr)
-	out.WriteString(strings.Repeat("\n", bottomPad))
+	// N newlines between two text blocks produce N-1 visible blank lines,
+	// so emit bottomPad+1 to get exactly bottomPad blank lines.
+	out.WriteString(strings.Repeat("\n", bottomPad+1))
 	// Wrap footer into multiple centered lines if it exceeds terminal width
 	if lipgloss.Width(footer) > w {
 		out.WriteString(wrapFooter(footer, w))
 	} else {
 		out.WriteString(centerLine(footer, w))
+	}
+
+	// Append the tab bar so it is part of Bubble Tea's render and survives
+	// screen clears on resize.
+	if m.cfg.TabBarLine != nil {
+		out.WriteString("\n\n")
+		out.WriteString(m.cfg.TabBarLine())
 	}
 
 	return out.String()

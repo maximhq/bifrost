@@ -1,0 +1,39 @@
+---
+title: "HashiCorp Vault"
+description: "HashiCorp Vault integration for secret management in Bifrost. Centralized API key storage and automatic synchronization with your HashiCorp Vault instance."
+icon: "vault"
+---
+
+Bifrost integrates with [HashiCorp Vault](https://www.vaultproject.io/) for centralized secret management, allowing you to store provider API keys and virtual keys in your existing Vault infrastructure and automatically sync them into Bifrost.
+
+## Configuration
+
+Add a `vault` block to your Bifrost configuration to connect to your HashiCorp Vault instance:
+
+```json
+{
+  "vault": {
+    "type": "hashicorp",
+    "address": "https://vault.company.com:8200",
+    "token": "${VAULT_TOKEN}",
+    "mount": "secret",
+    "sync_interval": "300s"
+  }
+}
+```
+
+## Configuration Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `string` | Must be set to `"hashicorp"` to use HashiCorp Vault. |
+| `address` | `string` | The full URL of your HashiCorp Vault server, including the port. |
+| `token` | `string` | Authentication token for Vault access. Supports environment variable interpolation via `${VAULT_TOKEN}`. |
+| `mount` | `string` | The secrets engine mount path in Vault (e.g., `"secret"` for the default KV secrets engine). |
+| `sync_interval` | `string` | How often Bifrost syncs keys from Vault. Accepts duration strings such as `"300s"`, `"5m"`, or `"1h"`. |
+
+<Note>
+  The `sync_interval` field controls how frequently Bifrost polls your vault for key changes. Lower intervals detect changes faster but increase load on your vault server. See the [Vault Support](/enterprise/vault-support) page for full sync configuration options including `sync_paths` and `auto_deprecate`.
+</Note>
+
+For key synchronization, deprecation management, and security configuration, see [Vault Support](/enterprise/vault-support).

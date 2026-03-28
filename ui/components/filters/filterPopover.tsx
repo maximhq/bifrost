@@ -12,11 +12,13 @@ import { useState } from "react";
 interface FilterPopoverProps {
 	filters: LogFiltersType;
 	onFilterChange: (key: keyof LogFiltersType, values: string[] | boolean) => void;
+	onMetadataFilterChange?: (metadataKey: string, value: string | undefined) => void;
 	showMissingCost?: boolean;
 }
 
-export function FilterPopover({ filters, onFilterChange, showMissingCost }: FilterPopoverProps) {
+export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange, showMissingCost }: FilterPopoverProps) {
 	const [open, setOpen] = useState(false);
+	const [customMetadataInputs, setCustomMetadataInputs] = useState<Record<string, string>>({});
 
 	const { data: providersData, isLoading: providersLoading } = useGetProvidersQuery();
 	const { data: filterData, isLoading: filterDataLoading } = useGetAvailableFilterDataQuery();
@@ -27,30 +29,46 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const availableRoutingRules = filterData?.routing_rules || [];
 	const availableRoutingEngines = filterData?.routing_engines || [];
+	const availableMetadataKeys = filterData?.metadata_keys || {};
 
-	// Create mappings from name to ID for keys, virtual keys, and routing rules
-	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
-	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
-	const routingRuleNameToId = new Map(availableRoutingRules.map((rule) => [rule.name, rule.id]));
+	// Create mappings from name to ALL matching IDs (handles duplicate names from deleted keys)
+	const groupByName = (items: { name: string; id: string }[]) => {
+		const map = new Map<string, string[]>();
+		for (const item of items) {
+			const ids = map.get(item.name) || [];
+			ids.push(item.id);
+			map.set(item.name, ids);
+		}
+		return map;
+	};
+	const selectedKeyNameToIds = groupByName(availableSelectedKeys);
+	const virtualKeyNameToIds = groupByName(availableVirtualKeys);
+	const routingRuleNameToIds = groupByName(availableRoutingRules);
 
-	const FILTER_OPTIONS = {
+	// Deduplicate by name to avoid React key collisions (e.g. multiple deleted keys with the same name)
+	const dedup = (items: { name: string }[]) => [...new Map(items.map((i) => [i.name, i])).values()].map((i) => i.name);
+
+	const FILTER_OPTIONS: Record<string, string[]> = {
 		Status: [...Statuses],
 		Providers: providersLoading ? [] : availableProviders.map((provider) => provider.name),
 		Type: [...RequestTypes],
 		Models: filterDataLoading ? [] : availableModels,
-		"Selected Keys": filterDataLoading ? [] : availableSelectedKeys.map((key) => key.name),
-		"Virtual Keys": filterDataLoading ? [] : availableVirtualKeys.map((key) => key.name),
+		"Selected Keys": filterDataLoading ? [] : dedup(availableSelectedKeys),
+		"Virtual Keys": filterDataLoading ? [] : dedup(availableVirtualKeys),
 		"Routing Engines": filterDataLoading ? [] : availableRoutingEngines,
-		"Routing Rules": filterDataLoading ? [] : availableRoutingRules.map((rule) => rule.name),
+		"Routing Rules": filterDataLoading ? [] : dedup(availableRoutingRules),
 	};
+
+	// Add dynamic metadata categories
+	for (const [metadataKey, values] of Object.entries(availableMetadataKeys)) {
+		FILTER_OPTIONS[`Metadata: ${metadataKey}`] = values;
+	}
 
 	const isCategoryLoading = (category: string) =>
 		(category === "Providers" && providersLoading) ||
-		(category !== "Status" && category !== "Type" && category !== "Providers" && filterDataLoading);
+		(category !== "Status" && category !== "Type" && category !== "Providers" && !category.startsWith("Metadata: ") && filterDataLoading);
 
-	type FilterCategory = keyof typeof FILTER_OPTIONS;
-
-	const filterKeyMap: Record<FilterCategory, keyof LogFiltersType> = {
+	const filterKeyMap: Record<string, keyof LogFiltersType> = {
 		Status: "status",
 		Providers: "providers",
 		Type: "objects",
@@ -61,43 +79,99 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		"Routing Engines": "routing_engine_used",
 	};
 
-	const resolveValueForCategory = (category: FilterCategory, value: string): string => {
-		if (category === "Selected Keys") return selectedKeyNameToId.get(value) || value;
-		if (category === "Virtual Keys") return virtualKeyNameToId.get(value) || value;
-		if (category === "Routing Rules") return routingRuleNameToId.get(value) || value;
-		return value;
+	// Resolves a display name to all matching IDs for key/rule categories
+	const resolveValuesForCategory = (category: string, value: string): string[] => {
+		if (category === "Selected Keys") return selectedKeyNameToIds.get(value) || [value];
+		if (category === "Virtual Keys") return virtualKeyNameToIds.get(value) || [value];
+		if (category === "Routing Rules") return routingRuleNameToIds.get(value) || [value];
+		return [value];
 	};
 
-	const handleFilterSelect = (category: FilterCategory, value: string) => {
+	const handleFilterSelect = (category: string, value: string) => {
+		// Handle metadata categories
+		if (category.startsWith("Metadata: ")) {
+			const metadataKey = category.replace("Metadata: ", "");
+			const currentValue = filters.metadata_filters?.[metadataKey];
+			const predefinedValues = FILTER_OPTIONS[category] || [];
+
+			if (currentValue === value) {
+				// Deselect - clear the filter and the draft
+				onMetadataFilterChange?.(metadataKey, undefined);
+				setCustomMetadataInputs((prev) => {
+					const updated = { ...prev };
+					delete updated[category];
+					return updated;
+				});
+			} else {
+				// Select
+				onMetadataFilterChange?.(metadataKey, value);
+				// Only clear draft if selecting a predefined value (not custom input submission)
+				if (predefinedValues.includes(value)) {
+					setCustomMetadataInputs((prev) => {
+						const updated = { ...prev };
+						delete updated[category];
+						return updated;
+					});
+				}
+			}
+			return;
+		}
+
 		const filterKey = filterKeyMap[category];
-		const resolved = resolveValueForCategory(category, value);
+		const resolvedIds = resolveValuesForCategory(category, value);
 
 		const currentValues = (filters[filterKey] as string[]) || [];
-		const newValues = currentValues.includes(resolved)
-			? currentValues.filter((v) => v !== resolved)
-			: [...currentValues, resolved];
+		// Check if ALL resolved IDs are already selected (toggle all together)
+		const allSelected = resolvedIds.every((id) => currentValues.includes(id));
+		const newValues = allSelected
+			? currentValues.filter((v) => !resolvedIds.includes(v))
+			: [...currentValues, ...resolvedIds.filter((id) => !currentValues.includes(id))];
 
 		onFilterChange(filterKey, newValues);
 	};
 
-	const isSelected = (category: FilterCategory, value: string) => {
+	const isSelected = (category: string, value: string) => {
+		// Handle metadata categories
+		if (category.startsWith("Metadata: ")) {
+			const metadataKey = category.replace("Metadata: ", "");
+			return filters.metadata_filters?.[metadataKey] === value;
+		}
+
 		const filterKey = filterKeyMap[category];
 		const currentValues = filters[filterKey];
-		const resolved = resolveValueForCategory(category, value);
+		const resolvedIds = resolveValuesForCategory(category, value);
 
-		return Array.isArray(currentValues) && currentValues.includes(resolved);
+		return Array.isArray(currentValues) && resolvedIds.every((id) => currentValues.includes(id));
 	};
 
-	const excludedKeys = ["start_time", "end_time", "content_search"];
+	// Count unique visible names for ID-based categories (avoids inflated badge when
+	// multiple backing IDs share the same display name due to deduplication).
+	const countUniqueNames = (ids: string[], nameToIds: Map<string, string[]>): number => {
+		const seen = new Set<string>();
+		for (const [name, mappedIds] of nameToIds) {
+			if (mappedIds.some((id) => ids.includes(id))) {
+				seen.add(name);
+			}
+		}
+		return seen.size;
+	};
+	const dedupedCountKeys: Record<string, Map<string, string[]>> = {
+		selected_key_ids: selectedKeyNameToIds,
+		virtual_key_ids: virtualKeyNameToIds,
+		routing_rule_ids: routingRuleNameToIds,
+	};
+
+	const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
 	const selectedCount = Object.entries(filters).reduce((count, [key, value]) => {
 		if (excludedKeys.includes(key)) {
 			return count;
 		}
 		if (Array.isArray(value)) {
-			return count + value.length;
+			const nameMap = dedupedCountKeys[key];
+			return count + (nameMap ? countUniqueNames(value, nameMap) : value.length);
 		}
 		return count + (value ? 1 : 0);
-	}, 0);
+	}, 0) + (filters.metadata_filters ? Object.keys(filters.metadata_filters).length : 0);
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -146,12 +220,12 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 										</CommandItem>
 									) : (
 										values.map((value: string) => {
-											const selected = isSelected(category as FilterCategory, value);
+											const selected = isSelected(category, value);
 											return (
 												<CommandItem
 													key={value}
-													data-testid={`filter-item-${category.toLowerCase().replace(/\s+/g, "-")}-${value}`}
-													onSelect={() => handleFilterSelect(category as FilterCategory, value)}
+													data-testid={`filter-item-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${value.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+													onSelect={() => handleFilterSelect(category, value)}
 												>
 													<div
 														className={cn(
@@ -169,6 +243,36 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 											);
 										})
 									)}
+									{category.startsWith("Metadata: ") && (() => {
+									const metadataKey = category.replace("Metadata: ", "");
+									const activeValue = filters.metadata_filters?.[metadataKey];
+									const isCustom = activeValue && !values.includes(activeValue);
+									const displayValue = customMetadataInputs[category] ?? (isCustom ? activeValue : "");
+									return (
+										<div className="flex items-center gap-1 px-2 py-1">
+											<input
+												className="h-7 w-full rounded border bg-transparent px-2 text-sm placeholder:text-muted-foreground"
+												placeholder="Custom value..."
+												data-testid={`filter-custom-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+												value={displayValue}
+												onChange={(e) => {
+													const newVal = e.target.value;
+													setCustomMetadataInputs((prev) => ({ ...prev, [category]: newVal }));
+													if (newVal === "" && isCustom) {
+														onMetadataFilterChange?.(metadataKey, undefined);
+													}
+												}}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" && customMetadataInputs[category]?.trim()) {
+														handleFilterSelect(category, customMetadataInputs[category].trim());
+													}
+													e.stopPropagation();
+												}}
+												onClick={(e) => e.stopPropagation()}
+											/>
+										</div>
+									);
+								})()}
 								</CommandGroup>
 							))}
 					</CommandList>

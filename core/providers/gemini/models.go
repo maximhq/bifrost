@@ -7,7 +7,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func toGeminiModelResourceName(modelID string) string {
+	if strings.HasPrefix(modelID, "models/") {
+		return modelID
+	}
+	if idx := strings.Index(modelID, "/"); idx >= 0 && idx+1 < len(modelID) {
+		return "models/" + modelID[idx+1:]
+	}
+	return "models/" + modelID
+}
+
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -25,6 +35,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
 			continue
 		}
+		if !unfiltered && slices.Contains(blacklistedModels, modelName) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:               string(providerKey) + "/" + modelName,
 			Name:             schemas.Ptr(model.DisplayName),
@@ -40,6 +53,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
@@ -64,7 +80,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 
 	for _, model := range resp.Data {
 		geminiModel := GeminiModel{
-			Name:                       model.ID,
+			Name:                       toGeminiModelResourceName(model.ID),
 			SupportedGenerationMethods: model.SupportedMethods,
 		}
 		if model.Name != nil {

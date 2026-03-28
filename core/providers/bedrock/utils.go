@@ -1,13 +1,13 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -104,14 +104,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				})
 			} else if schemas.IsNovaModel(bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
-				defaultMaxTokens := DefaultCompletionMaxTokens
+				modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+				defaultMaxTokens := modelDefaultMaxTokens
 				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
 					defaultMaxTokens = *bedrockReq.InferenceConfig.MaxTokens
 				} else if bedrockReq.InferenceConfig != nil {
-					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(modelDefaultMaxTokens)
 				} else {
 					bedrockReq.InferenceConfig = &BedrockInferenceConfig{
-						MaxTokens: schemas.Ptr(DefaultCompletionMaxTokens),
+						MaxTokens: schemas.Ptr(modelDefaultMaxTokens),
 					}
 				}
 
@@ -145,15 +146,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				})
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-			maxTokens := DefaultCompletionMaxTokens
+			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+			maxTokens := modelDefaultMaxTokens
 			if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
 				maxTokens = *bedrockReq.InferenceConfig.MaxTokens
 			} else {
 				if bedrockReq.InferenceConfig != nil {
-					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(modelDefaultMaxTokens)
 				} else {
 					bedrockReq.InferenceConfig = &BedrockInferenceConfig{
-						MaxTokens: schemas.Ptr(DefaultCompletionMaxTokens),
+						MaxTokens: schemas.Ptr(modelDefaultMaxTokens),
 					}
 				}
 			}
@@ -504,31 +506,38 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 		var toolResultContent []BedrockContentBlock
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string
-			// Try to unmarshal the string content as JSON
-			var parsedOutput interface{}
-			if err := json.Unmarshal([]byte(*msg.Content.ContentStr), &parsedOutput); err != nil {
+			// Validate and compact JSON without parsing into Go types (preserves key ordering)
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, []byte(*msg.Content.ContentStr)); err != nil {
 				// If it's not valid JSON, wrap it as a text block instead
 				toolResultContent = append(toolResultContent, BedrockContentBlock{
 					Text: msg.Content.ContentStr,
 				})
 			} else {
-				// Use the parsed JSON object
+				compacted := buf.Bytes()
 				// Bedrock does not accept primitives or arrays directly in the json field
-				switch v := parsedOutput.(type) {
-				case map[string]any:
+				if len(compacted) > 0 && compacted[0] == '{' {
 					// Objects are valid as-is
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: v,
+						JSON: json.RawMessage(compacted),
 					})
-				case []any:
+				} else if len(compacted) > 0 && compacted[0] == '[' {
 					// Arrays need to be wrapped
+					wrapped := make([]byte, 0, len(compacted)+len(`{"results":}`))
+					wrapped = append(wrapped, `{"results":`...)
+					wrapped = append(wrapped, compacted...)
+					wrapped = append(wrapped, '}')
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: map[string]any{"results": v},
+						JSON: json.RawMessage(wrapped),
 					})
-				default:
+				} else {
 					// Primitives (string, number, boolean, null) need to be wrapped
+					wrapped := make([]byte, 0, len(compacted)+len(`{"value":}`))
+					wrapped = append(wrapped, `{"value":`...)
+					wrapped = append(wrapped, compacted...)
+					wrapped = append(wrapped, '}')
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: map[string]any{"value": v},
+						JSON: json.RawMessage(wrapped),
 					})
 				}
 			}
@@ -861,12 +870,16 @@ func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.Ch
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
 	// Create the Bedrock tool
+	schemaObjBytes, err := providerUtils.MarshalSorted(schemaObj)
+	if err != nil {
+		return nil
+	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
 			Name:        toolName,
 			Description: schemas.Ptr(description),
 			InputSchema: BedrockToolInputSchema{
-				JSON: schemaObj,
+				JSON: json.RawMessage(schemaObjBytes),
 			},
 		},
 	}
@@ -903,12 +916,16 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.Re
 		return nil // Schema is required for Bedrock tooling
 	}
 
+	schemaObjBytes2, err := providerUtils.MarshalSorted(schemaObj)
+	if err != nil {
+		return nil
+	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
 			Name:        toolName,
 			Description: schemas.Ptr(description),
 			InputSchema: BedrockToolInputSchema{
-				JSON: schemaObj,
+				JSON: json.RawMessage(schemaObjBytes2),
 			},
 		},
 	}
@@ -945,99 +962,19 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	var bedrockTools []BedrockTool
 	for _, tool := range params.Tools {
 		if tool.Function != nil {
-			// Create the complete schema object that Bedrock expects
-			var schemaObject interface{}
+			// Serialize the parameters (or a default empty schema) to json.RawMessage
+			var schemaObjectBytes []byte
 			if tool.Function.Parameters != nil {
-				// Use the complete parameters object which includes type, properties, required, etc.
-				schemaMap := map[string]interface{}{
-					"type": tool.Function.Parameters.Type,
+				// ToolFunctionParameters.MarshalJSON handles all fields including
+				// properties, required, enum, additionalProperties, $defs, etc.
+				var err error
+				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				if err != nil {
+					continue
 				}
-				if tool.Function.Parameters.Properties != nil {
-					schemaMap["properties"] = tool.Function.Parameters.Properties
-				}
-				// Add required field if present
-				if len(tool.Function.Parameters.Required) > 0 {
-					schemaMap["required"] = tool.Function.Parameters.Required
-				}
-				// Add description if present
-				if tool.Function.Parameters.Description != nil {
-					schemaMap["description"] = *tool.Function.Parameters.Description
-				}
-				// Add enum if present
-				if len(tool.Function.Parameters.Enum) > 0 {
-					schemaMap["enum"] = tool.Function.Parameters.Enum
-				}
-				// Add additionalProperties if present
-				if tool.Function.Parameters.AdditionalProperties != nil {
-					schemaMap["additionalProperties"] = tool.Function.Parameters.AdditionalProperties
-				}
-				// Add JSON Schema definition fields
-				if tool.Function.Parameters.Defs != nil {
-					schemaMap["$defs"] = tool.Function.Parameters.Defs
-				}
-				if tool.Function.Parameters.Definitions != nil {
-					schemaMap["definitions"] = tool.Function.Parameters.Definitions
-				}
-				if tool.Function.Parameters.Ref != nil {
-					schemaMap["$ref"] = *tool.Function.Parameters.Ref
-				}
-				// Add array schema fields
-				if tool.Function.Parameters.Items != nil {
-					schemaMap["items"] = tool.Function.Parameters.Items
-				}
-				if tool.Function.Parameters.MinItems != nil {
-					schemaMap["minItems"] = *tool.Function.Parameters.MinItems
-				}
-				if tool.Function.Parameters.MaxItems != nil {
-					schemaMap["maxItems"] = *tool.Function.Parameters.MaxItems
-				}
-				// Add composition fields
-				if len(tool.Function.Parameters.AnyOf) > 0 {
-					schemaMap["anyOf"] = tool.Function.Parameters.AnyOf
-				}
-				if len(tool.Function.Parameters.OneOf) > 0 {
-					schemaMap["oneOf"] = tool.Function.Parameters.OneOf
-				}
-				if len(tool.Function.Parameters.AllOf) > 0 {
-					schemaMap["allOf"] = tool.Function.Parameters.AllOf
-				}
-				// Add string validation fields
-				if tool.Function.Parameters.Format != nil {
-					schemaMap["format"] = *tool.Function.Parameters.Format
-				}
-				if tool.Function.Parameters.Pattern != nil {
-					schemaMap["pattern"] = *tool.Function.Parameters.Pattern
-				}
-				if tool.Function.Parameters.MinLength != nil {
-					schemaMap["minLength"] = *tool.Function.Parameters.MinLength
-				}
-				if tool.Function.Parameters.MaxLength != nil {
-					schemaMap["maxLength"] = *tool.Function.Parameters.MaxLength
-				}
-				// Add number validation fields
-				if tool.Function.Parameters.Minimum != nil {
-					schemaMap["minimum"] = *tool.Function.Parameters.Minimum
-				}
-				if tool.Function.Parameters.Maximum != nil {
-					schemaMap["maximum"] = *tool.Function.Parameters.Maximum
-				}
-				// Add misc fields
-				if tool.Function.Parameters.Title != nil {
-					schemaMap["title"] = *tool.Function.Parameters.Title
-				}
-				if tool.Function.Parameters.Default != nil {
-					schemaMap["default"] = tool.Function.Parameters.Default
-				}
-				if tool.Function.Parameters.Nullable != nil {
-					schemaMap["nullable"] = *tool.Function.Parameters.Nullable
-				}
-				schemaObject = schemaMap
 			} else {
 				// Fallback to empty object schema if no parameters
-				schemaObject = map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				}
+				schemaObjectBytes = []byte(`{"type":"object","properties":{}}`)
 			}
 
 			// Use the tool description if available, otherwise use a generic description
@@ -1051,7 +988,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 					Name:        tool.Function.Name,
 					Description: schemas.Ptr(description),
 					InputSchema: BedrockToolInputSchema{
-						JSON: schemaObject,
+						JSON: json.RawMessage(schemaObjectBytes),
 					},
 				},
 			}
@@ -1155,13 +1092,14 @@ func checkMessageForToolContent(msg schemas.ChatMessage, toolsMap map[string]Bed
 						"type":       "object",
 						"properties": map[string]interface{}{},
 					}
+					extractedSchemaBytes, _ := providerUtils.MarshalSorted(schemaObject)
 
 					toolsMap[*toolCall.Function.Name] = BedrockTool{
 						ToolSpec: &BedrockToolSpec{
 							Name:        *toolCall.Function.Name,
 							Description: schemas.Ptr("Tool extracted from conversation history"),
 							InputSchema: BedrockToolInputSchema{
-								JSON: schemaObject,
+								JSON: json.RawMessage(extractedSchemaBytes),
 							},
 						},
 					}
@@ -1199,10 +1137,16 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 		toolName = *toolCall.Function.Name
 	}
 
-	// Parse JSON arguments to object
-	var input interface{}
-	if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
-		input = map[string]interface{}{} // Fallback to empty object
+	// Preserve original key ordering of tool arguments for prompt caching.
+	// Using json.RawMessage avoids the map[string]interface{} round-trip
+	// that would destroy key order.
+	var input json.RawMessage
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+		input = buf.Bytes()
+	} else {
+		// Preserve original payload instead of silently dropping args.
+		input = json.RawMessage([]byte(toolCall.Function.Arguments))
 	}
 
 	return BedrockContentBlock{
@@ -1452,22 +1396,30 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 // tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
 // BedrockContentBlock based on the result.
 func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
-	var parsed interface{}
-	// Try to parse as JSON, otherwise treat as text
-	if err := sonic.UnmarshalString(text, &parsed); err != nil {
+	// Validate and compact JSON without parsing into Go types (preserves key ordering)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(text)); err != nil {
 		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	}
+	compacted := buf.Bytes()
+
+	// Bedrock does not accept primitives or arrays directly in the json field
+	if len(compacted) > 0 && compacted[0] == '{' {
+		// Objects are valid as-is
+		return BedrockContentBlock{JSON: json.RawMessage(compacted)}
+	} else if len(compacted) > 0 && compacted[0] == '[' {
+		// Arrays need to be wrapped
+		wrapped := make([]byte, 0, len(compacted)+len(`{"results":}`))
+		wrapped = append(wrapped, `{"results":`...)
+		wrapped = append(wrapped, compacted...)
+		wrapped = append(wrapped, '}')
+		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	} else {
-		// Bedrock does not accept primitives or arrays directly in the json field
-		switch v := parsed.(type) {
-		case map[string]any:
-			// Objects are valid as-is
-			return BedrockContentBlock{JSON: v}
-		case []any:
-			// Arrays need to be wrapped
-			return BedrockContentBlock{JSON: map[string]any{"results": v}}
-		default:
-			// Primitives (string, number, boolean, null) need to be wrapped
-			return BedrockContentBlock{JSON: map[string]any{"value": v}}
-		}
+		// Primitives (string, number, boolean, null) need to be wrapped
+		wrapped := make([]byte, 0, len(compacted)+len(`{"value":}`))
+		wrapped = append(wrapped, `{"value":`...)
+		wrapped = append(wrapped, compacted...)
+		wrapped = append(wrapped, '}')
+		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	}
 }

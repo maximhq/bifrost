@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestPrefersPlainChooserLayoutAppleTerminal(t *testing.T) {
@@ -34,5 +36,37 @@ func TestRenderPlainChooserView(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, out)
 		}
+	}
+}
+
+func TestChooserViewShowsUpdatePrompt(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		Version:       "v1.0.0",
+		Commit:        "abc123",
+		ConfigSrc:     "test",
+		UpdateVersion: "v1.2.3",
+	})
+
+	view := m.View()
+
+	for _, want := range []string{"Update available:", "bifrost v1.2.3", "press y to update now"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected chooser view to contain %q, got %q", want, view)
+		}
+	}
+}
+
+func TestChooserUpdateShortcutRequestsUpdate(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		UpdateVersion: "v1.2.3",
+	})
+	// Move to a non-text-entry phase so 'y' isn't consumed by the input field.
+	m.phase = phaseSummary
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	got := next.(chooserModel)
+
+	if !got.updateRequested {
+		t.Fatal("expected y to request update when update is available")
 	}
 }

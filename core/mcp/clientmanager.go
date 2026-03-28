@@ -208,7 +208,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		return fmt.Errorf("client %s not found", id)
 	}
 
-	if err := validateMCPClientName(updatedConfig.Name); err != nil {
+	if err := ValidateMCPClientName(updatedConfig.Name); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 

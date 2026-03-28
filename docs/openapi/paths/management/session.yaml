@@ -74,3 +74,32 @@ is-auth-enabled:
               $ref: '../../schemas/management/session.yaml#/IsAuthEnabledResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+ws-ticket:
+  post:
+    operationId: issueWSTicket
+    summary: Issue WebSocket ticket
+    description: |
+      Issues a short-lived ticket for authenticating WebSocket connections.
+      The ticket can be used as a query parameter when upgrading to WebSocket.
+    tags:
+      - Session
+    responses:
+      '200':
+        description: Ticket issued successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ticket:
+                  type: string
+                  description: Short-lived WebSocket authentication ticket
+      '403':
+        description: Authentication is not enabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

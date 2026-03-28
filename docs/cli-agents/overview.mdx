@@ -1,18 +1,22 @@
 ---
 title: "Overview"
-description: "Use Bifrost with tools like LibreChat, Claude Code, Codex CLI, Gemini CLI and Qwen Code by just changing the base URL and unlock advanced features."
+description: "Use Bifrost with LibreChat, Claude Code, Codex CLI, Gemini CLI, Qwen Code, and more by pointing each tool at the correct Bifrost endpoint."
 icon: "Book"
 ---
 
 ## Overview
 
-Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini APIs, making it seamless to integrate with any agent that uses these providers. By simply pointing your agent's base URL to Bifrost, you unlock powerful features like:
+Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini APIs, making it seamless to integrate with any agent that uses these providers. Point each agent at the Bifrost URL shape it expects (see [Configuration](#configuration) below and the guide for your tool). That unlocks:
 
 - **Universal Model Access**: Use **any provider/model** configured in Bifrost with any agent (e.g., use GPT-5 with Claude Code, or Claude Sonnet 4.5 with Codex CLI)
 - **MCP Tools Integration**: All Model Context Protocol tools configured in Bifrost become available to your agents
 - **Built-in Observability**: Monitor all agent interactions in real-time through Bifrost's logging dashboard
 - **Load Balancing**: Automatically distribute requests across multiple providers and regions
 - **Advanced Features**: Governance, caching, failover, and more - all transparent to your agent
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with your CLI agent, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
 
 ## CLI Agents
 
@@ -25,6 +29,9 @@ Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini
   </Card>
   <Card title="Claude Code" icon="terminal" href="/cli-agents/claude-code">
     AI-powered coding directly in your terminal
+  </Card>
+  <Card title="Claude for Office" icon="file-word" href="/cli-agents/claude-for-office">
+    Claude in Word, Excel, PowerPoint, and Outlook
   </Card>
   <Card title="Codex CLI" icon="code" href="/cli-agents/codex-cli">
     OpenAI's powerful code generation CLI
@@ -55,6 +62,10 @@ Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini
 </CardGroup>
 
 ## Configuration
+
+<Note>
+**OpenAI-compatible URL shape** varies by client: tools such as **Codex CLI** need the API base to end with **`/v1`** (e.g. `https://your-gateway/openai/v1`). Official OpenAI SDKs often take `https://your-gateway/openai` and add `/v1` to request paths. Use the page for your agent to avoid 404s or wrong-host errors.
+</Note>
 
 Agent integrations work with your existing Bifrost configuration. Ensure you have:
 

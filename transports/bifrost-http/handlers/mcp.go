@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -16,6 +16,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -65,14 +66,32 @@ type MCPClientResponse struct {
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
 func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
+	emptyResponse := map[string]interface{}{
+		"clients":     []MCPClientResponse{},
+		"count":       0,
+		"total_count": 0,
+		"limit":       0,
+		"offset":      0,
+	}
 	if h.store.ConfigStore == nil {
-		SendJSON(ctx, []MCPClientResponse{})
+		SendJSON(ctx, emptyResponse)
 		return
 	}
-	// Get clients from store config
+
+	// Check if pagination params are present — if so, use paginated DB path
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	searchStr := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || searchStr != "" {
+		h.getMCPClientsPaginated(ctx, limitStr, offsetStr, searchStr)
+		return
+	}
+
+	// Non-paginated path: read from in-memory config
 	configsInStore := h.store.MCPConfig
 	if configsInStore == nil {
-		SendJSON(ctx, []MCPClientResponse{})
+		SendJSON(ctx, emptyResponse)
 		return
 	}
 	// Get actual connected clients from Bifrost
@@ -114,7 +133,114 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 			})
 		}
 	}
-	SendJSON(ctx, clients)
+	SendJSON(ctx, map[string]interface{}{
+		"clients":     clients,
+		"count":       len(clients),
+		"total_count": len(clients),
+		"limit":       len(clients),
+		"offset":      0,
+	})
+}
+
+// getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients
+func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, limitStr, offsetStr, searchStr string) {
+	params := configstore.MCPClientsQueryParams{
+		Search: searchStr,
+	}
+	if limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+
+	dbClients, totalCount, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, params)
+	if err != nil {
+		logger.Error("failed to retrieve MCP clients: %v", err)
+		SendError(ctx, 500, "Failed to retrieve MCP clients")
+		return
+	}
+
+	// Get connected clients from Bifrost engine for state/tools merge
+	clientsInBifrost, err := h.client.GetMCPClients()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP clients from Bifrost: %v", err))
+		return
+	}
+	connectedClientsMap := make(map[string]schemas.MCPClient)
+	for _, client := range clientsInBifrost {
+		connectedClientsMap[client.Config.ID] = client
+	}
+
+	// Convert DB rows to MCPClientConfig and merge with engine state
+	clients := make([]MCPClientResponse, 0, len(dbClients))
+	for _, dbClient := range dbClients {
+		isPingAvailable := true
+		if dbClient.IsPingAvailable != nil {
+			isPingAvailable = *dbClient.IsPingAvailable
+		}
+		clientConfig := &schemas.MCPClientConfig{
+			ID:                 dbClient.ClientID,
+			Name:               dbClient.Name,
+			IsCodeModeClient:   dbClient.IsCodeModeClient,
+			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:   dbClient.ConnectionString,
+			StdioConfig:        dbClient.StdioConfig,
+			AuthType:           schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:      dbClient.OauthConfigID,
+			ToolsToExecute:     dbClient.ToolsToExecute,
+			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+			Headers:            dbClient.Headers,
+			IsPingAvailable:    isPingAvailable,
+			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolPricing:        dbClient.ToolPricing,
+		}
+		redactedConfig := h.store.RedactMCPClientConfig(clientConfig)
+		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
+			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
+			copy(sortedTools, connectedClient.Tools)
+			sort.Slice(sortedTools, func(i, j int) bool {
+				return sortedTools[i].Name < sortedTools[j].Name
+			})
+			clients = append(clients, MCPClientResponse{
+				Config: redactedConfig,
+				Tools:  sortedTools,
+				State:  connectedClient.State,
+			})
+		} else {
+			clients = append(clients, MCPClientResponse{
+				Config: redactedConfig,
+				Tools:  []schemas.ChatToolFunction{},
+				State:  schemas.MCPConnectionStateError,
+			})
+		}
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"clients":     clients,
+		"count":       len(clients),
+		"total_count": totalCount,
+		"limit":       params.Limit,
+		"offset":      params.Offset,
+	})
 }
 
 // reconnectMCPClient handles POST /api/mcp/client/{id}/reconnect - Reconnect an MCP client
@@ -184,7 +310,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
-	if err := validateMCPClientName(req.Name); err != nil {
+	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
@@ -388,7 +514,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Validate client name
-	if err := validateMCPClientName(req.Name); err != nil {
+	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
@@ -584,28 +710,6 @@ func validateToolsToAutoExecute(toolsToAutoExecute []string, toolsToExecute []st
 		}
 	}
 
-	return nil
-}
-
-// validateMCPClientName validates the name of an MCP client
-func validateMCPClientName(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("client name is required")
-	}
-	for _, r := range name {
-		if r > 127 { // non-ASCII
-			return fmt.Errorf("name must contain only ASCII characters")
-		}
-	}
-	if strings.Contains(name, "-") {
-		return fmt.Errorf("client name cannot contain hyphens")
-	}
-	if strings.Contains(name, " ") {
-		return fmt.Errorf("client name cannot contain spaces")
-	}
-	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
-		return fmt.Errorf("client name cannot start with a number")
-	}
 	return nil
 }
 

@@ -124,12 +124,8 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 	if err := sonic.Unmarshal(data, &arr2D); err == nil {
 		embeddings := make([]schemas.EmbeddingData, len(arr2D))
 		for idx, embedding := range arr2D {
-			conv := make([]float32, len(embedding))
-			for i, v := range embedding {
-				conv[i] = float32(v)
-			}
 			embeddings[idx] = schemas.EmbeddingData{
-				Embedding: schemas.EmbeddingStruct{EmbeddingArray: conv},
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: append([]float64(nil), embedding...)},
 				Index:     idx,
 				Object:    "embedding",
 			}
@@ -149,13 +145,9 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 	// Try 1D array: [num, ...]
 	var arr1D []float64
 	if err := sonic.Unmarshal(data, &arr1D); err == nil {
-		conv := make([]float32, len(arr1D))
-		for i, v := range arr1D {
-			conv[i] = float32(v)
-		}
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
-				Embedding: schemas.EmbeddingStruct{EmbeddingArray: conv},
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: append([]float64(nil), arr1D...)},
 				Index:     0,
 				Object:    "embedding",
 			}},

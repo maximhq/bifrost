@@ -1,13 +1,27 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
+import { cn } from "@/lib/utils";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
+
+const COLUMN_LABELS: Record<string, string> = {
+	timestamp: "Time",
+	request_type: "Type",
+	input: "Message",
+	provider: "Provider",
+	model: "Model",
+	latency: "Latency",
+	tokens: "Tokens",
+	cost: "Cost",
+};
+
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -24,6 +38,7 @@ interface DataTableProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	metadataKeys?: string[];
 }
 
 export function LogsDataTable({
@@ -41,10 +56,55 @@ export function LogsDataTable({
 	onLiveToggle,
 	fetchLogs,
 	fetchStats,
+	metadataKeys = [],
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
+
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
+
+	// Column config: order, visibility, pinning — persisted in URL
+	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
+		columnIds,
+		paramName: "cols",
+	});
+
+	// Measure actual header cell widths for pixel-perfect pin offsets
+	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
+	const pinOffsets = usePinOffsets(headerCellRefs, columnPinning);
+
+	// Shadow on the edge of pinned groups
+	const lastLeftPinId = columnPinning.left?.at(-1);
+	const firstRightPinId = columnPinning.right?.at(0);
+
+	// Build labels including dynamic metadata columns
+	const columnLabels = useMemo(() => {
+		const labels = { ...COLUMN_LABELS };
+		for (const key of metadataKeys) {
+			labels[`metadata_${key}`] = key.charAt(0).toUpperCase() + key.slice(1);
+		}
+		return labels;
+	}, [metadataKeys]);
+
+	// Handle native drag-and-drop reorder
+	const handleColumnDrop = useCallback(
+		(draggedId: string, targetId: string) => {
+			const newEntries = [...entries];
+			const draggedIdx = newEntries.findIndex((e) => e.id === draggedId);
+			const targetIdx = newEntries.findIndex((e) => e.id === targetId);
+			if (draggedIdx === -1 || targetIdx === -1) return;
+			const [moved] = newEntries.splice(draggedIdx, 1);
+			newEntries.splice(targetIdx, 0, moved);
+			reorder(newEntries);
+		},
+		[entries, reorder],
+	);
 
 	// Refs to avoid stale closures in the page size effect
 	const paginationRef = useRef(pagination);
@@ -52,13 +112,12 @@ export function LogsDataTable({
 	paginationRef.current = pagination;
 	onPaginationChangeRef.current = onPaginationChange;
 
-	// Update pagination limit when calculated page size increases (don't reduce on size reduction)
 	useEffect(() => {
 		if (calculatedPageSize && calculatedPageSize > paginationRef.current.limit) {
 			onPaginationChangeRef.current({
 				...paginationRef.current,
 				limit: calculatedPageSize,
-				offset: 0, // Reset to first page when page size changes
+				offset: 0,
 			});
 		}
 	}, [calculatedPageSize]);
@@ -86,6 +145,9 @@ export function LogsDataTable({
 		pageCount: Math.ceil(totalItems / pagination.limit),
 		state: {
 			sorting,
+			columnOrder,
+			columnVisibility,
+			columnPinning,
 		},
 		onSortingChange: handleSortingChange,
 	});
@@ -105,30 +167,53 @@ export function LogsDataTable({
 
 	return (
 		<div className="flex h-full flex-col gap-2">
-			<div className="shrink-0">
-				<LogFiltersComponent
-					filters={filters}
-					onFiltersChange={onFiltersChange}
-					liveEnabled={liveEnabled}
-					onLiveToggle={onLiveToggle}
-					fetchLogs={fetchLogs}
-					fetchStats={fetchStats}
+			<div className="flex shrink-0 items-center gap-2">
+				<div className="flex-1">
+					<LogFiltersComponent
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						liveEnabled={liveEnabled}
+						onLiveToggle={onLiveToggle}
+						fetchLogs={fetchLogs}
+						fetchStats={fetchStats}
+					/>
+				</div>
+				<ColumnConfigDropdown
+					entries={entries}
+					labels={columnLabels}
+					onToggleVisibility={toggleVisibility}
+					onReset={reset}
 				/>
 			</div>
-			
+
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<TableHeader className="px-2">
+					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (
-							<TableRow key={headerGroup.id}>
+							<tr
+								key={headerGroup.id}
+								className="hover:bg-muted/50 dark:hover:bg-muted/75 data-[state=selected]:bg-muted border-b transition-colors"
+							>
 								{headerGroup.headers.map((header) => (
-									<TableHead key={header.id}>
-										{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-									</TableHead>
+									<DraggableColumnHeader
+										key={header.id}
+										header={header}
+										isConfigurable={!fixedColumnIds.has(header.column.id)}
+										pinStyle={buildPinStyle(header.column, pinOffsets)}
+										pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+										className={cn(
+											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+										)}
+										onHide={toggleVisibility}
+										onPin={togglePin}
+										onDrop={handleColumnDrop}
+										cellRef={setHeaderCellRef(header.column.id)}
+									/>
 								))}
-							</TableRow>
+							</tr>
 						))}
-					</TableHeader>
+					</thead>
 					<TableBody>
 						{loading ? (
 							<TableRow>
@@ -165,12 +250,25 @@ export function LogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer">
-											{row.getVisibleCells().map((cell) => (
-												<TableCell onClick={() => onRowClick?.(row.original, cell.column.id)} key={cell.id}>
-													{flexRender(cell.column.columnDef.cell, cell.getContext())}
-												</TableCell>
-											))}
+										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+											{row.getVisibleCells().map((cell) => {
+												const pinned = cell.column.getIsPinned();
+												return (
+													<TableCell
+														onClick={() => onRowClick?.(row.original, cell.column.id)}
+														key={cell.id}
+														style={buildPinStyle(cell.column, pinOffsets)}
+														className={cn(
+															pinned && "bg-card",
+															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+															"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+														)}
+													>
+														{flexRender(cell.column.columnDef.cell, cell.getContext())}
+													</TableCell>
+												);
+											})}
 										</TableRow>
 									))
 								) : (

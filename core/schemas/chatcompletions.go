@@ -374,7 +374,7 @@ func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
 	type Alias ToolFunctionParameters
-	data, err := Marshal(Alias(t))
+	data, err := MarshalSorted(Alias(t))
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +409,76 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Normalized returns a shallow copy of the ToolFunctionParameters with JSON
+// Schema structural keys sorted by priority (type, description, properties,
+// required first, then alphabetically), while preserving the client's original
+// ordering of user-defined property names inside "properties" maps. The copy
+// shares primitive values with the original but has independent key slices,
+// so sorting does not mutate the caller's data.
+//
+// User-defined property names (e.g., "chain_of_thought", "answer") are kept
+// in their original order because LLMs generate structured output fields in
+// schema-declared order. Reordering them alphabetically can degrade output
+// quality (e.g., forcing the model to write an answer before its reasoning).
+//
+// The captured keyOrder is cleared so the struct field declaration order is
+// used for the top-level keys. This produces deterministic JSON serialization
+// regardless of the client's original structural key ordering, which is
+// critical for Anthropic's prefix-based prompt caching.
+func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	out.keyOrder = JSONKeyOrder{}
+	// Properties contains user-defined field names whose order is semantically
+	// meaningful for LLM structured output generation. Preserve their key order
+	// while sorting nested schema structural keys for caching determinism.
+	out.Properties = t.Properties.preserveKeysWithPropertyAwareness()
+	out.Defs = t.Defs.SortedCopyPreservingProperties()
+	out.Definitions = t.Definitions.SortedCopyPreservingProperties()
+	out.Items = t.Items.SortedCopyPreservingProperties()
+	if len(t.AnyOf) > 0 {
+		out.AnyOf = make([]OrderedMap, len(t.AnyOf))
+		for i := range t.AnyOf {
+			if cp := t.AnyOf[i].SortedCopyPreservingProperties(); cp != nil {
+				out.AnyOf[i] = *cp
+			}
+		}
+	}
+	if len(t.OneOf) > 0 {
+		out.OneOf = make([]OrderedMap, len(t.OneOf))
+		for i := range t.OneOf {
+			if cp := t.OneOf[i].SortedCopyPreservingProperties(); cp != nil {
+				out.OneOf[i] = *cp
+			}
+		}
+	}
+	if len(t.AllOf) > 0 {
+		out.AllOf = make([]OrderedMap, len(t.AllOf))
+		for i := range t.AllOf {
+			if cp := t.AllOf[i].SortedCopyPreservingProperties(); cp != nil {
+				out.AllOf[i] = *cp
+			}
+		}
+	}
+	if t.AdditionalProperties != nil && t.AdditionalProperties.AdditionalPropertiesMap != nil {
+		out.AdditionalProperties = &AdditionalPropertiesStruct{
+			AdditionalPropertiesBool: t.AdditionalProperties.AdditionalPropertiesBool,
+			AdditionalPropertiesMap:  t.AdditionalProperties.AdditionalPropertiesMap.SortedCopyPreservingProperties(),
+		}
+	}
+	switch v := t.Default.(type) {
+	case *OrderedMap:
+		out.Default = v.SortedCopy()
+	case map[string]interface{}:
+		out.Default = OrderedMapFromMap(v).SortedCopy()
+	case []interface{}:
+		out.Default = sortedCopySlice(v)
+	}
+	return &out
+}
+
 type AdditionalPropertiesStruct struct {
 	AdditionalPropertiesBool *bool
 	AdditionalPropertiesMap  *OrderedMap
@@ -425,12 +495,12 @@ func (a AdditionalPropertiesStruct) MarshalJSON() ([]byte, error) {
 
 	// If bool is set, marshal as boolean
 	if a.AdditionalPropertiesBool != nil {
-		return Marshal(*a.AdditionalPropertiesBool)
+		return MarshalSorted(*a.AdditionalPropertiesBool)
 	}
 
 	// If map is set, marshal as object
 	if a.AdditionalPropertiesMap != nil {
-		return Marshal(a.AdditionalPropertiesMap)
+		return MarshalSorted(a.AdditionalPropertiesMap)
 	}
 
 	// If both are nil, return null
@@ -516,7 +586,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 	buf.WriteByte('{')
 
 	// Always emit "type" first
-	typeBytes, err := Marshal(string(s.Type))
+	typeBytes, err := MarshalSorted(string(s.Type))
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +596,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 	switch s.Type {
 	case ChatToolChoiceTypeFunction:
 		if s.Function != nil {
-			funcBytes, err := Marshal(s.Function)
+			funcBytes, err := MarshalSorted(s.Function)
 			if err != nil {
 				return nil, err
 			}
@@ -535,7 +605,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 		}
 	case ChatToolChoiceTypeCustom:
 		if s.Custom != nil {
-			customBytes, err := Marshal(s.Custom)
+			customBytes, err := MarshalSorted(s.Custom)
 			if err != nil {
 				return nil, err
 			}
@@ -544,7 +614,7 @@ func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
 		}
 	case ChatToolChoiceTypeAllowedTools:
 		if s.AllowedTools != nil {
-			allowedBytes, err := Marshal(s.AllowedTools)
+			allowedBytes, err := MarshalSorted(s.AllowedTools)
 			if err != nil {
 				return nil, err
 			}
@@ -598,13 +668,13 @@ func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if ctc.ChatToolChoiceStr != nil {
-		return Marshal(ctc.ChatToolChoiceStr)
+		return MarshalSorted(ctc.ChatToolChoiceStr)
 	}
 	if ctc.ChatToolChoiceStruct != nil {
-		return Marshal(ctc.ChatToolChoiceStruct)
+		return MarshalSorted(ctc.ChatToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -734,13 +804,13 @@ func (mc ChatMessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return Marshal(*mc.ContentStr)
+		return MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return Marshal(mc.ContentBlocks)
+		return MarshalSorted(mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -969,9 +1039,10 @@ const (
 type BifrostReasoningDetailsType string
 
 const (
-	BifrostReasoningDetailsTypeSummary   BifrostReasoningDetailsType = "reasoning.summary"
-	BifrostReasoningDetailsTypeEncrypted BifrostReasoningDetailsType = "reasoning.encrypted"
-	BifrostReasoningDetailsTypeText      BifrostReasoningDetailsType = "reasoning.text"
+	BifrostReasoningDetailsTypeSummary       BifrostReasoningDetailsType = "reasoning.summary"
+	BifrostReasoningDetailsTypeEncrypted     BifrostReasoningDetailsType = "reasoning.encrypted"
+	BifrostReasoningDetailsTypeText          BifrostReasoningDetailsType = "reasoning.text"
+	BifrostReasoningDetailsTypeContentBlocks BifrostReasoningDetailsType = "reasoning.content_blocks"
 )
 
 // Not in OpenAI's spec, but needed to support inter provider reasoning capabilities.
@@ -1131,7 +1202,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
 		CachedTokens      int `json:"cached_tokens"`
 	}
-	return Marshal(raw{
+	return MarshalSorted(raw{
 		TextTokens:        d.TextTokens,
 		AudioTokens:       d.AudioTokens,
 		ImageTokens:       d.ImageTokens,

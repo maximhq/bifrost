@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -221,7 +222,7 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -284,6 +285,10 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			modelID = matchedAllowedModel
 		}
 
+		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, model.ModelID, modelID, deploymentAlias, matchedAllowedModel) {
+			continue
+		}
+
 		modelEntry := schemas.Model{
 			ID:      string(providerKey) + "/" + modelID,
 			Name:    schemas.Ptr(model.ModelName),
@@ -315,6 +320,9 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
 				continue
 			}
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, alias) {
+				continue
+			}
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 				ID:         string(providerKey) + "/" + alias,
 				Name:       schemas.Ptr(alias),
@@ -327,6 +335,9 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

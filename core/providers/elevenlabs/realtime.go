@@ -207,10 +207,10 @@ func (provider *ElevenlabsProvider) ToProviderRealtimeEvent(bifrostEvent *schema
 			"type":             elUserAudioChunk,
 			"user_audio_chunk": bifrostEvent.Delta.Audio,
 		}
-		return json.Marshal(out)
+		return schemas.MarshalSorted(out)
 
 	case schemas.RealtimeEventType("pong"):
-		return json.Marshal(map[string]interface{}{
+		return schemas.MarshalSorted(map[string]interface{}{
 			"type": "pong",
 		})
 
@@ -218,6 +218,6 @@ func (provider *ElevenlabsProvider) ToProviderRealtimeEvent(bifrostEvent *schema
 		out := map[string]interface{}{
 			"type": string(bifrostEvent.Type),
 		}
-		return json.Marshal(out)
+		return schemas.MarshalSorted(out)
 	}
 }

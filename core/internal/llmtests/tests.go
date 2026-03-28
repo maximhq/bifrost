@@ -67,6 +67,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
 		RunPromptCachingToolBlocksTest,
+		RunPromptCachingMultipleToolCallsTest,
+		RunPromptCachingMultiTurnTest,
 		RunImageGenerationTest,
 		RunImageGenerationStreamTest,
 		RunImageEditTest,
@@ -115,6 +117,9 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunPassthroughAPITest,
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
+		RunCompactionTest,
+		RunInterleavedThinkingTest,
+		RunFastModeTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -175,6 +180,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ListModelsErrorMarshal", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
 		{"PromptCachingToolBlocks", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultipleToolCalls", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultiTurn", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
 		{"ImageGeneration", testConfig.Scenarios.ImageGeneration && testConfig.ImageGenerationModel != ""},
 		{"ImageGenerationStream", testConfig.Scenarios.ImageGenerationStream && testConfig.ImageGenerationModel != ""},
 		{"ImageEdit", testConfig.Scenarios.ImageEdit && testConfig.ImageEditModel != ""},
@@ -229,6 +236,9 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
 		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
 		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
+		{"Compaction", testConfig.Scenarios.Compaction},
+		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
+		{"FastMode", testConfig.Scenarios.FastMode},
 	}
 
 	supported := 0

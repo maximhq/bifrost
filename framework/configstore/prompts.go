@@ -78,16 +78,57 @@ func (s *RDBConfigStore) UpdateFolder(ctx context.Context, folder *tables.TableF
 	return nil
 }
 
-// DeleteFolder deletes a folder (child prompts, versions, sessions and messages are cascade-deleted by the DB)
+// DeleteFolder deletes a folder and all its child prompts (with their versions, sessions, and messages).
+// PostgreSQL uses native ON DELETE CASCADE; SQLite requires manual cascade because it cannot
+// alter foreign key constraints after table creation.
 func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
-	result := s.db.WithContext(ctx).Delete(&tables.TableFolder{}, "id = ?", id)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Check folder exists
+		var folder tables.TableFolder
+		if err := tx.First(&folder, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// PostgreSQL: ON DELETE CASCADE handles all child deletions
+		if s.db.Dialector.Name() == "postgres" {
+			return tx.Delete(&folder).Error
+		}
+
+		// SQLite: manual cascade deletion
+		var promptIDs []string
+		if err := tx.Model(&tables.TablePrompt{}).Where("folder_id = ?", id).Pluck("id", &promptIDs).Error; err != nil {
+			return err
+		}
+
+		if len(promptIDs) > 0 {
+			// Delete version messages
+			if err := tx.Where("prompt_id IN ?", promptIDs).Delete(&tables.TablePromptVersionMessage{}).Error; err != nil {
+				return err
+			}
+			// Delete versions
+			if err := tx.Where("prompt_id IN ?", promptIDs).Delete(&tables.TablePromptVersion{}).Error; err != nil {
+				return err
+			}
+			// Delete session messages
+			if err := tx.Where("prompt_id IN ?", promptIDs).Delete(&tables.TablePromptSessionMessage{}).Error; err != nil {
+				return err
+			}
+			// Delete sessions
+			if err := tx.Where("prompt_id IN ?", promptIDs).Delete(&tables.TablePromptSession{}).Error; err != nil {
+				return err
+			}
+			// Delete prompts
+			if err := tx.Where("folder_id = ?", id).Delete(&tables.TablePrompt{}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Delete the folder
+		return tx.Delete(&folder).Error
+	})
 }
 
 // ============================================================================
@@ -180,16 +221,40 @@ func (s *RDBConfigStore) UpdatePrompt(ctx context.Context, prompt *tables.TableP
 	return nil
 }
 
-// DeletePrompt deletes a prompt (child versions, sessions and messages are cascade-deleted by the DB)
+// DeletePrompt deletes a prompt and all its child versions, sessions, and messages.
+// PostgreSQL uses native ON DELETE CASCADE; SQLite requires manual cascade because it cannot
+// alter foreign key constraints after table creation.
 func (s *RDBConfigStore) DeletePrompt(ctx context.Context, id string) error {
-	result := s.db.WithContext(ctx).Delete(&tables.TablePrompt{}, "id = ?", id)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Check prompt exists
+		var prompt tables.TablePrompt
+		if err := tx.First(&prompt, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// PostgreSQL: ON DELETE CASCADE handles all child deletions
+		if s.db.Dialector.Name() == "postgres" {
+			return tx.Delete(&prompt).Error
+		}
+
+		// SQLite: manual cascade deletion
+		if err := tx.Where("prompt_id = ?", id).Delete(&tables.TablePromptVersionMessage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("prompt_id = ?", id).Delete(&tables.TablePromptVersion{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("prompt_id = ?", id).Delete(&tables.TablePromptSessionMessage{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("prompt_id = ?", id).Delete(&tables.TablePromptSession{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&prompt).Error
+	})
 }
 
 // ============================================================================
@@ -293,7 +358,8 @@ func (s *RDBConfigStore) CreatePromptVersion(ctx context.Context, version *table
 	return fmt.Errorf("failed to create prompt version after %d retries due to concurrent version_number conflict", maxRetries)
 }
 
-// DeletePromptVersion deletes a version
+// DeletePromptVersion deletes a version and promotes the previous version to latest if needed.
+// PostgreSQL uses native ON DELETE CASCADE for messages; SQLite requires manual cascade.
 func (s *RDBConfigStore) DeletePromptVersion(ctx context.Context, id uint) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Get the version to check if it's latest
@@ -305,7 +371,14 @@ func (s *RDBConfigStore) DeletePromptVersion(ctx context.Context, id uint) error
 			return err
 		}
 
-		// Delete version (messages are cascade-deleted by the DB)
+		// SQLite: manually delete version messages (PostgreSQL CASCADE handles this)
+		if s.db.Dialector.Name() != "postgres" {
+			if err := tx.Where("version_id = ?", id).Delete(&tables.TablePromptVersionMessage{}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Delete the version
 		if err := tx.Delete(&tables.TablePromptVersion{}, "id = ?", id).Error; err != nil {
 			return err
 		}
@@ -467,14 +540,28 @@ func (s *RDBConfigStore) RenamePromptSession(ctx context.Context, id uint, name 
 	return nil
 }
 
-// DeletePromptSession deletes a session (messages are cascade-deleted by the DB)
+// DeletePromptSession deletes a session and its messages.
+// PostgreSQL uses native ON DELETE CASCADE for messages; SQLite requires manual cascade.
 func (s *RDBConfigStore) DeletePromptSession(ctx context.Context, id uint) error {
-	result := s.db.WithContext(ctx).Delete(&tables.TablePromptSession{}, "id = ?", id)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var session tables.TablePromptSession
+		if err := tx.First(&session, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// PostgreSQL: ON DELETE CASCADE handles message deletion
+		if s.db.Dialector.Name() == "postgres" {
+			return tx.Delete(&session).Error
+		}
+
+		// SQLite: manually delete messages first
+		if err := tx.Where("session_id = ?", id).Delete(&tables.TablePromptSessionMessage{}).Error; err != nil {
+			return err
+		}
+
+		return tx.Delete(&session).Error
+	})
 }

@@ -22,11 +22,13 @@ func TestAzure(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.Azure,
-		ChatModel:      "gpt-4o-backup",
-		VisionModel:    "gpt-4o",
+		Provider:           schemas.Azure,
+		ChatModel:          "gpt-4o-backup",
+		PromptCachingModel: "gpt-4o-backup",
+		VisionModel:        "gpt-4o",
 		ChatAudioModel: "gpt-4o-mini-audio-preview",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
@@ -57,11 +59,12 @@ func TestAzure(t *testing.T) {
 			ListModels:            true,
 			Reasoning:             true,
 			ChatAudio:             true,
-			Transcription:         true,
+			Transcription:         false, // Disabled for azure because of 3 calls/minute quota	
 			TranscriptionStream:   false, // Not properly supported yet by Azure
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true,
+			SpeechSynthesis:       false, // Disabled for azure because of 3 calls/minute quota
+			SpeechSynthesisStream: false, // Disabled for azure because of 3 calls/minute quota
 			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			PromptCaching:         true,
 			ImageGeneration:       false, // Skipped for Azure
 			ImageGenerationStream: false, // Skipped for Azure
 			ImageEdit:             false, // Model not deployed on Azure endpoint
@@ -73,6 +76,7 @@ func TestAzure(t *testing.T) {
 			VideoRemix:            false,
 			VideoList:             false,
 			VideoDelete:           false,
+			InterleavedThinking:  true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}
@@ -80,5 +84,4 @@ func TestAzure(t *testing.T) {
 	t.Run("AzureTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

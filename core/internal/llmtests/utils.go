@@ -28,7 +28,7 @@ const (
 
 func GetProviderDefaultFormat(provider schemas.ModelProvider) string {
 	switch provider {
-	case schemas.Gemini:
+	case schemas.Gemini, schemas.Groq:
 		return "wav"
 	default:
 		return "mp3"
@@ -59,6 +59,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 			return "erinome"
 		default:
 			return "achernar"
+		}
+	case schemas.Groq:
+		switch voiceType {
+		case "primary":
+			return "troy"
+		case "secondary":
+			return "autumn"
+		case "tertiary":
+			return "diana"
+		default:
+			return "troy"
 		}
 	case schemas.Elevenlabs:
 		switch voiceType {
@@ -336,7 +347,8 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 		Content: &schemas.ResponsesMessageContent{
 			ContentBlocks: []schemas.ResponsesMessageContentBlock{
 				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
-				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: bifrost.Ptr(imageURL),
 					},
@@ -575,9 +587,8 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 	return []ToolCallInfo{}
 }
 
-// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
-func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
-
+// getEmbeddingVector extracts the float64 vector from a BifrostEmbeddingResponse.
+func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float64, error) {
 	if embedding.Embedding.EmbeddingArray != nil {
 		return embedding.Embedding.EmbeddingArray, nil
 	}

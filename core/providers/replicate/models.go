@@ -12,6 +12,7 @@ func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
 	allowedModels []string,
+	blacklistedModels []string,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
@@ -28,6 +29,9 @@ func ToBifrostListModelsResponse(
 			var created *int64
 
 			if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, deploymentID) {
+				continue
+			}
+			if !unfiltered && slices.Contains(blacklistedModels, deploymentID) {
 				continue
 			}
 
@@ -62,6 +66,9 @@ func ToBifrostListModelsResponse(
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,

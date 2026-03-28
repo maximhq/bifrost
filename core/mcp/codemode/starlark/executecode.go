@@ -5,6 +5,7 @@ package starlark
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -175,7 +176,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx context.Context, toolCall s
 				responseText = "Execution completed successfully."
 			}
 			if hasResult {
-				resultJSON, err := sonic.MarshalIndent(result.Result, "", "  ")
+				resultJSON, err := schemas.MarshalSortedIndent(result.Result, "", "  ")
 				if err == nil {
 					responseText += fmt.Sprintf("\nReturn value: %s", string(resultJSON))
 					s.logger.Debug("%s Added return value to response (JSON length: %d chars)", codemcp.CodeModeLogPrefix, len(resultJSON))
@@ -428,7 +429,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx context.Context, clientName, toolName
 	}
 
 	// Marshal arguments to JSON for the tool call
-	argsJSON, err := sonic.Marshal(args)
+	argsJSON, err := schemas.MarshalSorted(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal tool arguments: %v", err)
 	}
@@ -514,6 +515,14 @@ func (s *StarlarkCodeMode) callMCPTool(ctx context.Context, clientName, toolName
 			Name:      toolNameToCall,
 			Arguments: args,
 		},
+	}
+
+	if client.ExecutionConfig.Headers != nil {
+		headers := make(http.Header)
+		for key, value := range client.ExecutionConfig.Headers {
+			headers.Add(key, value.GetValue())
+		}
+		callRequest.Header = headers
 	}
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()
@@ -606,6 +615,14 @@ func (s *StarlarkCodeMode) callMCPToolDirect(ctx context.Context, client *schema
 			Name:      originalToolName,
 			Arguments: args,
 		},
+	}
+
+	if client.ExecutionConfig.Headers != nil {
+		headers := make(http.Header)
+		for key, value := range client.ExecutionConfig.Headers {
+			headers.Add(key, value.GetValue())
+		}
+		callRequest.Header = headers
 	}
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()

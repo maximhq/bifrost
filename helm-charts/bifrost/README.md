@@ -4,9 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.13
+**Latest Version:** 2.0.14
 
 ## Changelog
+
+### v2.0.14
+
+- Added `placement` and `order` fields to custom plugin schema and template rendering
+- Added plugin property completeness check to `validate-helm-schema.sh`
+- Added custom plugin placement/order rendering tests to `validate-helm-templates.sh`
+- Added `PluginConfig` struct validation to `validate-go-config-fields.sh`
 
 ### v2.0.13
 
@@ -374,6 +381,8 @@ bifrost:
         enabled: true
         path: "/plugins/my-plugin.so"
         version: 1
+        placement: "pre_builtin"  # or "post_builtin" (default)
+        order: 0                  # execution order within placement group
         config:
           key: value
 ```

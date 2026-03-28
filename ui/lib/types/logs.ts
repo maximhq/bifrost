@@ -495,6 +495,7 @@ export interface LogFilters {
 	max_tokens?: number;
 	missing_cost_only?: boolean;
 	content_search?: string;
+	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 export interface Pagination {
@@ -530,6 +531,7 @@ export interface TokenHistogramBucket {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	cached_read_tokens: number;
 }
 
 export interface TokenHistogramResponse {
@@ -658,6 +660,7 @@ export type ResponsesMessageType =
 	| "computer_call"
 	| "computer_call_output"
 	| "web_search_call"
+	| "web_fetch_call"
 	| "function_call"
 	| "function_call_output"
 	| "code_interpreter_call"
@@ -970,6 +973,65 @@ export interface WebSocketMCPToolLogMessage {
 	type: "mcp_log";
 	operation: "create" | "update";
 	payload: MCPToolLogEntry;
+}
+
+// MCP histogram types
+
+export interface MCPHistogramBucket {
+	timestamp: string;
+	count: number;
+	success: number;
+	error: number;
+}
+
+export interface MCPHistogramResponse {
+	buckets: MCPHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface MCPCostHistogramBucket {
+	timestamp: string;
+	total_cost: number;
+}
+
+export interface MCPCostHistogramResponse {
+	buckets: MCPCostHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface MCPTopTool {
+	tool_name: string;
+	count: number;
+	cost: number;
+}
+
+export interface MCPTopToolsResponse {
+	tools: MCPTopTool[];
+}
+
+// Model Rankings types
+export interface ModelRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+	latency_trend: number;
+}
+
+export interface ModelRankingEntry {
+	model: string;
+	provider: string;
+	total_requests: number;
+	success_count: number;
+	success_rate: number;
+	total_tokens: number;
+	total_cost: number;
+	avg_latency: number;
+	trend: ModelRankingTrend;
+}
+
+export interface ModelRankingsResponse {
+	rankings: ModelRankingEntry[];
 }
 
 // Date utility functions for URL state management

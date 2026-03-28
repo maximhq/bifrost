@@ -29,7 +29,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `semanticcache.CacheTypeKey` | `x-bf-cache-type` | `string` | Cache type |
 | `semanticcache.CacheNoStoreKey` | `x-bf-cache-no-store` | `bool` | Prevent caching |
 | `mcp-include-clients` | `x-bf-mcp-include-clients` | `[]string` | Filter MCP clients (comma-separated). |
-| `mcp-include-tools` | `x-bf-mcp-include-tools` | `[]string` | Filter MCP tools (comma-separated) |
+| `mcp-include-tools` | `x-bf-mcp-include-tools` | `[]string` | Filter MCP tools (`clientName-toolName` format, comma-separated) |
 | `maxim.TraceIDKey` | `x-bf-maxim-trace-id` | `string` | Maxim trace ID |
 | `maxim.GenerationIDKey` | `x-bf-maxim-generation-id` | `string` | Maxim generation ID |
 | `maxim.TagsKey` | `x-bf-maxim-*` | `map[string]string` | Maxim tags (custom tag names) |
@@ -341,9 +341,10 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 --data '{
     "model": "openai/gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}],
-    "extra_params": {
-        "custom_param": "value",
-        "another_param": 123
+    "custom_param": "value",
+    "nested_param": {
+        "a": "value",
+        "b": 123
     }
 }'
 ```
@@ -360,7 +361,10 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
     Params: &schemas.ChatParameters{
         ExtraParams: map[string]interface{}{
             "custom_param":  "value",
-            "another_param": 123,
+            "nested_param": map[string]interface{}{
+                "a": "value",
+                "b": 123,
+            },
         },
     },
 })
@@ -742,18 +746,18 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 
 ### Include Tools
 
-**Context Key:** `mcp-include-tools`  
-**Header:** `x-bf-mcp-include-tools`  
-**Type:** `[]string` (comma-separated values)  
+**Context Key:** `mcp-include-tools`
+**Header:** `x-bf-mcp-include-tools`
+**Type:** `[]string` (comma-separated values)
 **Required:** No
 
-Filter MCP tools to include only the specified ones.
+Filter MCP tools to include only the specified ones. Values must use the `clientName-toolName` format (e.g. `gmail-send_email`). Use `clientName-*` to include all tools from a client.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
 ```bash
 curl --location 'http://localhost:8080/v1/chat/completions' \
---header 'x-bf-mcp-include-tools: tool1,tool2' \
+--header 'x-bf-mcp-include-tools: gmail-send_email,filesystem-read_file' \
 --header 'Content-Type: application/json' \
 --data '{
     "model": "openai/gpt-4o-mini",
@@ -764,7 +768,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), []string{"tool1", "tool2"})
+ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), []string{"gmail-send_email", "filesystem-read_file"})
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,

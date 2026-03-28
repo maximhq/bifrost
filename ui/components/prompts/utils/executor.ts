@@ -67,7 +67,7 @@ export async function executePrompt(
 				model: `${config.provider}/${config.model}`,
 				messages: Message.toAPIMessages(resolvedMessages),
 				...requestParams,
-				stream: requestParams.stream ?? true,
+				stream: requestParams.stream,
 			}),
 		});
 

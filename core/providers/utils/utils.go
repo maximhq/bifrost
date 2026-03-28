@@ -28,6 +28,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
@@ -45,6 +47,28 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
+// SetJSONField sets a field in JSON bytes without disturbing other fields' ordering.
+// Uses in-place byte manipulation for minimal allocations and preserves nested structure.
+func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
+	return sjson.SetBytes(data, path, value)
+}
+
+// DeleteJSONField deletes a field from JSON bytes without disturbing other fields' ordering.
+// Uses in-place byte manipulation for minimal allocations and preserves nested structure.
+func DeleteJSONField(data []byte, path string) ([]byte, error) {
+	return sjson.DeleteBytes(data, path)
+}
+
+// JSONFieldExists checks if a field exists in JSON bytes.
+func JSONFieldExists(data []byte, path string) bool {
+	return gjson.GetBytes(data, path).Exists()
+}
+
+// GetJSONField retrieves a field value from JSON bytes without parsing the entire document.
+func GetJSONField(data []byte, path string) gjson.Result {
+	return gjson.GetBytes(data, path)
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -82,13 +106,20 @@ func getLogger() schemas.Logger {
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 
-// MakeRequestWithContext makes a request with a context and returns the latency and error.
+// noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
+var noop = func() {}
+
+// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
+// wait function. The wait function MUST be called (typically via defer) before releasing the
+// request or response objects. On the normal path it is a no-op. On the context-cancellation
+// path it blocks until the background client.Do goroutine finishes, preventing a data race
+// between the still-running goroutine and the caller's release of req/resp.
+//
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
 // or times out based on its own settings. This function merely stops *waiting* for the
 // fasthttp call and returns an error related to the context.
-// Returns the request latency and any error that occurred.
-func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
@@ -103,6 +134,9 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests
 		latency := time.Since(startTime)
+		// Return a wait function that blocks until the background goroutine finishes.
+		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
+		// a data race with the still-running client.Do goroutine.
 		return latency, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -110,7 +144,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
-		}
+		}, func() { <-errChan }
 	case err := <-errChan:
 		// The fasthttp.Do call completed.
 		// Calculate latency for both successful and failed requests
@@ -124,16 +158,16 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
-				}
+				}, noop
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks
 			var opErr *net.OpError
@@ -145,7 +179,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 						Message: schemas.ErrProviderNetworkError,
 						Error:   err,
 					},
-				}
+				}, noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return latency, &schemas.BifrostError{
@@ -154,11 +188,11 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 					Message: schemas.ErrProviderDoRequest,
 					Error:   err,
 				},
-			}
+			}, noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
-		return latency, nil
+		return latency, nil, noop
 	}
 }
 
@@ -930,7 +964,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	sort.Strings(extraKeys)
 	for _, k := range extraKeys {
 		v := extraParams[k]
-		newValBytes, err := sonic.Marshal(v)
+		newValBytes, err := MarshalSorted(v)
 		if err != nil {
 			continue
 		}
@@ -948,7 +982,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 				if existingDec.Decode(&existingMap) == nil {
 					if newDec.Decode(&newMap) == nil {
 						MergeExtraParams(existingMap, newMap)
-						if merged, err := sonic.Marshal(existingMap); err == nil {
+						if merged, err := MarshalSorted(existingMap); err == nil {
 							pairs[idx].val = merged
 							continue
 						}
@@ -1005,7 +1039,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
 
-		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
+		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 		}
@@ -1855,6 +1889,78 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 	}
 }
 
+// DefaultStreamIdleTimeout is how long a stream read can block with zero data
+// before bifrost considers the connection stalled and closes it. This protects
+// against providers that stop sending data but keep the TCP connection open
+// (e.g., Azure TPM throttling).
+const DefaultStreamIdleTimeout = 60 * time.Second
+
+// SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
+// the provider's network config, but only if no valid timeout is already present.
+// This allows upstream layers (transport, headers) to set the timeout first,
+// with the provider config acting as a fallback.
+func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int) {
+	if existing, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && existing > 0 {
+		return // already set from upstream (transport/header), respect it
+	}
+	if configSeconds > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Duration(configSeconds)*time.Second)
+	}
+}
+
+// GetStreamIdleTimeout reads the per-chunk idle timeout from context,
+// falling back to DefaultStreamIdleTimeout if not set.
+func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
+	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
+		return timeout
+	}
+	return DefaultStreamIdleTimeout
+}
+
+// idleTimeoutReader wraps an io.Reader and closes the underlying body stream
+// if no data arrives within the configured timeout. This unblocks any pending
+// Read() call on the wrapped reader.
+type idleTimeoutReader struct {
+	reader     io.Reader
+	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
+	timeout    time.Duration
+	timer      *time.Timer
+	once       sync.Once
+}
+
+// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
+// no data for the given timeout duration, bodyStream is closed to unblock the read.
+// bodyStream must implement io.Closer for the timeout to take effect; if it does not,
+// the wrapper still functions but cannot force-close the stream.
+// Returns the wrapped reader and a cleanup function that MUST be called (via defer)
+// when streaming is complete, to stop the timer and prevent premature closure.
+func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
+	if timeout <= 0 {
+		timeout = DefaultStreamIdleTimeout
+	}
+	r := &idleTimeoutReader{
+		reader:     reader,
+		bodyStream: bodyStream,
+		timeout:    timeout,
+	}
+	r.timer = time.AfterFunc(timeout, func() {
+		r.once.Do(func() {
+			if closer, ok := r.bodyStream.(io.Closer); ok {
+				closer.Close()
+			}
+		})
+	})
+	return r, func() { r.timer.Stop() }
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.timer.Reset(r.timeout)
+	}
+	return n, err
+}
+
 // HandleStreamCancellation should be called when a streaming goroutine exits
 // due to context cancellation. It ensures proper cleanup by:
 // 1. Checking if StreamEndIndicator was already set (to avoid duplicate handling)
@@ -2565,4 +2671,27 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 		return defaultProvider
 	}
 	return defaultProvider
+}
+
+// ModelMatchesDenylist reports whether any of the candidate model IDs matches
+// an entry in denylist, using both exact and base-model (SameBaseModel) matching.
+// Empty candidates are skipped. Returns false immediately if denylist is empty.
+func ModelMatchesDenylist(denylist []string, candidates ...string) bool {
+	if len(denylist) == 0 {
+		return false
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if slices.Contains(denylist, c) {
+			return true
+		}
+		for _, d := range denylist {
+			if schemas.SameBaseModel(d, c) {
+				return true
+			}
+		}
+	}
+	return false
 }

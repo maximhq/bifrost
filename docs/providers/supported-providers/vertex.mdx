@@ -640,11 +640,11 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 **Code**: `utils.go:33, 71`
 </Accordion>
 
-<Accordion title="Embeddings Float64 Conversion">
+<Accordion title="Embeddings Precision Preservation">
 **Severity**: Low
-**Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
-**Impact**: Minor precision loss (expected for embeddings)
-**Code**: `embedding.go:84-87`
+**Behavior**: Vertex returns float64 embeddings, and Bifrost preserves that precision in normalized embedding responses
+**Impact**: No precision loss in the `/v1/embeddings` response path
+**Code**: `embedding.go:84-91`
 </Accordion>
 
 <Accordion title="List Models API Returns Only Custom Models">

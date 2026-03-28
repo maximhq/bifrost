@@ -337,6 +337,9 @@ func (s *RedisStore) executeSearch(ctx context.Context, namespace string, redisQ
 		if result.Err() != nil {
 			errMsg = strings.ToLower(result.Err().Error())
 			if isQuerySyntaxError(errMsg) {
+				if IsScanFallbackDisabled(ctx) {
+					return nil, fmt.Errorf("failed to search without scan fallback: %w", result.Err())
+				}
 				s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s: %s", namespace, result.Err()))
 				scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, selectFields, nil, int64(searchLimit))
 				if scanErr != nil {
@@ -1346,6 +1349,9 @@ func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, qu
 			if result.Err() != nil {
 				errMsg = strings.ToLower(result.Err().Error())
 				if isQuerySyntaxError(errMsg) {
+					if IsScanFallbackDisabled(ctx) {
+						return nil, fmt.Errorf("failed to collect matching ids without scan fallback: %w", result.Err())
+					}
 					s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s while collecting ids: %s", namespace, result.Err()))
 					scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, nil, nil, 0)
 					if scanErr != nil {

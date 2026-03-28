@@ -4,45 +4,55 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
+	// Large payload mode: body streams directly from the LP reader — skip all body building
+	// (matches CheckContextAndGetRequestBody guard).
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
 	var jsonBody []byte
 	var err error
 
 	// Check if raw request body should be used
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonBody = request.GetRawRequestBody()
-		// Unmarshal and check if model and region are present
-		var requestBody map[string]interface{}
-		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
-		}
-		// Add max_tokens if not present
-		if _, exists := requestBody["max_tokens"]; !exists {
-			requestBody["max_tokens"] = anthropic.AnthropicDefaultMaxTokens
+
+		// Add max_tokens if not present (using sjson to preserve key order for prompt caching)
+		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(deployment, anthropic.AnthropicDefaultMaxTokens))
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		}
 		// Replace model with deployment
-		requestBody["model"] = deployment
-		delete(requestBody, "fallbacks")
-		// Add stream if not present
-		if isStreaming {
-			requestBody["stream"] = true
-		}
-		jsonBody, err = sonic.Marshal(requestBody)
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", deployment)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+		// Delete fallbacks field
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+		// Add stream if streaming
+		if isStreaming {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
 		}
 	} else {
 		// Convert request to Anthropic format
 		request.Model = deployment
-		reqBody, err := anthropic.ToAnthropicResponsesRequest(ctx, request)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
+		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
+		if convErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
 		}
 		if reqBody == nil {
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
@@ -52,8 +62,11 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			reqBody.Stream = schemas.Ptr(true)
 		}
 
-		// Convert struct to map
-		jsonBody, err = sonic.Marshal(reqBody)
+		// Add provider-aware beta headers for Azure
+		anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
+
+		// Marshal struct to JSON bytes, preserving field order
+		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
 		}

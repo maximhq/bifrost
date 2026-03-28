@@ -85,6 +85,9 @@ type TestScenarios struct {
 	PassthroughAPI         bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 	WebSocketResponses     bool // WebSocket Responses API mode
 	Realtime               bool // Realtime API (bidirectional audio/text)
+	Compaction          bool // Server-side compaction (context management)
+	InterleavedThinking bool // Interleaved thinking between tool calls (beta)
+	FastMode            bool // Fast mode for Opus 4.6 (beta: research preview)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -122,6 +125,9 @@ type ComprehensiveTestConfig struct {
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
+	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
+	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
+	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
 }
 

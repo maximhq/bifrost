@@ -25,6 +25,7 @@ ModelProvider:
     - huggingface
     - nebius
     - xai
+    - runway
 
 Fallback:
   type: object

@@ -70,6 +70,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				video_remix: true,
 				count_tokens: true,
 				list_models: true,
+				websocket_responses: true,
+				realtime: false,
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
@@ -227,7 +229,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 export default function AddCustomProviderSheet(props: Props) {
 	return (
 		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
-			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8 sm:max-w-3xl" data-testid="custom-provider-sheet">
+			<SheetContent className="custom-scrollbar flex flex-col p-8 sm:max-w-3xl" data-testid="custom-provider-sheet">
 				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>

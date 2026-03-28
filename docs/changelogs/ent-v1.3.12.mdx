@@ -1,0 +1,36 @@
+---
+title: "v1.3.12"
+description: "v1.3.12 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.12">
+
+## Changelog
+
+This release upgrades the base OSS version from v1.4.15 to v1.4.16, fixing Responses API tool type routing, Postgres indexing deadlocks, and startup blocking. On the enterprise side, this release adds targeted release deployments via `--release-for` and fixes MCP tool group filtering.
+
+## ✨ Features
+
+- **Targeted Release Deployments** — Added `--release-for` flag to CI/CD pipeline, allowing releases to target specific environments by name instead of auto-detecting all environments
+
+## 🐞 Fixed
+
+- **Responses API Tool Types** — Normalized versioned/provider-specific tool type strings (e.g. `web_search_20250305`) to their canonical types for correct routing
+- **Provider Histogram Index** — Deferred provider histogram index creation to background goroutine to avoid blocking pod startup
+- **MCP Tool Group Filtering** — Fixed MCP tool include filter to use correct schema constant for proper tool group resolution
+
+## 📀 Base OSS version
+
+`transports/v1.4.16`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+github.com/maximhq/bifrost/core v1.4.13
+github.com/maximhq/bifrost/framework v1.2.32
+github.com/maximhq/bifrost/plugins/governance v1.4.32
+github.com/maximhq/bifrost/plugins/logging v1.4.32
+github.com/maximhq/bifrost/transports v1.4.16
+```
+
+</Update>

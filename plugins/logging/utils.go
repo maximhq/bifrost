@@ -54,6 +54,9 @@ type LogManager interface {
 	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
 	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
 
+	// GetModelRankings returns models ranked by usage with trend comparison
+	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
@@ -71,6 +74,9 @@ type LogManager interface {
 
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
+
+	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
+	GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error)
 
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
@@ -96,6 +102,15 @@ type LogManager interface {
 
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair
+
+	// GetMCPHistogram returns time-bucketed MCP tool call volume
+	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPCostHistogram returns time-bucketed MCP cost data
+	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
+
+	// GetMCPTopTools returns the top N MCP tools by call count
+	GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error)
 
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
@@ -180,6 +195,13 @@ func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filt
 	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
+func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetModelRankings(ctx, *filters)
+}
+
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
@@ -207,6 +229,13 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return map[string][]string{}, nil
+	}
+	return p.plugin.store.GetDistinctMetadataKeys(ctx)
 }
 
 // DeleteLog deletes a log from the log store
@@ -270,6 +299,30 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context) []Key
 		return []KeyPair{}
 	}
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx)
+}
+
+// GetMCPHistogram returns time-bucketed MCP tool call volume
+func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPCostHistogram returns time-bucketed MCP cost data
+func (p *PluginLogManager) GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPCostHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPTopTools returns the top N MCP tools by call count
+func (p *PluginLogManager) GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPTopToolsResult{}, nil
+	}
+	return p.plugin.store.GetMCPTopTools(ctx, filters, limit)
 }
 
 // DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
