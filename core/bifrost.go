@@ -6268,7 +6268,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 	}
 	// Check if no keys found
 	if len(keys) == 0 {
-		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v and model: %s", providerKey, model)
+		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v", providerKey)
 	}
 
 	// For batch API operations, filter keys to only include those with UseForBatchAPI enabled
