@@ -1746,67 +1746,103 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		return true // continue
 	})
 
-	// Prepare rate limit usage updates with baselines
-	type rateLimitUpdate struct {
+	// Snapshot current in-memory values for delta computation
+	type rateLimitSnapshot struct {
 		ID                  string
 		TokenCurrentUsage   int64
 		RequestCurrentUsage int64
 	}
-	var rateLimitUpdates []rateLimitUpdate
+	var snapshots []rateLimitSnapshot
 	for rateLimitID := range rateLimitIDs {
 		if rateLimitValue, exists := gs.rateLimits.Load(rateLimitID); exists && rateLimitValue != nil {
 			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-				update := rateLimitUpdate{
+				snapshots = append(snapshots, rateLimitSnapshot{
 					ID:                  rateLimit.ID,
 					TokenCurrentUsage:   rateLimit.TokenCurrentUsage,
 					RequestCurrentUsage: rateLimit.RequestCurrentUsage,
-				}
-				if tokenBaseline, exists := tokenBaselines[rateLimit.ID]; exists {
-					update.TokenCurrentUsage += tokenBaseline
-				}
-				if requestBaseline, exists := requestBaselines[rateLimit.ID]; exists {
-					update.RequestCurrentUsage += requestBaseline
-				}
-				rateLimitUpdates = append(rateLimitUpdates, update)
+				})
 			}
 		}
 	}
 
-	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields
-	if len(rateLimitUpdates) > 0 && gs.configStore != nil {
-		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, update := range rateLimitUpdates {
-				// Direct UPDATE only updates usage fields
-				// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableRateLimit{}).
-					Where("id = ?", update.ID).
-					Updates(map[string]interface{}{
-						"token_current_usage":   update.TokenCurrentUsage,
-						"request_current_usage": update.RequestCurrentUsage,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to dump rate limit %s: %w", update.ID, result.Error)
-				}
-			}
-			return nil
-		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Rate limit dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
-			}
-			return fmt.Errorf("failed to dump rate limits to database: %w", err)
+	if len(snapshots) > 0 && gs.configStore != nil {
+		// Compute deltas: how much usage this replica accumulated since last dump
+		gs.LastDBUsagesRateLimitsTokensMu.RLock()
+		gs.LastDBUsagesRateLimitsRequestsMu.RLock()
+		type rateLimitDelta struct {
+			ID           string
+			TokenDelta   int64
+			RequestDelta int64
 		}
+		var deltas []rateLimitDelta
+		for _, snap := range snapshots {
+			lastTokens := gs.LastDBUsagesTokensRateLimits[snap.ID]     // 0 if not found
+			lastRequests := gs.LastDBUsagesRequestsRateLimits[snap.ID] // 0 if not found
+			tokenDelta := snap.TokenCurrentUsage - lastTokens
+			requestDelta := snap.RequestCurrentUsage - lastRequests
+			if tokenBaseline, exists := tokenBaselines[snap.ID]; exists {
+				tokenDelta += tokenBaseline
+			}
+			if requestBaseline, exists := requestBaselines[snap.ID]; exists {
+				requestDelta += requestBaseline
+			}
+			// Only write if there is a meaningful change
+			if tokenDelta != 0 || requestDelta != 0 {
+				deltas = append(deltas, rateLimitDelta{
+					ID:           snap.ID,
+					TokenDelta:   tokenDelta,
+					RequestDelta: requestDelta,
+				})
+			}
+		}
+		gs.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+		gs.LastDBUsagesRateLimitsTokensMu.RUnlock()
+
+		if len(deltas) > 0 {
+			if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				for _, d := range deltas {
+					// Atomic increment: SET field = field + delta
+					// This is safe for multi-replica: each replica only adds its own delta
+					result := tx.WithContext(ctx).
+						Session(&gorm.Session{SkipHooks: true}).
+						Model(&configstoreTables.TableRateLimit{}).
+						Where("id = ?", d.ID).
+						Updates(map[string]interface{}{
+							"token_current_usage":   gorm.Expr("token_current_usage + ?", d.TokenDelta),
+							"request_current_usage": gorm.Expr("request_current_usage + ?", d.RequestDelta),
+						})
+
+					if result.Error != nil {
+						return fmt.Errorf("failed to dump rate limit %s: %w", d.ID, result.Error)
+					}
+				}
+				return nil
+			}); err != nil {
+				// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
+				errStr := err.Error()
+				isDeadlock := strings.Contains(errStr, "deadlock") ||
+					strings.Contains(errStr, "40P01") ||
+					strings.Contains(errStr, "1213")
+
+				if isDeadlock {
+					// Deadlock means another node is updating the same rows concurrently.
+					// Do NOT update LastDBUsages so the delta will be retried in the next cycle.
+					gs.logger.Debug("Rate limit dump encountered deadlock (another node is updating) - will retry next cycle")
+					return nil
+				}
+				return fmt.Errorf("failed to dump rate limits to database: %w", err)
+			}
+		}
+
+		// Update last-written tracking so next dump computes the correct delta
+		gs.LastDBUsagesRateLimitsTokensMu.Lock()
+		gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+		for _, snap := range snapshots {
+			gs.LastDBUsagesTokensRateLimits[snap.ID] = snap.TokenCurrentUsage
+			gs.LastDBUsagesRequestsRateLimits[snap.ID] = snap.RequestCurrentUsage
+		}
+		gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
+		gs.LastDBUsagesRateLimitsTokensMu.Unlock()
 	}
 	return nil
 }
@@ -1822,58 +1858,85 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 		baselines = map[string]float64{}
 	}
 
-	budgets := make(map[string]*configstoreTables.TableBudget)
+	// Snapshot current in-memory values for delta computation
+	type budgetSnapshot struct {
+		ID           string
+		CurrentUsage float64
+	}
+	var snapshots []budgetSnapshot
 
 	gs.budgets.Range(func(key, value interface{}) bool {
-		// Type-safe conversion
 		keyStr, keyOk := key.(string)
 		budget, budgetOk := value.(*configstoreTables.TableBudget)
-
 		if keyOk && budgetOk && budget != nil {
-			budgets[keyStr] = budget // Store budget by ID
+			snapshots = append(snapshots, budgetSnapshot{
+				ID:           keyStr,
+				CurrentUsage: budget.CurrentUsage,
+			})
 		}
-		return true // continue iteration
+		return true
 	})
 
-	if len(budgets) > 0 && gs.configStore != nil {
-		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			// Update each budget atomically using direct UPDATE to avoid deadlocks
-			// (SELECT + Save pattern causes deadlocks when multiple instances run concurrently)
-			for _, inMemoryBudget := range budgets {
-				// Calculate the new usage value
-				newUsage := inMemoryBudget.CurrentUsage
-				if baseline, exists := baselines[inMemoryBudget.ID]; exists {
-					newUsage += baseline
-				}
-
-				// Direct UPDATE avoids read-then-write lock escalation that causes deadlocks
-				// Use Session with SkipHooks to avoid triggering BeforeSave hook validation
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ?", inMemoryBudget.ID).
-					Update("current_usage", newUsage)
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to update budget %s: %w", inMemoryBudget.ID, result.Error)
-				}
-			}
-			return nil
-		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Budget dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
-			}
-			return fmt.Errorf("failed to dump budgets to database: %w", err)
+	if len(snapshots) > 0 && gs.configStore != nil {
+		// Compute deltas: how much usage this replica accumulated since last dump
+		gs.LastDBUsagesBudgetsMu.RLock()
+		type budgetDelta struct {
+			ID    string
+			Delta float64
 		}
+		var deltas []budgetDelta
+		for _, snap := range snapshots {
+			lastWritten := gs.LastDBUsagesBudgets[snap.ID] // 0 if not found (first dump after startup)
+			delta := snap.CurrentUsage - lastWritten
+			if baseline, exists := baselines[snap.ID]; exists {
+				delta += baseline
+			}
+			// Only write if there is a meaningful change to avoid unnecessary DB writes
+			if delta > 0.0001 || delta < -0.0001 {
+				deltas = append(deltas, budgetDelta{ID: snap.ID, Delta: delta})
+			}
+		}
+		gs.LastDBUsagesBudgetsMu.RUnlock()
+
+		if len(deltas) > 0 {
+			if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				for _, d := range deltas {
+					// Atomic increment: SET current_usage = current_usage + delta
+					// This is safe for multi-replica: each replica only adds its own delta
+					result := tx.WithContext(ctx).
+						Session(&gorm.Session{SkipHooks: true}).
+						Model(&configstoreTables.TableBudget{}).
+						Where("id = ?", d.ID).
+						Update("current_usage", gorm.Expr("current_usage + ?", d.Delta))
+
+					if result.Error != nil {
+						return fmt.Errorf("failed to update budget %s: %w", d.ID, result.Error)
+					}
+				}
+				return nil
+			}); err != nil {
+				// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
+				errStr := err.Error()
+				isDeadlock := strings.Contains(errStr, "deadlock") ||
+					strings.Contains(errStr, "40P01") ||
+					strings.Contains(errStr, "1213")
+
+				if isDeadlock {
+					// Deadlock means another node is updating the same rows concurrently.
+					// Do NOT update LastDBUsages so the delta will be retried in the next cycle.
+					gs.logger.Debug("Budget dump encountered deadlock (another node is updating) - will retry next cycle")
+					return nil
+				}
+				return fmt.Errorf("failed to dump budgets to database: %w", err)
+			}
+		}
+
+		// Update last-written tracking so next dump computes the correct delta
+		gs.LastDBUsagesBudgetsMu.Lock()
+		for _, snap := range snapshots {
+			gs.LastDBUsagesBudgets[snap.ID] = snap.CurrentUsage
+		}
+		gs.LastDBUsagesBudgetsMu.Unlock()
 	}
 
 	return nil
