@@ -173,6 +173,8 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	// Can be empty in case of passthrough or keyless custom provider
 	// Here we can avoid this - in case of passthrough completely
 	if key != "" && !IsClaudeCodeMaxMode(ctx) {
+		req.Header.Del("Authorization")
+		req.Header.Del("x-api-key")
 		if isOAuth {
 			req.Header.Set("Authorization", "Bearer "+key)
 			appendBetaHeader(req, AnthropicOAuthBetaHeader)
