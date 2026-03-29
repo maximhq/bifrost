@@ -30,13 +30,11 @@ type TableVirtualKeyProviderConfig struct {
 	Weight        *float64          `json:"weight"`
 	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
 	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	BudgetID      *string           `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
-	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
-	Budgets   []TableBudget   `gorm:"many2many:governance_virtual_key_provider_config_budgets;joinForeignKey:ProviderConfigID;joinReferences:BudgetID" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
+	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"`                                             // Empty means all keys allowed for this provider
 }
 
@@ -218,17 +216,16 @@ type TableVirtualKey struct {
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
-	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
-	CustomerID  *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
-	BudgetID    *string `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	TeamID          *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
+	CustomerID      *string `gorm:"type:varchar(255);index" json:"customer_id,omitempty"`
+	RateLimitID     *string `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	CalendarAligned bool    `gorm:"default:false" json:"calendar_aligned"` // When true, all budgets under this VK reset at clean calendar boundaries
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
-	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
-	Budgets   []TableBudget   `gorm:"many2many:governance_virtual_key_budgets;joinForeignKey:VirtualKeyID;joinReferences:BudgetID" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
+	Budgets   []TableBudget   `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

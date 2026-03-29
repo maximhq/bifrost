@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { resetDurationOptions } from "@/lib/constants/governance";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 export interface BudgetLineEntry {
@@ -16,6 +16,8 @@ interface MultiBudgetLinesProps {
 	lines: BudgetLineEntry[];
 	onChange: (lines: BudgetLineEntry[]) => void;
 	options?: { label: string; value: string }[];
+	onReset?: () => void;
+	showReset?: boolean;
 }
 
 export default function MultiBudgetLines({
@@ -24,6 +26,8 @@ export default function MultiBudgetLines({
 	lines,
 	onChange,
 	options = resetDurationOptions,
+	onReset,
+	showReset,
 }: MultiBudgetLinesProps) {
 	// Track which reset durations are already used (for duplicate detection)
 	const usedDurations = useMemo(() => {
@@ -55,10 +59,18 @@ export default function MultiBudgetLines({
 		<div className="space-y-3">
 			<div className="flex items-center justify-between">
 				<Label className="text-sm font-medium">{label}</Label>
-				<Button variant="outline" size="sm" type="button" onClick={addLine}>
-					<Plus className="mr-1 h-3 w-3" />
-					Add Budget
-				</Button>
+				<div className="flex items-center gap-2">
+					{onReset && (showReset ?? true) && (
+						<Button data-testid={`${id}-reset-btn`} type="button" variant="ghost" size="sm" onClick={onReset}>
+							<RotateCcw className="mr-1 h-3 w-3" />
+							Reset
+						</Button>
+					)}
+					<Button data-testid="budget-add-btn" variant="outline" size="sm" type="button" onClick={addLine}>
+						<Plus className="mr-1 h-3 w-3" />
+						Add Budget
+					</Button>
+				</div>
 			</div>
 
 			{lines.length === 0 && (
@@ -85,6 +97,8 @@ export default function MultiBudgetLines({
 								/>
 							</div>
 							<Button
+								data-testid={`budget-remove-${index}`}
+								aria-label={`Remove budget ${index + 1}`}
 								variant="ghost"
 								size="icon"
 								type="button"

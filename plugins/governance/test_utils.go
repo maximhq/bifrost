@@ -89,9 +89,13 @@ func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.T
 
 func buildVirtualKeyWithBudget(id, value, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableVirtualKey {
 	vk := buildVirtualKey(id, value, name, true)
-	vk.Budget = budget
-	budgetID := budget.ID
-	vk.BudgetID = &budgetID
+	vkID := id
+	budget.VirtualKeyID = &vkID
+	vk.Budgets = []configstoreTables.TableBudget{*budget}
+	// Add a default provider config so the resolver doesn't block at provider check
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 
@@ -100,6 +104,10 @@ func buildVirtualKeyWithRateLimit(id, value, name string, rateLimit *configstore
 	vk.RateLimit = rateLimit
 	rateLimitID := rateLimit.ID
 	vk.RateLimitID = &rateLimitID
+	// Add a default provider config so the resolver doesn't block at provider check
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 
@@ -188,10 +196,25 @@ func buildProviderConfig(provider string, allowedModels []string) configstoreTab
 		Provider:      provider,
 		AllowedModels: allowedModels,
 		Weight:        bifrost.Ptr(1.0),
-		RateLimit:     nil,
-		Budget:        nil,
-		Keys:          []configstoreTables.TableKey{},
+		RateLimit: nil,
+		Keys:      []configstoreTables.TableKey{},
 	}
+}
+
+func buildProviderConfigWithBudgets(provider string, allowedModels []string, budgets []configstoreTables.TableBudget) configstoreTables.TableVirtualKeyProviderConfig {
+	pc := buildProviderConfig(provider, allowedModels)
+	pc.Budgets = budgets
+	return pc
+}
+
+func buildVirtualKeyWithMultiBudgets(id, value, name string, budgets []configstoreTables.TableBudget) *configstoreTables.TableVirtualKey {
+	vk := buildVirtualKey(id, value, name, true)
+	for i := range budgets {
+		vkID := id
+		budgets[i].VirtualKeyID = &vkID
+	}
+	vk.Budgets = budgets
+	return vk
 }
 
 func buildProviderConfigWithRateLimit(provider string, allowedModels []string, rateLimit *configstoreTables.TableRateLimit) configstoreTables.TableVirtualKeyProviderConfig {

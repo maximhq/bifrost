@@ -1837,10 +1837,10 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 		Preload("Team").
 		Preload("Team.Customer").
 		Preload("Customer").
-		Preload("Budget").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit").
 		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
@@ -1899,10 +1899,10 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		Preload("Team").
 		Preload("Team.Customer").
 		Preload("Customer").
-		Preload("Budget").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit").
 		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
@@ -1925,10 +1925,10 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 		Preload("Team").
 		Preload("Team.Customer").
 		Preload("Customer").
-		Preload("Budget").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit").
 		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
@@ -1952,10 +1952,10 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 		Preload("Team").
 		Preload("Team.Customer").
 		Preload("Customer").
-		Preload("Budget").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit").
 		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
@@ -2093,32 +2093,25 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 			return err
 		}
 
-		// Collect budget and rate limit IDs from provider configs before deletion
-		var providerConfigBudgetIDs []string
+		// Delete provider config resources before deleting the configs themselves
 		var providerConfigRateLimitIDs []string
 		for _, pc := range virtualKey.ProviderConfigs {
 			// Delete the keys join table entries
 			if err := tx.WithContext(ctx).Exec("DELETE FROM governance_virtual_key_provider_config_keys WHERE table_virtual_key_provider_config_id = ?", pc.ID).Error; err != nil {
 				return err
 			}
-			// Collect budget and rate limit IDs for deletion after provider config
-			if pc.BudgetID != nil {
-				providerConfigBudgetIDs = append(providerConfigBudgetIDs, *pc.BudgetID)
+			// Delete budgets owned by this provider config
+			if err := tx.WithContext(ctx).Where("provider_config_id = ?", pc.ID).Delete(&tables.TableBudget{}).Error; err != nil {
+				return err
 			}
 			if pc.RateLimitID != nil {
 				providerConfigRateLimitIDs = append(providerConfigRateLimitIDs, *pc.RateLimitID)
 			}
 		}
 
-		// Delete all provider configs associated with the virtual key first
+		// Delete all provider configs associated with the virtual key
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
-		}
-		// Now delete the collected budgets and rate limits
-		for _, budgetID := range providerConfigBudgetIDs {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", budgetID).Error; err != nil {
-				return err
-			}
 		}
 		for _, rateLimitID := range providerConfigRateLimitIDs {
 			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", rateLimitID).Error; err != nil {
@@ -2129,8 +2122,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
-		// Delete the budget associated with the virtual key
-		budgetID := virtualKey.BudgetID
+		// Delete budgets owned by this virtual key
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+			return err
+		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
@@ -2138,11 +2133,6 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 				return ErrNotFound
 			}
 			return err
-		}
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
 		}
 		// Delete the rate limit associated with the virtual key
 		if rateLimitID != nil {
@@ -2341,18 +2331,15 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 		}
 		return err
 	}
-	// Store the budget and rate limit IDs before deleting
-	budgetID := providerConfig.BudgetID
+	// Store the rate limit ID before deleting
 	rateLimitID := providerConfig.RateLimitID
-	// Delete the provider config first
-	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "id = ?", id).Error; err != nil {
+	// Delete budgets owned by this provider config
+	if err := txDB.WithContext(ctx).Where("provider_config_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 		return err
 	}
-	// Delete the budget if it exists
-	if budgetID != nil {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-			return err
-		}
+	// Delete the provider config
+	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "id = ?", id).Error; err != nil {
+		return err
 	}
 	// Delete the rate limit if it exists
 	if rateLimitID != nil {

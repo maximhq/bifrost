@@ -997,12 +997,13 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
-			// Add BudgetID column if it doesn't exist
+			// Add budget_id and rate_limit_id columns if they don't exist
+			// Note: budget_id is added via raw SQL because the field was later removed from the struct
+			// (migrated to governance_budgets.provider_config_id in add_multi_budget_tables)
 			if migrator.HasTable(&tables.TableVirtualKeyProviderConfig{}) {
-				if !migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
-					if err := migrator.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id"); err != nil {
-						return fmt.Errorf("failed to add budget_id column: %w", err)
-					}
+				if err := tx.Exec("ALTER TABLE governance_virtual_key_provider_configs ADD COLUMN IF NOT EXISTS budget_id VARCHAR(255)").Error; err != nil {
+					// Ignore error for databases that don't support IF NOT EXISTS (e.g., SQLite)
+					// The column may already exist from a previous run
 				}
 
 				// Add RateLimitID column if it doesn't exist
@@ -1013,10 +1014,8 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 				}
 
 				// Create foreign key indexes for better performance
-				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_budget") {
-					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
-						return fmt.Errorf("failed to create budget_id index: %w", err)
-					}
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_config_budget ON governance_virtual_key_provider_configs (budget_id)").Error; err != nil {
+					// Ignore - index may already exist or column may not exist yet
 				}
 
 				if !migrator.HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_provider_config_rate_limit") {
@@ -1025,12 +1024,7 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 					}
 				}
 
-				// Create FK constraints (dialect‑agnostic)
-				if !migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget") {
-					if err := migrator.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget"); err != nil {
-						return fmt.Errorf("failed to create Budget FK constraint: %w", err)
-					}
-				}
+				// Create FK constraint for RateLimit (Budget FK is no longer needed - budgets use direct FK on budget table)
 				if !migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit") {
 					if err := migrator.CreateConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit"); err != nil {
 						return fmt.Errorf("failed to create RateLimit FK constraint: %w", err)
@@ -1044,32 +1038,19 @@ func migrationAddProviderConfigBudgetRateLimit(ctx context.Context, db *gorm.DB)
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
 
-			// Drop indexes first
-			if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_config_budget").Error; err != nil {
-				return fmt.Errorf("failed to drop budget_id index: %w", err)
-			}
-			if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_config_rate_limit").Error; err != nil {
-				return fmt.Errorf("failed to drop rate_limit_id index: %w", err)
-			}
+			// Drop indexes
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_provider_config_budget")
+			_ = tx.Exec("DROP INDEX IF EXISTS idx_provider_config_rate_limit")
 
 			// Drop FK constraints
-			if migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget") {
-				if err := migrator.DropConstraint(&tables.TableVirtualKeyProviderConfig{}, "Budget"); err != nil {
-					return fmt.Errorf("failed to drop Budget FK constraint: %w", err)
-				}
-			}
 			if migrator.HasConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit") {
 				if err := migrator.DropConstraint(&tables.TableVirtualKeyProviderConfig{}, "RateLimit"); err != nil {
 					return fmt.Errorf("failed to drop RateLimit FK constraint: %w", err)
 				}
 			}
 
-			// Drop columns
-			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
-				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id"); err != nil {
-					return fmt.Errorf("failed to drop budget_id column: %w", err)
-				}
-			}
+			// Drop columns via raw SQL (budget_id no longer on struct)
+			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
 			if migrator.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id") {
 				if err := migrator.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "rate_limit_id"); err != nil {
 					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
@@ -5218,6 +5199,7 @@ func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) e
 	return nil
 }
 
+// migrationAddAllowOnAllVirtualKeysColumn adds the allow_on_all_virtual_keys column to the mcp_client table
 func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_allow_on_all_virtual_keys_column",
@@ -5314,36 +5296,21 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
-// migrationAddBudgetCalendarAlignedColumn adds the calendar_aligned column to the governance_budgets table.
+// migrationAddBudgetCalendarAlignedColumn was originally for adding calendar_aligned to governance_budgets.
+// Calendar alignment is now a VK-level field (governance_virtual_keys.calendar_aligned) added in migrationAddMultiBudgetTables.
+// This migration is kept as a no-op so the migrator doesn't try to re-run it.
 func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_budget_calendar_aligned_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if !mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mg.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
-				if err := mg.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
-					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
-				}
-			}
-			return nil
-		},
+		ID:       "add_budget_calendar_aligned_column",
+		Migrate:  func(tx *gorm.DB) error { return nil },
+		Rollback: func(tx *gorm.DB) error { return nil },
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_budget_calendar_aligned_column migration: %s", err.Error())
 	}
 	return nil
 }
+
 // migrationAddMultiBudgetTables creates junction tables for multi-budget support and backfills existing data.
 func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -5352,60 +5319,71 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 
-			// Create VK-level multi-budget junction table
-			if !mg.HasTable(&tables.TableVirtualKeyBudget{}) {
-				if err := mg.CreateTable(&tables.TableVirtualKeyBudget{}); err != nil {
-					return fmt.Errorf("failed to create governance_virtual_key_budgets table: %w", err)
+			// Add calendar_aligned to governance_virtual_keys (VK-level setting)
+			if !mg.HasColumn(&tables.TableVirtualKey{}, "calendar_aligned") {
+				if err := mg.AddColumn(&tables.TableVirtualKey{}, "CalendarAligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column to governance_virtual_keys: %w", err)
 				}
 			}
 
-			// Create provider-config-level multi-budget junction table
-			if !mg.HasTable(&tables.TableVirtualKeyProviderConfigBudget{}) {
-				if err := mg.CreateTable(&tables.TableVirtualKeyProviderConfigBudget{}); err != nil {
-					return fmt.Errorf("failed to create governance_virtual_key_provider_config_budgets table: %w", err)
+			// Add FK columns on governance_budgets for multi-budget ownership
+			if !mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "VirtualKeyID"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_id column to governance_budgets: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "ProviderConfigID"); err != nil {
+					return fmt.Errorf("failed to add provider_config_id column to governance_budgets: %w", err)
 				}
 			}
 
-			// Backfill: migrate existing VK single budgets to junction table
-			if err := tx.Exec(`
-				INSERT INTO governance_virtual_key_budgets (virtual_key_id, budget_id)
-				SELECT id, budget_id FROM governance_virtual_keys
-				WHERE budget_id IS NOT NULL AND budget_id != ''
-				AND NOT EXISTS (
-					SELECT 1 FROM governance_virtual_key_budgets
-					WHERE governance_virtual_key_budgets.virtual_key_id = governance_virtual_keys.id
-					AND governance_virtual_key_budgets.budget_id = governance_virtual_keys.budget_id
-				)
-			`).Error; err != nil {
-				return fmt.Errorf("failed to backfill VK budgets: %w", err)
+			// Backfill: set virtual_key_id from legacy VK budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableVirtualKey{}, "budget_id") {
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET virtual_key_id = (
+						SELECT id FROM governance_virtual_keys
+						WHERE governance_virtual_keys.budget_id = governance_budgets.id
+					) WHERE virtual_key_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_virtual_keys
+						WHERE governance_virtual_keys.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill VK budget virtual_key_id: %w", err)
+				}
 			}
 
-			// Backfill: migrate existing provider config single budgets to junction table
-			if err := tx.Exec(`
-				INSERT INTO governance_virtual_key_provider_config_budgets (provider_config_id, budget_id)
-				SELECT id, budget_id FROM governance_virtual_key_provider_configs
-				WHERE budget_id IS NOT NULL AND budget_id != ''
-				AND NOT EXISTS (
-					SELECT 1 FROM governance_virtual_key_provider_config_budgets
-					WHERE governance_virtual_key_provider_config_budgets.provider_config_id = governance_virtual_key_provider_configs.id
-					AND governance_virtual_key_provider_config_budgets.budget_id = governance_virtual_key_provider_configs.budget_id
-				)
-			`).Error; err != nil {
-				return fmt.Errorf("failed to backfill provider config budgets: %w", err)
+			// Backfill: set provider_config_id from legacy PC budget_id (if column still exists)
+			if mg.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "budget_id") {
+				if err := tx.Exec(`
+					UPDATE governance_budgets SET provider_config_id = (
+						SELECT id FROM governance_virtual_key_provider_configs
+						WHERE governance_virtual_key_provider_configs.budget_id = governance_budgets.id
+					) WHERE provider_config_id IS NULL AND EXISTS (
+						SELECT 1 FROM governance_virtual_key_provider_configs
+						WHERE governance_virtual_key_provider_configs.budget_id = governance_budgets.id
+					)
+				`).Error; err != nil {
+					return fmt.Errorf("failed to backfill PC budget provider_config_id: %w", err)
+				}
 			}
+
+			// Drop legacy budget_id columns from VK and ProviderConfig (raw SQL to avoid GORM FK lookup issues)
+			_ = tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN IF EXISTS budget_id")
+			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
 
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-			if mg.HasTable(&tables.TableVirtualKeyProviderConfigBudget{}) {
-				if err := mg.DropTable(&tables.TableVirtualKeyProviderConfigBudget{}); err != nil {
+			if mg.HasColumn(&tables.TableBudget{}, "virtual_key_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "virtual_key_id"); err != nil {
 					return err
 				}
 			}
-			if mg.HasTable(&tables.TableVirtualKeyBudget{}) {
-				if err := mg.DropTable(&tables.TableVirtualKeyBudget{}); err != nil {
+			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
 					return err
 				}
 			}
