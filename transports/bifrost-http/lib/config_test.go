@@ -240,8 +240,7 @@ End-to-end tests for virtual key provider configuration operations.
 | TestSQLite_VKProviderConfig_KeyReference         | VK provider config key references work       |
 | TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange | Hash changes when key ID changes          |
 | TestSQLite_VKProviderConfig_WeightAndAllowedModels | Weight and allowed models handled correctly |
-| TestSQLite_VKProviderConfig_BudgetAndRateLimit   | BudgetID/RateLimitID persisted correctly     |
-| TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit | VK hash includes provider config budget/rate limit |
+| TestGenerateVirtualKeyHash_ProviderConfigRateLimit | VK hash includes provider config rate limit  |
 
 ===================================================================================
 SQLITE INTEGRATION TESTS - VK MCP CONFIGS
@@ -6433,7 +6432,6 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 func TestGenerateVirtualKeyHash(t *testing.T) {
 	// Create a virtual key
 	teamID := "team-1"
-	budgetID := "budget-1"
 	vk1 := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
@@ -6441,7 +6439,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	// Generate hash
@@ -6462,7 +6459,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash2, err := configstore.GenerateVirtualKeyHash(vk2)
@@ -6482,7 +6478,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash3, err := configstore.GenerateVirtualKeyHash(vk3)
@@ -6502,7 +6497,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_different", // Different value
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash4, err := configstore.GenerateVirtualKeyHash(vk4)
@@ -6522,7 +6516,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    false, // Different IsActive
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash5, err := configstore.GenerateVirtualKeyHash(vk5)
@@ -6543,7 +6536,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &differentTeamID, // Different TeamID
-		BudgetID:    &budgetID,
 	}
 
 	hash6, err := configstore.GenerateVirtualKeyHash(vk6)
@@ -6563,7 +6555,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	hash7, err := configstore.GenerateVirtualKeyHash(vk7)
@@ -6584,7 +6575,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		CustomerID:  &customerID, // CustomerID set
 	}
 
@@ -6606,7 +6596,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		CustomerID:  &differentCustomerID, // Different CustomerID
 	}
 
@@ -6619,27 +6608,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		t.Error("Expected different hash for virtual keys with different CustomerID values")
 	}
 
-	// Different BudgetID should produce different hash
-	differentBudgetID := "budget-2"
-	vk9 := tables.TableVirtualKey{
-		ID:          "vk-1",
-		Name:        "test-vk",
-		Description: "Test virtual key",
-		Value:       "vk_abc123",
-		IsActive:    true,
-		TeamID:      &teamID,
-		BudgetID:    &differentBudgetID, // Different BudgetID
-	}
-
-	hash9, err := configstore.GenerateVirtualKeyHash(vk9)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if hash1 == hash9 {
-		t.Error("Expected different hash for virtual keys with different BudgetID")
-	}
-
 	// RateLimitID should produce different hash
 	rateLimitID := "ratelimit-1"
 	vk10 := tables.TableVirtualKey{
@@ -6649,7 +6617,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID, // RateLimitID set
 	}
 
@@ -6671,7 +6638,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &differentRateLimitID, // Different RateLimitID
 	}
 
@@ -6689,7 +6655,6 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_WithProviderConfigs tests hash generation with provider configs
 func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
-	budgetID := "budget-pc-1"
 	rateLimitID := "rl-pc-1"
 
 	// Virtual key with provider configs
@@ -6706,7 +6671,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 				Keys: []tables.TableKey{
 					{KeyID: "key-1", Name: "key-1"},
@@ -6739,7 +6703,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "anthropic", // Different provider
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 			},
 		},
@@ -6768,7 +6731,6 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(2.0), // Different weight
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
-				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
 				Keys: []tables.TableKey{
 					{KeyID: "key-1", Name: "key-1"},
@@ -6872,7 +6834,6 @@ func TestGenerateVirtualKeyHash_WithMCPConfigs(t *testing.T) {
 // TestVirtualKeyHashComparison_MatchingHash tests that DB config is kept when hashes match
 func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Create a virtual key (simulating what's in config.json)
 	fileVK := tables.TableVirtualKey{
@@ -6882,7 +6843,6 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	// Generate file hash
@@ -6893,7 +6853,6 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 
 	// Create DB virtual key with same content (simulating existing DB record)
 	dbTeamID := "team-1"
-	dbBudgetID := "budget-1"
 	dbVK := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
@@ -6901,7 +6860,6 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &dbTeamID,
-		BudgetID:    &dbBudgetID,
 		ConfigHash:  fileHash, // Same hash as file
 	}
 
@@ -6926,7 +6884,6 @@ func TestVirtualKeyHashComparison_MatchingHash(t *testing.T) {
 // TestVirtualKeyHashComparison_DifferentHash tests that file config is used when hashes differ
 func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Create DB virtual key with old config
 	dbVK := tables.TableVirtualKey{
@@ -6936,7 +6893,6 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	dbHash, err := configstore.GenerateVirtualKeyHash(dbVK)
@@ -6947,7 +6903,6 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 
 	// Create file virtual key with updated config
 	fileTeamID := "team-1"
-	fileBudgetID := "budget-1"
 	fileVK := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "new-name", // Updated name
@@ -6955,7 +6910,6 @@ func TestVirtualKeyHashComparison_DifferentHash(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &fileTeamID,
-		BudgetID:    &fileBudgetID,
 	}
 
 	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
@@ -7127,26 +7081,6 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 		t.Error("Expected different hash for team_id vs customer_id")
 	}
 
-	// Virtual key with budget_id
-	budgetID := "budget-1"
-	vkWithBudget := tables.TableVirtualKey{
-		ID:          "vk-1",
-		Name:        "test-vk",
-		Description: "",
-		Value:       "vk_abc123",
-		IsActive:    true,
-		BudgetID:    &budgetID,
-	}
-
-	hashWithBudget, err := configstore.GenerateVirtualKeyHash(vkWithBudget)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if hashNoOptional == hashWithBudget {
-		t.Error("Expected different hash when budget_id is added")
-	}
-
 	// Virtual key with rate_limit_id
 	rateLimitID := "rl-1"
 	vkWithRateLimit := tables.TableVirtualKey{
@@ -7173,7 +7107,6 @@ func TestVirtualKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 // TestVirtualKeyHashComparison_FieldValueChanges tests hash changes when field values change
 func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 
 	// Base virtual key
 	baseVK := tables.TableVirtualKey{
@@ -7183,7 +7116,6 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 	}
 
 	baseHash, err := configstore.GenerateVirtualKeyHash(baseVK)
@@ -7231,27 +7163,12 @@ func TestVirtualKeyHashComparison_FieldValueChanges(t *testing.T) {
 		t.Error("Expected different hash when TeamID value changes")
 	}
 
-	// Change BudgetID value
-	newBudgetID := "budget-2"
-	vkChangedBudget := baseVK
-	vkChangedBudget.BudgetID = &newBudgetID
-
-	hashChangedBudget, err := configstore.GenerateVirtualKeyHash(vkChangedBudget)
-	if err != nil {
-		t.Fatalf("Failed to generate hash: %v", err)
-	}
-
-	if baseHash == hashChangedBudget {
-		t.Error("Expected different hash when BudgetID value changes")
-	}
-
 	t.Log("✓ Field value changes correctly detected in hash")
 }
 
 // TestVirtualKeyHashComparison_RoundTrip tests JSON → DB → same JSON produces no changes
 func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 	teamID := "team-1"
-	budgetID := "budget-1"
 	rateLimitID := "rl-1"
 
 	// Original config.json virtual key
@@ -7262,7 +7179,6 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &teamID,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -7285,7 +7201,6 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 
 	// Same config.json on reload (simulating app restart)
 	reloadTeamID := "team-1"
-	reloadBudgetID := "budget-1"
 	reloadRateLimitID := "rl-1"
 	reloadVK := tables.TableVirtualKey{
 		ID:          "vk-1",
@@ -7294,7 +7209,6 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		Value:       "vk_abc123",
 		IsActive:    true,
 		TeamID:      &reloadTeamID,
-		BudgetID:    &reloadBudgetID,
 		RateLimitID: &reloadRateLimitID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
@@ -8806,7 +8720,6 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				Description: "Test virtual key 1",
 				Value:       "vk_test123",
 				IsActive:    true,
-				BudgetID:    &budgetID,
 				RateLimitID: &rateLimitID,
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
@@ -10521,9 +10434,6 @@ func TestGenerateKeyHash_StableOrdering(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_StableProviderConfigOrdering verifies hash stability with different provider config orderings
 func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
-	budgetID1 := "budget-1"
-	budgetID2 := "budget-2"
-
 	// VK with provider configs in order A
 	vkOrderA := tables.TableVirtualKey{
 		ID:          "vk-1",
@@ -10538,7 +10448,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 			{
 				ID:            2,
@@ -10546,7 +10455,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            3,
@@ -10579,7 +10487,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            1,
@@ -10587,7 +10494,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 		},
 	}
@@ -10606,7 +10512,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "anthropic",
 				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
-				BudgetID:      &budgetID2,
 			},
 			{
 				ID:            1,
@@ -10614,7 +10519,6 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				Provider:      "openai",
 				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
-				BudgetID:      &budgetID1,
 			},
 			{
 				ID:            3,
@@ -11027,8 +10931,6 @@ func TestGenerateVirtualKeyHash_StableToolsToExecuteOrdering(t *testing.T) {
 
 // TestGenerateVirtualKeyHash_StableCombinedOrdering verifies hash stability with all nested orderings randomized
 func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
-	budgetID := "budget-1"
-
 	// VK with all elements in order A
 	vkOrderA := tables.TableVirtualKey{
 		ID:          "vk-1",
@@ -11036,7 +10938,6 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
 		IsActive:    true,
-		BudgetID:    &budgetID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            1,
@@ -11079,7 +10980,6 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 		Description: "Test virtual key",
 		Value:       "vk_abc123",
 		IsActive:    true,
-		BudgetID:    &budgetID,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				ID:            2,
@@ -14165,11 +14065,9 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	}
 }
 
-// TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit verifies that BudgetID and RateLimitID
-// in VK provider configs affect hash generation.
-func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
-	budgetID1 := "budget-1"
-	budgetID2 := "budget-2"
+// TestGenerateVirtualKeyHash_ProviderConfigRateLimit verifies that RateLimitID
+// in VK provider configs affects hash generation.
+func TestGenerateVirtualKeyHash_ProviderConfigRateLimit(t *testing.T) {
 	rateLimitID1 := "rate-limit-1"
 	rateLimitID2 := "rate-limit-2"
 	weight := 1.0
@@ -14180,34 +14078,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 		vk2         tables.TableVirtualKey
 		expectEqual bool
 	}{
-		{
-			name: "different_budget_id_different_hash",
-			vk1: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID1,
-					},
-				},
-			},
-			vk2: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID2,
-					},
-				},
-			},
-			expectEqual: false,
-		},
 		{
 			name: "different_rate_limit_id_different_hash",
 			vk1: tables.TableVirtualKey{
@@ -14231,34 +14101,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 						Provider:    "openai",
 						Weight:      &weight,
 						RateLimitID: &rateLimitID2,
-					},
-				},
-			},
-			expectEqual: false,
-		},
-		{
-			name: "nil_vs_set_budget_id_different_hash",
-			vk1: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: nil,
-					},
-				},
-			},
-			vk2: tables.TableVirtualKey{
-				ID:       "vk-1",
-				Name:     "test-vk",
-				IsActive: true,
-				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-					{
-						Provider: "openai",
-						Weight:   &weight,
-						BudgetID: &budgetID1,
 					},
 				},
 			},
@@ -14293,7 +14135,7 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 			expectEqual: false,
 		},
 		{
-			name: "same_budget_and_rate_limit_same_hash",
+			name: "same_rate_limit_same_hash",
 			vk1: tables.TableVirtualKey{
 				ID:       "vk-1",
 				Name:     "test-vk",
@@ -14302,7 +14144,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 					{
 						Provider:    "openai",
 						Weight:      &weight,
-						BudgetID:    &budgetID1,
 						RateLimitID: &rateLimitID1,
 					},
 				},
@@ -14315,7 +14156,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 					{
 						Provider:    "openai",
 						Weight:      &weight,
-						BudgetID:    &budgetID1,
 						RateLimitID: &rateLimitID1,
 					},
 				},
@@ -14343,107 +14183,6 @@ func TestGenerateVirtualKeyHash_ProviderConfigBudgetRateLimit(t *testing.T) {
 				t.Errorf("Expected different hashes, but both are %s", hash1)
 			}
 		})
-	}
-}
-
-// TestSQLite_VKProviderConfig_BudgetAndRateLimit verifies that BudgetID and RateLimitID
-// in VK provider configs are properly persisted and retrieved from SQLite.
-func TestSQLite_VKProviderConfig_BudgetAndRateLimit(t *testing.T) {
-	initTestLogger()
-	tempDir := createTempDir(t)
-
-	budgetID := "budget-123"
-	rateLimitID := "rate-limit-456"
-	vkID := uuid.NewString()
-	weight := 1.0
-
-	// Create config with VK that has provider config with BudgetID and RateLimitID
-	configData := makeConfigDataFullWithDir(
-		nil,
-		map[string]configstore.ProviderConfig{
-			"openai": {
-				Keys: []schemas.Key{
-					{
-						ID:     uuid.NewString(),
-						Name:   "openai-key",
-						Value:  *schemas.NewEnvVar("sk-test"),
-						Weight: 1,
-					},
-				},
-			},
-		},
-		&configstore.GovernanceConfig{
-			Budgets: []tables.TableBudget{
-				{
-					ID:       budgetID,
-					MaxLimit: 100.0,
-				},
-			},
-			RateLimits: []tables.TableRateLimit{
-				{
-					ID:              rateLimitID,
-					RequestMaxLimit: int64Ptr(60),
-					TokenMaxLimit:   int64Ptr(10000),
-				},
-			},
-			VirtualKeys: []tables.TableVirtualKey{
-				{
-					ID:       vkID,
-					Name:     "test-vk",
-					Value:    "vk-test-value",
-					IsActive: true,
-					ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
-						{
-							Provider:    "openai",
-							Weight:      &weight,
-							BudgetID:    &budgetID,
-							RateLimitID: &rateLimitID,
-						},
-					},
-				},
-			},
-		},
-		tempDir,
-	)
-
-	// Load config
-	createConfigFile(t, tempDir, configData)
-	config, err := LoadConfig(context.Background(), tempDir)
-	if err != nil {
-		t.Fatalf("LoadConfig failed: %v", err)
-	}
-	defer config.Close(context.Background())
-
-	// Verify the governance config has the VK with provider configs
-	if config.GovernanceConfig == nil {
-		t.Fatal("Expected GovernanceConfig to exist")
-	}
-	if len(config.GovernanceConfig.VirtualKeys) == 0 {
-		t.Fatal("Expected VirtualKeys in GovernanceConfig")
-	}
-
-	// Find the VK and verify provider config
-	var foundVK *tables.TableVirtualKey
-	for i := range config.GovernanceConfig.VirtualKeys {
-		if config.GovernanceConfig.VirtualKeys[i].ID == vkID {
-			foundVK = &config.GovernanceConfig.VirtualKeys[i]
-			break
-		}
-	}
-	if foundVK == nil {
-		t.Fatalf("Virtual key %s not found in config", vkID)
-	}
-
-	if len(foundVK.ProviderConfigs) == 0 {
-		t.Fatal("Expected VK to have provider configs")
-	}
-
-	pc := foundVK.ProviderConfigs[0]
-	if pc.BudgetID == nil || *pc.BudgetID != budgetID {
-		t.Errorf("Expected BudgetID=%s, got %v", budgetID, pc.BudgetID)
-	}
-	if pc.RateLimitID == nil || *pc.RateLimitID != rateLimitID {
-		t.Errorf("Expected RateLimitID=%s, got %v", rateLimitID, pc.RateLimitID)
 	}
 }
 
@@ -15519,9 +15258,11 @@ var excludedGoFields = map[string]map[string]bool{
 	},
 	// Table types have DB-specific fields
 	"tables.TableBudget": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
+		"config_hash":        true,
+		"created_at":         true,
+		"updated_at":         true,
+		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
+		"provider_config_id": true, // Internal DB FK for multi-budget ownership
 	},
 	"tables.TableRateLimit": {
 		"config_hash": true,
@@ -15550,13 +15291,13 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash": true,
 		"created_at":  true,
 		"updated_at":  true,
-		"budget":      true, // GORM relation
+		"budgets":     true, // GORM relation (budgets have virtual_key_id FK)
 		"rate_limit":  true, // GORM relation
 		"team":        true, // GORM relation
 		"customer":    true, // GORM relation
 	},
 	"tables.TableVirtualKeyProviderConfig": {
-		"budget":     true, // GORM relation
+		"budgets":    true, // GORM relation (budgets have provider_config_id FK)
 		"rate_limit": true, // GORM relation
 	},
 	"tables.TableVirtualKeyMCPConfig": {
