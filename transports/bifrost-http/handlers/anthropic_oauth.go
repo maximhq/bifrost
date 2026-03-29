@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fasthttp/router"
@@ -12,6 +13,21 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// oauthErrorStatus maps OAuth sentinel errors to the appropriate HTTP status code.
+func oauthErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, oauth2.ErrOAuthConfigNotFound), errors.Is(err, oauth2.ErrOAuthTokenNotFound):
+		return fasthttp.StatusNotFound
+	case errors.Is(err, oauth2.ErrOAuthFlowExpired),
+		errors.Is(err, oauth2.ErrOAuthInvalidInput),
+		errors.Is(err, oauth2.ErrOAuthStateMismatch),
+		errors.Is(err, oauth2.ErrOAuthNoLinkedToken):
+		return fasthttp.StatusBadRequest
+	default:
+		return fasthttp.StatusInternalServerError
+	}
+}
 
 // AnthropicOAuthHandler manages HTTP requests for Anthropic OAuth operations
 type AnthropicOAuthHandler struct {
@@ -74,7 +90,7 @@ func (h *AnthropicOAuthHandler) handleExchange(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.oauthProvider.CompleteAnthropicOAuthFlow(ctx, req.Code, req.OAuthConfigID); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to exchange code: %v", err))
+		SendError(ctx, oauthErrorStatus(err), fmt.Sprintf("Failed to exchange code: %v", err))
 		return
 	}
 
@@ -129,7 +145,7 @@ func (h *AnthropicOAuthHandler) handleRefresh(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.oauthProvider.RefreshAccessToken(ctx, req.OAuthConfigID); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh token: %v", err))
+		SendError(ctx, oauthErrorStatus(err), fmt.Sprintf("Failed to refresh token: %v", err))
 		return
 	}
 
@@ -158,7 +174,7 @@ func (h *AnthropicOAuthHandler) handleLogout(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.oauthProvider.RevokeToken(ctx, req.OAuthConfigID); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke token: %v", err))
+		SendError(ctx, oauthErrorStatus(err), fmt.Sprintf("Failed to revoke token: %v", err))
 		return
 	}
 

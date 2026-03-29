@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+)
+
+// Sentinel errors for OAuth operations, allowing callers to distinguish
+// client-caused failures from server-side errors.
+var (
+	ErrOAuthConfigNotFound = errors.New("oauth config not found")
+	ErrOAuthFlowExpired    = errors.New("oauth flow expired")
+	ErrOAuthInvalidInput   = errors.New("invalid oauth input")
+	ErrOAuthStateMismatch  = errors.New("invalid state token")
+	ErrOAuthTokenNotFound  = errors.New("oauth token not found")
+	ErrOAuthNoLinkedToken  = errors.New("no token linked to oauth config")
 )
 
 // OAuth2Provider implements the schemas.OAuth2Provider interface
@@ -98,17 +110,17 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 	// Load oauth_config
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil || oauthConfig == nil {
-		return fmt.Errorf("oauth config not found: %w", err)
+		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
 	if oauthConfig.TokenID == nil {
-		return fmt.Errorf("no token linked to oauth config")
+		return fmt.Errorf("%w: oauth_config_id %s", ErrOAuthNoLinkedToken, oauthConfigID)
 	}
 
 	// Load oauth_token
 	token, err := p.configStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
 	if err != nil || token == nil {
-		return fmt.Errorf("oauth token not found: %w", err)
+		return fmt.Errorf("%w: token_id %s", ErrOAuthTokenNotFound, *oauthConfig.TokenID)
 	}
 
 	// Call OAuth provider's token endpoint with refresh_token
@@ -178,16 +190,16 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
 	if err != nil || oauthConfig == nil {
-		return fmt.Errorf("oauth config not found: %w", err)
+		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
 	if oauthConfig.TokenID == nil {
-		return fmt.Errorf("no token linked to oauth config")
+		return fmt.Errorf("%w: oauth_config_id %s", ErrOAuthNoLinkedToken, oauthConfigID)
 	}
 
 	token, err := p.configStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
 	if err != nil || token == nil {
-		return fmt.Errorf("oauth token not found: %w", err)
+		return fmt.Errorf("%w: token_id %s", ErrOAuthTokenNotFound, *oauthConfig.TokenID)
 	}
 
 	// Optionally call provider's revocation endpoint (if supported)
@@ -827,14 +839,14 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 		return fmt.Errorf("failed to lookup oauth config: %w", err)
 	}
 	if oauthConfig == nil {
-		return fmt.Errorf("oauth config not found: %s", oauthConfigID)
+		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
 	// Check expiry
 	if time.Now().After(oauthConfig.ExpiresAt) {
 		oauthConfig.Status = "expired"
 		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
-		return fmt.Errorf("oauth flow expired")
+		return fmt.Errorf("%w: flow has expired", ErrOAuthFlowExpired)
 	}
 
 	// Parse code#state format and validate state for CSRF protection
@@ -842,14 +854,14 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 	if len(parts) != 2 {
 		oauthConfig.Status = "failed"
 		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
-		return fmt.Errorf("authorization code must include state (expected code#state format)")
+		return fmt.Errorf("%w: authorization code must include state (expected code#state format)", ErrOAuthInvalidInput)
 	}
 	code := parts[0]
 	returnedState := parts[1]
 	if returnedState != oauthConfig.State {
 		oauthConfig.Status = "failed"
 		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
-		return fmt.Errorf("invalid state token")
+		return fmt.Errorf("%w: state token mismatch", ErrOAuthStateMismatch)
 	}
 
 	// Exchange code for tokens via JSON POST
