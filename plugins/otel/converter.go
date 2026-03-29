@@ -73,7 +73,18 @@ func hexToBytes(hexStr string, length int) []byte {
 func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
+		// When llmSpansOnly is enabled, skip non-LLM spans. Note: filtered spans
+		// may leave child spans with dangling ParentSpanId references. Most
+		// collectors (including Langfuse and Jaeger) handle this gracefully by
+		// promoting orphan spans to root level.
+		if p.llmSpansOnly && !isLLMOperationSpan(span.Kind) {
+			continue
+		}
 		otelSpans = append(otelSpans, p.convertSpanToOTELSpan(trace.TraceID, span))
+	}
+
+	if len(otelSpans) == 0 {
+		return nil
 	}
 
 	return &ResourceSpan{
@@ -84,6 +95,24 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 			Scope:  p.getInstrumentationScope(),
 			Spans:  otelSpans,
 		}},
+	}
+}
+
+// isLLMOperationSpan returns true for span kinds that represent LLM operations.
+// Infrastructure spans (HTTP requests, plugin hooks, key selection) and MCP tool
+// spans are intentionally excluded — MCP tool invocations are infrastructure-level
+// calls not directly related to LLM cost and latency analysis.
+func isLLMOperationSpan(kind schemas.SpanKind) bool {
+	switch kind {
+	case schemas.SpanKindLLMCall,
+		schemas.SpanKindRetry,
+		schemas.SpanKindFallback,
+		schemas.SpanKindEmbedding,
+		schemas.SpanKindSpeech,
+		schemas.SpanKindTranscription:
+		return true
+	default:
+		return false
 	}
 }
 
