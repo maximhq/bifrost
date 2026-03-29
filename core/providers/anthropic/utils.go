@@ -2057,11 +2057,11 @@ func isOAuthKey(key schemas.Key) bool {
 // setAnthropicAuthHeader sets the appropriate authentication header on a fasthttp request.
 // OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
 func setAnthropicAuthHeader(req *fasthttp.Request, keyValue string, key schemas.Key) {
-	req.Header.Del("Authorization")
-	req.Header.Del("x-api-key")
 	if keyValue == "" {
 		return
 	}
+	req.Header.Del("Authorization")
+	req.Header.Del("x-api-key")
 	if isOAuthKey(key) {
 		req.Header.Set("Authorization", "Bearer "+keyValue)
 		appendBetaHeader(req, AnthropicOAuthBetaHeader)
@@ -2073,11 +2073,11 @@ func setAnthropicAuthHeader(req *fasthttp.Request, keyValue string, key schemas.
 // setAnthropicAuthHeaderMap sets the appropriate authentication header in a headers map.
 // OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
 func setAnthropicAuthHeaderMap(headers map[string]string, keyValue string, key schemas.Key) {
-	delete(headers, "Authorization")
-	delete(headers, "x-api-key")
 	if keyValue == "" {
 		return
 	}
+	delete(headers, "Authorization")
+	delete(headers, "x-api-key")
 	if isOAuthKey(key) {
 		headers["Authorization"] = "Bearer " + keyValue
 		if existing := headers["anthropic-beta"]; existing != "" {
