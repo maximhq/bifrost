@@ -38,7 +38,8 @@ func TestCohere(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,  // May not support automatic
 			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
