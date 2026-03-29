@@ -1,5 +1,5 @@
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:25-alpine3.23 AS ui-builder
+FROM node:25-alpine3.23@sha256:cf38e1f3c28ac9d81cdc0c51d8220320b3b618780e44ef96a39f76f7dbfef023 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -15,7 +15,7 @@ RUN node scripts/fix-paths.js
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.26.1-alpine3.23 AS builder
+FROM golang:1.26.1-alpine3.23@sha256:2389ebfa5b7f43eeafbd6be0c3700cc46690ef842ad962f6c5bd6be49ed82039 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -48,7 +48,7 @@ RUN go build \
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
 # --- Runtime Stage: Minimal runtime image ---
-FROM alpine:3.23.3
+FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
 WORKDIR /app
 
 # Install runtime dependencies for CGO-enabled binary
