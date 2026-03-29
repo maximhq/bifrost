@@ -250,7 +250,7 @@ export default function VirtualKeysTable({
 								virtualKeys.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
 									const isExhausted =
-										(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
+										(vk.budgets?.some((b) => b.current_usage >= b.max_limit)) ||
 										(vk.rate_limit?.token_current_usage &&
 											vk.rate_limit?.token_max_limit &&
 											vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
@@ -301,15 +301,19 @@ export default function VirtualKeysTable({
 												</div>
 											</TableCell>
 											<TableCell>
-												{vk.budget ? (
+												{vk.budgets && vk.budgets.length > 0 ? (
 													<div className="flex flex-col gap-0.5">
-														<span className={cn("font-mono text-sm", vk.budget.current_usage >= vk.budget.max_limit && "text-red-400")}>
-															{formatCurrency(vk.budget.current_usage)} / {formatCurrency(vk.budget.max_limit)}
-														</span>
-														<span className="text-muted-foreground text-xs">
-															Resets {formatResetDuration(vk.budget.reset_duration)}
-															{vk.budget.calendar_aligned && " (calendar)"}
-														</span>
+														{vk.budgets.map((b, idx) => (
+															<div key={idx} className="flex flex-col">
+																<span className={cn("font-mono text-sm", b.current_usage >= b.max_limit && "text-red-400")}>
+																	{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																</span>
+																<span className="text-muted-foreground text-xs">
+																	Resets {formatResetDuration(b.reset_duration)}
+																	{b.calendar_aligned && " (calendar)"}
+																</span>
+															</div>
+														))}
 													</div>
 												) : (
 													<span className="text-muted-foreground text-sm">-</span>

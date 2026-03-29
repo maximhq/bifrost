@@ -339,6 +339,22 @@ run_postgres_sql() {
     -c "$sql" 2>/dev/null
 }
 
+run_postgres_scalar() {
+  local sql="$1"
+
+  local container
+  container=$(get_postgres_container)
+
+  if [ -z "$container" ]; then
+    log_error "PostgreSQL container not found"
+    return 1
+  fi
+
+  docker exec "$container" \
+    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
+    -c "$sql" 2>/dev/null | tr -d '[:space:]'
+}
+
 run_postgres_sql_file() {
   local sql_file="$1"
   
@@ -2605,6 +2621,7 @@ compare_postgres_snapshots() {
   # - network_config_json, concurrency_buffer_json, proxy_config_json, custom_provider_config_json:
   #   JSON fields that get normalized with default values during migration
   # - budget_id, rate_limit_id: governance fields that may be reset or initialized during migrations
+  # - virtual_key_id, provider_config_id: new FK columns on governance_budgets (added by multi-budget migration)
   # - status, description: key validation runs after migration, updating these fields
   #   for invalid/test keys (e.g., status becomes "list_models_failed")
   local ignore_columns="updated_at config_hash created_at models_json weight allowed_models network_config_json concurrency_buffer_json proxy_config_json custom_provider_config_json budget_id rate_limit_id status description"
@@ -2721,7 +2738,12 @@ compare_postgres_snapshots() {
     local col_idx=1
     for col in "${before_col_array[@]}"; do
       # Skip columns that are expected to change
-      if [[ " $ignore_columns " == *" $col "* ]]; then
+      # virtual_key_id, provider_config_id: only ignore on governance_budgets (new FK columns from multi-budget migration)
+      local table_ignore_columns="$ignore_columns"
+      if [ "$table" = "governance_budgets" ]; then
+        table_ignore_columns="$table_ignore_columns virtual_key_id provider_config_id"
+      fi
+      if [[ " $table_ignore_columns " == *" $col "* ]]; then
         col_idx=$((col_idx + 1))
         continue
       fi
@@ -2812,10 +2834,88 @@ compare_postgres_snapshots() {
 # Validation Functions (simplified, uses snapshots)
 # ============================================================================
 
+# verify_budget_migration checks that the multi-budget FK migration correctly
+# moved budget ownership from VK/ProviderConfig budget_id columns to
+# governance_budgets.virtual_key_id / governance_budgets.provider_config_id
+verify_budget_migration_postgres() {
+  log_info "Verifying budget migration (budget_id → virtual_key_id/provider_config_id)..."
+  local failed=0
+
+  # Check: budget-migration-test-1 was linked to vk-migration-test-1 via budget_id
+  # After migration, governance_budgets.virtual_key_id should be set
+  local vk_budget_count
+  vk_budget_count=$(run_postgres_scalar "SELECT COUNT(*) FROM governance_budgets WHERE id = 'budget-migration-test-1' AND virtual_key_id = 'vk-migration-test-1'")
+  if [ "$vk_budget_count" = "1" ]; then
+    log_info "  VK budget migration: budget-migration-test-1 → vk-migration-test-1 ✓"
+  else
+    log_warn "  VK budget migration: budget-migration-test-1 virtual_key_id not set (count=$vk_budget_count) — may be expected if old version didn't have budget_id on VK"
+  fi
+
+  # Check: budget-migration-test-2 was linked to provider config via budget_id
+  # After migration, governance_budgets.provider_config_id should be set
+  local pc_budget_count
+  pc_budget_count=$(run_postgres_scalar "SELECT COUNT(*) FROM governance_budgets WHERE id = 'budget-migration-test-2' AND provider_config_id IS NOT NULL")
+  if [ "$pc_budget_count" = "1" ]; then
+    log_info "  PC budget migration: budget-migration-test-2 → provider_config ✓"
+  else
+    log_warn "  PC budget migration: budget-migration-test-2 provider_config_id not set (count=$pc_budget_count) — may be expected if old version didn't have budget_id on PC"
+  fi
+
+  # Check: virtual_key_id and provider_config_id columns exist on governance_budgets
+  local has_vk_col
+  has_vk_col=$(run_postgres_scalar "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'governance_budgets' AND column_name = 'virtual_key_id'")
+  if [ "$has_vk_col" = "1" ]; then
+    log_info "  Column governance_budgets.virtual_key_id exists ✓"
+  else
+    log_error "  Column governance_budgets.virtual_key_id MISSING!"
+    failed=1
+  fi
+
+  local has_pc_col
+  has_pc_col=$(run_postgres_scalar "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'governance_budgets' AND column_name = 'provider_config_id'")
+  if [ "$has_pc_col" = "1" ]; then
+    log_info "  Column governance_budgets.provider_config_id exists ✓"
+  else
+    log_error "  Column governance_budgets.provider_config_id MISSING!"
+    failed=1
+  fi
+
+  # Check: budget_id column should be dropped from governance_virtual_keys
+  local vk_has_budget_id
+  vk_has_budget_id=$(run_postgres_scalar "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'governance_virtual_keys' AND column_name = 'budget_id'")
+  if [ "$vk_has_budget_id" = "0" ]; then
+    log_info "  Column governance_virtual_keys.budget_id dropped ✓"
+  else
+    log_error "  Column governance_virtual_keys.budget_id still exists!"
+    failed=1
+  fi
+
+  # Check: budget_id column should be dropped from governance_virtual_key_provider_configs
+  local pc_has_budget_id
+  pc_has_budget_id=$(run_postgres_scalar "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'governance_virtual_key_provider_configs' AND column_name = 'budget_id'")
+  if [ "$pc_has_budget_id" = "0" ]; then
+    log_info "  Column governance_virtual_key_provider_configs.budget_id dropped ✓"
+  else
+    log_error "  Column governance_virtual_key_provider_configs.budget_id still exists!"
+    failed=1
+  fi
+
+  # Check: junction tables should not exist
+  local junction_vk
+  junction_vk=$(run_postgres_scalar "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'governance_virtual_key_budgets'")
+  if [ "$junction_vk" = "0" ]; then
+    log_info "  Junction table governance_virtual_key_budgets dropped ✓"
+  else
+    log_warn "  Junction table governance_virtual_key_budgets still exists (may not have existed in old version)"
+  fi
+
+  return $failed
+}
+
 validate_postgres_data() {
   local before_snapshot="$1"
   local after_snapshot="$2"
-  
+
   compare_postgres_snapshots "$before_snapshot" "$after_snapshot"
 }
 
@@ -3060,7 +3160,14 @@ EOF
       stop_bifrost
       return 1
     fi
-    
+
+    # STEP 6: Verify budget migration (budget_id → virtual_key_id/provider_config_id)
+    if ! verify_budget_migration_postgres; then
+      log_error "Budget migration verification failed after migration from $version"
+      stop_bifrost
+      return 1
+    fi
+
     stop_bifrost
     log_info "Migration from $version: SUCCESS"
   done

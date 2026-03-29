@@ -2237,7 +2237,6 @@ func reconcileVirtualKeyAssociations(
 			// Update existing provider config from file
 			existing.Weight = newPC.Weight
 			existing.AllowedModels = newPC.AllowedModels
-			existing.BudgetID = newPC.BudgetID
 			existing.RateLimitID = newPC.RateLimitID
 			existing.Keys = newPC.Keys
 			if err := store.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {

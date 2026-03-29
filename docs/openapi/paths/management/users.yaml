@@ -1,0 +1,103 @@
+users:
+  get:
+    operationId: listUsers
+    summary: List users
+    description: Returns a paginated list of users with optional search.
+    tags:
+      - Users
+    parameters:
+      - name: page
+        in: query
+        description: Page number (1-based)
+        schema:
+          type: integer
+          default: 1
+      - name: limit
+        in: query
+        description: Number of users per page (max 100)
+        schema:
+          type: integer
+          default: 20
+      - name: search
+        in: query
+        description: Search by name or email
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/ListUsersResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createUser
+    summary: Create user
+    description: Manually creates a new user in the organization.
+    tags:
+      - Users
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/users.yaml#/CreateUserRequest'
+    responses:
+      '200':
+        description: User created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: User with this email already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+users-by-id:
+  delete:
+    operationId: deleteUser
+    summary: Delete user
+    description: >
+      Permanently removes a user from the organization. This cascades to delete
+      the user's governance settings (budget/rate limits), team memberships,
+      access profiles, and OIDC sessions. Cannot delete yourself.
+    tags:
+      - Users
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: User deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        description: Bad request (e.g. cannot delete yourself)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '404':
+        description: User not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

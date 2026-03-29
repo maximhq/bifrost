@@ -165,7 +165,10 @@
         },
         "mcp_code_mode_binding_level": {
           "type": "string",
-          "enum": ["server", "tool"],
+          "enum": [
+            "server",
+            "tool"
+          ],
           "description": "Code mode binding level for MCP tools"
         },
         "mcp_tool_sync_interval": {
@@ -291,6 +294,14 @@
                 "type": "boolean",
                 "description": "Snap resets to calendar boundaries (day/week/month/year start)",
                 "default": false
+              },
+              "virtual_key_id": {
+                "type": "string",
+                "description": "ID of the virtual key this budget belongs to (mutually exclusive with provider_config_id)"
+              },
+              "provider_config_id": {
+                "type": "integer",
+                "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               }
             },
             "required": [
@@ -457,6 +468,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
+                "default": false
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id)"
@@ -464,10 +480,6 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
-              },
-              "budget_id": {
-                "type": "string",
-                "description": "Associated budget ID"
               },
               "rate_limit_id": {
                 "type": "string",
@@ -577,7 +589,9 @@
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
               }
             },
-            "required": ["name"]
+            "required": [
+              "name"
+            ]
           }
         }
       },
@@ -932,7 +946,10 @@
           },
           "placement": {
             "type": "string",
-            "enum": ["pre_builtin", "post_builtin"],
+            "enum": [
+              "pre_builtin",
+              "post_builtin"
+            ],
             "description": "Whether this plugin runs before or after built-in plugins. Default: post_builtin",
             "optional": true,
             "default": "post_builtin"
@@ -1012,10 +1029,15 @@
                               "description": "Password for basic authentication"
                             }
                           },
-                          "required": ["username", "password"]
+                          "required": [
+                            "username",
+                            "password"
+                          ]
                         }
                       },
-                      "required": ["push_gateway_url"]
+                      "required": [
+                        "push_gateway_url"
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -1474,7 +1496,9 @@
           "maximum": 1
         }
       },
-      "required": ["weight"],
+      "required": [
+        "weight"
+      ],
       "additionalProperties": false
     },
     "routing_rule": {
@@ -1521,12 +1545,20 @@
         },
         "scope": {
           "type": "string",
-          "enum": ["global", "team", "customer", "virtual_key"],
+          "enum": [
+            "global",
+            "team",
+            "customer",
+            "virtual_key"
+          ],
           "description": "Rule scope level",
           "default": "global"
         },
         "scope_id": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Entity ID for non-global scopes (required for non-global scope)"
         },
         "priority": {
@@ -1540,7 +1572,11 @@
           "additionalProperties": true
         }
       },
-      "required": ["id", "name", "targets"],
+      "required": [
+        "id",
+        "name",
+        "targets"
+      ],
       "additionalProperties": false
     },
     "virtual_key_provider_config": {
@@ -1560,7 +1596,10 @@
           "description": "Provider name"
         },
         "weight": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "description": "Weight for load balancing (null opts out of weighted routing)",
           "default": null
         },
@@ -1570,10 +1609,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "budget_id": {
-          "type": "string",
-          "description": "Associated budget ID"
         },
         "rate_limit_id": {
           "type": "string",
@@ -2486,7 +2521,11 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2632,8 +2671,16 @@
             }
           },
           "anyOf": [
-            { "required": ["http_config"] },
-            { "required": ["connection_string"] }
+            {
+              "required": [
+                "http_config"
+              ]
+            },
+            {
+              "required": [
+                "connection_string"
+              ]
+            }
           ]
         },
         {
@@ -2665,7 +2712,10 @@
         },
         "code_mode_binding_level": {
           "type": "string",
-          "enum": ["server", "tool"],
+          "enum": [
+            "server",
+            "tool"
+          ],
           "description": "How tools are exposed in VFS for code execution"
         },
         "disable_auto_tool_inject": {
@@ -3148,7 +3198,11 @@
         },
         "cloud": {
           "type": "string",
-          "enum": ["commercial", "gcc-high", "dod"],
+          "enum": [
+            "commercial",
+            "gcc-high",
+            "dod"
+          ],
           "default": "commercial",
           "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
@@ -3412,7 +3466,14 @@
         "scope_kind": {
           "type": "string",
           "description": "Scope level for this override",
-          "enum": ["global", "provider", "provider_key", "virtual_key", "virtual_key_provider", "virtual_key_provider_key"]
+          "enum": [
+            "global",
+            "provider",
+            "provider_key",
+            "virtual_key",
+            "virtual_key_provider",
+            "virtual_key_provider_key"
+          ]
         },
         "virtual_key_id": {
           "type": "string",
@@ -3429,7 +3490,10 @@
         "match_type": {
           "type": "string",
           "description": "How the pattern is matched against model names",
-          "enum": ["exact", "wildcard"]
+          "enum": [
+            "exact",
+            "wildcard"
+          ]
         },
         "pattern": {
           "type": "string",
@@ -3452,21 +3516,38 @@
           "description": "Internal hash for change detection (auto-managed)"
         }
       },
-      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
+      "required": [
+        "id",
+        "name",
+        "scope_kind",
+        "match_type",
+        "pattern",
+        "request_types"
+      ],
       "additionalProperties": false
     },
     "pricing_override_match_type": {
       "type": "string",
-      "enum": ["exact", "wildcard"]
+      "enum": [
+        "exact",
+        "wildcard"
+      ]
     },
     "pricing_override_request_type": {
       "type": "string",
       "enum": [
-        "chat_completion", "text_completion", "responses",
-        "embedding", "rerank",
-        "speech", "transcription",
-        "image_generation", "image_variation", "image_edit",
-        "video_generation", "video_remix"
+        "chat_completion",
+        "text_completion",
+        "responses",
+        "embedding",
+        "rerank",
+        "speech",
+        "transcription",
+        "image_generation",
+        "image_variation",
+        "image_edit",
+        "video_generation",
+        "video_remix"
       ]
     },
     "custom_provider_config": {
@@ -3485,65 +3566,167 @@
           "type": "object",
           "description": "Allowed request types for the custom provider",
           "properties": {
-            "list_models": { "type": "boolean" },
-            "text_completion": { "type": "boolean" },
-            "text_completion_stream": { "type": "boolean" },
-            "chat_completion": { "type": "boolean" },
-            "chat_completion_stream": { "type": "boolean" },
-            "responses": { "type": "boolean" },
-            "responses_stream": { "type": "boolean" },
-            "count_tokens": { "type": "boolean" },
-            "embedding": { "type": "boolean" },
-            "rerank": { "type": "boolean" },
-            "speech": { "type": "boolean" },
-            "speech_stream": { "type": "boolean" },
-            "transcription": { "type": "boolean" },
-            "transcription_stream": { "type": "boolean" },
-            "image_generation": { "type": "boolean" },
-            "image_generation_stream": { "type": "boolean" },
-            "image_edit": { "type": "boolean" },
-            "image_edit_stream": { "type": "boolean" },
-            "image_variation": { "type": "boolean" },
-            "video_generation": { "type": "boolean" },
-            "video_retrieve": { "type": "boolean" },
-            "video_download": { "type": "boolean" },
-            "video_delete": { "type": "boolean" },
-            "video_list": { "type": "boolean" },
-            "video_remix": { "type": "boolean" },
-            "batch_create": { "type": "boolean" },
-            "batch_list": { "type": "boolean" },
-            "batch_retrieve": { "type": "boolean" },
-            "batch_cancel": { "type": "boolean" },
-            "batch_delete": { "type": "boolean" },
-            "batch_results": { "type": "boolean" },
-            "file_upload": { "type": "boolean" },
-            "file_list": { "type": "boolean" },
-            "file_retrieve": { "type": "boolean" },
-            "file_delete": { "type": "boolean" },
-            "file_content": { "type": "boolean" },
-            "container_create": { "type": "boolean" },
-            "container_list": { "type": "boolean" },
-            "container_retrieve": { "type": "boolean" },
-            "container_delete": { "type": "boolean" },
-            "container_file_create": { "type": "boolean" },
-            "container_file_list": { "type": "boolean" },
-            "container_file_retrieve": { "type": "boolean" },
-            "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" },
-            "passthrough": { "type": "boolean" },
-            "passthrough_stream": { "type": "boolean" },
-            "websocket_responses": { "type": "boolean" },
-            "realtime": { "type": "boolean" }
+            "list_models": {
+              "type": "boolean"
+            },
+            "text_completion": {
+              "type": "boolean"
+            },
+            "text_completion_stream": {
+              "type": "boolean"
+            },
+            "chat_completion": {
+              "type": "boolean"
+            },
+            "chat_completion_stream": {
+              "type": "boolean"
+            },
+            "responses": {
+              "type": "boolean"
+            },
+            "responses_stream": {
+              "type": "boolean"
+            },
+            "count_tokens": {
+              "type": "boolean"
+            },
+            "embedding": {
+              "type": "boolean"
+            },
+            "rerank": {
+              "type": "boolean"
+            },
+            "speech": {
+              "type": "boolean"
+            },
+            "speech_stream": {
+              "type": "boolean"
+            },
+            "transcription": {
+              "type": "boolean"
+            },
+            "transcription_stream": {
+              "type": "boolean"
+            },
+            "image_generation": {
+              "type": "boolean"
+            },
+            "image_generation_stream": {
+              "type": "boolean"
+            },
+            "image_edit": {
+              "type": "boolean"
+            },
+            "image_edit_stream": {
+              "type": "boolean"
+            },
+            "image_variation": {
+              "type": "boolean"
+            },
+            "video_generation": {
+              "type": "boolean"
+            },
+            "video_retrieve": {
+              "type": "boolean"
+            },
+            "video_download": {
+              "type": "boolean"
+            },
+            "video_delete": {
+              "type": "boolean"
+            },
+            "video_list": {
+              "type": "boolean"
+            },
+            "video_remix": {
+              "type": "boolean"
+            },
+            "batch_create": {
+              "type": "boolean"
+            },
+            "batch_list": {
+              "type": "boolean"
+            },
+            "batch_retrieve": {
+              "type": "boolean"
+            },
+            "batch_cancel": {
+              "type": "boolean"
+            },
+            "batch_delete": {
+              "type": "boolean"
+            },
+            "batch_results": {
+              "type": "boolean"
+            },
+            "file_upload": {
+              "type": "boolean"
+            },
+            "file_list": {
+              "type": "boolean"
+            },
+            "file_retrieve": {
+              "type": "boolean"
+            },
+            "file_delete": {
+              "type": "boolean"
+            },
+            "file_content": {
+              "type": "boolean"
+            },
+            "container_create": {
+              "type": "boolean"
+            },
+            "container_list": {
+              "type": "boolean"
+            },
+            "container_retrieve": {
+              "type": "boolean"
+            },
+            "container_delete": {
+              "type": "boolean"
+            },
+            "container_file_create": {
+              "type": "boolean"
+            },
+            "container_file_list": {
+              "type": "boolean"
+            },
+            "container_file_retrieve": {
+              "type": "boolean"
+            },
+            "container_file_content": {
+              "type": "boolean"
+            },
+            "container_file_delete": {
+              "type": "boolean"
+            },
+            "passthrough": {
+              "type": "boolean"
+            },
+            "passthrough_stream": {
+              "type": "boolean"
+            },
+            "websocket_responses": {
+              "type": "boolean"
+            },
+            "realtime": {
+              "type": "boolean"
+            }
           },
           "additionalProperties": false
         },
         "request_path_overrides": {
           "type": "object",
           "description": "Mapping of request type to custom path overriding the default provider path",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
-      "required": ["base_provider_type"],
+      "required": [
+        "base_provider_type"
+      ],
       "additionalProperties": false
     }
   }

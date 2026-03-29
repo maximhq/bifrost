@@ -1,0 +1,82 @@
+UserObject:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique user identifier
+    name:
+      type: string
+      description: User's display name
+    email:
+      type: string
+      format: email
+      description: User's email address
+    role_id:
+      type: integer
+      nullable: true
+      description: ID of the assigned RBAC role
+    role:
+      type: object
+      nullable: true
+      description: RBAC role details
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        is_system_role:
+          type: boolean
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateUserRequest:
+  type: object
+  required:
+    - name
+    - email
+  properties:
+    name:
+      type: string
+      description: User's display name
+    email:
+      type: string
+      format: email
+      description: User's email address (must be unique)
+    role_id:
+      type: integer
+      description: Optional RBAC role ID to assign
+
+UserResponse:
+  type: object
+  properties:
+    user:
+      $ref: '#/UserObject'
+
+ListUsersResponse:
+  type: object
+  properties:
+    users:
+      type: array
+      items:
+        $ref: '#/UserObject'
+    total:
+      type: integer
+      description: Total number of users matching the query
+    page:
+      type: integer
+      description: Current page number
+    limit:
+      type: integer
+      description: Number of users per page
+    total_pages:
+      type: integer
+      description: Total number of pages
+    has_more:
+      type: boolean
+      description: Whether more pages are available

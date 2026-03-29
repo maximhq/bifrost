@@ -195,12 +195,20 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if vk == nil {
 			return
 		}
-		if vk.BudgetID != nil {
-			if liveBudget, exists := gs.budgets.Load(*vk.BudgetID); exists && liveBudget != nil {
-				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-					vk.Budget = b
+		// Cross-reference live budget/rate limit from standalone maps
+		// (usage updates clone into budgets/rateLimits maps, so embedded pointers go stale)
+		clone := *vk
+		// Hydrate multi-budgets from live sync.Map
+		if len(clone.Budgets) > 0 {
+			liveBudgets := make([]configstoreTables.TableBudget, 0, len(clone.Budgets))
+			for _, b := range clone.Budgets {
+				if lb, exists := gs.budgets.Load(b.ID); exists && lb != nil {
+					if budget, ok := lb.(*configstoreTables.TableBudget); ok {
+						liveBudgets = append(liveBudgets, *budget)
+					}
 				}
 			}
+			clone.Budgets = liveBudgets
 		}
 		if vk.RateLimitID != nil {
 			if liveRL, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && liveRL != nil {
@@ -213,12 +221,17 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 			configs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
 			copy(configs, vk.ProviderConfigs)
 			for i := range configs {
-				if configs[i].BudgetID != nil {
-					if liveBudget, exists := gs.budgets.Load(*configs[i].BudgetID); exists && liveBudget != nil {
-						if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-							configs[i].Budget = b
+				// Hydrate provider config multi-budgets
+				if len(configs[i].Budgets) > 0 {
+					liveBudgets := make([]configstoreTables.TableBudget, 0, len(configs[i].Budgets))
+					for _, b := range configs[i].Budgets {
+						if lb, exists := gs.budgets.Load(b.ID); exists && lb != nil {
+							if budget, ok := lb.(*configstoreTables.TableBudget); ok {
+								liveBudgets = append(liveBudgets, *budget)
+							}
 						}
 					}
+					configs[i].Budgets = liveBudgets
 				}
 				if configs[i].RateLimitID != nil {
 					if liveRL, exists := gs.rateLimits.Load(*configs[i].RateLimitID); exists && liveRL != nil {
@@ -1527,10 +1540,34 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 		var shouldReset bool
 		var newLastReset time.Time
 
-		if budget.CalendarAligned {
+		// Check if the owning VK has calendar alignment enabled
+		// virtualKeys map is keyed by VK value (not ID), so we scan to find by VirtualKeyID
+		calendarAligned := false
+		if budget.VirtualKeyID != nil {
+			gs.virtualKeys.Range(func(_, v interface{}) bool {
+				if vk, ok := v.(*configstoreTables.TableVirtualKey); ok && vk != nil && vk.ID == *budget.VirtualKeyID {
+					calendarAligned = vk.CalendarAligned
+					return false // stop
+				}
+				return true
+			})
+		} else if budget.ProviderConfigID != nil {
+			// Provider config budgets: look up the VK that owns this provider config
+			gs.virtualKeys.Range(func(_, v interface{}) bool {
+				if vk, ok := v.(*configstoreTables.TableVirtualKey); ok && vk != nil {
+					for _, pc := range vk.ProviderConfigs {
+						if pc.ID == *budget.ProviderConfigID {
+							calendarAligned = vk.CalendarAligned
+							return false // stop
+						}
+					}
+				}
+				return true
+			})
+		}
+
+		if calendarAligned {
 			// Calendar-aligned: reset when we've entered a genuinely new calendar period.
-			// This avoids the double-reset bug with rolling durations in months with
-			// more days than ParseDuration approximates (e.g. 31-day months with "1M" = 30 days).
 			currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
 			if currentPeriodStart.After(budget.LastReset) {
 				shouldReset = true
@@ -2102,32 +2139,16 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 			}
 		}
 
-		for i := range budgets {
-			if vk.BudgetID != nil && budgets[i].ID == *vk.BudgetID {
-				vk.Budget = &budgets[i]
-			}
-		}
-
 		for i := range rateLimits {
 			if vk.RateLimitID != nil && rateLimits[i].ID == *vk.RateLimitID {
 				vk.RateLimit = &rateLimits[i]
 			}
 		}
 
-		// Populate provider config relationships with budgets and rate limits
+		// Populate provider config relationships with rate limits
 		if vk.ProviderConfigs != nil {
 			for j := range vk.ProviderConfigs {
 				pc := &vk.ProviderConfigs[j]
-
-				// Populate budget
-				if pc.BudgetID != nil {
-					for k := range budgets {
-						if budgets[k].ID == *pc.BudgetID {
-							pc.Budget = &budgets[k]
-							break
-						}
-					}
-				}
 
 				// Populate rate limit
 				if pc.RateLimitID != nil {
@@ -2373,22 +2394,36 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(vk *configstoreTable
 	var budgetNames []string
 
 	// Collect all budgets in hierarchy order using lock-free sync.Map access (Provider Configs → VK → Team → Customer)
+	seen := make(map[string]bool)
 	for _, pc := range vk.ProviderConfigs {
-		if pc.BudgetID != nil && pc.Provider == string(requestedProvider) {
-			if budgetValue, exists := gs.budgets.Load(*pc.BudgetID); exists && budgetValue != nil {
+		if pc.Provider != string(requestedProvider) {
+			continue
+		}
+		// Multi-budgets
+		for _, b := range pc.Budgets {
+			if seen[b.ID] {
+				continue
+			}
+			if budgetValue, exists := gs.budgets.Load(b.ID); exists && budgetValue != nil {
 				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 					budgets = append(budgets, budget)
 					budgetNames = append(budgetNames, pc.Provider)
+					seen[budget.ID] = true
 				}
 			}
 		}
 	}
 
-	if vk.BudgetID != nil {
-		if budgetValue, exists := gs.budgets.Load(*vk.BudgetID); exists && budgetValue != nil {
+	// VK-level multi-budgets
+	for _, b := range vk.Budgets {
+		if seen[b.ID] {
+			continue
+		}
+		if budgetValue, exists := gs.budgets.Load(b.ID); exists && budgetValue != nil {
 			if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 				budgets = append(budgets, budget)
 				budgetNames = append(budgetNames, "VK")
+				seen[budget.ID] = true
 			}
 		}
 	}
@@ -2477,9 +2512,9 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(vk *configstoreTables.T
 		return // Nothing to create
 	}
 
-	// Create associated budget if exists
-	if vk.Budget != nil {
-		gs.budgets.Store(vk.Budget.ID, vk.Budget)
+	// Store budgets
+	for i := range vk.Budgets {
+		gs.budgets.Store(vk.Budgets[i].ID, &vk.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
@@ -2490,8 +2525,8 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(vk *configstoreTables.T
 	// Create provider config budgets and rate limits if they exist
 	if vk.ProviderConfigs != nil {
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Budget != nil {
-				gs.budgets.Store(pc.Budget.ID, pc.Budget)
+			for i := range pc.Budgets {
+				gs.budgets.Store(pc.Budgets[i].ID, &pc.Budgets[i])
 			}
 			if pc.RateLimit != nil {
 				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
@@ -2518,23 +2553,37 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 
 		// Create clone to avoid modifying the original
 		clone := *vk
-		// Update Budget for VK in memory store
-		if clone.Budget != nil {
-			// Preserve existing usage from memory when updating budget config
-			// The usage tracker maintains current usage in memory, and we only want to update
-			// the configuration fields (max_limit, reset_duration) from the database
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
+
+		// Collect all incoming budget IDs across VK + provider configs to avoid
+		// deleting a budget that was moved between VK-level and PC-level in one update.
+		allNewBudgetIDs := make(map[string]bool)
+		for i := range clone.Budgets {
+			allNewBudgetIDs[clone.Budgets[i].ID] = true
+		}
+		for i := range clone.ProviderConfigs {
+			for j := range clone.ProviderConfigs[i].Budgets {
+				allNewBudgetIDs[clone.ProviderConfigs[i].Budgets[j].ID] = true
+			}
+		}
+
+		// Update multi-budgets for VK
+		for i := range clone.Budgets {
+			// Preserve existing usage from memory
+			if existingBudgetValue, exists := gs.budgets.Load(clone.Budgets[i].ID); exists && existingBudgetValue != nil {
 				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					// Preserve current usage and last reset time from existing in-memory budget
-					clone.Budget.CurrentUsage = existingBudget.CurrentUsage
-					clone.Budget.LastReset = existingBudget.LastReset
+					clone.Budgets[i].CurrentUsage = existingBudget.CurrentUsage
+					clone.Budgets[i].LastReset = existingBudget.LastReset
 				}
 			}
-			gs.budgets.Store(clone.Budget.ID, clone.Budget)
-		} else if existingVK.Budget != nil {
-			// Budget was removed from the virtual key, delete it from memory
-			gs.budgets.Delete(existingVK.Budget.ID)
+			gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
 		}
+		// Delete removed multi-budgets
+		for _, oldBudget := range existingVK.Budgets {
+			if !allNewBudgetIDs[oldBudget.ID] {
+				gs.budgets.Delete(oldBudget.ID)
+			}
+		}
+
 		if clone.RateLimit != nil {
 			// Preserve existing usage from memory when updating rate limit config
 			// The usage tracker maintains current usage in memory, and we only want to update
@@ -2584,22 +2633,23 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 						clone.ProviderConfigs[i].RateLimit = nil
 					}
 				}
-				// Update Budget for provider config in memory store
-				if pc.Budget != nil {
-					// Preserve existing usage from memory when updating provider config budget
-					if existingBudgetValue, exists := gs.budgets.Load(pc.Budget.ID); exists && existingBudgetValue != nil {
+				// Update multi-budgets for provider config
+				for j := range clone.ProviderConfigs[i].Budgets {
+					b := &clone.ProviderConfigs[i].Budgets[j]
+					if existingBudgetValue, exists := gs.budgets.Load(b.ID); exists && existingBudgetValue != nil {
 						if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-							// Preserve current usage and last reset time from existing in-memory budget
-							clone.ProviderConfigs[i].Budget.CurrentUsage = existingBudget.CurrentUsage
-							clone.ProviderConfigs[i].Budget.LastReset = existingBudget.LastReset
+							b.CurrentUsage = existingBudget.CurrentUsage
+							b.LastReset = existingBudget.LastReset
 						}
 					}
-					gs.budgets.Store(clone.ProviderConfigs[i].Budget.ID, clone.ProviderConfigs[i].Budget)
-				} else {
-					// Budget was removed from provider config, delete it from memory if it existed
-					if existingPC, exists := existingProviderConfigs[pc.ID]; exists && existingPC.Budget != nil {
-						gs.budgets.Delete(existingPC.Budget.ID)
-						clone.ProviderConfigs[i].Budget = nil
+					gs.budgets.Store(b.ID, b)
+				}
+				// Delete removed multi-budgets for this provider config
+				if existingPC, exists := existingProviderConfigs[pc.ID]; exists {
+					for _, oldBudget := range existingPC.Budgets {
+						if !allNewBudgetIDs[oldBudget.ID] {
+							gs.budgets.Delete(oldBudget.ID)
+						}
 					}
 				}
 			}
@@ -2625,9 +2675,9 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(vkID string) {
 		}
 
 		if vk.ID == vkID {
-			// Delete associated budget if exists
-			if vk.BudgetID != nil {
-				gs.budgets.Delete(*vk.BudgetID)
+			// Delete budgets
+			for _, b := range vk.Budgets {
+				gs.budgets.Delete(b.ID)
 			}
 
 			// Delete associated rate limit if exists
@@ -2638,8 +2688,8 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(vkID string) {
 			// Delete provider config budgets and rate limits
 			if vk.ProviderConfigs != nil {
 				for _, pc := range vk.ProviderConfigs {
-					if pc.BudgetID != nil {
-						gs.budgets.Delete(*pc.BudgetID)
+					for _, b := range pc.Budgets {
+						gs.budgets.Delete(b.ID)
 					}
 					if pc.RateLimitID != nil {
 						gs.rateLimits.Delete(*pc.RateLimitID)
@@ -3165,18 +3215,22 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(resetBudget *configstoreT
 		needsUpdate := false
 		clone := *vk
 
-		// Check VK-level budget
-		if vk.BudgetID != nil && *vk.BudgetID == budgetID {
-			clone.Budget = resetBudget
-			needsUpdate = true
+		// Check VK-level budgets
+		for i, b := range clone.Budgets {
+			if b.ID == budgetID {
+				clone.Budgets[i] = *resetBudget
+				needsUpdate = true
+			}
 		}
 
 		// Check provider config budgets
 		if vk.ProviderConfigs != nil {
-			for i, pc := range clone.ProviderConfigs {
-				if pc.BudgetID != nil && *pc.BudgetID == budgetID {
-					clone.ProviderConfigs[i].Budget = resetBudget
-					needsUpdate = true
+			for i := range clone.ProviderConfigs {
+				for j, b := range clone.ProviderConfigs[i].Budgets {
+					if b.ID == budgetID {
+						clone.ProviderConfigs[i].Budgets[j] = *resetBudget
+						needsUpdate = true
+					}
 				}
 			}
 		}
@@ -3638,9 +3692,9 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 							}
 						}
 					}
-					// Get budget status
-					if pc.BudgetID != nil {
-						if budgetValue, ok := gs.budgets.Load(*pc.BudgetID); ok && budgetValue != nil {
+					// Get budget status from multi-budgets
+					for _, b := range pc.Budgets {
+						if budgetValue, ok := gs.budgets.Load(b.ID); ok && budgetValue != nil {
 							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 								baseline, exists := budgetBaselines[budget.ID]
 								if !exists {

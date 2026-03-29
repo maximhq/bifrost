@@ -548,6 +548,12 @@ paths:
   /api/pricing/force-sync:
     $ref: './paths/management/config.yaml#/force-sync-pricing'
 
+  # Users
+  /api/users:
+    $ref: './paths/management/users.yaml#/users'
+  /api/users/{id}:
+    $ref: './paths/management/users.yaml#/users-by-id'
+
   # Session
   /api/session/login:
     $ref: './paths/management/session.yaml#/login'

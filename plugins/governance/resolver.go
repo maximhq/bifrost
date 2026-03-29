@@ -353,7 +353,7 @@ func (r *BudgetResolver) isProviderBudgetViolated(ctx context.Context, vk *confi
 	}
 
 	// 2. Check VK-level provider config budget
-	if config.Budget == nil {
+	if len(config.Budgets) == 0 {
 		return false
 	}
 	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
