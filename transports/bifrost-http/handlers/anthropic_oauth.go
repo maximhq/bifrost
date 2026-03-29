@@ -22,7 +22,8 @@ func oauthErrorStatus(err error) int {
 	case errors.Is(err, oauth2.ErrOAuthFlowExpired),
 		errors.Is(err, oauth2.ErrOAuthInvalidInput),
 		errors.Is(err, oauth2.ErrOAuthStateMismatch),
-		errors.Is(err, oauth2.ErrOAuthNoLinkedToken):
+		errors.Is(err, oauth2.ErrOAuthNoLinkedToken),
+		errors.Is(err, oauth2.ErrOAuthTokenExchangeFailed):
 		return fasthttp.StatusBadRequest
 	default:
 		return fasthttp.StatusInternalServerError
