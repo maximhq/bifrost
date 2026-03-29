@@ -173,7 +173,10 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 // ValidateToken checks if the token is still valid
 func (p *OAuth2Provider) ValidateToken(ctx context.Context, oauthConfigID string) (bool, error) {
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
-	if err != nil || oauthConfig == nil {
+	if err != nil {
+		return false, fmt.Errorf("failed to load oauth config: %w", err)
+	}
+	if oauthConfig == nil {
 		return false, nil
 	}
 
@@ -182,7 +185,10 @@ func (p *OAuth2Provider) ValidateToken(ctx context.Context, oauthConfigID string
 	}
 
 	token, err := p.configStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
-	if err != nil || token == nil {
+	if err != nil {
+		return false, fmt.Errorf("failed to load oauth token: %w", err)
+	}
+	if token == nil {
 		return false, nil
 	}
 
