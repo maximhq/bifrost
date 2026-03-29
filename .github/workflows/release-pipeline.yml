@@ -17,6 +17,10 @@ jobs:
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Check if pipeline should be skipped
         id: check
         env:
@@ -28,7 +32,7 @@ jobs:
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT
           fi
-
+            
   # Detect what needs to be released
   detect-changes:
     needs: [check-skip]
@@ -46,6 +50,10 @@ jobs:
       framework-version: ${{ steps.detect.outputs.framework-version }}
       transport-version: ${{ steps.detect.outputs.transport-version }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -69,6 +77,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -138,6 +150,10 @@ jobs:
     outputs:
       approved: ${{ steps.approve.outputs.approved }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Display failed test info
         run: |
           echo "::warning::test-core failed. Review the logs to determine if this is a flaky test."
@@ -154,6 +170,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -219,6 +239,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -289,6 +313,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -334,6 +362,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -376,6 +408,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -428,6 +464,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -487,6 +527,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -556,6 +600,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -639,6 +687,10 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.core-version }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -724,6 +776,10 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.framework-version }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -817,6 +873,10 @@ jobs:
     outputs:
       success: ${{ steps.release.outputs.success }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -922,6 +982,10 @@ jobs:
     outputs:
       success: ${{ steps.prep.outputs.success }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -958,6 +1022,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1009,6 +1077,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1060,6 +1132,10 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.transport-version }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1113,6 +1189,10 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1184,6 +1264,10 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1237,6 +1321,10 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -1274,6 +1362,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1308,6 +1400,10 @@ jobs:
     if: "always() && needs.check-skip.outputs.should-skip != 'true'"
     runs-on: ubuntu-latest
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Install jq
         run: |
           sudo apt-get update

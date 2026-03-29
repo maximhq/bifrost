@@ -1,0 +1,1 @@
+- fix: removed reason field from telemetry events

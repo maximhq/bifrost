@@ -23,6 +23,10 @@ jobs:
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -55,6 +59,10 @@ jobs:
       pull-requests: write
 
     steps:
+      - uses: bullfrogsec/bullfrog@7bc9b6e13e2dd9cbe5861f33bc26dc6bdb9d9ed2
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

@@ -1,0 +1,7 @@
+- fix: handle SSE error events for 429s and other error status codes during streaming
+- fix: pick max tokens for Anthropic from model params cache
+- fix: fixed Anthropic streaming usage token reporting
+- fix: fixed Anthropic cache token reporting
+- fix: preserved provider precision in embedding responses
+- fix: removed pending marshal-to-map to fix caching issues at provider level
+- fix: fixed support for Claude office suite add-on model routing
