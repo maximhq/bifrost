@@ -481,10 +481,10 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- config_providers (with all JSON config fields and governance fields including budget_id, rate_limit_id)
-INSERT INTO config_providers (name, send_back_raw_request, send_back_raw_response, network_config_json, concurrency_buffer_json, proxy_config_json, custom_provider_config_json, budget_id, rate_limit_id, config_hash, created_at, updated_at)
-VALUES 
-  ('openai', false, false, '{"timeout": 30}', '{"buffer_size": 100}', NULL, NULL, 'budget-migration-test-1', 'ratelimit-migration-test-1', 'provider-hash-openai', $now, $now),
-  ('anthropic', true, true, '{"timeout": 60}', '{"buffer_size": 200}', '{"url": "http://proxy.test"}', NULL, NULL, NULL, 'provider-hash-anthropic', $now, $now)
+INSERT INTO config_providers (name, send_back_raw_request, send_back_raw_response, network_config_json, concurrency_buffer_json, proxy_config_json, custom_provider_config_json, open_ai_config_json, budget_id, rate_limit_id, config_hash, created_at, updated_at)
+VALUES
+  ('openai', false, false, '{"timeout": 30}', '{"buffer_size": 100}', NULL, NULL, '{"organization": "org-test"}', 'budget-migration-test-1', 'ratelimit-migration-test-1', 'provider-hash-openai', $now, $now),
+  ('anthropic', true, true, '{"timeout": 60}', '{"buffer_size": 200}', '{"url": "http://proxy.test"}', NULL, NULL, NULL, NULL, 'provider-hash-anthropic', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- framework_configs
@@ -563,13 +563,13 @@ ON CONFLICT DO NOTHING;
 
 -- config_keys (references config_providers) - with ALL columns including Azure/Vertex/Bedrock/Replicate fields
 -- NOTE: azure_scopes column is added dynamically via append_dynamic_inserts() for schema compatibility
-INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
-SELECT 'migration-test-key-openai', id, 'openai', 'key-migration-uuid-001', 'sk-migration-test-fake-key-value-openai', '["gpt-4", "gpt-3.5-turbo"]', 1.0, true, 'key-hash-001', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
+INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, blacklisted_models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
+SELECT 'migration-test-key-openai', id, 'openai', 'key-migration-uuid-001', 'sk-migration-test-fake-key-value-openai', '["gpt-4", "gpt-3.5-turbo"]', '["gpt-4-32k"]', 1.0, true, 'key-hash-001', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
 FROM config_providers WHERE name = 'openai'
 ON CONFLICT DO NOTHING;
 
-INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
-SELECT 'migration-test-key-anthropic', id, 'anthropic', 'key-migration-uuid-002', 'sk-ant-migration-test-fake-key', '["claude-3-opus"]', 0.8, true, 'key-hash-002', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
+INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, blacklisted_models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
+SELECT 'migration-test-key-anthropic', id, 'anthropic', 'key-migration-uuid-002', 'sk-ant-migration-test-fake-key', '["claude-3-opus"]', '[]', 0.8, true, 'key-hash-002', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
 FROM config_providers WHERE name = 'anthropic'
 ON CONFLICT DO NOTHING;
 
@@ -1189,6 +1189,22 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 2;" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.17 columns
+  # -------------------------------------------------------------------------
+
+  # config_keys.blacklisted_models_json (added in v1.4.17 - per-key model deny list)
+  if column_exists_postgres "config_keys" "blacklisted_models_json"; then
+    echo "UPDATE config_keys SET blacklisted_models_json = '[]' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET blacklisted_models_json = '[\"gpt-4-vision\"]' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_providers.open_ai_config_json (added in v1.4.17 - OpenAI-specific provider config)
+  if column_exists_postgres "config_providers" "open_ai_config_json"; then
+    echo "UPDATE config_providers SET open_ai_config_json = '{\"disable_store\":false}' WHERE name = 'openai';" >> "$output_file"
+    echo "UPDATE config_providers SET open_ai_config_json = '' WHERE name = 'anthropic';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1638,6 +1654,24 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET cached_read_tokens = 128 WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.4.17 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_keys.blacklisted_models_json (added in v1.4.17 - per-key model deny list)
+    if column_exists_sqlite "$config_db" "config_keys" "blacklisted_models_json"; then
+      echo "UPDATE config_keys SET blacklisted_models_json = '[]' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET blacklisted_models_json = '[\"gpt-4-vision\"]' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # config_providers.open_ai_config_json (added in v1.4.17 - OpenAI-specific provider config)
+    if column_exists_sqlite "$config_db" "config_providers" "open_ai_config_json"; then
+      echo "UPDATE config_providers SET open_ai_config_json = '{\"disable_store\":false}' WHERE name = 'openai';" >> "$output_file"
+      echo "UPDATE config_providers SET open_ai_config_json = '' WHERE name = 'anthropic';" >> "$output_file"
+    fi
+  fi
 }
 
 # ============================================================================

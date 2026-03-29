@@ -476,8 +476,8 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 
 	case schemas.Perplexity:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveTimestamps = false // Perplexity does not return created timestamps
+		expectations.ShouldHaveModel = false      // Perplexity does not return model field
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Cerebras:
