@@ -30,7 +30,8 @@ var (
 	ErrOAuthInvalidInput   = errors.New("invalid oauth input")
 	ErrOAuthStateMismatch  = errors.New("invalid state token")
 	ErrOAuthTokenNotFound  = errors.New("oauth token not found")
-	ErrOAuthNoLinkedToken  = errors.New("no token linked to oauth config")
+	ErrOAuthNoLinkedToken     = errors.New("no token linked to oauth config")
+	ErrOAuthTokenExchangeFailed = errors.New("token exchange rejected by provider")
 )
 
 // OAuth2Provider implements the schemas.OAuth2Provider interface
@@ -109,7 +110,10 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 
 	// Load oauth_config
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
-	if err != nil || oauthConfig == nil {
+	if err != nil {
+		return fmt.Errorf("failed to load oauth config: %w", err)
+	}
+	if oauthConfig == nil {
 		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
@@ -119,7 +123,10 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 
 	// Load oauth_token
 	token, err := p.configStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
-	if err != nil || token == nil {
+	if err != nil {
+		return fmt.Errorf("failed to load oauth token: %w", err)
+	}
+	if token == nil {
 		return fmt.Errorf("%w: token_id %s", ErrOAuthTokenNotFound, *oauthConfig.TokenID)
 	}
 
@@ -189,7 +196,10 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	defer p.mu.Unlock()
 
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
-	if err != nil || oauthConfig == nil {
+	if err != nil {
+		return fmt.Errorf("failed to load oauth config: %w", err)
+	}
+	if oauthConfig == nil {
 		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
@@ -198,7 +208,10 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	}
 
 	token, err := p.configStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
-	if err != nil || token == nil {
+	if err != nil {
+		return fmt.Errorf("failed to load oauth token: %w", err)
+	}
+	if token == nil {
 		return fmt.Errorf("%w: token_id %s", ErrOAuthTokenNotFound, *oauthConfig.TokenID)
 	}
 
@@ -749,6 +762,9 @@ func (p *OAuth2Provider) callTokenEndpointJSON(ctx context.Context, tokenURL str
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, fmt.Errorf("%w: status %d: %s", ErrOAuthTokenExchangeFailed, resp.StatusCode, string(body))
+		}
 		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
