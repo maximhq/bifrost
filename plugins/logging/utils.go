@@ -478,13 +478,14 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	}
 
 	// Build accumulated data
+	ttft := result.TimeToFirstToken
 	data := &streaming.AccumulatedData{
 		RequestID:             result.RequestID,
 		Model:                 result.Model,
 		Status:                result.Status,
 		Stream:                true,
 		Latency:               result.Latency,
-		TimeToFirstToken:      result.TimeToFirstToken,
+		TimeToFirstToken:      &ttft,
 		OutputMessage:         result.OutputMessage,
 		OutputMessages:        result.OutputMessages,
 		ErrorDetails:          result.ErrorDetails,
