@@ -191,7 +191,7 @@ export default function ClientSettingsView() {
 				await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
 				coreConfigSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save core config: ${getErrorMessage(error)}`);
+				toast.error(`Failed to save client config: ${getErrorMessage(error)}`);
 			}
 		}
 
