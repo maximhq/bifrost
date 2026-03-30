@@ -84,6 +84,7 @@ CreateBudgetRequest:
       type: string
     calendar_aligned:
       type: boolean
+      default: false
       description: >
         When true, usage resets at the start of each calendar period in UTC instead of on a rolling window
         from last reset. Only valid with reset durations that use day, week, month, or year suffixes
@@ -103,8 +104,10 @@ UpdateBudgetRequest:
       type: boolean
       nullable: true
       description: >
-        Set to true or false to enable or disable calendar-aligned resets. When enabling on an existing
-        budget, current usage is reset to zero and last_reset snaps to the current period start.
+        Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations
+        that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`,
+        `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on
+        an existing budget, current usage is reset to zero and last_reset snaps to the current period start.
 
 CreateRateLimitRequest:
   type: object

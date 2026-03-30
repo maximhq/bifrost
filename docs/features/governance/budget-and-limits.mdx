@@ -143,10 +143,11 @@ Budgets and rate limits support flexible reset durations:
 - `1d` - 1 day
 - `1w` - 1 week
 - `1M` - 1 month
+- `1Y` - 1 year
 
 **Common Patterns:**
 - **Rate Limits**: `1m`, `1h`, `1d` for request throttling
-- **Budgets**: `1d`, `1w`, `1M` for cost control
+- **Budgets**: `1d`, `1w`, `1M`, `1Y` for cost control
 
 ### Calendar-aligned budgets
 
@@ -218,7 +219,8 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
         "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
         "budget": {
           "max_limit": 500.00,
-          "reset_duration": "1M"
+          "reset_duration": "1M",
+          "calendar_aligned": true
         },
         "rate_limit": {
           "token_max_limit": 1000000,
