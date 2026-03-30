@@ -30,9 +30,6 @@ func (s *RDBConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, 
 	if err := s.db.WithContext(ctx).
 		Order("created_at DESC").
 		Find(&folders).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return []tables.TableFolder{}, nil
-		}
 		return nil, err
 	}
 
@@ -147,9 +144,6 @@ func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]ta
 	}
 
 	if err := query.Find(&prompts).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return []tables.TablePrompt{}, nil
-		}
 		return nil, err
 	}
 
@@ -261,6 +255,18 @@ func (s *RDBConfigStore) DeletePrompt(ctx context.Context, id string) error {
 // Prompt Repository - Versions
 // ============================================================================
 
+// GetAllPromptVersions returns every version across all prompts in a single query.
+func (s *RDBConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
+	var versions []tables.TablePromptVersion
+	if err := s.db.WithContext(ctx).
+		Preload("Messages", func(db *gorm.DB) *gorm.DB { return db.Order("order_index ASC") }).
+		Order("prompt_id ASC, version_number DESC").
+		Find(&versions).Error; err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
 // GetPromptVersions gets all versions for a prompt
 func (s *RDBConfigStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
 	var versions []tables.TablePromptVersion
@@ -269,9 +275,6 @@ func (s *RDBConfigStore) GetPromptVersions(ctx context.Context, promptID string)
 		Where("prompt_id = ?", promptID).
 		Order("version_number DESC").
 		Find(&versions).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return []tables.TablePromptVersion{}, nil
-		}
 		return nil, err
 	}
 	return versions, nil
@@ -416,9 +419,6 @@ func (s *RDBConfigStore) GetPromptSessions(ctx context.Context, promptID string)
 		Where("prompt_id = ?", promptID).
 		Order("created_at DESC").
 		Find(&sessions).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return []tables.TablePromptSession{}, nil
-		}
 		return nil, err
 	}
 	return sessions, nil
