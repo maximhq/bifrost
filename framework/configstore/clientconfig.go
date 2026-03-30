@@ -61,6 +61,7 @@ type ClientConfig struct {
 	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
 	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
+	RoutingChainMaxDepth            int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
 	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -116,6 +117,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.RoutingChainMaxDepth > 0 {
+		hash.Write([]byte("routingChainMaxDepth:" + strconv.Itoa(c.RoutingChainMaxDepth)))
 	}
 
 	if c.MCPAgentDepth > 0 {
@@ -978,6 +984,13 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash ChainRule
+	if r.ChainRule {
+		hash.Write([]byte("chain_rule:true"))
+	} else {
+		hash.Write([]byte("chain_rule:false"))
 	}
 
 	// Hash Scope

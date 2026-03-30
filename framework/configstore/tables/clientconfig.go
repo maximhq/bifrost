@@ -34,6 +34,7 @@ type TableClientConfig struct {
 	RequiredHeadersJSON             string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	LoggingHeadersJSON              string `gorm:"type:text" json:"-"`                                        // JSON serialized []string
 	HideDeletedVirtualKeysInFilters bool   `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys in logs filter dropdowns
+	RoutingChainMaxDepth            int    `gorm:"default:10" json:"routing_chain_max_depth"`                 // Maximum depth for routing rule chain evaluation (default: 10)
 
 	// LiteLLM fallback flag
 	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`

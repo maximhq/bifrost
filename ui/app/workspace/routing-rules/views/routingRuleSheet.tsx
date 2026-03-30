@@ -111,6 +111,7 @@ export function RoutingRuleSheet({
 	const isEditing = !!editingRule;
 	const isLoading = isCreating || isUpdating;
 	const enabled = watch("enabled");
+	const chainRule = watch("chain_rule");
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
 	const fallbacks = watch("fallbacks");
@@ -139,6 +140,7 @@ export function RoutingRuleSheet({
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
 			setValue("enabled", editingRule.enabled);
+			setValue("chain_rule", editingRule.chain_rule ?? false);
 			if (editingRule.targets && editingRule.targets.length > 0) {
 				setTargets(editingRule.targets.map((t) => ({
 					...DEFAULT_ROUTING_TARGET,
@@ -246,6 +248,7 @@ export function RoutingRuleSheet({
 			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
 			priority: data.priority,
 			enabled: data.enabled,
+			chain_rule: data.chain_rule,
 			query: query,
 		};
 
@@ -332,6 +335,22 @@ export function RoutingRuleSheet({
 							id="enabled"
 							checked={enabled}
 							onCheckedChange={(checked) => setValue("enabled", checked)}
+						/>
+					</div>
+
+					{/* Chain Rule Switch */}
+					<div className="flex items-center justify-between rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<Label htmlFor="chain_rule">Chain Rule</Label>
+							<p className="text-muted-foreground text-sm">
+								After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for composing rules — e.g. normalize a model alias first, then route based on the canonical name.
+							</p>
+						</div>
+						<Switch
+							id="chain_rule"
+							checked={chainRule}
+							onCheckedChange={(checked) => setValue("chain_rule", checked)}
+							data-testid="routing-rule-chain-rule-switch"
 						/>
 					</div>
 

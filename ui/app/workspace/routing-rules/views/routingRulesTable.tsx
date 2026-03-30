@@ -42,6 +42,7 @@ interface RoutingRulesTableProps {
 	totalCount: number;
 	isLoading: boolean;
 	onEdit: (rule: RoutingRule) => void;
+	onRowClick: (rule: RoutingRule) => void;
 	/** When false, delete button is hidden and deletion is disabled (e.g. for read-only users). */
 	canDelete?: boolean;
 	search: string;
@@ -51,7 +52,7 @@ interface RoutingRulesTableProps {
 	onOffsetChange: (offset: number) => void;
 }
 
-export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDelete = false, search, onSearchChange, offset, limit, onOffsetChange }: RoutingRulesTableProps) {
+export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, onRowClick, canDelete = false, search, onSearchChange, offset, limit, onOffsetChange }: RoutingRulesTableProps) {
 	const [deleteRuleId, setDeleteRuleId] = useState<string | null>(null);
 	const [deleteRoutingRule, { isLoading: isDeleting }] = useDeleteRoutingRuleMutation();
 
@@ -137,56 +138,56 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 								</TableCell>
 							</TableRow>
 						) : (
-						sortedRules.map((rule) => (
-							<TableRow key={rule.id} className="hover:bg-muted/50 cursor-pointer transition-colors">
-								<TableCell className="font-medium">
-									<div className="flex flex-col gap-1">
-										<span className="truncate max-w-xs">{rule.name}</span>
-										{rule.description && (
-											<span data-testid="routing-rule-description" className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</span>
-										)}
-									</div>
-								</TableCell>
-								<TableCell>
-									<TargetsSummary targets={rule.targets || []} />
-								</TableCell>
-								<TableCell>
-									<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
-								</TableCell>
-								<TableCell className="text-right">
-									<div className={`inline-block px-2.5 py-1 rounded text-xs font-medium ${getPriorityBadgeClass(rule.priority)}`}>
-										{rule.priority}
-									</div>
-								</TableCell>
-								<TableCell>
-									<span className="font-mono text-xs text-muted-foreground truncate max-w-xs block" title={rule.cel_expression}>
-										{truncateCELExpression(rule.cel_expression)}
-									</span>
-								</TableCell>
-								<TableCell>
-									<Badge variant={rule.enabled ? "default" : "secondary"}>
-										{rule.enabled ? "Enabled" : "Disabled"}
-									</Badge>
-								</TableCell>
-								<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-									<div className="flex items-center justify-end gap-2">
-										<Button variant="ghost" size="sm" onClick={() => onEdit(rule)} aria-label="Edit routing rule">
-											<Edit className="h-4 w-4" />
-										</Button>
-										{canDelete && (
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => setDeleteRuleId(rule.id)}
-												aria-label="Delete routing rule"
-											>
-												<Trash2 className="h-4 w-4" />
+							sortedRules.map((rule) => (
+								<TableRow key={rule.id} className="hover:bg-muted/50 cursor-pointer transition-colors" onClick={() => onRowClick(rule)}>
+									<TableCell className="font-medium">
+										<div className="flex flex-col gap-1">
+											<span className="truncate max-w-xs">{rule.name}</span>
+											{rule.description && (
+												<span data-testid="routing-rule-description" className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</span>
+											)}
+										</div>
+									</TableCell>
+									<TableCell>
+										<TargetsSummary targets={rule.targets || []} />
+									</TableCell>
+									<TableCell>
+										<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
+									</TableCell>
+									<TableCell className="text-right">
+										<div className={`inline-block px-2.5 py-1 rounded text-xs font-medium ${getPriorityBadgeClass(rule.priority)}`}>
+											{rule.priority}
+										</div>
+									</TableCell>
+									<TableCell>
+										<span className="font-mono text-xs text-muted-foreground truncate max-w-xs block" title={rule.cel_expression}>
+											{truncateCELExpression(rule.cel_expression)}
+										</span>
+									</TableCell>
+									<TableCell>
+										<Badge variant={rule.enabled ? "default" : "secondary"}>
+											{rule.enabled ? "Enabled" : "Disabled"}
+										</Badge>
+									</TableCell>
+									<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+										<div className="flex items-center justify-end gap-2">
+											<Button variant="ghost" size="sm" onClick={() => onEdit(rule)} aria-label="Edit routing rule">
+												<Edit className="h-4 w-4" />
 											</Button>
-										)}
-									</div>
-								</TableCell>
-							</TableRow>
-						))
+											{canDelete && (
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() => setDeleteRuleId(rule.id)}
+													aria-label="Delete routing rule"
+												>
+													<Trash2 className="h-4 w-4" />
+												</Button>
+											)}
+										</div>
+									</TableCell>
+								</TableRow>
+							))
 						)}
 					</TableBody>
 				</Table>
@@ -265,9 +266,6 @@ function TargetsSummary({ targets }: { targets: RoutingTarget[] }) {
 					/>
 				)}
 				<span className="text-sm truncate max-w-[160px]">{label}</span>
-				{targets.length === 1 && (
-					<span className="text-xs text-muted-foreground shrink-0">{first.weight}</span>
-				)}
 			</div>
 			{targets.length > 1 && (
 				<span className="text-xs text-muted-foreground">+{targets.length - 1} more target{targets.length > 2 ? "s" : ""}</span>

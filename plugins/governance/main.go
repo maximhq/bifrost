@@ -41,6 +41,7 @@ type Config struct {
 	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
+	RoutingChainMaxDepth  *int      `json:"routing_chain_max_depth"` // Pointer to live config value; changes are reflected immediately without restart
 }
 
 type InMemoryStore interface {
@@ -153,10 +154,16 @@ func Init(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var routingChainMaxDepth *int
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		routingChainMaxDepth = config.RoutingChainMaxDepth
+	}
+	if routingChainMaxDepth == nil {
+		defaultDepth := DefaultRoutingChainMaxDepth
+		routingChainMaxDepth = &defaultDepth
 	}
 
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
@@ -200,7 +207,7 @@ func Init(
 	}
 
 	// 5. Routing engine (dynamically routing requests based on routing rules)
-	engine, err := NewRoutingEngine(governanceStore, logger)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
 	}
@@ -265,14 +272,20 @@ func InitFromStore(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var routingChainMaxDepth *int
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		routingChainMaxDepth = config.RoutingChainMaxDepth
+	}
+	if routingChainMaxDepth == nil {
+		defaultDepth := DefaultRoutingChainMaxDepth
+		routingChainMaxDepth = &defaultDepth
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
-	engine, err := NewRoutingEngine(governanceStore, logger)
+	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
 	}
