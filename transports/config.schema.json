@@ -286,6 +286,11 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "Last time budget was reset"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap resets to calendar boundaries (day/week/month/year start)",
+                "default": false
               }
             },
             "required": [

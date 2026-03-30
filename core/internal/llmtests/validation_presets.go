@@ -131,6 +131,12 @@ func CountTokensExpectations() ResponseExpectations {
 func StreamingExpectations() ResponseExpectations {
 	expectations := BasicChatExpectations()
 
+	// Streaming consolidated responses are assembled from chunks.
+	// The last chunk often does not carry created/model fields,
+	// so we cannot reliably validate them on the consolidated response.
+	expectations.ShouldHaveTimestamps = false
+	expectations.ShouldHaveModel = false
+
 	return expectations
 }
 
@@ -318,7 +324,7 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 	case "FileInput":
 		expectations = FileInputExpectations()
 
-	case "ChatCompletionStream":
+	case "ChatCompletionStream", "TextCompletionStream":
 		expectations = StreamingExpectations()
 
 	case "MultiTurnConversation":
@@ -439,7 +445,7 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 	case schemas.Cohere:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveModel = false // Cohere does not return model field in all response types
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Vertex:
@@ -476,8 +482,8 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 
 	case schemas.Perplexity:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveTimestamps = false // Perplexity does not return created timestamps
+		expectations.ShouldHaveModel = false      // Perplexity does not return model field
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Cerebras:
@@ -514,8 +520,8 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 
 	case schemas.Parasail:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveTimestamps = false // Parasail does not return created timestamps
+		expectations.ShouldHaveModel = false      // Parasail does not return model field in streaming
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Elevenlabs:

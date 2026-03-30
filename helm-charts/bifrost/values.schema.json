@@ -714,9 +714,7 @@
                 "properties": {
                   "config": {
                     "required": [
-                      "dimension",
-                      "keys",
-                      "provider"
+                      "dimension"
                     ]
                   }
                 }

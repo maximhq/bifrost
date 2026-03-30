@@ -3,10 +3,10 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useGetCoreConfigQuery } from "@/lib/store";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { Copy, InfoIcon, KeyRound } from "lucide-react";
 import Link from "next/link";
 import { useMemo } from "react";
-import { toast } from "sonner";
 import ContactUsView from "../views/contactUsView";
 
 export default function APIKeysView() {
@@ -31,10 +31,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
   ] 
 }'`;
 
-	const copyToClipboard = (text: string) => {
-		navigator.clipboard.writeText(text);
-		toast.success("Copied to clipboard");
-	};
+	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	if (isLoading) {
 		return <div>Loading...</div>;

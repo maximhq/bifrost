@@ -128,6 +128,9 @@ type PricingOptions struct {
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+	// Model parameters
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+
 	// Costs - Other
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the pricing datasheet

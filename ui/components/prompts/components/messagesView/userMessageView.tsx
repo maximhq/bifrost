@@ -286,8 +286,10 @@ export function UserMessageView({
 				) : (
 					<div
 						className={!disabled ? "cursor-text" : undefined}
-						onClick={() => {
-							if (!disabled) setEditMode(true);
+						onClick={(e) => {
+							if (disabled || editMode) return;
+							if ((e.target as HTMLElement).closest("button, a, [role='button']")) return;
+							setEditMode(true);
 						}}
 					>
 						<Markdown content={content} className="text-muted-foreground" />

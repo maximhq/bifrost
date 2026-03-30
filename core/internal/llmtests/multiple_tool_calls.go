@@ -196,6 +196,9 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 
 	// Streaming Chat Completions with multiple tool calls (validates sequential indices 0, 1, 2, ...)
 	t.Run("MultipleToolCallsStreamingChatCompletions", func(t *testing.T) {
+		if !testConfig.Scenarios.MultipleToolCallsStreaming {
+			t.Skip("Multiple tool calls streaming not supported for this provider")
+		}
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()
 		}
@@ -343,6 +346,9 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 
 	// Streaming Responses API with multiple tool calls
 	t.Run("MultipleToolCallsStreamingResponses", func(t *testing.T) {
+		if !testConfig.Scenarios.MultipleToolCallsStreaming {
+			t.Skip("Multiple tool calls streaming not supported for this provider")
+		}
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()
 		}

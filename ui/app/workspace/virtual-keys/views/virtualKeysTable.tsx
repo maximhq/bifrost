@@ -16,12 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { resetDurationLabels } from "@/lib/constants/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -136,10 +137,7 @@ export default function VirtualKeysTable({
 		return key.substring(0, 8) + "•".repeat(Math.max(0, key.length - 8));
 	};
 
-	const copyToClipboard = (key: string) => {
-		navigator.clipboard.writeText(key);
-		toast.success("Copied to clipboard");
-	};
+	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter;
 
