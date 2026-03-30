@@ -29,6 +29,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ChevronDown, ChevronUp, Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
@@ -82,6 +83,8 @@ const isContainerOperation = (object: string) => {
 };
 
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: LogDetailSheetProps) {
+	const { copy: copyRequestId } = useCopyToClipboard({ successMessage: "Request ID copied" });
+	const { copy: copyBody } = useCopyToClipboard({ successMessage: "Request body copied to clipboard", errorMessage: "Failed to copy request body" });
 	const [fetchLog, { data: fullLog, isFetching }] = useLazyGetLogByIdQuery();
 
 	useEffect(() => {
@@ -147,12 +150,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNaviga
 									Request ID:{" "}
 									<code
 										className="text-normal cursor-pointer"
-										onClick={() => {
-											navigator.clipboard
-												.writeText(displayLog.id)
-												.then(() => toast.success("Request ID copied"))
-												.catch(() => toast.error("Failed to copy"));
-										}}
+										onClick={() => copyRequestId(displayLog.id)}
 									>
 										{displayLog.id}
 									</code>
@@ -192,7 +190,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNaviga
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem onClick={() => copyRequestBody(displayLog)} data-testid="logdetails-copy-request-body-button">
+								<DropdownMenuItem onClick={() => copyRequestBody(displayLog, copyBody)} data-testid="logdetails-copy-request-body-button">
 									<Clipboard className="h-4 w-4" />
 									Copy request body
 								</DropdownMenuItem>
@@ -898,7 +896,7 @@ const normalizeObjectForCopy = (object: string | undefined): string => {
 	return mapping[normalized] ?? normalized;
 };
 
-const copyRequestBody = async (log: LogEntry) => {
+const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<void>) => {
 	try {
 		// Check if request is for responses, chat, speech, text completion, or embedding (exclude transcriptions)
 		const object = normalizeObjectForCopy(log.object);
@@ -1007,14 +1005,7 @@ const copyRequestBody = async (log: LogEntry) => {
 		}
 
 		const requestBodyJson = JSON.stringify(requestBody, null, 2);
-		navigator.clipboard
-			.writeText(requestBodyJson)
-			.then(() => {
-				toast.success("Request body copied to clipboard");
-			})
-			.catch((error) => {
-				toast.error("Failed to copy request body");
-			});
+		await copy(requestBodyJson);
 	} catch (error) {
 		toast.error("Failed to copy request body");
 	}
