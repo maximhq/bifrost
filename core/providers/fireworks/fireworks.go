@@ -117,7 +117,7 @@ func (provider *FireworksProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
