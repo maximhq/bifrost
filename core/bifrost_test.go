@@ -1243,3 +1243,40 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 	})
 }
 
+// TestRequestWorkerExitsOnContextCancel verifies that requestWorker goroutines
+// clean up when the context passed to Init() is cancelled (without calling Shutdown()).
+func TestRequestWorkerExitsOnContextCancel(t *testing.T) {
+	workerCount := 4
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, workerCount, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	b, err := Init(schemas.NewBifrostContext(ctx, schemas.NoDeadline), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Failed to initialize Bifrost: %v", err)
+	}
+	cancel()
+
+	wgValue, ok := b.waitGroups.Load(schemas.OpenAI)
+	if !ok {
+		t.Fatal("wait group for OpenAI provider not found")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wgValue.(*sync.WaitGroup).Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		b.Shutdown()
+	case <-time.After(2 * time.Second):
+		t.Fatal("workers did not exit after context cancellation")
+	}
+}

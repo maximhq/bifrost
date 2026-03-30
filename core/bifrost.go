@@ -4434,11 +4434,15 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
 		provider, model, _ := req.GetRequestFields()
+		errType, errMsg := schemas.RequestCancelled, fmt.Sprintf("request cancelled while waiting for provider response: %v", ctx.Err())
+		if ctx.Err() == context.DeadlineExceeded {
+			errType, errMsg = schemas.RequestTimedOut, fmt.Sprintf("request timed out waiting for provider response: %v", ctx.Err())
+		}
 		bifrostErr := &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr(schemas.RequestCancelled),
-				Message: fmt.Sprintf("request timed out waiting for provider response: %v", ctx.Err()),
+				Type:    schemas.Ptr(errType),
+				Message: errMsg,
 				Error:   ctx.Err(),
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
@@ -4686,6 +4690,33 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return newBifrostMessageChan(recoveredResp), nil
 		}
 		return nil, &bifrostErrVal
+	case <-ctx.Done():
+		errType, errMsg := schemas.RequestCancelled, fmt.Sprintf("request cancelled while waiting for provider response: %v", ctx.Err())
+		if ctx.Err() == context.DeadlineExceeded {
+			errType, errMsg = schemas.RequestTimedOut, fmt.Sprintf("request timed out waiting for provider response: %v", ctx.Err())
+		}
+		bifrostErr := &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(errType),
+				Message: errMsg,
+				Error:   ctx.Err(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			},
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if recoveredErr != nil {
+			return nil, recoveredErr
+		}
+		if recoveredResp != nil {
+			return newBifrostMessageChan(recoveredResp), nil
+		}
+		return nil, bifrostErr
 	}
 }
 
@@ -4725,7 +4756,29 @@ func executeRequestWithRetries[T any](
 			backoff := calculateBackoff(attempts-1, config)
 			logger.Debug("sleeping for %s before retry", backoff)
 
-			time.Sleep(backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				errType := schemas.RequestCancelled
+				errMsg := fmt.Sprintf("request cancelled during retry backoff: %v", ctx.Err())
+				if ctx.Err() == context.DeadlineExceeded {
+					errType = schemas.RequestTimedOut
+					errMsg = fmt.Sprintf("request timed out during retry backoff: %v", ctx.Err())
+				}
+				return result, &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(errType),
+						Message: errMsg,
+						Error:   ctx.Err(),
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						RequestType:    requestType,
+						Provider:       providerKey,
+						ModelRequested: model,
+					},
+				}
+			}
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
@@ -4902,7 +4955,19 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 	}()
 
-	for req := range pq.queue {
+	for {
+		var req *ChannelMessage
+		select {
+		case <-bifrost.ctx.Done():
+			bifrost.logger.Debug("worker exiting due to context cancellation for provider %s", provider.GetProviderKey())
+			return
+		case r, ok := <-pq.queue:
+			if !ok {
+				return
+			}
+			req = r
+		}
+
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 
 		var result *schemas.BifrostResponse
@@ -5096,11 +5161,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				case req.ResponseStream <- stream:
 					// Stream sent successfully
 				case <-req.Context.Done():
-					// Client no longer listening, log and continue
+					// Client no longer listening; release msg since tryStreamRequest already returned
 					bifrost.logger.Debug("Client context cancelled while sending stream response")
+					bifrost.releaseChannelMessage(req)
 				case <-time.After(5 * time.Second):
-					// Timeout to prevent indefinite blocking
+					// Timeout to prevent indefinite blocking; release msg to avoid pool leak
 					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
+					bifrost.releaseChannelMessage(req)
 				}
 			} else {
 				// Send response with context awareness to prevent deadlock
