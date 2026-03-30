@@ -92,6 +92,8 @@ var chatParamsKnownFields = map[string]bool{
 	"presence_penalty":      true,
 	"prompt_cache_key":      true,
 	"reasoning":             true,
+	"reasoning_effort":      true,
+	"reasoning_max_tokens":  true,
 	"response_format":       true,
 	"safety_identifier":     true,
 	"service_tier":          true,
@@ -515,6 +517,16 @@ func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 	return fallbacks, nil
 }
 
+func effectiveStream(bodyStream *bool, bifrostCtx *schemas.BifrostContext) bool {
+	if bodyStream != nil {
+		return *bodyStream
+	}
+	if v, ok := bifrostCtx.Value(schemas.BifrostContextKeyPromptStreamRequest).(bool); ok && v {
+		return true
+	}
+	return false
+}
+
 // extractExtraParams processes unknown fields from JSON data into ExtraParams
 func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]any, error) {
 	// Parse JSON to extract unknown fields
@@ -932,7 +944,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if req.Stream != nil && *req.Stream {
+	if effectiveStream(req.Stream, bifrostCtx) {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
 	}
@@ -1027,7 +1039,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if req.Stream != nil && *req.Stream {
+	if effectiveStream(req.Stream, bifrostCtx) {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
 		return
 	}
