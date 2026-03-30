@@ -42,6 +42,7 @@
 		"@reduxjs/toolkit": "2.8.2",
 		"@streamdown/code": "^1.0.3",
 		"@tanstack/react-table": "8.21.3",
+		"@xyflow/react": "12.10.1",
 		"axios": "1.13.5",
 		"class-variance-authority": "0.7.1",
 		"clsx": "2.1.1",
