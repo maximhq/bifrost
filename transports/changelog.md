@@ -491,6 +491,26 @@ This allows you to configure a provider on a VK for fallback purposes without in
 ```
 In this example: 100% of weighted traffic goes to OpenAI. Anthropic is still reachable via `anthropic/claude-3-5-sonnet-20241022` direct routing or as a manual fallback, but won't receive any traffic from weighted load balancing.
 
+## Breaking Change 7: Image Edits No Longer Supported on Replicate's Image Generation Endpoint
+
+**Who is affected:** Anyone using the Replicate provider to perform image editing operations via the `/v1/images/generations` endpoint (i.e., passing a source image or mask to generate a modified image).
+
+### What changed
+
+The `/v1/images/generations` endpoint on the Replicate provider previously accepted image editing parameters (source image + optional mask) alongside a generation prompt. This behavior is no longer supported — the endpoint now only handles pure image generation (text-to-image).
+
+Attempting to pass image editing parameters to `/v1/images/generations` on Replicate will return an error.
+
+### How to update
+
+If you were using Replicate for image editing via the generations endpoint, you have one options:
+
+1. **Switch to the image edit endpoint `/v1/images/edits`**.
+
+<Note>
+Support for image editing via the dedicated `/v1/images/edits` endpoint on Replicate is also being removed in a follow-up release. If your workflow depends on Replicate-backed image editing, plan to migrate to an alternative provider.
+</Note>
+
 ---
 
 ## New Validation: WhiteList Rules
