@@ -29,16 +29,16 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                      string                     `json:"id"`
-	Choices                 []BifrostResponseChoice    `json:"choices"`
-	Created                 int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model                   string                     `json:"model"`
-	Object                  string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier             *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint       string                     `json:"system_fingerprint"`
-	Usage                   *BifrostLLMUsage           `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams             map[string]interface{}     `json:"-"`
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -63,7 +63,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
@@ -96,7 +96,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
@@ -132,7 +132,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
@@ -901,6 +901,7 @@ type ChatInputImage struct {
 // Format is optional (e.g., "wav", "mp3"); when nil, providers may attempt auto-detection.
 type ChatInputAudio struct {
 	Data   string  `json:"data"`
+	URL    string  `json:"url,omitempty"`
 	Format *string `json:"format,omitempty"`
 }
 
