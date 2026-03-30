@@ -591,7 +591,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 			// Filter by keys if specified
 			if keysParam != "" {
 				keyIDs := strings.Split(keysParam, ",")
-				models = h.filterModelsByKeys(provider, models, keyIDs)
+				models = h.filterModelsByKeys(ctx, provider, models, keyIDs)
 			}
 		}
 		for _, model := range models {
@@ -618,7 +618,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 				// Filter by keys if specified
 				if keysParam != "" {
 					keyIDs := strings.Split(keysParam, ",")
-					models = h.filterModelsByKeys(provider, models, keyIDs)
+					models = h.filterModelsByKeys(ctx, provider, models, keyIDs)
 				}
 
 			}
@@ -713,51 +713,86 @@ func keyAllowsModelForList(key schemas.Key, model string) bool {
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions.
+// keyIDs may contain provider key UUIDs or virtual key values (sk-vk-...).
 // A model is included in the result if at least one of the specified keys grants access to it.
-// A key grants access to a model when: the model is not blacklisted by that key AND
-// the key's allowlist is unrestricted (wildcard) or explicitly contains the model.
-// Empty allowlist (no wildcard) = deny-all for that key.
-func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
-	// Get provider config to access keys
+//
+// Provider key access: the model is not blacklisted AND the allowlist is unrestricted or explicitly contains it.
+// Virtual key access: the virtual key has a ProviderConfig for the given provider AND AllowedModels allows the model.
+func (h *ProviderHandler) filterModelsByKeys(ctx context.Context, provider schemas.ModelProvider, models []string, keyIDs []string) []string {
+	// Get provider config to access provider-level keys
 	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
 		return models
 	}
 
-	// Index keys by ID for fast lookup
+	// Index provider keys by ID for fast lookup
 	keyMap := make(map[string]schemas.Key, len(config.Keys))
 	for _, key := range config.Keys {
 		keyMap[key.ID] = key
 	}
 
-	// Collect only the keys referenced by keyIDs
-	matchedKeys := make([]schemas.Key, 0, len(keyIDs))
+	// Partition keyIDs into matched provider keys and unmatched (potential virtual key values)
+	matchedProviderKeys := make([]schemas.Key, 0, len(keyIDs))
+	var unmatchedIDs []string
 	for _, keyID := range keyIDs {
 		if key, ok := keyMap[keyID]; ok {
-			matchedKeys = append(matchedKeys, key)
+			matchedProviderKeys = append(matchedProviderKeys, key)
+		} else {
+			unmatchedIDs = append(unmatchedIDs, keyID)
 		}
 	}
 
-	// If none of the requested key IDs exist in config, fall back to returning all models
-	if len(matchedKeys) == 0 {
+	// Try to resolve unmatched IDs as virtual key values
+	var matchedVKProviderConfigs []tables.TableVirtualKeyProviderConfig
+	if len(unmatchedIDs) > 0 && h.dbStore != nil {
+		for _, keyValue := range unmatchedIDs {
+			vk, err := h.dbStore.GetVirtualKeyByValue(ctx, keyValue)
+			if err != nil {
+				continue // not found or db error — skip
+			}
+			for _, pc := range vk.ProviderConfigs {
+				if schemas.ModelProvider(pc.Provider) == provider {
+					matchedVKProviderConfigs = append(matchedVKProviderConfigs, pc)
+					break
+				}
+			}
+		}
+	}
+
+	// If nothing matched at all, fall back to returning all models
+	if len(matchedProviderKeys) == 0 && len(matchedVKProviderConfigs) == 0 {
 		return models
 	}
 
 	// For each model, include it if at least one matched key grants access
 	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		for _, key := range matchedKeys {
-			// Blacklist wins over allowlist
+		granted := false
+
+		// Check provider keys: blacklist wins, then allowlist
+		for _, key := range matchedProviderKeys {
 			if key.BlacklistedModels.IsBlocked(model) {
 				continue
 			}
-			// Unrestricted (wildcard) key grants access to all non-blacklisted models;
-			// restricted key grants access only if the model is explicitly listed
 			if key.Models.IsUnrestricted() || key.Models.Contains(model) {
-				filtered = append(filtered, model)
+				granted = true
 				break
 			}
+		}
+
+		// Check virtual key provider configs
+		if !granted {
+			for _, pc := range matchedVKProviderConfigs {
+				if pc.AllowedModels.IsAllowed(model) {
+					granted = true
+					break
+				}
+			}
+		}
+
+		if granted {
+			filtered = append(filtered, model)
 		}
 	}
 	return filtered
