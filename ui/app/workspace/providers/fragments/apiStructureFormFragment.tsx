@@ -16,6 +16,7 @@ import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { buildProviderUpdatePayload } from "../views/utils";
 import { AllowedRequestsFields } from "./allowedRequestsFields";
 
 // Type for form data
@@ -66,15 +67,14 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	const onSubmit = (data: FormCustomProviderConfig) => {
 		// Create updated provider configuration
-		updateProvider({
-			...provider,
+		updateProvider(buildProviderUpdatePayload(provider, {
 			custom_provider_config: {
 				base_provider_type: data.base_provider_type as unknown as BaseProvider,
 				is_key_less: data.is_key_less ?? false,
 				allowed_requests: data.allowed_requests,
 				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 			},
-		})
+		}))
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");

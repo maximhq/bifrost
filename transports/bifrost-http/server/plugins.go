@@ -174,8 +174,9 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 3. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
-			IsVkMandatory:   &s.Config.ClientConfig.EnforceAuthOnInference,
-			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
+			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
+			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
+			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {

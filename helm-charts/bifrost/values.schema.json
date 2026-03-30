@@ -2764,7 +2764,7 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
@@ -2804,7 +2804,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Supported models for this key"
+                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
               },
               "weight": {
                 "type": "number",

@@ -541,6 +541,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							</div>
 						</>
 					)}
+
 				</div>
 				{/* Form Footer */}
 				<div className="dark:bg-card border-border bg-white px-4 py-6">

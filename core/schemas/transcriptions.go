@@ -14,15 +14,37 @@ func (r *BifrostTranscriptionRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostTranscriptionResponse struct {
-	Duration    *float64                   `json:"duration,omitempty"` // Duration in seconds
-	Language    *string                    `json:"language,omitempty"` // e.g., "english"
-	LogProbs    []TranscriptionLogProb     `json:"logprobs,omitempty"`
-	Segments    []TranscriptionSegment     `json:"segments,omitempty"`
-	Task        *string                    `json:"task,omitempty"` // e.g., "transcribe"
-	Text        string                     `json:"text"`
-	Usage       *TranscriptionUsage        `json:"usage,omitempty"`
-	Words       []TranscriptionWord        `json:"words,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Duration       *float64                   `json:"duration,omitempty"` // Duration in seconds
+	Language       *string                    `json:"language,omitempty"` // e.g., "english"
+	LogProbs       []TranscriptionLogProb     `json:"logprobs,omitempty"`
+	Segments       []TranscriptionSegment     `json:"segments,omitempty"`
+	Task           *string                    `json:"task,omitempty"` // e.g., "transcribe"
+	Text           string                     `json:"text"`
+	Usage          *TranscriptionUsage        `json:"usage,omitempty"`
+	Words          []TranscriptionWord        `json:"words,omitempty"`
+	ResponseFormat *string                    `json:"-"` // Set by provider for non-JSON formats (text, srt, vtt); used by integration response converters
+	ExtraFields    BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+func (r *BifrostTranscriptionResponse) BackfillParams(req *BifrostTranscriptionRequest) {
+	if r == nil || req == nil || req.Params == nil || req.Params.ResponseFormat == nil {
+		return
+	}
+	r.ResponseFormat = req.Params.ResponseFormat
+}
+
+// IsPlainTextTranscriptionFormat returns true if the given response format
+// produces a plain-text response body (not JSON).
+func IsPlainTextTranscriptionFormat(format *string) bool {
+	if format == nil {
+		return false
+	}
+	switch *format {
+	case "text", "srt", "vtt":
+		return true
+	default:
+		return false
+	}
 }
 
 type TranscriptionInput struct {
@@ -31,17 +53,17 @@ type TranscriptionInput struct {
 }
 
 type TranscriptionParameters struct {
-	Language                *string  `json:"language,omitempty"`
-	Prompt                  *string  `json:"prompt,omitempty"`
-	ResponseFormat          *string  `json:"response_format,omitempty"`           // Default is "json"
-	Temperature             *float64 `json:"temperature,omitempty"`               // Sampling temperature (0.0-1.0)
-	TimestampGranularities  []string `json:"timestamp_granularities,omitempty"`   // "word" and/or "segment"; requires response_format=verbose_json
-	Include                 []string `json:"include,omitempty"`                   // Additional response info (e.g., logprobs)
-	Format                  *string  `json:"file_format,omitempty"`               // Type of file, not required in openai, but required in gemini
-	MaxLength               *int     `json:"max_length,omitempty"`                // Maximum length of the transcription used by HuggingFace
-	MinLength               *int     `json:"min_length,omitempty"`                // Minimum length of the transcription used by HuggingFace
-	MaxNewTokens            *int     `json:"max_new_tokens,omitempty"`            // Maximum new tokens to generate used by HuggingFace
-	MinNewTokens            *int     `json:"min_new_tokens,omitempty"`            // Minimum new tokens to generate used by HuggingFace
+	Language               *string  `json:"language,omitempty"`
+	Prompt                 *string  `json:"prompt,omitempty"`
+	ResponseFormat         *string  `json:"response_format,omitempty"`         // Default is "json"
+	Temperature            *float64 `json:"temperature,omitempty"`             // Sampling temperature (0.0-1.0)
+	TimestampGranularities []string `json:"timestamp_granularities,omitempty"` // "word" and/or "segment"; requires response_format=verbose_json
+	Include                []string `json:"include,omitempty"`                 // Additional response info (e.g., logprobs)
+	Format                 *string  `json:"file_format,omitempty"`             // Type of file, not required in openai, but required in gemini
+	MaxLength              *int     `json:"max_length,omitempty"`              // Maximum length of the transcription used by HuggingFace
+	MinLength              *int     `json:"min_length,omitempty"`              // Minimum length of the transcription used by HuggingFace
+	MaxNewTokens           *int     `json:"max_new_tokens,omitempty"`          // Maximum new tokens to generate used by HuggingFace
+	MinNewTokens           *int     `json:"min_new_tokens,omitempty"`          // Minimum new tokens to generate used by HuggingFace
 
 	// Elevenlabs-specific fields
 	AdditionalFormats []TranscriptionAdditionalFormat `json:"additional_formats,omitempty"`
@@ -132,4 +154,3 @@ type BifrostTranscriptionStreamResponse struct {
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
 }
-

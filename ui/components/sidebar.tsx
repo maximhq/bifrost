@@ -32,6 +32,7 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SlidersHorizontal,
 	SquareTerminal,
 	Telescope,
 	ToolCase,
@@ -199,10 +200,14 @@ const SidebarItemView = ({
 	prefetchRoute: (url: string) => void;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
+	const isRouteMatch = (url: string) => {
+		if (url === "/workspace/custom-pricing") return pathname === url;
+		return pathname.startsWith(url);
+	};
 	const isAnySubItemActive =
 		hasSubItems &&
 		item.subItems?.some((subItem) => {
-			return pathname.startsWith(subItem.url);
+			return isRouteMatch(subItem.url);
 		});
 
 	const handleClick = (e: React.MouseEvent) => {
@@ -248,16 +253,16 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
 				tooltip={item.title}
+				data-testid={`nav-button-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
 				data-nav-url={!hasSubItems ? item.url : undefined}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isHighlighted
-						? "bg-sidebar-accent text-accent-foreground border-primary/20"
-						: isActive || isAnySubItemActive
-							? "bg-sidebar-accent text-primary border-primary/20"
-							: item.hasAccess
-								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+					? "bg-sidebar-accent text-accent-foreground border-primary/20"
+					: isActive || isAnySubItemActive
+						? "bg-sidebar-accent text-primary border-primary/20"
+						: item.hasAccess
+							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
 				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
 				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
@@ -292,22 +297,22 @@ const SidebarItemView = ({
 					{item.subItems?.map((subItem: SidebarItem) => {
 						const subItemHref = getSidebarItemHref(subItem);
 						// For query param based subitems, check if tab matches
-						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
+						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl === subItemHref;
 						const SubItemIcon = subItem.icon;
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
+									data-testid={`nav-submenu-toggle-${subItem.title.toLowerCase().replace(/\s+/g, "-")}`}
 									data-nav-url={subItemHref}
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemHighlighted
-											? "bg-sidebar-accent text-accent-foreground"
-											: isSubItemActive
-												? "bg-sidebar-accent text-primary font-medium"
-												: subItem.hasAccess === false
-													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+										? "bg-sidebar-accent text-accent-foreground"
+										: isSubItemActive
+											? "bg-sidebar-accent text-primary font-medium"
+											: subItem.hasAccess === false
+												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
 									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
@@ -492,10 +497,17 @@ export default function AppSidebar() {
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Pricing config",
+						title: "Pricing Settings",
 						url: "/workspace/custom-pricing",
 						icon: CircleDollarSign,
 						description: "Pricing configuration",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Pricing Overrides",
+						url: "/workspace/custom-pricing/overrides",
+						icon: SlidersHorizontal,
+						description: "Scoped pricing overrides",
 						hasAccess: hasSettingsAccess,
 					},
 				],
@@ -641,31 +653,31 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: hasPromptRepositoryAccess,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: hasPromptDeploymentStrategyAccess,
-								},
-							],
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+						subItems: [
+							{
+								title: "Prompts",
+								url: "/workspace/prompt-repo/prompts",
+								icon: SquareTerminal,
+								description: "Manage prompts",
+								hasAccess: hasPromptRepositoryAccess,
+								tag: "Beta",
+							},
+							{
+								title: "Deployments",
+								url: "/workspace/prompt-repo/deployments",
+								icon: Router,
+								description: "Manage deployment",
+								hasAccess: hasPromptDeploymentStrategyAccess,
+							},
+						],
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -705,14 +717,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -817,8 +829,12 @@ export default function AppSidebar() {
 	// Auto-expand items when their subitems are active
 	useEffect(() => {
 		const newExpandedItems = new Set<string>();
+		const isRouteMatch = (url: string) => {
+			if (url === "/workspace/custom-pricing") return pathname === url;
+			return pathname.startsWith(url);
+		};
 		items.forEach((item) => {
-			if (item.subItems?.some((subItem) => pathname.startsWith(subItem.url))) {
+			if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
 				newExpandedItems.add(item.title);
 			}
 		});
@@ -945,6 +961,8 @@ export default function AppSidebar() {
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
+		// Avoid double-highlighting with "/workspace/custom-pricing/overrides"
+		if (url === "/workspace/custom-pricing") return pathname === url;
 		if (url !== "/" && pathname.startsWith(url)) {
 			if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
 				return false;
@@ -1120,13 +1138,13 @@ export default function AppSidebar() {
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
-									pathname={pathname}
-									router={router}
-									isSidebarCollapsed={sidebarState === "collapsed"}
-									expandSidebar={() => toggleSidebar()}
-									highlightedUrl={highlightedUrl}
-									prefetchRoute={prefetchRoute}
-								/>
+										pathname={pathname}
+										router={router}
+										isSidebarCollapsed={sidebarState === "collapsed"}
+										expandSidebar={() => toggleSidebar()}
+										highlightedUrl={highlightedUrl}
+										prefetchRoute={prefetchRoute}
+									/>
 								);
 							})}
 						</SidebarMenu>

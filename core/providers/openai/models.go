@@ -1,13 +1,13 @@
 package openai
 
 import (
-	"slices"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ToBifrostListModelsResponse converts an OpenAI list models response to a Bifrost list models response
-func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -16,12 +16,16 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Data)),
 	}
 
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+		return bifrostResponse
+	}
+
 	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
+		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(model.ID) {
 			continue
 		}
-		if !unfiltered && slices.Contains(blacklistedModels, model.ID) {
+		if !unfiltered && blacklistedModels.IsBlocked(model.ID) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -30,16 +34,16 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 			OwnedBy:       schemas.Ptr(model.OwnedBy),
 			ContextLength: model.ContextWindow,
 		})
-		includedModels[model.ID] = true
+		includedModels[strings.ToLower(model.ID)] = true
 	}
 
 	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
+	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
-			if slices.Contains(blacklistedModels, allowedModel) {
+			if blacklistedModels.IsBlocked(allowedModel) {
 				continue
 			}
-			if !includedModels[allowedModel] {
+			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
 					Name: schemas.Ptr(allowedModel),

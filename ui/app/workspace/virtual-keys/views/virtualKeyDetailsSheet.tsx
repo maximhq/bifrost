@@ -85,14 +85,14 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 					</div>
 
 					<DottedSeparator />
-					
+
 					{/* Provider Configurations */}
 					<div className="space-y-4">
 						<h3 className="font-semibold">Provider Configurations</h3>
 
 						<div className="space-y-3">
 							{!virtualKey.provider_configs || virtualKey.provider_configs.length === 0 ? (
-								<span className="text-muted-foreground text-sm">All providers allowed with default settings</span>
+								<span className="text-muted-foreground text-sm">No providers configured (deny-by-default)</span>
 							) : (
 								<div className="space-y-4">
 									{virtualKey.provider_configs.map((config, index) => (
@@ -113,7 +113,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 												<div className="grid grid-cols-3 items-start gap-4">
 													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Models</span>
 													<div className="col-span-2">
-														{config.allowed_models && config.allowed_models.length > 0 ? (
+														{config.allowed_models?.includes("*") ? (
+															<Badge variant="outline" className="text-xs">All Models</Badge>
+														) : config.allowed_models && config.allowed_models.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.allowed_models.map((model) => (
 																	<Badge key={model} variant="secondary" className="text-xs">
@@ -122,7 +124,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<span className="text-muted-foreground text-sm">All models allowed</span>
+															<Badge variant="destructive" className="text-xs">No models (deny all)</Badge>
 														)}
 													</div>
 												</div>
@@ -130,7 +132,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 												<div className="grid grid-cols-3 items-start gap-4">
 													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Keys</span>
 													<div className="col-span-2">
-														{config.keys && config.keys.length > 0 ? (
+														{config.allow_all_keys ? (
+															<span className="text-muted-foreground text-sm">All keys allowed</span>
+														) : config.keys && config.keys.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.keys.map((key) => (
 																	<Badge key={key.key_id} variant="outline" className="text-xs">
@@ -139,7 +143,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<span className="text-muted-foreground text-sm">All keys allowed</span>
+															<span className="text-muted-foreground text-sm">No keys allowed</span>
 														)}
 													</div>
 												</div>
@@ -295,7 +299,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
 						<div className="space-y-3">
 							{!virtualKey.mcp_configs || virtualKey.mcp_configs.length === 0 ? (
-								<span className="text-muted-foreground text-sm">All MCP clients allowed with default settings</span>
+								<span className="text-muted-foreground text-sm">No MCP clients configured (deny-by-default)</span>
 							) : (
 								<div className="rounded-md border">
 									<Table>

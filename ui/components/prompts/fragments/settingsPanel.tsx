@@ -9,6 +9,7 @@ import { useGetAllKeysQuery, useGetProvidersQuery, useLazyGetModelsQuery } from 
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useCallback, useEffect, useMemo } from "react";
 import { ModelProviderName } from "@/lib/types/config";
+import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptContext } from "../context";
 import { VariablesTableView } from "../components/variablesTableView";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
@@ -44,18 +45,27 @@ export function SettingsPanel() {
 		[setApiKeyId],
 	);
 	// Dynamic providers
-	const { data: providers } = useGetProvidersQuery();
+	const { data: providers, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const { data: virtualKeysData } = useGetVirtualKeysQuery();
+	// Keys for the API Key selector (from /api/keys endpoint, provider-filtered)
+	const { data: allKeys, isSuccess: hasLoadedAllKeys } = useGetAllKeysQuery();
+
+	const isInitialLoading = isLoadingProviders;
+
 	const configuredProviders = useMemo(() => {
 		const activeVirtualKeys = virtualKeysData?.virtual_keys?.filter((vk) => vk.is_active) ?? [];
+		if (!hasLoadedAllKeys) {
+			return providers ?? [];
+		}
+		const keyedProviders = new Set((allKeys ?? []).map((k) => k.provider));
 		return (providers ?? []).filter((p) => {
-			if (p.keys && p.keys.length > 0) return true;
+			if (keyedProviders.has(p.name)) return true;
 			// Include providers that have active virtual keys (wildcard or explicitly targeting this provider)
 			return activeVirtualKeys.some(
 				(vk) => !vk.provider_configs || vk.provider_configs.length === 0 || vk.provider_configs.some((pc) => pc.provider === p.name),
 			);
 		});
-	}, [providers, virtualKeysData]);
+	}, [providers, virtualKeysData, allKeys, hasLoadedAllKeys]);
 
 	// Ensure current provider always has a label-resolved option (even before providers query loads)
 	const providerOptions = useMemo(() => {
@@ -66,13 +76,8 @@ export function SettingsPanel() {
 		return opts;
 	}, [configuredProviders, provider]);
 
-	// Get keys from the provider config (has models[] per key)
-	const selectedProvider = useMemo(() => configuredProviders.find((p) => p.name === provider), [configuredProviders, provider]);
-	const providerKeyConfigs = useMemo(() => selectedProvider?.keys ?? [], [selectedProvider]);
-
-	// Keys for the API Key selector (from /api/keys endpoint, provider-filtered)
-	const { data: allKeys } = useGetAllKeysQuery();
 	const providerKeys = useMemo(() => (allKeys ?? []).filter((k) => k.provider === provider), [allKeys, provider]);
+	const providerKeyConfigs = useMemo(() => providerKeys.map((k) => ({ id: k.key_id, models: k.models })), [providerKeys]);
 
 	// Virtual keys filtered by selected provider
 	const providerVirtualKeys = useMemo(() => {
@@ -130,6 +135,23 @@ export function SettingsPanel() {
 		},
 		[onModelParamsChange],
 	);
+
+	if (isInitialLoading) {
+		return (
+			<div className="flex h-full flex-col">
+				<div className="space-y-6 p-4">
+					<div className="flex flex-col gap-2">
+						<Skeleton className="h-4 w-16" />
+						<Skeleton className="h-9 w-full rounded-sm" />
+					</div>
+					<div className="flex flex-col gap-2">
+						<Skeleton className="h-4 w-12" />
+						<Skeleton className="h-9 w-full rounded-sm" />
+					</div>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex h-full flex-col">

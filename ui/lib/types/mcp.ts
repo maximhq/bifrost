@@ -40,12 +40,21 @@ export interface MCPClientConfig {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
+	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+}
+
+export interface MCPVKConfigResponse {
+	virtual_key_id: string;
+	virtual_key_name: string;
+	tools_to_execute: string[];
 }
 
 export interface MCPClient {
 	config: MCPClientConfig;
 	tools: ToolFunction[];
 	state: MCPConnectionState;
+	vk_configs: MCPVKConfigResponse[];
 }
 
 export interface CreateMCPClientRequest {
@@ -81,6 +90,11 @@ export interface OAuthStatusResponse {
 	token_scopes?: string;
 }
 
+export interface MCPVKConfig {
+	virtual_key_id: string;
+	tools_to_execute: string[];
+}
+
 export interface UpdateMCPClientRequest {
 	name?: string;
 	is_code_mode_client?: boolean;
@@ -90,6 +104,9 @@ export interface UpdateMCPClientRequest {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
+	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
 // Pagination params for MCP clients list

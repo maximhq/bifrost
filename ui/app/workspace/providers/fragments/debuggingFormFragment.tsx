@@ -12,6 +12,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { buildProviderUpdatePayload } from "../views/utils";
 
 interface DebuggingFormFragmentProps {
 	provider: ModelProvider;
@@ -45,12 +46,11 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 	}, [form, provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
-		const updatedProvider: ModelProvider = {
-			...provider,
+		const updatedProvider = buildProviderUpdatePayload(provider, {
 			send_back_raw_request: data.send_back_raw_request,
 			send_back_raw_response: data.send_back_raw_response,
 			store_raw_request_response: data.store_raw_request_response,
-		};
+		});
 		updateProvider(updatedProvider)
 			.unwrap()
 			.then(() => {

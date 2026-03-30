@@ -3,11 +3,10 @@ package anthropic
 import (
 	"time"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -25,10 +24,14 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		bifrostResponse.NextPageToken = *response.LastID
 	}
 
+	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+		return bifrostResponse
+	}
+
 	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
 		modelID := model.ID
-		if !unfiltered && len(allowedModels) > 0 {
+		if !unfiltered && allowedModels.IsRestricted() {
 			allowed := false
 			for _, allowedModel := range allowedModels {
 				if schemas.SameBaseModel(model.ID, allowedModel) {
@@ -41,7 +44,7 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 				continue
 			}
 		}
-		if !unfiltered && providerUtils.ModelMatchesDenylist(blacklistedModels, modelID) {
+		if !unfiltered && blacklistedModels.IsBlocked(modelID) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -55,10 +58,10 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		includedModels[modelID] = true
 	}
 
-	// Backfill allowed models that were not in the response (skip blacklisted; blacklist wins over allow list)
-	if !unfiltered && len(allowedModels) > 0 {
+	// Backfill allowed models that were not in the response
+	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
-			if providerUtils.ModelMatchesDenylist(blacklistedModels, allowedModel) {
+			if blacklistedModels.IsBlocked(allowedModel) {
 				continue
 			}
 			if !includedModels[allowedModel] {
