@@ -48,6 +48,18 @@ Claude for Office requires the following headers to be in the Allowed Headers li
 anthropic-dangerous-direct-browser-access, anthropic-version, content-type, user-agent, x-api-key, x-stainless-arch, x-stainless-helper-method, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout
 ```
 
+### 6. Enable CORS
+
+<Note>
+If your Allowed Origins are already set to `*`, you can skip this step.
+</Note>
+
+Claude for Office makes requests from the `pivot.claude.ai` domain. Go to **Settings > Client Settings** and add the following origin to your Allowed Origins list:
+
+```
+https://pivot.claude.ai
+```
+
 You're all set — Claude for Office will now route all requests through Bifrost.
 
 ## How It Works
