@@ -35,6 +35,7 @@ export interface GetModelsRequest {
 	query?: string;
 	provider?: string;
 	keys?: string[];
+	vks?: string[];
 	limit?: number;
 	unfiltered?: boolean;
 }
@@ -309,11 +310,12 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, limit, unfiltered }) => {
+			query: ({ query, provider, keys, vks, limit, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
+				if (vks && vks.length > 0) params.append("vks", vks.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
