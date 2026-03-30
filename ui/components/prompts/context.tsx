@@ -222,6 +222,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedSession.model_params, selectedSession.provider, selectedSession.model);
+			// Restore variables (key:value) from session
+			if (selectedSession.variables && Object.keys(selectedSession.variables).length > 0) {
+				setVariables(selectedSession.variables);
+			}
 		} else if (selectedVersion) {
 			// If sessions are still loading and no session is explicitly selected,
 			// wait — a session may auto-select and take priority
@@ -230,6 +234,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedVersion.model_params, selectedVersion.provider, selectedVersion.model);
+			// Initialize variables from version (keys with empty values)
+			if (selectedVersion.variables && Object.keys(selectedVersion.variables).length > 0) {
+				setVariables((prev) => mergeVariables(prev, Object.keys(selectedVersion.variables!)));
+			}
 		} else if (selectedPrompt?.latest_version) {
 			// Only fall back to latest_version after sessions have settled
 			// to avoid racing with the session auto-select effect
@@ -239,6 +247,10 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(version.model_params, version.provider, version.model);
+			// Initialize variables from version (keys with empty values)
+			if (version.variables && Object.keys(version.variables).length > 0) {
+				setVariables((prev) => mergeVariables(prev, Object.keys(version.variables!)));
+			}
 			if (sessions.length === 0) {
 				setUrlState({ versionId: version.id });
 			}

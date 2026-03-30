@@ -168,12 +168,12 @@ export function SettingsPanel() {
 						/>
 					)}
 
-					{/* {Object.keys(variables).length > 0 && (
+					{Object.keys(variables).length > 0 && (
 						<>
 							<Separator />
 							<VariablesTableView variables={variables} onChange={setVariables} />
 						</>
-					)} */}
+					)}
 
 					{model && (
 						<>
