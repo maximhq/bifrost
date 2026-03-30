@@ -2911,7 +2911,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
 			contents = append(contents, Content{
 				Parts: pendingFunctionResponseParts,
-				Role:  "model", // Function responses use "model" role in Gemini
+				Role:  "user", // Function responses must be sent back as user content in Gemini
 			})
 			pendingFunctionResponseParts = nil
 		}
@@ -3045,7 +3045,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
 						contents = append(contents, Content{
 							Parts: pendingFunctionResponseParts,
-							Role:  "model",
+							Role:  "user",
 						})
 						pendingFunctionResponseParts = nil
 					}
