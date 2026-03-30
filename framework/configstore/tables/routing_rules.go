@@ -19,7 +19,7 @@ type TableRoutingRule struct {
 	CelExpression string `gorm:"type:text;not null" json:"cel_expression"`
 
 	// Routing Targets (output) — 1:many relationship; weights must sum to 1
-	Targets []TableRoutingTarget `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"targets,omitempty"`
+	Targets []TableRoutingTarget `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"targets"`
 
 	Fallbacks       *string  `gorm:"type:text" json:"-"`           // JSON array of fallback chains
 	ParsedFallbacks []string `gorm:"-" json:"fallbacks,omitempty"` // Parsed fallbacks from JSON

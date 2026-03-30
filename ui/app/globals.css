@@ -280,6 +280,35 @@ div.content-container:has(.no-border-parent) {
 	fill: var(--foreground) !important;
 }
 
+/* Dynamic chain: dash period 3+5 = 8 — offset must move exactly one period per loop */
+@keyframes rf-routing-tree-dynamic-chain-dash {
+	from {
+		stroke-dashoffset: 0;
+	}
+	to {
+		stroke-dashoffset: -8;
+	}
+}
+
+.rf-chain-legend-dynamic-dash {
+	animation: rf-routing-tree-dynamic-chain-dash 0.5s linear infinite;
+}
+
+.react-flow__edge.rf-chain-edge-dynamic .react-flow__edge-path {
+	stroke-dasharray: 3 5;
+	animation: rf-routing-tree-dynamic-chain-dash 0.5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.rf-chain-legend-dynamic-dash {
+		animation: none;
+	}
+
+	.react-flow__edge.rf-chain-edge-dynamic .react-flow__edge-path {
+		animation: none;
+	}
+}
+
 /* // Custom styling for streamdown */
 
 [data-streamdown="code-block"], [data-streamdown="code-block-body"]{

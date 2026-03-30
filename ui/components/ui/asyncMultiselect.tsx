@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckIcon, ChevronDown, PlusCircle, PlusIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronDown, PlusIcon, XIcon } from "lucide-react";
 import React, { KeyboardEventHandler, useCallback, useEffect, useRef, useState } from "react";
 import {
 	ClearIndicatorProps,
@@ -27,7 +27,6 @@ import {
 } from "react-select";
 import AsyncCreatableSelect from "react-select/async-creatable";
 import { useDebouncedFunction } from "../../hooks/useDebounce";
-import { Checkbox } from "./checkbox";
 import { Icons } from "./icons";
 import { Label } from "./label";
 import {
@@ -36,10 +35,8 @@ import {
 	CustomDropdownIndicatorProps,
 	CustomOptionProps,
 	CustomPlaceholderProps,
-	EvaluatorGroup,
-	EvaluatorOption,
 	Option,
-	OptionGroup,
+	OptionGroup
 } from "./multiselectUtils";
 import { Separator } from "./separator";
 import { cn, radixDialogOnBlurWorkaround } from "./utils";
@@ -459,7 +456,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 					noOptionsMessage: () => cn("text-content-disabled flex items-center justify-center text-sm", props.noOptionsMessageClassName),
 					indicatorsContainer: () => "h-8",
 				}}
-				minMenuHeight={400}
+				minMenuHeight={160}
 				components={{
 					ClearIndicator: CustomClearIndicator,
 					Control: CustomControl,
@@ -533,128 +530,6 @@ export function MultiSelectInput<T>(props: AsyncMultiSelectProps<T>) {
 	);
 }
 
-interface EvaluatorMultiSelectProps<V> extends Omit<AsyncMultiSelectProps<EvaluatorOption<V>>, "onChange"> {
-	keepTags?: string[];
-	filterTags?: string[];
-	typeFilter?: string[];
-	filter?: (options: (EvaluatorOption<V> | EvaluatorGroup<V>)[]) => (EvaluatorOption<V> | EvaluatorGroup<V>)[];
-	options?: any;
-	onChange?: (items: EvaluatorOption<V>[]) => void;
-}
-
-export function EvaluatorMultiSelect<V>(props: EvaluatorMultiSelectProps<V>) {
-	const shouldFilterEvaluatorOnTags = (option: EvaluatorOption<V>) => {
-		const tags = (option as any)?.tags || [];
-		const type = (option as any)?.type;
-
-		if (props.keepTags?.length) {
-			for (const tag of props.keepTags) {
-				if (tags.some((t: any) => t.label === tag)) {
-					return true;
-				}
-			}
-			return false;
-		}
-
-		if (props.filterTags?.length || props.typeFilter?.length) {
-			if (props.typeFilter?.includes(type)) {
-				return false;
-			}
-
-			for (const tag of props.filterTags || []) {
-				if (tags.some((t: any) => t.label === tag)) {
-					return false;
-				}
-			}
-		}
-		return true;
-	};
-
-	const processedOptions = props.options
-		? Array.isArray(props.options)
-			? props.options.map((group) => ({
-					...group,
-					options: group.options.filter(shouldFilterEvaluatorOnTags),
-				}))
-			: props.options
-		: undefined;
-
-	const filteredOptions = props.filter ? props.filter(processedOptions as (EvaluatorOption<V> | EvaluatorGroup<V>)[]) : processedOptions;
-
-	return (
-		<AsyncMultiSelect
-			{...props}
-			onChange={(items) => {
-				props.onChange?.(items as EvaluatorOption<V>[]);
-			}}
-			isNonAsync
-			defaultOptions={filteredOptions}
-			value={props.value}
-			views={{
-				option: (optionProps) => {
-					return (
-						<OptionWrapper
-							{...optionProps}
-							className={cn(
-								optionProps.className,
-								"text-content-primary hover:bg-background-highlight-primary/60",
-								optionProps.isSelected ? "text-content-primary bg-transparent" : "",
-							)}
-						>
-							<div className="flex w-full items-start justify-between">
-								<div className="flex grow flex-col">
-									<div className="flex">
-										<span className="text-content-primary grow truncate text-sm font-medium">{optionProps.data.label}</span>
-									</div>
-									{optionProps.data.meta?.description && (
-										<span className="text-content-tertiary max-w-[70%] text-sm">{optionProps.data.meta.description}</span>
-									)}
-								</div>
-								<button className="flex items-center pt-0.5" type="button">
-									{optionProps.isSelected ? (
-										<Checkbox
-											checked={optionProps.isSelected}
-											className="h-4 w-4"
-											onCheckedChange={(e) => {
-												optionProps.selectOption(optionProps.data);
-											}}
-										/>
-									) : (
-										<PlusCircle className="h-4 w-4" strokeWidth={1.5} />
-									)}
-								</button>
-							</div>
-						</OptionWrapper>
-					);
-				},
-				groupHeading: (groupProps) => {
-					const data = groupProps.data as unknown as EvaluatorGroup<V>;
-					return (
-						<GroupHeadingWrapper {...groupProps} className={cn(groupProps.className, "bg-content-inverse sticky z-[1] m-0 !px-2 py-2")}>
-							<div className="text-content-secondary flex items-center gap-1 capitalize">
-								{data.icon && <div className="flex shrink-0 items-center">{data.icon}</div>}
-								{data.label}
-							</div>
-						</GroupHeadingWrapper>
-					);
-				},
-				group: (groupProps) => {
-					return <GroupWrapper {...groupProps} className={cn(groupProps.className, "py-0!")} />;
-				},
-				multiValue: (multiValueProps) => {
-					return (
-						<MultiValueWrapper {...multiValueProps}>
-							<div className="mr-1 flex items-center gap-1">
-								{multiValueProps.data.meta?.icon && <div className="flex shrink-0 items-center">{multiValueProps.data.meta.icon}</div>}
-								<span className="text-content-tertiary grow truncate text-sm font-medium">{multiValueProps.data.label}</span>
-							</div>
-						</MultiValueWrapper>
-					);
-				},
-			}}
-		/>
-	);
-}
 
 function CustomOption<T>(props: OptionProps<Option<T>> & { selectProps: CustomOptionProps & CustomComponentsProps }) {
 	const { Option } = components;
