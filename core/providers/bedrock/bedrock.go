@@ -178,6 +178,12 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
+	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
@@ -404,6 +410,12 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
@@ -1030,7 +1042,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err, providerName), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// Convert using the new response converter	
+	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err, providerName), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)

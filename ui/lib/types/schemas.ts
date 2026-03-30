@@ -691,6 +691,13 @@ export const debuggingFormSchema = z.object({
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
 
+// Beta Headers tab
+export const betaHeadersFormSchema = z.object({
+	beta_header_overrides: z.record(z.string(), z.boolean()).optional(),
+});
+
+export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
+
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),

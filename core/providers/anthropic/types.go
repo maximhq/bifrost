@@ -16,6 +16,9 @@ const (
 	AnthropicDefaultMaxTokens = 4096
 	MinimumReasoningMaxTokens = 1024
 
+	// AnthropicBetaHeader is the HTTP header name used to enable Anthropic beta features.
+	AnthropicBetaHeader = "anthropic-beta"
+
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
@@ -43,6 +46,8 @@ const (
 	AnthropicContext1MBetaHeader = "context-1m-2025-08-07"
 	// AnthropicFastModeBetaHeader is required for fast mode on Opus 4.6 (research preview).
 	AnthropicFastModeBetaHeader = "fast-mode-2026-02-01"
+	// AnthropicRedactThinkingBetaHeader is required for redacting thinking blocks in responses.
+	AnthropicRedactThinkingBetaHeader = "redact-thinking-2026-02-12"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -61,6 +66,7 @@ const (
 	AnthropicSkillsBetaHeaderPrefix              = "skills-"
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
+	AnthropicRedactThinkingBetaHeaderPrefix       = "redact-thinking-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -86,6 +92,7 @@ type ProviderFeatureSupport struct {
 	Skills              bool // Agent Skills
 	Context1M           bool // 1M context window beta (for Sonnet 4.5/4 only)
 	FastMode            bool // fast mode (Opus 4.6 only, research preview)
+	RedactThinking      bool // redact thinking blocks in responses
 	FileSearch          bool // file_search server tool (OpenAI-only)
 	ImageGeneration     bool // image_generation server tool (OpenAI-only)
 }
@@ -98,6 +105,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
+		RedactThinking: true,
 	},
 	schemas.Vertex: {
 		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
@@ -116,6 +124,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true,
+		RedactThinking: true,
 	},
 }
 

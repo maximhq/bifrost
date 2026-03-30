@@ -51,6 +51,16 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 **Limitations**: Images must be in base64 or data URI format (remote URLs not supported). Text completion streaming is not supported.
 </Note>
 
+## Beta Headers
+
+For Claude models on Bedrock, Bifrost validates `anthropic-beta` headers to ensure only supported features are forwarded.
+
+**Supported**: `computer-use-*`, `structured-outputs-*`, `compact-*`, `context-management-*`, `interleaved-thinking-*`, `context-1m-*`
+
+**Not supported**: `advanced-tool-use-*`, `mcp-client-*`, `prompt-caching-scope-*`, `files-api-*`, `skills-*`, `fast-mode-*`, `redact-thinking-*`
+
+You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
+
 ---
 
 # 1. Chat Completions

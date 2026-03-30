@@ -519,6 +519,9 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
+			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+				continue
+			}
 			for i, v := range values {
 				if i == 0 {
 					req.Header.Set(k, v)
@@ -1083,6 +1086,9 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	// Give priority to extra headers in the context
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
+			if skipHeaders != nil && slices.Contains(skipHeaders, strings.ToLower(k)) {
+				continue
+			}
 			for i, v := range values {
 				if i == 0 {
 					req.Header.Set(k, v)

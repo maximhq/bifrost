@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -220,13 +221,18 @@ func (provider *AzureProvider) completeRequest(
 		}
 	}()
 
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
-
 	var url string
 	isAnthropicModel := schemas.IsAnthropicModel(deployment)
+
+	// Set any extra headers from network config.
+	// For Anthropic models, exclude anthropic-beta — it is merged and filtered explicitly below.
+	if isAnthropicModel {
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	} else {
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	}
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
 
 	// Get authentication headers
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, isAnthropicModel)
@@ -247,6 +253,13 @@ func (provider *AzureProvider) completeRequest(
 	if isAnthropicModel {
 		req.Header.Set("anthropic-version", AzureAnthropicAPIVersionDefault)
 		url = fmt.Sprintf("%s/%s", endpoint, path)
+
+		// Merge ExtraHeaders + context anthropic-beta, filter for Azure, then set as HTTP header
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Azure, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
 	} else {
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
@@ -701,6 +714,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			jsonData,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -895,6 +909,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			jsonData,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),

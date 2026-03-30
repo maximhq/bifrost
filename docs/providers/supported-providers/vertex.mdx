@@ -39,6 +39,16 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 **Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
 </Note>
 
+## Beta Headers
+
+For Anthropic models on Vertex AI, Bifrost validates `anthropic-beta` headers to ensure only supported features are forwarded. Unsupported headers are rejected with a clear error.
+
+**Supported**: `computer-use-*`, `compact-*`, `context-management-*`, `interleaved-thinking-*`, `context-1m-*`
+
+**Not supported**: `structured-outputs-*`, `advanced-tool-use-*`, `mcp-client-*`, `prompt-caching-scope-*`, `files-api-*`, `skills-*`, `fast-mode-*`, `redact-thinking-*`
+
+You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
+
 ---
 
 # 1. Chat Completions
