@@ -11,6 +11,7 @@ import { Option } from "./multiselectUtils";
 interface ModelMultiselectPropsBase {
 	provider?: string;
 	keys?: string[];
+	vks?: string[];
 	placeholder?: string;
 	disabled?: boolean;
 	className?: string;
@@ -59,6 +60,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
 		provider,
 		keys,
+		vks,
 		value,
 		unfiltered = false,
 		onChange,
@@ -90,12 +92,13 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }
 		));
 
-	// Fetch initial models on mount or when provider/keys change
+	// Fetch initial models on mount or when provider/keys/vks change
 	useEffect(() => {
 		if (provider) {
 			getModels({
 				provider,
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 5,
 				unfiltered,
 			});
@@ -104,11 +107,12 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		} else if (shouldLoadOnEmpty) {
 			getModels({
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 20,
 				unfiltered,
 			});
 		}
-	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
+	}, [provider, keys, vks, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
 
 	// Load options function for AsyncMultiSelect
 	const loadOptions = useCallback(
@@ -144,6 +148,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: query || undefined,
 					provider: provider || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: query ? 50 : shouldLoadOnEmpty && !provider ? 20 : 5,
 					unfiltered,
 				})
@@ -161,7 +166,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					});
 			}
 		},
-		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels, allowAllOption],
+		[getModels, getBaseModels, provider, keys, vks, shouldLoadOnEmpty, shouldUseBaseModels, allowAllOption],
 	);
 
 	// Handle selection change
@@ -182,6 +187,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: currentQuery || undefined,
 					provider,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
@@ -194,12 +200,13 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				getModels({
 					query: currentQuery || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
 			}
 		},
-		[onChange, provider, keys, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
+		[onChange, provider, keys, vks, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
 	);
 
 	// Handle input change - track in both state and ref

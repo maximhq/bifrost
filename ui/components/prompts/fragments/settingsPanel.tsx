@@ -5,10 +5,11 @@ import { Separator } from "@/components/ui/separator";
 import ModelParameters from "@/components/ui/custom/modelParameters";
 import { ModelParams } from "@/lib/types/prompts";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { useGetAllKeysQuery, useGetProvidersQuery, useLazyGetModelsQuery } from "@/lib/store/apis/providersApi";
+import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useGetVirtualKeysQuery } from "@/lib/store";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { ModelProviderName } from "@/lib/types/config";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptContext } from "../context";
 import { VariablesTableView } from "../components/variablesTableView";
@@ -77,7 +78,6 @@ export function SettingsPanel() {
 	}, [configuredProviders, provider]);
 
 	const providerKeys = useMemo(() => (allKeys ?? []).filter((k) => k.provider === provider), [allKeys, provider]);
-	const providerKeyConfigs = useMemo(() => providerKeys.map((k) => ({ id: k.key_id, models: k.models })), [providerKeys]);
 
 	// Virtual keys filtered by selected provider
 	const providerVirtualKeys = useMemo(() => {
@@ -91,43 +91,21 @@ export function SettingsPanel() {
 		});
 	}, [virtualKeysData, provider]);
 
-	// Fallback: fetch all models for this provider (used when any key has no models restriction)
-	const [fetchModels, { data: modelsData }] = useLazyGetModelsQuery();
-	useEffect(() => {
-		if (provider) {
-			fetchModels({ provider, limit: 100, unfiltered: true });
-		}
-	}, [provider, fetchModels]);
-	const allProviderModels = useMemo(() => (modelsData?.models ?? []).map((m) => m.name), [modelsData]);
+	// Separate keys/vks to pass to model fetch for filtering.
+	const filterKeys = useMemo(() => {
+		const isProviderKey = providerKeys.some((k) => k.key_id === apiKeyId);
+		if (isProviderKey) return [apiKeyId];
+		const isVirtualKey = providerVirtualKeys.some((vk) => vk.id === apiKeyId);
+		if (isVirtualKey) return undefined;
+		// Auto: pass all provider key IDs
+		return providerKeys.map((k) => k.key_id);
+	}, [apiKeyId, providerKeys, providerVirtualKeys]);
 
-	// Build model list based on key selection
-	const availableModels = useMemo(() => {
-		if (apiKeyId !== "__auto__") {
-			// Specific key selected — find it in provider config
-			const key = providerKeyConfigs.find((k) => k.id === apiKeyId);
-			if (key?.models && key.models.length > 0) {
-				return key.models;
-			}
-			// Key has no model restriction → show all
-			return allProviderModels;
-		}
-
-		// Auto mode — blend models from all keys
-		// If any key has empty models (no restriction), show all models
-		const hasUnrestrictedKey = providerKeyConfigs.some((k) => !k.models || k.models.length === 0);
-		if (hasUnrestrictedKey || providerKeyConfigs.length === 0) {
-			return allProviderModels;
-		}
-
-		// All keys have specific models — show unique union
-		const modelSet = new Set<string>();
-		for (const k of providerKeyConfigs) {
-			for (const m of k.models ?? []) {
-				modelSet.add(m);
-			}
-		}
-		return Array.from(modelSet);
-	}, [apiKeyId, providerKeyConfigs, allProviderModels]);
+	const filterVks = useMemo(() => {
+		const isVirtualKey = providerVirtualKeys.some((vk) => vk.id === apiKeyId);
+		if (isVirtualKey) return [apiKeyId];
+		return undefined;
+	}, [apiKeyId, providerVirtualKeys]);
 
 	const handleModelParamsChange = useCallback(
 		(params: Record<string, any>) => {
@@ -170,12 +148,14 @@ export function SettingsPanel() {
 
 					<div className="flex flex-col gap-2" data-testid="settings-model">
 						<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
-						<ComboboxSelect
-							options={availableModels.map((m) => ({ label: m, value: m }))}
+						<ModelMultiselect
+							provider={provider}
+							keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
+						vks={filterVks}
 							value={model}
-							onValueChange={(v) => v && onModelChange(v)}
+							onChange={(v) => onModelChange(v)}
+							isSingleSelect
 							placeholder={!provider ? "Select a provider first" : "Select model"}
-							hideClear
 							disabled={!provider}
 						/>
 					</div>
