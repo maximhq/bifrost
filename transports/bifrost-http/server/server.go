@@ -1013,6 +1013,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
+	anthropicOAuthHandler := handlers.NewAnthropicOAuthHandler(s.Config.OAuthProvider)
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
@@ -1024,6 +1025,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
+	anthropicOAuthHandler.RegisterRoutes(s.Router, middlewares...)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}

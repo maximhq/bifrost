@@ -112,6 +112,11 @@ export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
 
+// AnthropicOAuthKeyConfig matching Go's schemas.AnthropicOAuthKeyConfig
+export interface AnthropicOAuthKeyConfig {
+	oauth_config_id: string;
+}
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -127,6 +132,7 @@ export interface ModelProviderKey {
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
+	anthropic_oauth_key_config?: AnthropicOAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

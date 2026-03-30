@@ -33,6 +33,8 @@ const (
 	AnthropicCompactionBetaHeader = "compact-2026-01-12"
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
+	// AnthropicOAuthBetaHeader is required for OAuth Bearer token authentication (Claude Pro/Max).
+	AnthropicOAuthBetaHeader = "oauth-2025-04-20"
 	// AnthropicInterleavedThinkingBetaHeader is required for interleaved thinking between tool calls.
 	// Deprecated on Opus 4.6/Sonnet 4.6 (use adaptive thinking); active on older Claude 4 models.
 	AnthropicInterleavedThinkingBetaHeader = "interleaved-thinking-2025-05-14"

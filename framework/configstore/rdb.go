@@ -297,6 +297,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				BedrockKeyConfig:   key.BedrockKeyConfig,
 				ReplicateKeyConfig: key.ReplicateKeyConfig,
 				VLLMKeyConfig:      key.VLLMKeyConfig,
+				AnthropicOAuthKeyConfig: key.AnthropicOAuthKeyConfig,
 				ConfigHash:         keyHash,
 				Status:             string(key.Status),
 				Description:        key.Description,
@@ -355,6 +356,14 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+				// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+				// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+				// by the logout handler — it is never present in config-reload or admin-UI payloads.
+				// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+				// intentionally prevents accidental disconnection during config updates.
+				if dbKey.AnthropicOAuthKeyConfig == nil {
+					dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+				}
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -370,6 +379,14 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+					// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+					// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+					// by the logout handler — it is never present in config-reload or admin-UI payloads.
+					// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+					// intentionally prevents accidental disconnection during config updates.
+					if dbKey.AnthropicOAuthKeyConfig == nil {
+						dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+					}
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -467,6 +484,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			AnthropicOAuthKeyConfig: key.AnthropicOAuthKeyConfig,
 			ConfigHash:         keyHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -515,6 +533,14 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+			// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+			// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+			// by the logout handler — it is never present in config-reload or admin-UI payloads.
+			// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+			// intentionally prevents accidental disconnection during config updates.
+			if dbKey.AnthropicOAuthKeyConfig == nil {
+				dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+			}
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -590,6 +616,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			AnthropicOAuthKeyConfig: key.AnthropicOAuthKeyConfig,
 			ConfigHash:         key.ConfigHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -699,22 +726,23 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
 			keys[i] = schemas.Key{
-				ID:                 dbKey.KeyID,
-				Name:               dbKey.Name,
-				Value:              dbKey.Value,
-				Models:             dbKey.Models,
-				BlacklistedModels:  dbKey.BlacklistedModels,
-				Weight:             getWeight(dbKey.Weight),
-				Enabled:            dbKey.Enabled,
-				UseForBatchAPI:     dbKey.UseForBatchAPI,
-				AzureKeyConfig:     dbKey.AzureKeyConfig,
-				VertexKeyConfig:    dbKey.VertexKeyConfig,
-				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-				VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-				ConfigHash:         dbKey.ConfigHash,
-				Status:             schemas.KeyStatusType(dbKey.Status),
-				Description:        dbKey.Description,
+				ID:                      dbKey.KeyID,
+				Name:                    dbKey.Name,
+				Value:                   dbKey.Value,
+				Models:                  dbKey.Models,
+				BlacklistedModels:       dbKey.BlacklistedModels,
+				Weight:                  getWeight(dbKey.Weight),
+				Enabled:                 dbKey.Enabled,
+				UseForBatchAPI:          dbKey.UseForBatchAPI,
+				AzureKeyConfig:          dbKey.AzureKeyConfig,
+				VertexKeyConfig:         dbKey.VertexKeyConfig,
+				BedrockKeyConfig:        dbKey.BedrockKeyConfig,
+				ReplicateKeyConfig:      dbKey.ReplicateKeyConfig,
+				VLLMKeyConfig:           dbKey.VLLMKeyConfig,
+				AnthropicOAuthKeyConfig: dbKey.AnthropicOAuthKeyConfig,
+				ConfigHash:              dbKey.ConfigHash,
+				Status:                  schemas.KeyStatusType(dbKey.Status),
+				Description:             dbKey.Description,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -750,22 +778,23 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
 		keys[i] = schemas.Key{
-			ID:                 dbKey.KeyID,
-			Name:               dbKey.Name,
-			Value:              dbKey.Value,
-			Models:             dbKey.Models,
-			BlacklistedModels:  dbKey.BlacklistedModels,
-			Weight:             getWeight(dbKey.Weight),
-			Enabled:            dbKey.Enabled,
-			UseForBatchAPI:     dbKey.UseForBatchAPI,
-			AzureKeyConfig:     dbKey.AzureKeyConfig,
-			VertexKeyConfig:    dbKey.VertexKeyConfig,
-			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-			VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-			ConfigHash:         dbKey.ConfigHash,
-			Status:             schemas.KeyStatusType(dbKey.Status),
-			Description:        dbKey.Description,
+			ID:                      dbKey.KeyID,
+			Name:                    dbKey.Name,
+			Value:                   dbKey.Value,
+			Models:                  dbKey.Models,
+			BlacklistedModels:       dbKey.BlacklistedModels,
+			Weight:                  getWeight(dbKey.Weight),
+			Enabled:                 dbKey.Enabled,
+			UseForBatchAPI:          dbKey.UseForBatchAPI,
+			AzureKeyConfig:          dbKey.AzureKeyConfig,
+			VertexKeyConfig:         dbKey.VertexKeyConfig,
+			BedrockKeyConfig:        dbKey.BedrockKeyConfig,
+			ReplicateKeyConfig:      dbKey.ReplicateKeyConfig,
+			VLLMKeyConfig:           dbKey.VLLMKeyConfig,
+			AnthropicOAuthKeyConfig: dbKey.AnthropicOAuthKeyConfig,
+			ConfigHash:              dbKey.ConfigHash,
+			Status:                  schemas.KeyStatusType(dbKey.Status),
+			Description:             dbKey.Description,
 		}
 	}
 	return &ProviderConfig{

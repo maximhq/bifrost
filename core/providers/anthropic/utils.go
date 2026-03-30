@@ -2049,3 +2049,87 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
+// isOAuthKey reports whether a key uses Anthropic OAuth rather than a static API key.
+func isOAuthKey(key schemas.Key) bool {
+	return key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != ""
+}
+
+// setAnthropicAuthHeader sets the appropriate authentication header on a fasthttp request.
+// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
+func setAnthropicAuthHeader(req *fasthttp.Request, keyValue string, key schemas.Key) {
+	if keyValue == "" {
+		return
+	}
+	req.Header.Del("Authorization")
+	req.Header.Del("x-api-key")
+	if isOAuthKey(key) {
+		req.Header.Set("Authorization", "Bearer "+keyValue)
+		appendBetaHeader(req, AnthropicOAuthBetaHeader)
+	} else {
+		req.Header.Set("x-api-key", keyValue)
+	}
+}
+
+// setAnthropicAuthHeaderMap sets the appropriate authentication header in a headers map.
+// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
+func setAnthropicAuthHeaderMap(headers map[string]string, keyValue string, key schemas.Key) {
+	if keyValue == "" {
+		return
+	}
+	delete(headers, "Authorization")
+	delete(headers, "x-api-key")
+	if isOAuthKey(key) {
+		headers["Authorization"] = "Bearer " + keyValue
+		if existing := headers["anthropic-beta"]; existing != "" {
+			alreadyPresent := false
+			for _, h := range strings.Split(existing, ",") {
+				if strings.TrimSpace(h) == AnthropicOAuthBetaHeader {
+					alreadyPresent = true
+					break
+				}
+			}
+			if !alreadyPresent {
+				headers["anthropic-beta"] = existing + "," + AnthropicOAuthBetaHeader
+			}
+		} else {
+			headers["anthropic-beta"] = AnthropicOAuthBetaHeader
+		}
+	} else {
+		headers["x-api-key"] = keyValue
+	}
+}
+
+// setAnthropicRequestBody sets the request body on a fasthttp request.
+// Supports both normal mode (converted JSON/multipart bytes) and large payload mode
+// (streaming original client body reader).
+func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request, body []byte) bool {
+	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Anthropic)
+	if !usedLargePayloadBody {
+		req.SetBody(body)
+	}
+	return usedLargePayloadBody
+}
+
+// extractAnthropicResponsesUsageFromPrefetch extracts usage information from a prefetched response body.
+func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesResponseUsage {
+	node, err := sonic.Get(data, "usage")
+	if err != nil {
+		return nil
+	}
+	raw, _ := node.Raw()
+	if raw == "" {
+		return nil
+	}
+	var usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}
+	if err := sonic.UnmarshalString(raw, &usage); err != nil {
+		return nil
+	}
+	return &schemas.ResponsesResponseUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	}
+}

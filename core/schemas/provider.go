@@ -485,6 +485,7 @@ type ProviderConfig struct {
 	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig         *OpenAIConfig             `json:"openai_config,omitempty"`
 	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	OAuth2Provider       OAuth2Provider            `json:"-"` // For providers needing OAuth token resolution
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.

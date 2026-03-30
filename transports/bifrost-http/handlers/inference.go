@@ -734,6 +734,18 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Fall back to the static model catalog when the provider returned no models
+	// (e.g. Anthropic OAuth-only setups where /v1/models cannot be called).
+	if len(resp.Data) == 0 && provider != "" && pageToken == "" && h.config.ModelCatalog != nil {
+		catalogModels := h.config.ModelCatalog.GetModelsForProvider(schemas.ModelProvider(provider))
+		if len(catalogModels) > 0 {
+			resp.Data = make([]schemas.Model, len(catalogModels))
+			for i, m := range catalogModels {
+				resp.Data[i] = schemas.Model{ID: m}
+			}
+		}
+	}
+
 	// Add pricing data to the response
 	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {

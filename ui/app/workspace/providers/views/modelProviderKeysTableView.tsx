@@ -20,6 +20,7 @@ import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Badge } from "@/components/ui/badge";
 import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
@@ -168,6 +169,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													</Tooltip>
 												)}
 												<span className="font-mono text-sm">{key.name}</span>
+												{key.anthropic_oauth_key_config?.oauth_config_id && (
+													<Badge variant="secondary" className="ml-2 text-xs">OAuth</Badge>
+												)}
 											</div>
 										</TableCell>
 										<TableCell data-testid="key-weight-value">
