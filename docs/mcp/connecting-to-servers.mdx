@@ -178,6 +178,8 @@ Server-Sent Events (SSE) connections provide real-time, persistent connections t
   <img src="/media/ui-mcp-servers-table.png" alt="MCP Servers Table" />
 </Frame>
 
+The MCP Server Catalog supports server-side search by client name and paginated browsing in OSS.
+
 2. Click **New MCP Server** button to open the creation form
 
 3. Fill in the connection details:
@@ -259,29 +261,38 @@ curl -X POST http://localhost:8080/api/mcp/client \
 
 ```bash
 curl http://localhost:8080/api/mcp/clients
+
+# Search by client name with pagination
+curl "http://localhost:8080/api/mcp/clients?search=filesystem&limit=25&offset=0"
 ```
 
 Response:
 ```json
-[
-  {
-    "config": {
-      "id": "abc123",
-      "name": "filesystem",
-      "connection_type": "stdio",
-      "stdio_config": {
-        "command": "npx",
-        "args": ["-y", "@anthropic/mcp-filesystem"]
-      }
-    },
-    "tools": [
-      {"name": "read_file", "description": "Read contents of a file"},
-      {"name": "write_file", "description": "Write contents to a file"},
-      {"name": "list_directory", "description": "List directory contents"}
-    ],
-    "state": "connected"
-  }
-]
+{
+  "clients": [
+    {
+      "config": {
+        "id": "abc123",
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": ["-y", "@anthropic/mcp-filesystem"]
+        }
+      },
+      "tools": [
+        {"name": "read_file", "description": "Read contents of a file"},
+        {"name": "write_file", "description": "Write contents to a file"},
+        {"name": "list_directory", "description": "List directory contents"}
+      ],
+      "state": "connected"
+    }
+  ],
+  "count": 1,
+  "total_count": 3,
+  "limit": 25,
+  "offset": 0
+}
 ```
 
 </Tab>
