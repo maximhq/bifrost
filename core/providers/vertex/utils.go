@@ -9,7 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
 	// Large payload mode: body streams directly from the LP reader — skip all body building
 	// (matches CheckContextAndGetRequestBody guard).
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
@@ -26,74 +26,74 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		if isCountTokens {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", deployment)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		} else {
 			// Add max_tokens if not present
 			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
 				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(deployment, anthropic.AnthropicDefaultMaxTokens))
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 			// Add stream if streaming
 			if isStreaming {
 				jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 		}
 
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 
 		// Remap unsupported tool versions for Vertex (e.g., web_search_20260209 → web_search_20250305)
 		jsonBody, err = anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(err.Error(), nil, providerName)
+			return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
 		}
 
 		// Add anthropic_version if not present
 		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 	} else {
 		// Validate tools are supported by Vertex
 		if request.Params != nil && request.Params.Tools != nil {
 			if toolErr := anthropic.ValidateToolsForProvider(request.Params.Tools, schemas.Vertex); toolErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(toolErr.Error(), nil, providerName)
+				return nil, providerUtils.NewBifrostOperationError(toolErr.Error(), nil)
 			}
 		}
 
 		// Convert request to Anthropic format
 		reqBody, convErr := anthropic.ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
 		}
 		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
+			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
 		}
 		reqBody.Model = deployment
 
@@ -109,14 +109,14 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		// Marshal struct to JSON bytes
 		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 
 		// Add anthropic_version if not present (using sjson to preserve order)
 		if !providerUtils.JSONFieldExists(jsonBody, "anthropic_version") {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_version", DefaultVertexAnthropicVersion)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 
@@ -124,12 +124,12 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 			betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
 			if betaErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, betaErr, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, betaErr)
 			}
 			if len(betaHeaders) > 0 {
 				jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 		}
@@ -137,23 +137,23 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		if isCountTokens {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "temperature")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		} else {
 			// Remove model field for Vertex API (it's in URL)
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "model")
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 	}
 
@@ -211,11 +211,11 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 			continue
 		}
 
-		modelName := formatDeploymentName(alias)
+		modelName := providerUtils.ToDisplayName(alias)
 		modelEntry := schemas.Model{
-			ID:         modelID,
-			Name:       schemas.Ptr(modelName),
-			Deployment: schemas.Ptr(deploymentValue),
+			ID:    modelID,
+			Name:  schemas.Ptr(modelName),
+			Alias: schemas.Ptr(deploymentValue),
 		}
 
 		response.Data = append(response.Data, modelEntry)
@@ -235,7 +235,7 @@ func buildResponseFromConfig(deployments map[string]string, allowedModels schema
 			continue
 		}
 
-		modelName := formatDeploymentName(allowedModel)
+		modelName := providerUtils.ToDisplayName(allowedModel)
 		modelEntry := schemas.Model{
 			ID:   modelID,
 			Name: schemas.Ptr(modelName),

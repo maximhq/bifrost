@@ -706,7 +706,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry := &logstore.Log{
 				ID:        requestID,
 				Provider:  string(bifrostErr.ExtraFields.Provider),
-				Model:     bifrostErr.ExtraFields.ModelRequested,
+				Model:     bifrostErr.ExtraFields.OriginalModelRequested,
 				Status:    "error",
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),

@@ -77,10 +77,8 @@ Configure deployed models in the Replicate key configuration. Deployments map cu
 {
   "provider": "replicate",
   "value": "your-api-key",
-  "replicate_key_config": {
-    "deployments": {
-      "my-model": "owner/my-deployment-name"
-    }
+  "aliases": {
+    "my-model": "owner/my-deployment-name"
   }
 }
 ```

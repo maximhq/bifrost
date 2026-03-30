@@ -193,9 +193,6 @@ func (provider *NebiusProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	response := chatResponse.ToBifrostResponsesResponse()
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
 
 	return response, nil
 }
@@ -260,16 +257,15 @@ func (provider *NebiusProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate request is not nil
 	if request == nil {
-		return nil, providerUtils.NewBifrostOperationError("image generation request is nil", nil, provider.GetProviderKey())
+		return nil, providerUtils.NewBifrostOperationError("image generation request is nil", nil)
 	}
 
 	// Validate input and prompt are not nil/empty
 	if request.Input == nil || strings.TrimSpace(request.Input.Prompt) == "" {
-		return nil, providerUtils.NewBifrostOperationError("prompt cannot be empty", nil, provider.GetProviderKey())
+		return nil, providerUtils.NewBifrostOperationError("prompt cannot be empty", nil)
 	}
 
 	path := providerUtils.GetPathFromContext(ctx, "/v1/images/generations")
-	providerName := schemas.Nebius
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -304,8 +300,7 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return provider.ToNebiusImageGenerationRequest(request)
-		},
-		providerName)
+		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -323,16 +318,12 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseNebiusImageError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       request.Model,
-			RequestType: schemas.ImageGenerationRequest,
-		}), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseNebiusImageError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
@@ -352,9 +343,6 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
-	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled

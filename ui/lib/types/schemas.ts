@@ -20,82 +20,22 @@ export const envVarSchema = z.object({
 });
 
 // Azure key config schema
-export const azureKeyConfigSchema = z
-	.object({
-		endpoint: envVarSchema,
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
-		api_version: envVarSchema.optional(),
-		client_id: envVarSchema.optional(),
-		client_secret: envVarSchema.optional(),
-		tenant_id: envVarSchema.optional(),
-		scopes: z.array(z.string()).optional(),
-	})
-	.refine(
-		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
-			}
-			return false;
-		},
-		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
-		},
-	);
+export const azureKeyConfigSchema = z.object({
+	endpoint: envVarSchema,
+	api_version: envVarSchema.optional(),
+	client_id: envVarSchema.optional(),
+	client_secret: envVarSchema.optional(),
+	tenant_id: envVarSchema.optional(),
+	scopes: z.array(z.string()).optional(),
+});
 
 // Vertex key config schema
-export const vertexKeyConfigSchema = z
-	.object({
-		project_id: envVarSchema,
-		project_number: envVarSchema.optional(),
-		region: envVarSchema,
-		auth_credentials: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
-	})
-	.refine(
-		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
-			}
-			return false;
-		},
-		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
-		},
-	);
+export const vertexKeyConfigSchema = z.object({
+	project_id: envVarSchema,
+	project_number: envVarSchema.optional(),
+	region: envVarSchema,
+	auth_credentials: envVarSchema.optional(),
+});
 
 // S3 bucket configuration for Bedrock batch operations
 export const s3BucketConfigSchema = z.object({
@@ -109,51 +49,16 @@ export const batchS3ConfigSchema = z.object({
 });
 
 // Bedrock key config schema
-export const bedrockKeyConfigSchema = z
-	.object({
-		access_key: envVarSchema.optional(),
-		secret_key: envVarSchema.optional(),
-		session_token: envVarSchema.optional(),
-		region: envVarSchema.optional(),
-		role_arn: envVarSchema.optional(),
-		external_id: envVarSchema.optional(),
-		session_name: envVarSchema.optional(),
-		arn: envVarSchema.optional(),
-		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
-		batch_s3_config: batchS3ConfigSchema.optional(),
-	})
-	.refine(
-		(data) => {
-			// If deployments is not provided, it's valid
-			if (!data.deployments) return true;
-			// If it's already an object, it's valid
-			if (typeof data.deployments === "object") return true;
-			// If it's a string, check if it's valid JSON or an env variable
-			if (typeof data.deployments === "string") {
-				const trimmed = data.deployments.trim();
-				// Allow empty string
-				if (trimmed === "") return true;
-				// Allow env variables
-				if (trimmed.startsWith("env.")) return true;
-				// Validate JSON format
-				try {
-					const parsed = JSON.parse(trimmed);
-					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
-				} catch {
-					return false;
-				}
-			}
-			return false;
-		},
-		{
-			message: "Deployments must be a valid JSON object or an environment variable reference",
-			path: ["deployments"],
-		},
-	);
-
-// Replicate key config schema
-export const replicateKeyConfigSchema = z.object({
-	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+export const bedrockKeyConfigSchema = z.object({
+	access_key: envVarSchema.optional(),
+	secret_key: envVarSchema.optional(),
+	session_token: envVarSchema.optional(),
+	region: envVarSchema.optional(),
+	role_arn: envVarSchema.optional(),
+	external_id: envVarSchema.optional(),
+	session_name: envVarSchema.optional(),
+	arn: envVarSchema.optional(),
+	batch_s3_config: batchS3ConfigSchema.optional(),
 });
 
 // VLLM key config schema
@@ -162,6 +67,10 @@ export const vllmKeyConfigSchema = z.object({
 		message: "Server URL is required",
 	}),
 	model_name: z.string().trim().min(1, "Model name is required"),
+});
+
+export const replicateKeyConfigSchema = z.object({
+	use_deployments_endpoint: z.boolean(),
 });
 
 // Model provider key schema
@@ -192,18 +101,19 @@ export const modelProviderKeySchema = z
 				})
 				.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
 		]),
+		aliases: z.record(z.string(), z.string()).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
-		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		replicate_key_config: replicateKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+				// If bedrock_key_config, azure_key_config, vertex_key_config, vllm_key_config, or replicate_key_config is present, value is not required
+				if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config || data.replicate_key_config) {
 				return true;
 			}
 			// Otherwise, value is required

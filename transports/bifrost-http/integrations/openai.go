@@ -286,7 +286,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 		if deploymentEndpointStr != "" && deploymentIDStr != "" && azureKeyStr != "" {
 			key.Value = *schemas.NewEnvVar(strings.TrimPrefix(azureKeyStr, "Bearer "))
 			key.AzureKeyConfig.Endpoint = *schemas.NewEnvVar(deploymentEndpointStr)
-			key.AzureKeyConfig.Deployments = map[string]string{
+			key.Aliases = schemas.KeyAliases{
 				deploymentIDStr: deploymentIDStr,
 			}
 		}

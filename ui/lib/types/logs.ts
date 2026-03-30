@@ -85,7 +85,7 @@ export interface Model {
 	id: string;
 	canonical_slug?: string;
 	name?: string;
-	deployment?: string;
+	alias?: string;
 	created?: number;
 	context_length?: number;
 	max_input_tokens?: number;

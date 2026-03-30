@@ -23,7 +23,6 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
 	api_version?: EnvVar;
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
@@ -33,7 +32,6 @@ export interface AzureKeyConfig {
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	endpoint: { value: "", env_var: "", from_env: false },
-	deployments: {},
 	api_version: { value: "2024-02-01", env_var: "", from_env: false },
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
@@ -47,7 +45,6 @@ export interface VertexKeyConfig {
 	project_number?: EnvVar;
 	region: EnvVar;
 	auth_credentials?: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
@@ -55,7 +52,6 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_number: { value: "", env_var: "", from_env: false },
 	region: { value: "", env_var: "", from_env: false },
 	auth_credentials: { value: "", env_var: "", from_env: false },
-	deployments: {},
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -75,7 +71,6 @@ export interface BedrockKeyConfig {
 	session_token?: EnvVar;
 	region?: EnvVar;
 	arn?: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
 	batch_s3_config?: BatchS3Config;
 }
 
@@ -86,19 +81,8 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	session_token: undefined as unknown as EnvVar,
 	region: { value: "us-east-1", env_var: "", from_env: false },
 	arn: { value: "", env_var: "", from_env: false },
-	deployments: {},
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
-
-// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
-export interface ReplicateKeyConfig {
-	deployments?: Record<string, string> | string; // Allow string during editing
-}
-
-// Default ReplicateKeyConfig
-export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
-	deployments: {},
-} as const satisfies Required<ReplicateKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
@@ -112,6 +96,16 @@ export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
 
+// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
+export interface ReplicateKeyConfig {
+	use_deployments_endpoint: boolean;
+}
+
+// Default ReplicateKeyConfig
+export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
+	use_deployments_endpoint: false,
+} as const satisfies Required<ReplicateKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -122,11 +116,12 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	aliases?: Record<string, string>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
-	replicate_key_config?: ReplicateKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
+	replicate_key_config?: ReplicateKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

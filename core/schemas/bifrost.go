@@ -222,7 +222,7 @@ const (
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
-	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"              // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
+	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -812,10 +812,10 @@ type BifrostMCPResponse struct {
 type BifrostResponseExtraFields struct {
 	RequestType             RequestType        `json:"request_type"`
 	Provider                ModelProvider      `json:"provider,omitempty"`
-	ModelRequested          string             `json:"model_requested,omitempty"`
-	ModelDeployment         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
-	Latency                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	OriginalModelRequested  string             `json:"original_model_requested"` // the model alias the caller sent in the request
+	ResolvedModelUsed       string             `json:"resolved_model_used"`      // the actual provider API identifier used (equals OriginalModelRequested when no alias mapping exists)
+	Latency                 int64              `json:"latency"`                  // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex              int                `json:"chunk_index"`              // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest              interface{}        `json:"raw_request,omitempty"`
 	RawResponse             interface{}        `json:"raw_response,omitempty"`
 	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
@@ -979,11 +979,12 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider,omitempty"`
-	ModelRequested string        `json:"model_requested,omitempty"`
-	RequestType    RequestType   `json:"request_type,omitempty"`
-	RawRequest     interface{}   `json:"raw_request,omitempty"`
-	RawResponse    interface{}   `json:"raw_response,omitempty"`
-	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
-	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+	Provider               ModelProvider `json:"provider,omitempty"`
+	OriginalModelRequested string        `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed      string        `json:"resolved_model_used,omitempty"`
+	RequestType            RequestType   `json:"request_type,omitempty"`
+	RawRequest             interface{}   `json:"raw_request,omitempty"`
+	RawResponse            interface{}   `json:"raw_response,omitempty"`
+	LiteLLMCompat          bool          `json:"litellm_compat,omitempty"`
+	KeyStatuses            []KeyStatus   `json:"key_statuses,omitempty"`
 }

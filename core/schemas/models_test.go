@@ -94,7 +94,7 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 		Error:          &ErrorField{Message: "unauthorized"},
 		ExtraFields: BifrostErrorExtraFields{
 			Provider:       "openai",
-			ModelRequested: "gpt-4",
+			OriginalModelRequested: "gpt-4",
 		},
 	}
 	keyStatus := KeyStatus{
@@ -112,6 +112,6 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 	// Error fields other than key_statuses should be preserved
 	dataStr := string(data)
 	assert.Contains(t, dataStr, `"unauthorized"`)
-	assert.Contains(t, dataStr, `"model_requested":"gpt-4"`)
+	assert.Contains(t, dataStr, `"original_model_requested":"gpt-4"`)
 	assert.Contains(t, dataStr, `"status_code":401`)
 }

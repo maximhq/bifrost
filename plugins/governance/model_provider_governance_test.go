@@ -1702,9 +1702,9 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
 			},
 		},
 	}
@@ -1771,9 +1771,9 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
 			},
 		},
 	}
@@ -1838,9 +1838,9 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
 			},
 		},
 	}
@@ -1907,9 +1907,9 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4",
 			},
 		},
 	}

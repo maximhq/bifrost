@@ -13,9 +13,7 @@ func HandleVLLMResponse[T any](responseBody []byte, response *T, requestBody []b
 		return rawRequest, rawResponse, bifrostErr
 	}
 	if err := sonic.Unmarshal(responseBody, &errorResp); err == nil && errorResp.Error != nil && errorResp.Error.Message != "" {
-		errorResp.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider: schemas.VLLM,
-		}
+		errorResp.ExtraFields = schemas.BifrostErrorExtraFields{}
 		return rawRequest, rawResponse, &errorResp
 	}
 	return rawRequest, rawResponse, nil

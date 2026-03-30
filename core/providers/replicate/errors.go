@@ -15,9 +15,7 @@ func parseReplicateError(body []byte, statusCode int) *schemas.BifrostError {
 			Error: &schemas.ErrorField{
 				Message: replicateErr.Detail,
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider: schemas.Replicate,
-			},
+			ExtraFields: schemas.BifrostErrorExtraFields{},
 		}
 	}
 
@@ -28,8 +26,6 @@ func parseReplicateError(body []byte, statusCode int) *schemas.BifrostError {
 		Error: &schemas.ErrorField{
 			Message: string(body),
 		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider: schemas.Replicate,
-		},
+		ExtraFields: schemas.BifrostErrorExtraFields{},
 	}
 }

@@ -102,12 +102,12 @@ detects the auth environment.
 
 ```json
 {
+  "aliases": {
+    "gpt-4": "my-gpt4-deployment"
+  },
   "azure_key_config": {
     "endpoint": "https://your-org.openai.azure.com",
-    "api_version": "2024-10-21",
-    "deployments": {
-      "gpt-4": "my-gpt4-deployment"
-    }
+    "api_version": "2024-10-21"
   }
 }
 ```
@@ -118,18 +118,18 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 
 ```json
 {
+  "aliases": {
+    "gpt-4": "my-gpt4-deployment",
+    "gpt-4-turbo": "my-gpt4-turbo-deployment",
+    "claude-3": "my-claude-deployment"
+  },
   "azure_key_config": {
     "endpoint": "https://your-org.openai.azure.com",
     "client_id": "your-client-id",
     "client_secret": "your-client-secret",
     "tenant_id": "your-tenant-id",
     "scopes": ["https://cognitiveservices.azure.com/.default"],
-    "api_version": "2024-10-21",
-    "deployments": {
-      "gpt-4": "my-gpt4-deployment",
-      "gpt-4-turbo": "my-gpt4-turbo-deployment",
-      "claude-3": "my-claude-deployment"
-    }
+    "api_version": "2024-10-21"
   }
 }
 ```
@@ -142,14 +142,14 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 
 ```json
 {
+  "aliases": {
+    "gpt-4": "my-gpt4-deployment",
+    "gpt-4-turbo": "my-gpt4-turbo-deployment",
+    "claude-3": "my-claude-deployment"
+  },
   "azure_key_config": {
     "endpoint": "https://your-org.openai.azure.com",
-    "api_version": "2024-10-21",
-    "deployments": {
-      "gpt-4": "my-gpt4-deployment",
-      "gpt-4-turbo": "my-gpt4-turbo-deployment",
-      "claude-3": "my-claude-deployment"
-    }
+    "api_version": "2024-10-21"
   }
 }
 ```
@@ -161,7 +161,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
 - `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
 - `api_version` - API version to use (default: `2024-10-21`)
-- `deployments` - Map of model names to deployment IDs (optional, can be provided per-request)
+- `aliases` - Map of model names to Azure deployment IDs (optional, set at key level)
 - `allowed_models` - List of allowed models to use from this key (optional)
 
 ### Deployment Selection
@@ -175,7 +175,7 @@ Deployments can be specified at three levels (in order of precedence):
 
 2. **Key configuration**
    ```json
-   {"deployments": {"gpt-4": "my-gpt4-deployment"}}
+   {"aliases": {"gpt-4": "my-gpt4-deployment"}}
    ```
 
 3. **Model name** (lowest priority, if no deployment specified)

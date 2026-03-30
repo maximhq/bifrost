@@ -87,8 +87,8 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 	}
 
 	provider := string(extraFields.Provider)
-	model := extraFields.ModelRequested
-	deployment := extraFields.ModelDeployment
+	model := extraFields.OriginalModelRequested
+	deployment := extraFields.ResolvedModelUsed
 	requestType := extraFields.RequestType
 
 	// Extract usage data from the response

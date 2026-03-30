@@ -741,9 +741,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		for i, modelEntry := range resp.Data {
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
 			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
-			if pricingEntry == nil && modelEntry.Deployment != nil {
+			if pricingEntry == nil && modelEntry.Alias != nil {
 				// Retry with deployment
-				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Deployment, provider)
+				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
 				pricing := &schemas.Pricing{}

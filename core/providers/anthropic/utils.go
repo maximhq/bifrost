@@ -64,7 +64,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 			if !features.ImageGeneration {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
-		// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
+			// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
 		}
 	}
 	return nil
@@ -135,7 +135,7 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
+func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
 	// Large payload mode: body streams directly from the LP reader in completeRequest/
 	// setAnthropicRequestBody — skip all body building here (matches CheckContextAndGetRequestBody).
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
@@ -155,7 +155,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
 				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 		}
@@ -167,36 +167,36 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 			}
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 		// Add stream if streaming
 		if isStreaming {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
 		jsonBody, err = StripAutoInjectableTools(jsonBody)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Remove excluded fields
 		for _, field := range excludeFields {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
 			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 			}
 		}
 	} else {
 		// Convert request to Anthropic format
 		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
 		}
 		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
+			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
 		}
 		AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Anthropic)
 		if isStreaming {
@@ -205,7 +205,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		// Marshal struct to JSON bytes
 		jsonBody, err = providerUtils.MarshalSorted(reqBody)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err))
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
 		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
@@ -214,14 +214,14 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				// Use MergeExtraParamsIntoJSON which preserves key order
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 			// Remove excluded fields after merging (using sjson to preserve order)
 			for _, field := range excludeFields {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 		} else if len(excludeFields) > 0 {
@@ -229,7 +229,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 			for _, field := range excludeFields {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
 		}
@@ -2048,4 +2048,3 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	}
 	return false
 }
-

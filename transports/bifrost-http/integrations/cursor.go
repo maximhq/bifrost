@@ -104,10 +104,10 @@ func cursorChunkID(extras *schemas.BifrostResponseExtraFields) string {
 
 // cursorModel returns the best model name available from extra fields.
 func cursorModel(extras *schemas.BifrostResponseExtraFields) string {
-	if extras.ModelDeployment != "" {
-		return extras.ModelDeployment
+	if extras.ResolvedModelUsed != "" {
+		return extras.ResolvedModelUsed
 	}
-	return extras.ModelRequested
+	return extras.OriginalModelRequested
 }
 
 // convertResponsesStreamToChatChunk maps a Responses API stream event to a

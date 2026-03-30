@@ -3,62 +3,68 @@ package replicate
 import (
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ToBifrostListModelsResponse converts Replicate models and deployments to a Bifrost list models response
+// ToBifrostListModelsResponse converts Replicate deployments to a Bifrost list models response.
+// Replicate model IDs are composite: "{owner}/{name}" (e.g. "stability-ai/stable-diffusion").
 func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
 	allowedModels schemas.WhiteList,
 	blacklistedModels schemas.BlackList,
+	aliases map[string]string,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	includedModels := make(map[string]bool)
-	// Add deployments from /v1/deployments endpoint
+	included := make(map[string]bool)
+
 	if deploymentsResponse != nil {
 		for _, deployment := range deploymentsResponse.Results {
+			// Replicate model IDs are composite owner/name
 			deploymentID := deployment.Owner + "/" + deployment.Name
 
-			modelName := schemas.Ptr(deployment.Name)
+			result := pipeline.FilterModel(deploymentID)
+			if !result.Include {
+				continue
+			}
+
 			var created *int64
-
-			if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(deploymentID) {
-				continue
-			}
-			if !unfiltered && blacklistedModels.IsBlocked(deploymentID) {
-				continue
-			}
-
-			// Extract information from current release if available
-			if deployment.CurrentRelease != nil {
-				// Parse created timestamp
-				if deployment.CurrentRelease.CreatedAt != "" {
-					createdTimestamp := ParseReplicateTimestamp(deployment.CurrentRelease.CreatedAt)
-					if createdTimestamp > 0 {
-						created = schemas.Ptr(createdTimestamp)
-					}
+			if deployment.CurrentRelease != nil && deployment.CurrentRelease.CreatedAt != "" {
+				createdTimestamp := ParseReplicateTimestamp(deployment.CurrentRelease.CreatedAt)
+				if createdTimestamp > 0 {
+					created = schemas.Ptr(createdTimestamp)
 				}
 			}
 
 			bifrostModel := schemas.Model{
-				ID:         string(providerKey) + "/" + deploymentID,
-				Name:       modelName,
-				Deployment: modelName,
-				OwnedBy:    schemas.Ptr(deployment.Owner),
-				Created:    created,
+				ID:      string(providerKey) + "/" + result.ResolvedID,
+				Name:    schemas.Ptr(deployment.Name),
+				OwnedBy: schemas.Ptr(deployment.Owner),
+				Created: created,
+			}
+			if result.AliasValue != "" {
+				bifrostModel.Alias = schemas.Ptr(result.AliasValue)
 			}
 
 			bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
-			includedModels[strings.ToLower(deploymentID)] = true
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
 
 		if deploymentsResponse.Next != nil {
@@ -66,20 +72,8 @@ func ToBifrostListModelsResponse(
 		}
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && allowedModels.IsRestricted() {
-		for _, allowedModel := range allowedModels {
-			if blacklistedModels.IsBlocked(allowedModel) {
-				continue
-			}
-			if !includedModels[strings.ToLower(allowedModel)] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(providerKey) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
-			}
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }

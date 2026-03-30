@@ -127,8 +127,6 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.TextCompletionRequest,
-			Provider:    schemas.Bedrock,
 		},
 	}
 }
@@ -154,8 +152,6 @@ func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *s
 		Object:  "text_completion",
 		Choices: choices,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.TextCompletionRequest,
-			Provider:    schemas.Bedrock,
 		},
 	}
 }
@@ -168,10 +164,10 @@ func ToBedrockTextCompletionResponse(bifrostResp *schemas.BifrostTextCompletionR
 	}
 
 	// Determine response format based on model
-	// Use ModelRequested from ExtraFields if available, otherwise use Model
+	// Use OriginalModelRequested from ExtraFields if available, otherwise use Model
 	model := bifrostResp.Model
-	if bifrostResp.ExtraFields.ModelRequested != "" {
-		model = bifrostResp.ExtraFields.ModelRequested
+	if bifrostResp.ExtraFields.OriginalModelRequested != "" {
+		model = bifrostResp.ExtraFields.OriginalModelRequested
 	}
 
 	if strings.Contains(model, "anthropic.") || strings.Contains(model, "claude") {

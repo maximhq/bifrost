@@ -280,8 +280,6 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 		Object:  response.Object,
 		Created: response.Created,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Perplexity,
 		},
 		SearchResults: response.SearchResults,
 		Videos:        response.Videos,

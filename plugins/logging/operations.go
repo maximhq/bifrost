@@ -981,7 +981,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 	extraFields := schemas.BifrostResponseExtraFields{
 		RequestType:    requestType,
 		Provider:       schemas.ModelProvider(logEntry.Provider),
-		ModelRequested: logEntry.Model,
+		OriginalModelRequested: logEntry.Model,
 		CacheDebug:     cacheDebug,
 	}
 

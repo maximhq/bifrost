@@ -242,8 +242,8 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						if response.BifrostTranscriptionStreamResponse.Type != schemas.TranscriptionStreamResponseTypeDelta {
 							t.Logf("⚠️ Unexpected object type in stream: %s", response.BifrostTranscriptionStreamResponse.Type)
 						}
-						if response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested != testConfig.TranscriptionModel {
-							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
+						if response.BifrostTranscriptionStreamResponse.ExtraFields.OriginalModelRequested != "" && response.BifrostTranscriptionStreamResponse.ExtraFields.OriginalModelRequested != testConfig.TranscriptionModel {
+							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.OriginalModelRequested)
 						}
 
 						lastResponse = DeepCopyBifrostStreamChunk(response)

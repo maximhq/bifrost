@@ -165,8 +165,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		bifrostReq,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToRunwayVideoGenerationRequest(bifrostReq)
-		},
-		provider.GetProviderKey())
+		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -205,17 +204,13 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       model,
-			RequestType: schemas.VideoGenerationRequest,
-		}), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	// Parse response
@@ -232,10 +227,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		Object: "video",
 		Status: schemas.VideoStatusQueued,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency:        latency.Milliseconds(),
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    schemas.VideoGenerationRequest,
+			Latency: latency.Milliseconds(),
 		},
 	}
 
@@ -282,16 +274,13 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			RequestType: schemas.VideoRetrieveRequest,
-		}), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Decode response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	// Parse response
@@ -309,8 +298,6 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResp.ID, providerName)
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.Provider = providerName
-	bifrostResp.ExtraFields.RequestType = schemas.VideoRetrieveRequest
 
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
@@ -324,7 +311,6 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 
 // VideoDownload retrieves a video from Runway's API.
 func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
 	// Retrieve task status to get the video URL
 	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{
 		Provider: request.Provider,
@@ -338,19 +324,17 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if taskDetails.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("video not ready, current status: %s", taskDetails.Status),
-			nil,
-			providerName,
-		)
+			nil)
 	}
 	if len(taskDetails.Videos) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 	var videoUrl string
 	if taskDetails.Videos[0].URL != nil {
 		videoUrl = *taskDetails.Videos[0].URL
 	}
 	if videoUrl == "" {
-		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
 	// Download video from Runway's URL
 	req := fasthttp.AcquireRequest()
@@ -367,14 +351,12 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil,
-			providerName,
-		)
+			nil)
 	}
 	// Get content and content type
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 	contentType := string(resp.Header.ContentType())
 	if contentType == "" {
@@ -389,8 +371,6 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	}
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.Provider = providerName
-	bifrostResp.ExtraFields.RequestType = schemas.VideoDownloadRequest
 
 	return bifrostResp, nil
 }
@@ -402,7 +382,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	providerName := provider.GetProviderKey()
 
 	if request.ID == "" {
-		return nil, providerUtils.NewBifrostOperationError("task_id is required", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("task_id is required", nil)
 	}
 
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
@@ -434,10 +414,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 
 	// Handle error response - Runway returns 204 No Content on success
 	if resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			RequestType: schemas.VideoDeleteRequest,
-		}), nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseRunwayError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Build response - Runway returns empty body on 204
@@ -448,8 +425,6 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.RequestType = schemas.VideoDeleteRequest
 
 	return response, nil
 }
