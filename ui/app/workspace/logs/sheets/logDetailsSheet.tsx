@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
+import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -85,13 +85,15 @@ const isContainerOperation = (object: string) => {
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: LogDetailSheetProps) {
 	const { copy: copyRequestId } = useCopyToClipboard({ successMessage: "Request ID copied" });
 	const { copy: copyBody } = useCopyToClipboard({ successMessage: "Request body copied to clipboard", errorMessage: "Failed to copy request body" });
-	const [fetchLog, { data: fullLog, isFetching }] = useLazyGetLogByIdQuery();
-
+	const [pollingInterval, setPollingInterval] = useState(0);
+	const { data: fullLog, isLoading, isError } = useGetLogByIdQuery(log?.id ?? "", {
+		skip: !open || !log?.id,
+		pollingInterval,
+	});
+	const shouldPoll = isError || fullLog?.status === "processing";
 	useEffect(() => {
-		if (open && log?.id) {
-			fetchLog(log.id);
-		}
-	}, [open, log?.id, fetchLog]);
+		setPollingInterval(shouldPoll ? 2000 : 0);
+	}, [shouldPoll]);
 
 	// Keyboard navigation: arrow up/down to navigate between logs
 	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
@@ -99,8 +101,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNaviga
 
 	if (!log) return null;
 
-	// Show a loader until the full log data is fetched from the dedicated single-log endpoint.
-	const isFullDataReady = fullLog?.id === log.id && !isFetching;
+	// Show a loader only on the initial fetch, not during background polling refetches.
+	const isFullDataReady = fullLog?.id === log.id && !isLoading;
 	const displayLog = isFullDataReady ? fullLog : log;
 
 	const isContainer = isContainerOperation(displayLog.object);
@@ -142,9 +144,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete, onNaviga
 					</div>
 				) : (
 				<>
-				<SheetHeader className="flex flex-row items-center px-0">
-					<div className="flex w-full items-center justify-between">
-						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
+				<SheetHeader className="flex flex-row items-center px-0 overflow-x-hidden">
+					<div className="flex w-full items-center justify-between overflow-x-hidden">
+						<SheetTitle className="flex w-fit items-center gap-2 font-medium overflow-x-hidden">
 							{displayLog.id && (
 								<p className="text-md max-w-full truncate">
 									Request ID:{" "}

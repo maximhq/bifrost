@@ -394,4 +394,5 @@ export const {
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
 	useLazyGetLogByIdQuery,
+	useGetLogByIdQuery,
 } = logsApi;
