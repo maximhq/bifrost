@@ -1,8 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
-import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -16,9 +13,11 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
 	RequestTypeColors,
@@ -28,10 +27,12 @@ import {
 	Status,
 	StatusColors,
 } from "@/lib/constants/logs";
+import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ChevronDown, ChevronUp, Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
+import { useEffect, useState } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -42,7 +43,6 @@ import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
-import { CodeEditor } from "@/components/ui/codeEditor";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {

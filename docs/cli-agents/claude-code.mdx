@@ -22,10 +22,12 @@ Claude Code supports multiple authentication methods. Choose the one that matche
 
 ### Claude Pro / Max accounts
 
-If you have a Claude Pro or Max subscription, Claude Code authenticates via browser-based OAuth — no API key needed.
+If you have a Claude Pro or Max subscription, Claude Code authenticates via browser-based OAuth. When routing through a custom base URL like Bifrost, an API key is still required.
 
-1. **Set the Bifrost base URL**
+1. **Set environment variables**
    ```bash
+   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
+   export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key  # same value
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -41,10 +43,12 @@ Max subscriptions default to **Opus**, while Pro subscriptions default to **Sonn
 
 ### Claude for Teams / Enterprise accounts
 
-Teams and Enterprise users authenticate the same way — via browser OAuth with their team Claude.ai account.
+Teams and Enterprise users authenticate the same way — via browser OAuth with their team Claude.ai account. When routing through a custom base URL like Bifrost, an API key is still required.
 
-1. **Set the Bifrost base URL**
+1. **Set environment variables**
    ```bash
+   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
+   export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key  # same value
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -84,6 +88,7 @@ For enterprise setups where Bifrost handles authentication centrally, Claude Cod
 
 - **`ANTHROPIC_AUTH_TOKEN`** — Sets the `Authorization: Bearer` header. Use this when your gateway requires a custom bearer token.
   ```bash
+  export ANTHROPIC_API_KEY=your-bearer-token  # required even when using AUTH_TOKEN
   export ANTHROPIC_AUTH_TOKEN=your-bearer-token
   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
   ```
@@ -97,7 +102,7 @@ For enterprise setups where Bifrost handles authentication centrally, Claude Cod
   Set `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` to control the refresh interval (in milliseconds).
 
 <Note>
-`ANTHROPIC_AUTH_TOKEN` takes precedence over `ANTHROPIC_API_KEY`. The `apiKeyHelper` has the lowest precedence — it is only used when neither `ANTHROPIC_AUTH_TOKEN` nor `ANTHROPIC_API_KEY` is set.
+`ANTHROPIC_AUTH_TOKEN` takes precedence over `ANTHROPIC_API_KEY`. The `apiKeyHelper` has the lowest precedence — it is only used when neither `ANTHROPIC_AUTH_TOKEN` nor `ANTHROPIC_API_KEY` is set. Note: `ANTHROPIC_API_KEY` (even a dummy value) is always required when using a custom `ANTHROPIC_BASE_URL`.
 </Note>
 
 Now all Claude Code traffic flows through Bifrost, giving you access to any provider/model configured in your Bifrost setup, plus MCP tools and observability.
@@ -253,8 +258,9 @@ If you experience issues with tool calls not executing properly, try switching t
 # Core Bifrost configuration
 export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
 
-# For API key users (skip for Pro/Max/Team OAuth login)
+# Always required (use Bifrost virtual key or "dummy" for OAuth-only setups)
 export ANTHROPIC_API_KEY=your-bifrost-virtual-key
+export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key
 
 # Custom model tiers (optional)
 export ANTHROPIC_DEFAULT_SONNET_MODEL="anthropic/claude-sonnet-4-5-20250929"
