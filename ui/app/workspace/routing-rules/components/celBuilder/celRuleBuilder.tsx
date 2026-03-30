@@ -122,7 +122,7 @@ export function CELRuleBuilder({
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
 					<Label>CEL Expression Preview</Label>
-					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2">
+					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2" type="button">
 						{copied ? (
 							<>
 								<Check className="h-4 w-4" />

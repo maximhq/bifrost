@@ -83,17 +83,17 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNav
 						</SheetTitle>
 					</div>
 					<div className="flex items-center">
-						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="mcp-log-nav-prev">
+						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="mcp-log-nav-prev" type="button">
 							<ChevronUp className="size-4" />
 						</Button>
-						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="mcp-log-nav-next">
+						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="mcp-log-nav-next" type="button">
 							<ChevronDown className="size-4" />
 						</Button>
 					</div>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" className="size-8">
+								<Button variant="ghost" className="size-8" type="button">
 									<MoreVertical className="h-3 w-3" />
 								</Button>
 							</DropdownMenuTrigger>
