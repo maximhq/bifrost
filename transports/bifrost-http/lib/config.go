@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"gorm.io/gorm"
@@ -103,6 +104,7 @@ func getWeight(w *float64) float64 {
 // IsBuiltinPlugin checks if a plugin is a built-in plugin
 func IsBuiltinPlugin(name string) bool {
 	return name == telemetry.PluginName ||
+		name == prompts.PluginName ||
 		name == logging.PluginName ||
 		name == governance.PluginName ||
 		name == litellmcompat.PluginName ||

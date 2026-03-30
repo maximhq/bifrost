@@ -1185,6 +1185,9 @@ func (m *MockConfigStore) DeletePrompt(ctx context.Context, id string) error { r
 func (m *MockConfigStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
 	return nil, nil
 }
+func (m *MockConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
+	return nil, nil
+}
 func (m *MockConfigStore) GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
