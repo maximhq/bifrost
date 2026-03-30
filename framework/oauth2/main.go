@@ -864,6 +864,12 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 		return fmt.Errorf("%w: %s", ErrOAuthConfigNotFound, oauthConfigID)
 	}
 
+	// Idempotency: if the flow was already completed, return success without
+	// re-sending the (now spent) authorization code to the token endpoint.
+	if oauthConfig.Status == "authorized" && oauthConfig.TokenID != nil {
+		return nil
+	}
+
 	// Check expiry
 	if time.Now().After(oauthConfig.ExpiresAt) {
 		oauthConfig.Status = "expired"
@@ -927,6 +933,13 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 	oauthConfig.TokenID = &tokenID
 	oauthConfig.Status = "authorized"
 	if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
+		// Clean up orphaned token to avoid leaking credentials in storage
+		if deleteErr := p.configStore.DeleteOauthToken(ctx, tokenID); deleteErr != nil {
+			return errors.Join(
+				fmt.Errorf("failed to update oauth config: %w", err),
+				fmt.Errorf("failed to cleanup orphaned oauth token: %w", deleteErr),
+			)
+		}
 		return fmt.Errorf("failed to update oauth config: %w", err)
 	}
 
