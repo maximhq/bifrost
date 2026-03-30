@@ -382,6 +382,8 @@ export interface CacheDebug {
 	cache_hit: boolean;
 	cache_id?: string;
 	hit_type?: string;
+	requested_provider?: string;
+	requested_model?: string;
 	provider_used?: string;
 	model_used?: string;
 	input_tokens?: number;
