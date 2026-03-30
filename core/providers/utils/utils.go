@@ -2362,16 +2362,6 @@ func extractSuccessfulListModelsResponses(
 		if lastError != nil {
 			return nil, keyStatuses, lastError
 		}
-		return nil, keyStatuses, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "all keys failed to list models",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    providerName,
-				RequestType: schemas.ListModelsRequest,
-			},
-		}
 	}
 
 	return successfulResponses, keyStatuses, nil

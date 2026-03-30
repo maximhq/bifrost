@@ -6059,7 +6059,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 	}
 
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("no keys found for provider: %v", providerKey)
+		return []schemas.Key{}, nil
 	}
 
 	// Filter keys for ListModels - only check if key has a value
@@ -6077,7 +6077,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 	bifrost.logger.Debug("[Bifrost] Provider %s: %d enabled keys found", providerKey, len(supportedKeys))
 
 	if len(supportedKeys) == 0 {
-		return nil, fmt.Errorf("no valid keys found for provider: %v", providerKey)
+		return []schemas.Key{}, nil
 	}
 
 	return supportedKeys, nil
