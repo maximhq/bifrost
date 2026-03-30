@@ -112,6 +112,26 @@ export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
 
+// OllamaKeyConfig matching Go's schemas.OllamaKeyConfig
+export interface OllamaKeyConfig {
+	url: EnvVar;
+}
+
+// Default OllamaKeyConfig
+export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
+	url: { value: "", env_var: "", from_env: false },
+} as const satisfies Required<OllamaKeyConfig>;
+
+// SGLKeyConfig matching Go's schemas.SGLKeyConfig
+export interface SGLKeyConfig {
+	url: EnvVar;
+}
+
+// Default SGLKeyConfig
+export const DefaultSGLKeyConfig: SGLKeyConfig = {
+	url: { value: "", env_var: "", from_env: false },
+} as const satisfies Required<SGLKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -127,6 +147,8 @@ export interface ModelProviderKey {
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
+	ollama_key_config?: OllamaKeyConfig;
+	sgl_key_config?: SGLKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

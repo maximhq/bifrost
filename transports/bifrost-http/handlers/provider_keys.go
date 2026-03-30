@@ -88,12 +88,12 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot add keys to a keyless provider")
 		return
 	}
 
-	if key.Value.GetValue() == "" {
+	if !bifrost.CanProviderKeyValueBeEmpty(provider) && key.Value.GetValue() == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -166,7 +166,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot update keys on a keyless provider")
 		return
 	}
@@ -245,7 +245,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot delete keys on a keyless provider")
 		return
 	}
@@ -397,6 +397,20 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
 			updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
 			mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
+		}
+	}
+
+	if updateKey.OllamaKeyConfig != nil && oldRedactedKey.OllamaKeyConfig != nil && oldRawKey.OllamaKeyConfig != nil {
+		if updateKey.OllamaKeyConfig.URL.IsRedacted() &&
+			updateKey.OllamaKeyConfig.URL.Equals(&oldRedactedKey.OllamaKeyConfig.URL) {
+			mergedKey.OllamaKeyConfig.URL = oldRawKey.OllamaKeyConfig.URL
+		}
+	}
+
+	if updateKey.SGLKeyConfig != nil && oldRedactedKey.SGLKeyConfig != nil && oldRawKey.SGLKeyConfig != nil {
+		if updateKey.SGLKeyConfig.URL.IsRedacted() &&
+			updateKey.SGLKeyConfig.URL.Equals(&oldRedactedKey.SGLKeyConfig.URL) {
+			mergedKey.SGLKeyConfig.URL = oldRawKey.SGLKeyConfig.URL
 		}
 	}
 

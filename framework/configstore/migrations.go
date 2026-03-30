@@ -344,6 +344,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOllamaSGLKeyConfigColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5083,6 +5086,8 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 					BedrockKeyConfig:   key.BedrockKeyConfig,
 					ReplicateKeyConfig: key.ReplicateKeyConfig,
 					VLLMKeyConfig:      key.VLLMKeyConfig,
+					OllamaKeyConfig:    key.OllamaKeyConfig,
+					SGLKeyConfig:       key.SGLKeyConfig,
 					Enabled:            key.Enabled,
 					UseForBatchAPI:     key.UseForBatchAPI,
 				}
@@ -5304,6 +5309,47 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOllamaSGLKeyConfigColumns adds ollama_url and sgl_url columns to the key table
+func migrationAddOllamaSGLKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_ollama_sgl_key_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running ollama sgl key config columns migration: %s", err.Error())
 	}
 	return nil
 }

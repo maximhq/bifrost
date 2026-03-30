@@ -132,6 +132,8 @@ type Key struct {
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
 	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
+	OllamaKeyConfig      *OllamaKeyConfig      `json:"ollama_key_config,omitempty"`      // Ollama-specific key configuration
+	SGLKeyConfig         *SGLKeyConfig         `json:"sgl_key_config,omitempty"`         // SGLang-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
@@ -218,6 +220,20 @@ type ReplicateKeyConfig struct {
 type VLLMKeyConfig struct {
 	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+}
+
+// OllamaKeyConfig represents the Ollama-specific key configuration.
+// It allows each key to target a different Ollama server URL,
+// enabling per-key routing and round-robin load balancing across multiple Ollama instances.
+type OllamaKeyConfig struct {
+	URL EnvVar `json:"url"` // Ollama server base URL (required, supports env. prefix)
+}
+
+// SGLKeyConfig represents the SGLang-specific key configuration.
+// It allows each key to target a different SGLang server URL,
+// enabling per-key routing and round-robin load balancing across multiple SGLang instances.
+type SGLKeyConfig struct {
+	URL EnvVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

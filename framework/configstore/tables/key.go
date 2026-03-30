@@ -64,6 +64,12 @@ type TableKey struct {
 	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
 
+	// Ollama config fields (embedded)
+	OllamaUrl *schemas.EnvVar `gorm:"type:text" json:"ollama_url,omitempty"`
+
+	// SGL config fields (embedded)
+	SGLUrl *schemas.EnvVar `gorm:"type:text" json:"sgl_url,omitempty"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -80,6 +86,8 @@ type TableKey struct {
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
 	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
 	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
+	OllamaKeyConfig    *schemas.OllamaKeyConfig    `gorm:"-" json:"ollama_key_config,omitempty"`
+	SGLKeyConfig       *schemas.SGLKeyConfig       `gorm:"-" json:"sgl_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -340,6 +348,20 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VLLMModelName = nil
 	}
 
+	if k.OllamaKeyConfig != nil && k.OllamaKeyConfig.URL.GetValue() != "" {
+		u := k.OllamaKeyConfig.URL
+		k.OllamaUrl = &u
+	} else {
+		k.OllamaUrl = nil
+	}
+
+	if k.SGLKeyConfig != nil && k.SGLKeyConfig.URL.GetValue() != "" {
+		u := k.SGLKeyConfig.URL
+		k.SGLUrl = &u
+	} else {
+		k.SGLUrl = nil
+	}
+
 	// Encrypt sensitive fields after serialization
 	if encrypt.IsEnabled() {
 		if err := encryptEnvVar(&k.Value); err != nil {
@@ -408,6 +430,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		// VLLM
 		if err := encryptEnvVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to encrypt vllm url: %w", err)
+		}
+		// Ollama
+		if err := encryptEnvVarPtr(&k.OllamaUrl); err != nil {
+			return fmt.Errorf("failed to encrypt ollama url: %w", err)
+		}
+		// SGL
+		if err := encryptEnvVarPtr(&k.SGLUrl); err != nil {
+			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -486,6 +516,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// VLLM
 		if err := decryptEnvVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to decrypt vllm url: %w", err)
+		}
+		// Ollama
+		if err := decryptEnvVarPtr(&k.OllamaUrl); err != nil {
+			return fmt.Errorf("failed to decrypt ollama url: %w", err)
+		}
+		// SGL
+		if err := decryptEnvVarPtr(&k.SGLUrl); err != nil {
+			return fmt.Errorf("failed to decrypt sgl url: %w", err)
 		}
 	}
 
@@ -631,6 +669,22 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VLLMKeyConfig = vllmConfig
 	} else {
 		k.VLLMKeyConfig = nil
+	}
+	// Reconstruct Ollama config if fields are present
+	if k.OllamaUrl != nil {
+		k.OllamaKeyConfig = &schemas.OllamaKeyConfig{
+			URL: *k.OllamaUrl,
+		}
+	} else {
+		k.OllamaKeyConfig = nil
+	}
+	// Reconstruct SGL config if fields are present
+	if k.SGLUrl != nil {
+		k.SGLKeyConfig = &schemas.SGLKeyConfig{
+			URL: *k.SGLUrl,
+		}
+	} else {
+		k.SGLKeyConfig = nil
 	}
 	return nil
 }

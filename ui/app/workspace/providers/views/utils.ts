@@ -1,8 +1,6 @@
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ModelProvider, UpdateProviderRequest } from "@/lib/types/config";
 
-export const keysRequired = (selectedProvider: string) => selectedProvider.toLowerCase() === "custom" || !["ollama", "sgl"].includes(selectedProvider.toLowerCase());
-
 export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Partial<UpdateProviderRequest>) => {
 	const { name } = provider;
 
