@@ -331,7 +331,6 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 
 				nestedVK := *vk
 				nestedVK.Customer = nil
-				refreshVKAssociations(&nestedVK)
 				customer.VirtualKeys = append(customer.VirtualKeys, nestedVK)
 			}
 		}
@@ -342,9 +341,15 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 			continue
 		}
 		sort.Slice(customer.Teams, func(i, j int) bool {
+			if customer.Teams[i].CreatedAt.Equal(customer.Teams[j].CreatedAt) {
+				return customer.Teams[i].ID < customer.Teams[j].ID
+			}
 			return customer.Teams[i].CreatedAt.Before(customer.Teams[j].CreatedAt)
 		})
 		sort.Slice(customer.VirtualKeys, func(i, j int) bool {
+			if customer.VirtualKeys[i].CreatedAt.Equal(customer.VirtualKeys[j].CreatedAt) {
+				return customer.VirtualKeys[i].ID < customer.VirtualKeys[j].ID
+			}
 			return customer.VirtualKeys[i].CreatedAt.Before(customer.VirtualKeys[j].CreatedAt)
 		})
 	}

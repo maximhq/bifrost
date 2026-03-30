@@ -1518,11 +1518,10 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		Preload(relation("VirtualKeys"))
 }
 
-func preloadVirtualKeyRelations(db *gorm.DB) *gorm.DB {
+func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 	db = db.Preload("Team").Preload("Team.Customer")
 
 	db = db.Preload("Customer")
-	db = preloadCustomerRelations(db, "Customer.")
 
 	return db.
 		Preload("Budget").
@@ -1537,12 +1536,16 @@ func preloadVirtualKeyRelations(db *gorm.DB) *gorm.DB {
 		Preload("MCPConfigs.MCPClient")
 }
 
+func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
+	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
+}
+
 // GetVirtualKeys retrieves all virtual keys from the database.
 func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
 	var virtualKeys []tables.TableVirtualKey
 
 	// Preload all relationships for complete information
-	if err := preloadVirtualKeyRelations(s.db.WithContext(ctx)).
+	if err := preloadVirtualKeyBaseRelations(s.db.WithContext(ctx)).
 		Order("created_at ASC").
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
@@ -1591,7 +1594,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 
 	// Fetch with preloads and pagination
 	var virtualKeys []tables.TableVirtualKey
-	if err := preloadVirtualKeyRelations(baseQuery).
+	if err := preloadVirtualKeyBaseRelations(baseQuery).
 		Order("created_at ASC, id ASC").
 		Offset(offset).
 		Limit(limit).
@@ -1604,7 +1607,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 // GetVirtualKey retrieves a virtual key from the database.
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := preloadVirtualKeyRelations(s.db.WithContext(ctx)).
+	if err := preloadVirtualKeyDetailRelations(s.db.WithContext(ctx)).
 		First(&virtualKey, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -1618,7 +1621,7 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	query := preloadVirtualKeyRelations(s.db.WithContext(ctx))
+	query := preloadVirtualKeyBaseRelations(s.db.WithContext(ctx))
 
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {

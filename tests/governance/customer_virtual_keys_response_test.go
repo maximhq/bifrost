@@ -27,7 +27,10 @@ func TestCustomerResponsesIncludeAssignedVirtualKeys(t *testing.T) {
 	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
-	customerData := createCustomerResp.Body["customer"].(map[string]interface{})
+	customerData, ok := createCustomerResp.Body["customer"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected 'customer' in response body, got: %v", createCustomerResp.Body)
+	}
 	assertJSONArrayField(t, customerData, "teams", 0)
 	assertJSONArrayField(t, customerData, "virtual_keys", 0)
 
