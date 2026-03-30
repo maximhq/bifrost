@@ -18,15 +18,16 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import MultiBudgetLines from "@/components/ui/multiBudgetLines";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
-import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/components/ui/utils";
 import { ModelPlaceholders } from "@/lib/constants/config";
@@ -80,11 +81,13 @@ const providerConfigSchema = z.object({
 	allowed_models: z.array(z.string()).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
-	budget: z
-		.object({
-			max_limit: z.string().optional(),
-			reset_duration: z.string().optional(),
-		})
+	budgets: z
+		.array(
+			z.object({
+				max_limit: z.string().optional(),
+				reset_duration: z.string().optional(),
+			}),
+		)
 		.optional(),
 	// Provider-level rate limits
 	rate_limit: z
@@ -115,9 +118,15 @@ const formSchema = z
 		customerId: z.string().optional(),
 		isActive: z.boolean(),
 		// Budget
-		budgetMaxLimit: z.string().optional(),
-		budgetResetDuration: z.string().optional(),
 		budgetCalendarAligned: z.boolean(),
+		budgets: z
+			.array(
+				z.object({
+					max_limit: z.string(),
+					reset_duration: z.string(),
+				}),
+			)
+			.optional(),
 		// Token limits
 		tokenMaxLimit: z.string().optional(),
 		tokenResetDuration: z.string().optional(),
@@ -187,22 +196,22 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			description: virtualKey?.description || "",
 			providerConfigs:
 				virtualKey?.provider_configs?.map((config) => ({
-					...config,
+					id: config.id,
+					provider: config.provider,
 					weight: config.weight ?? "",
-					key_ids: config.allow_all_keys ? ["*"] : (config.keys?.map((key) => key.key_id) || []),
-					budget: config.budget
-						? {
-							max_limit: String(config.budget.max_limit),
-							reset_duration: config.budget.reset_duration,
-						}
-						: undefined,
+					allowed_models: config.allowed_models,
+					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
+					budgets: config.budgets?.map((b) => ({
+						max_limit: String(b.max_limit),
+						reset_duration: b.reset_duration,
+					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -215,9 +224,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			teamId: virtualKey?.team_id || "",
 			customerId: virtualKey?.customer_id || "",
 			isActive: virtualKey?.is_active ?? true,
-			budgetMaxLimit: virtualKey?.budget ? String(virtualKey.budget.max_limit) : "",
-			budgetResetDuration: virtualKey?.budget?.reset_duration || "1M",
-			budgetCalendarAligned: virtualKey?.budget?.calendar_aligned ?? false,
+			budgets:
+				virtualKey?.budgets && virtualKey.budgets.length > 0
+					? virtualKey.budgets.map((b) => ({ max_limit: String(b.max_limit ?? ""), reset_duration: b.reset_duration ?? "1M" }))
+					: [],
+			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ? String(virtualKey.rate_limit.token_max_limit) : "",
 			tokenResetDuration: virtualKey?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ? String(virtualKey.rate_limit.request_max_limit) : "",
@@ -272,11 +283,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	const mcpConfigs = form.watch("mcpConfigs") || [];
 
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons
-	const watchedBudgetMaxLimit = form.watch("budgetMaxLimit");
-	const watchedBudgetResetDuration = form.watch("budgetResetDuration") || "1M";
-	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
+	const watchedBudgets = form.watch("budgets");
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
+	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
+
+	// Derive single-budget-style values from the multi-budget array for calendar alignment UI
+	const firstBudget = watchedBudgets && watchedBudgets.length > 0 ? watchedBudgets[0] : null;
+	const watchedBudgetMaxLimit = firstBudget?.max_limit;
+	const watchedBudgetResetDuration = firstBudget?.reset_duration || "1M";
 
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
@@ -340,18 +355,17 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 
-	const clearVirtualKeyBudget = () => {
-		form.setValue("budgetMaxLimit", "", { shouldDirty: true });
-		form.setValue("budgetResetDuration", "1M", { shouldDirty: true });
-		form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
-	};
-
 	const handleCalendarAlignedChange = (checked: boolean) => {
-		if (checked && isEditing && virtualKey?.budget && !virtualKey.budget.calendar_aligned) {
+		if (checked && isEditing) {
+			// Show warning when enabling on an existing VK
 			setShowCalendarAlignWarning(true);
 		} else {
 			form.setValue("budgetCalendarAligned", checked, { shouldDirty: true });
 		}
+	};
+
+	const clearVirtualKeyBudget = () => {
+		form.setValue("budgets", [], { shouldDirty: true });
 	};
 
 	const clearVirtualKeyRateLimits = () => {
@@ -361,40 +375,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
 	};
 
-	const normalizeIntegerField = (value: string | undefined): number | undefined => {
-		if (value === undefined || value === "") return undefined;
-		const num = parseInt(value, 10);
-		return isNaN(num) ? undefined : num;
-	};
-
-	// Helper function to convert string weights to numbers and normalize budget/rate limit fields
-	const normalizeProviderConfigs = (
-		configs: NonNullable<FormData["providerConfigs"]>,
-		existingConfigs?: VirtualKey["provider_configs"],
-	): any[] => {
+	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight: config.weight === undefined || config.weight === null
-				? null
-				: typeof config.weight === "string" ? (Number.isNaN(parseFloat(config.weight)) ? null : parseFloat(config.weight)) : config.weight, budget: (() => {
-					const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
-					if (budgetMaxLimit !== undefined) {
-						return {
-							max_limit: budgetMaxLimit,
-							reset_duration: config.budget?.reset_duration || "1M",
-						};
-					}
-
-					const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
-					if (existingConfig?.budget) {
-						return {};
-					}
-
-					return undefined;
-				})(),
+			weight:
+				config.weight === undefined || config.weight === null
+					? null
+					: typeof config.weight === "string"
+						? Number.isNaN(parseFloat(config.weight))
+							? null
+							: parseFloat(config.weight)
+						: config.weight,
 			rate_limit: (() => {
-				const tokenMaxLimit = normalizeIntegerField(config.rate_limit?.token_max_limit);
-				const requestMaxLimit = normalizeIntegerField(config.rate_limit?.request_max_limit);
+				const tokenMaxLimit = normalizeNumericField(config.rate_limit?.token_max_limit);
+				const requestMaxLimit = normalizeNumericField(config.rate_limit?.request_max_limit);
 				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
 				const hasRequestMaxLimit = requestMaxLimit !== undefined;
 				if (hasTokenMaxLimit || hasRequestMaxLimit) {
@@ -446,23 +440,23 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-				// Add budget if enabled
-				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				const hadBudget = !!virtualKey.budget;
-				const hasBudget = budgetMaxLimit !== undefined;
-				if (hasBudget) {
-					updateData.budget = {
-						max_limit: budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-						calendar_aligned: data.budgetCalendarAligned,
-					};
+				// Add budgets if enabled
+				const validBudgets = (data.budgets || []).filter((b) => normalizeNumericField(b.max_limit) !== undefined);
+				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
+				if (validBudgets.length > 0) {
+					updateData.budgets = validBudgets.map((b) => ({
+						max_limit: normalizeNumericField(b.max_limit)!,
+						reset_duration: b.reset_duration || "1M",
+					}));
+					updateData.calendar_aligned = data.budgetCalendarAligned;
 				} else if (hadBudget) {
-					updateData.budget = {};
+					updateData.budgets = [];
+					updateData.calendar_aligned = false;
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
+				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
+				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
 				const hadRateLimit = !!virtualKey.rate_limit;
 				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
 				const hasRequestMaxLimit = requestMaxLimit !== undefined;
@@ -492,19 +486,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-				// Add budget if enabled
-				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				if (budgetMaxLimit !== undefined) {
-					createData.budget = {
-						max_limit: budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-						calendar_aligned: data.budgetCalendarAligned,
-					};
+				// Add budgets if enabled
+				const validBudgets = (data.budgets || []).filter((b) => normalizeNumericField(b.max_limit) !== undefined);
+				if (validBudgets.length > 0) {
+					createData.budgets = validBudgets.map((b) => ({
+						max_limit: normalizeNumericField(b.max_limit)!,
+						reset_duration: b.reset_duration || "1M",
+					}));
+					createData.calendar_aligned = data.budgetCalendarAligned;
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
+				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
+				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
 				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
 				const hasRequestMaxLimit = requestMaxLimit !== undefined;
 				if (hasTokenMaxLimit || hasRequestMaxLimit) {
@@ -581,7 +575,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									)}
 								/>
 							</div>
-
 							{/* Provider Configurations */}
 							<div className="space-y-2">
 								<div className="flex items-center gap-2">
@@ -684,9 +677,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		? providerConfig.name
 																		: ProviderLabels[config.provider as ProviderName]}
 																</div>
-																<div className="hover:bg-accent/50 cursor-pointer rounded-sm p-2">
-																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" data-testid={`vk-delete-provider-${index}`} />
-																</div>
+																<Button
+																	type="button"
+																	variant="ghost"
+																	size="icon"
+																	aria-label={`Remove ${config.provider} provider`}
+																	className="hover:bg-accent/50 h-8 w-8 rounded-sm p-2"
+																	data-testid={`vk-delete-provider-${index}`}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		handleRemoveProvider(index);
+																	}}
+																>
+																	<Trash2 className="h-4 w-4 opacity-75" />
+																</Button>
 															</div>
 														</AccordionTrigger>
 														<AccordionContent className="flex flex-col gap-4 px-1 text-balance">
@@ -739,14 +743,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																						: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
 																				})()}
 																				allowAllOption={true}
-																				value={hasWildcardModels ? ["*"] : (config.allowed_models || [])}
+																				value={hasWildcardModels ? ["*"] : config.allowed_models || []}
 																				onChange={(models: string[]) => {
 																					const hadStar = (config.allowed_models || []).includes("*");
 																					const hasStar = models.includes("*");
 																					if (!hadStar && hasStar) {
 																						handleUpdateProviderConfig(index, "allowed_models", ["*"]);
 																					} else if (hadStar && hasStar && models.length > 1) {
-																						handleUpdateProviderConfig(index, "allowed_models", models.filter((m) => m !== "*"));
+																						handleUpdateProviderConfig(
+																							index,
+																							"allowed_models",
+																							models.filter((m) => m !== "*"),
+																						);
 																					} else {
 																						handleUpdateProviderConfig(index, "allowed_models", models);
 																					}
@@ -757,14 +765,17 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																						: (config.allowed_models || []).length === 0
 																							? "No models (deny all)"
 																							: config.provider
-																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
+																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
+																									ModelPlaceholders.default
 																								: ModelPlaceholders.default
 																				}
 																				className="min-h-10 max-w-[500px] min-w-[200px]"
 																			/>
 																		);
 																	})()}
-																	<p className="text-muted-foreground text-xs">Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.</p>
+																	<p className="text-muted-foreground text-xs">
+																		Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.
+																	</p>
 																</div>
 															</div>
 
@@ -793,21 +804,23 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																const selectedProviderKeys = hasWildcard
 																	? [allKeyOptions[0]]
 																	: providerKeys
-																		.filter((key) => configKeyIds.includes(key.key_id))
-																		.map((key) => ({
-																			label: key.name,
-																			value: key.key_id,
-																			description:
-																				key.models == null || key.models.includes("*")
-																					? "All models"
-																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																			provider: key.provider,
-																		}));
+																			.filter((key) => configKeyIds.includes(key.key_id))
+																			.map((key) => ({
+																				label: key.name,
+																				value: key.key_id,
+																				description:
+																					key.models == null || key.models.includes("*")
+																						? "All models"
+																						: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+																				provider: key.provider,
+																			}));
 
 																return (
 																	<div className="mx-0.5 space-y-2">
 																		<Label className="text-sm font-medium">Allowed Keys</Label>
-																		<p className="text-muted-foreground text-xs">Select specific keys or allow all. Leave empty to block all keys for this provider.</p>
+																		<p className="text-muted-foreground text-xs">
+																			Select specific keys or allow all. Leave empty to block all keys for this provider.
+																		</p>
 																		<AsyncMultiSelect
 																			hideSelectedOptions
 																			isNonAsync
@@ -863,17 +876,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																					handleUpdateProviderConfig(index, "key_ids", ["*"]);
 																				} else if (hadStar && hasStar && keys.length > 1) {
 																					// Had "*", still has "*", but user also selected a specific key — drop "*"
-																					handleUpdateProviderConfig(index, "key_ids", keys.filter((k) => k.value !== "*").map((k) => k.value as string));
+																					handleUpdateProviderConfig(
+																						index,
+																						"key_ids",
+																						keys.filter((k) => k.value !== "*").map((k) => k.value as string),
+																					);
 																				} else {
-																					handleUpdateProviderConfig(index, "key_ids", keys.map((k) => k.value as string));
+																					handleUpdateProviderConfig(
+																						index,
+																						"key_ids",
+																						keys.map((k) => k.value as string),
+																					);
 																				}
 																			}}
 																			placeholder={
-																				hasWildcard
-																					? "All keys allowed"
-																					: configKeyIds.length === 0
-																						? "No keys selected"
-																						: "Select keys..."
+																				hasWildcard ? "All keys allowed" : configKeyIds.length === 0 ? "No keys selected" : "Select keys..."
 																			}
 																			className="hover:bg-accent w-full"
 																			menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
@@ -885,31 +902,39 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															<DottedSeparator />
 
 															{/* Provider Budget Configuration */}
-															<div className="space-y-4">
-																<Label className="text-sm font-medium">Provider Budget</Label>
-																<NumberAndSelect
-																	id={`providerBudget-${index}`}
-																	labelClassName="font-normal"
-																	label="Maximum Spend (USD)"
-																	value={config.budget?.max_limit || ""}
-																	selectValue={config.budget?.reset_duration || "1M"}
-																	onChangeNumber={(value) => {
-																		const currentBudget = config.budget || {};
+															<MultiBudgetLines
+																id={`providerBudget-${index}`}
+																label="Provider Budget"
+																lines={
+																	config.budgets && config.budgets.length > 0
+																		? config.budgets.map((b) => ({
+																				max_limit: String(b.max_limit ?? ""),
+																				reset_duration: b.reset_duration || "1M",
+																			}))
+																		: []
+																}
+																onChange={(lines) => {
+																	if (lines.length === 0) {
+																		handleUpdateProviderConfig(index, "budget", undefined);
+																		handleUpdateProviderConfig(index, "budgets", []);
+																	} else {
+																		// Legacy single budget field = first line
 																		handleUpdateProviderConfig(index, "budget", {
-																			...currentBudget,
-																			max_limit: value,
+																			max_limit: lines[0].max_limit,
+																			reset_duration: lines[0].reset_duration,
 																		});
-																	}}
-																	onChangeSelect={(value) => {
-																		const currentBudget = config.budget || {};
-																		handleUpdateProviderConfig(index, "budget", {
-																			...currentBudget,
-																			reset_duration: value,
-																		});
-																	}}
-																	options={resetDurationOptions}
-																/>
-															</div>
+																		// All lines in budgets array
+																		handleUpdateProviderConfig(
+																			index,
+																			"budgets",
+																			lines.map((l) => ({
+																				max_limit: l.max_limit,
+																				reset_duration: l.reset_duration,
+																			})),
+																		);
+																	}
+																}}
+															/>
 
 															<DottedSeparator />
 
@@ -975,7 +1000,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									<div className="text-destructive text-sm">{form.formState.errors.providerConfigs.message}</div>
 								)}
 							</div>
-
 							{/* MCP Client Configurations */}
 							{((mcpClientsData && mcpClientsData.length > 0) || (mcpConfigs && mcpConfigs.length > 0)) && (
 								<div className="mt-6 space-y-2">
@@ -990,8 +1014,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												</TooltipTrigger>
 												<TooltipContent>
 													<p>
-														Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
-														blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
+														Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty blocks
+														all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
 														<span className="font-medium">Allow All Tools</span> to grant tool access.
 													</p>
 												</TooltipContent>
@@ -1012,10 +1036,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 													<Info className="mt-0.5 h-3 w-3 shrink-0" />
 													<span>
 														The following MCP servers are available to this key by default with all tools enabled on that client:{" "}
-														<span className="text-foreground font-medium">
-															{defaultMCPClients.map((c) => c.config.name).join(", ")}
-														</span>
-														. Adding an explicit config for any of them below will override the all-tools default for this key.
+														<span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>.
+														Adding an explicit config for any of them below will override the all-tools default for this key.
 													</span>
 												</div>
 											</div>
@@ -1129,7 +1151,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																				handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
 																			} else if (hadStar && hasStar && tools.length > 1) {
 																				// Had "*", still has "*", but user also selected a specific tool — drop "*"
-																				handleUpdateMCPConfig(index, "tools_to_execute", tools.filter((t) => t !== "*"));
+																				handleUpdateMCPConfig(
+																					index,
+																					"tools_to_execute",
+																					tools.filter((t) => t !== "*"),
+																				);
 																			} else {
 																				handleUpdateMCPConfig(index, "tools_to_execute", tools);
 																			}
@@ -1149,7 +1175,13 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	/>
 																</TableCell>
 																<TableCell>
-																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)} data-testid={`vk-delete-mcp-${index}`}>
+																	<Button
+																		type="button"
+																		variant="ghost"
+																		size="sm"
+																		onClick={() => handleRemoveMCPClient(index)}
+																		data-testid={`vk-delete-mcp-${index}`}
+																	>
 																		<Trash2 className="h-4 w-4" />
 																	</Button>
 																</TableCell>
@@ -1162,45 +1194,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									)}
 								</div>
 							)}
-
 							<DottedSeparator className="mt-6 mb-5" />
-
 							{/* Budget Configuration */}
 							<div className="space-y-4">
-								<div className="flex items-center justify-between gap-2">
-									<Label className="text-sm font-medium">Budget Configuration</Label>
-									{isEditing && (virtualKey?.budget || watchedBudgetMaxLimit) && (
-										<Button type="button" variant="ghost" size="sm" onClick={clearVirtualKeyBudget} data-testid="vk-budget-reset-button">
-											<RotateCcw className="h-4 w-4" />
-											Reset
-										</Button>
-									)}
-								</div>
-								<FormField
-									control={form.control}
-									name="budgetMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="budgetMaxLimit"
-												labelClassName="font-normal"
-												label="Maximum Spend (USD)"
-												value={field.value || ""}
-												selectValue={watchedBudgetResetDuration}
-												onChangeNumber={(value) => {
-													field.onChange(value);
-												}}
-												onChangeSelect={(value) => {
-													form.setValue("budgetResetDuration", value, { shouldDirty: true });
-													if (!supportsCalendarAlignment(value)) {
-														form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
-													}
-												}}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
+								<MultiBudgetLines
+									id="vkBudget"
+									label="Budget Configuration"
+									lines={form.watch("budgets") ?? []}
+									onChange={(lines) => {
+										form.setValue("budgets", lines, { shouldDirty: true });
+									}}
+									onReset={clearVirtualKeyBudget}
+									showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
 								/>
 
 								{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
@@ -1241,8 +1246,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															: watchedBudgetResetDuration === "1Y"
 																? "year"
 																: "period"}
-												. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later.
-													This will take effect when you save.
+												. The usage reset to $0.00 cannot be undone, but calendar alignment can be turned off later. This will take effect
+												when you save.
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
@@ -1260,7 +1265,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									</AlertDialogContent>
 								</AlertDialog>
 							</div>
-
 							{/* Rate Limiting Configuration */}
 							<div className="space-y-4">
 								<div className="flex items-center justify-between gap-2">
@@ -1323,7 +1327,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									)}
 								/>
 							</div>
-
 							{(teams?.length > 0 || customers?.length > 0) && (
 								<>
 									<DottedSeparator className="my-6" />
@@ -1367,7 +1370,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<SelectValue />
 																</SelectTrigger>
 															</FormControl>
-															<SelectContent >
+															<SelectContent>
 																<SelectItem value="none">No Assignment</SelectItem>
 																{teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
 																{customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}

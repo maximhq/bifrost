@@ -590,7 +590,6 @@ type VirtualKeyHashInput struct {
 	IsActive    bool
 	TeamID      *string
 	CustomerID  *string
-	BudgetID    *string
 	RateLimitID *string
 	// ProviderConfigs and MCPConfigs are hashed separately as they contain nested data
 	ProviderConfigs []VirtualKeyProviderConfigHashInput
@@ -602,7 +601,6 @@ type VirtualKeyProviderConfigHashInput struct {
 	Provider      string
 	Weight        *float64
 	AllowedModels []string
-	BudgetID      *string
 	RateLimitID   *string
 	KeyIDs        []string // Only key IDs, not full key objects
 }
@@ -638,10 +636,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
 	}
-	// Hash BudgetID
-	if vk.BudgetID != nil {
-		hash.Write([]byte("budgetID:" + *vk.BudgetID))
-	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
 		hash.Write([]byte("rateLimitID:" + *vk.RateLimitID))
@@ -654,16 +648,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		sort.Slice(sortedProviderConfigs, func(i, j int) bool {
 			if sortedProviderConfigs[i].Provider != sortedProviderConfigs[j].Provider {
 				return sortedProviderConfigs[i].Provider < sortedProviderConfigs[j].Provider
-			}
-			bi, bj := "", ""
-			if sortedProviderConfigs[i].BudgetID != nil {
-				bi = *sortedProviderConfigs[i].BudgetID
-			}
-			if sortedProviderConfigs[j].BudgetID != nil {
-				bj = *sortedProviderConfigs[j].BudgetID
-			}
-			if bi != bj {
-				return bi < bj
 			}
 			ri, rj := "", ""
 			if sortedProviderConfigs[i].RateLimitID != nil {
@@ -702,7 +686,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 				Provider:      pc.Provider,
 				Weight:        pc.Weight,
 				AllowedModels: sortedAllowedModels,
-				BudgetID:      pc.BudgetID,
 				RateLimitID:   pc.RateLimitID,
 				KeyIDs:        keyIDs,
 			}

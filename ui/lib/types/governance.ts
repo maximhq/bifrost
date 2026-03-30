@@ -72,15 +72,15 @@ export interface VirtualKey {
 	mcp_configs?: VirtualKeyMCPConfig[];
 	team_id?: string;
 	customer_id?: string;
-	budget_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
+	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
 	// Populated relationships
 	team?: Team;
 	customer?: Customer;
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	config_hash?: string; // Present when config is synced from config.json
 }
@@ -91,7 +91,7 @@ export interface VirtualKeyProviderConfig {
 	weight: number | null;
 	allowed_models: string[];
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
-	budget?: Budget;
+	budgets?: Budget[];
 	rate_limit?: RateLimit;
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
@@ -134,7 +134,7 @@ export interface VirtualKeyProviderConfigRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -144,7 +144,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	provider: string;
 	weight?: number | null;
 	allowed_models?: string[];
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
@@ -157,9 +157,10 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budget?: CreateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
+	calendar_aligned?: boolean;
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -169,9 +170,10 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budget?: UpdateBudgetRequest;
+	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
+	calendar_aligned?: boolean;
 }
 
 export interface CreateTeamRequest {

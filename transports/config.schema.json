@@ -452,6 +452,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
+                "default": false
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id)"
@@ -459,10 +464,6 @@
               "customer_id": {
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
-              },
-              "budget_id": {
-                "type": "string",
-                "description": "Associated budget ID"
               },
               "rate_limit_id": {
                 "type": "string",
@@ -1565,10 +1566,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "budget_id": {
-          "type": "string",
-          "description": "Associated budget ID"
         },
         "rate_limit_id": {
           "type": "string",

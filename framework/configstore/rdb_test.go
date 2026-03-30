@@ -520,24 +520,28 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create virtual key with references
-	budgetID := "budget-for-vk"
 	rateLimitID := "rate-limit-for-vk"
+	vkID := "vk-with-refs"
 	vk := &tables.TableVirtualKey{
-		ID:          "vk-with-refs",
+		ID:          vkID,
 		Name:        "VK With References",
 		Value:       "vk-refs-value",
 		IsActive:    true,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID,
 	}
 
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
+	// Link the existing budget to the VK via FK
+	budget.VirtualKeyID = &vkID
+	err = store.UpdateBudget(ctx, budget)
+	require.NoError(t, err)
+
 	result, err := store.GetVirtualKey(ctx, "vk-with-refs")
 	require.NoError(t, err)
-	assert.NotNil(t, result.BudgetID)
-	assert.Equal(t, "budget-for-vk", *result.BudgetID)
+	assert.Len(t, result.Budgets, 1)
+	assert.Equal(t, "budget-for-vk", result.Budgets[0].ID)
 	assert.NotNil(t, result.RateLimitID)
 	assert.Equal(t, "rate-limit-for-vk", *result.RateLimitID)
 }
@@ -999,17 +1003,21 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	// Step 4: Create virtual key
-	budgetID := "integration-budget"
 	rateLimitID := "integration-rate-limit"
+	integrationVKID := "integration-vk"
 	vk := &tables.TableVirtualKey{
-		ID:          "integration-vk",
+		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
 		Value:       "vk-integration-xyz",
 		IsActive:    true,
-		BudgetID:    &budgetID,
 		RateLimitID: &rateLimitID,
 	}
 	err = store.CreateVirtualKey(ctx, vk)
+	require.NoError(t, err)
+
+	// Link the existing budget to the VK via FK
+	budget.VirtualKeyID = &integrationVKID
+	err = store.UpdateBudget(ctx, budget)
 	require.NoError(t, err)
 
 	// Step 5: Create provider config with key reference
@@ -1029,7 +1037,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 	result, err := store.GetVirtualKey(ctx, "integration-vk")
 	require.NoError(t, err)
 	assert.Equal(t, "Integration Virtual Key", result.Name)
-	assert.NotNil(t, result.BudgetID)
+	assert.Len(t, result.Budgets, 1)
 	assert.NotNil(t, result.RateLimitID)
 
 	configs, err := store.GetVirtualKeyProviderConfigs(ctx, "integration-vk")

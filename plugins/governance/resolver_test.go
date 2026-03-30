@@ -17,6 +17,9 @@ import (
 func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
@@ -99,9 +102,8 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 			Provider:      "openai",
 			AllowedModels: []string{"gpt-4", "gpt-4-turbo"}, // Only these models
 			Weight:        bifrost.Ptr(1.0),
-			RateLimit:     nil,
-			Budget:        nil,
-			Keys:          []configstoreTables.TableKey{},
+			RateLimit: nil,
+			Keys:      []configstoreTables.TableKey{},
 		},
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
@@ -468,6 +470,9 @@ func TestBudgetResolver_IsModelAllowed(t *testing.T) {
 func TestBudgetResolver_ContextPopulation(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	customer := buildCustomer("cust1", "Customer 1", nil)
 	team := buildTeam("team1", "Team 1", nil)
 	team.CustomerID = &customer.ID

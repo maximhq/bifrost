@@ -15,9 +15,9 @@ type TableBudget struct {
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
 
-	// CalendarAligned snaps LastReset to the start of the current calendar period (day, week, month, year)
-	// instead of the exact creation/update time, so budgets reset at clean calendar boundaries.
-	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
+	// Owner FKs: a budget belongs to at most one VK or one ProviderConfig
+	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
+	ProviderConfigID *uint   `gorm:"index" json:"provider_config_id,omitempty"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
