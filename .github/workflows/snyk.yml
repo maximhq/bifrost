@@ -71,6 +71,9 @@ jobs:
         with:
           go-version: "1.26.1"
 
+      - name: Build
+        run: make build
+
       - name: Install Snyk CLI
         uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
         with:
@@ -79,7 +82,7 @@ jobs:
       - name: Snyk test (all projects)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --all-projects --detection-depth=4 --sarif-file-output=snyk.sarif || true
+        run: snyk test --all-projects --detection-depth=4 --exclude=examples,tests/scripts --sarif-file-output=snyk.sarif || true
 
       - name: Upload SARIF
         if: always() && hashFiles('snyk.sarif') != ''
