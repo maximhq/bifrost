@@ -102,6 +102,8 @@ if err != nil {
 
 ## Semantic Cache Configuration
 
+> **UI Note**: The current Web UI flow configures provider-backed semantic caching. If you want direct-only mode (`dimension: 1` with no `provider`), configure it through `config.json`.
+
 <Tabs group="cache-config">
 
 <Tab title="Go SDK">
@@ -201,8 +203,6 @@ bifrostConfig := schemas.BifrostConfig{
 ```
 
 > **Note**: In `config.json` setups, provider keys are taken from the provider config on initialization, so you do not need to duplicate `keys` inside the plugin config. Any updates to the provider keys will not be reflected until next restart.
-
-> **UI Note**: The current Web UI flow configures provider-backed semantic caching. If you want direct-only mode (`dimension: 1` with no `provider`), configure it through `config.json`.
 
 **TTL Format Options:**
 - Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
