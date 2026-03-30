@@ -16,7 +16,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
+import { getErrorMessage } from "@/lib/store";
+import { useDeleteProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -40,12 +41,16 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
-	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
-	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyIndex: number } | undefined>(undefined);
-	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyIndex: number } | undefined>(undefined);
+	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
+	const [deleteProviderKey, { isLoading: isDeletingProviderKey }] = useDeleteProviderKeyMutation();
+	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
+	const isMutatingProviderKey = isUpdatingProviderKey || isDeletingProviderKey;
+	const [togglingKeyIds, setTogglingKeyIds] = useState<Set<string>>(new Set());
+	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyId: string | null } | undefined>(undefined);
+	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyId: string } | undefined>(undefined);
 
-	function handleAddKey(keyIndex: number) {
-		setShowAddNewKeyDialog({ show: true, keyIndex: keyIndex });
+	function handleAddKey() {
+		setShowAddNewKeyDialog({ show: true, keyId: null });
 	}
 
 	return (
@@ -55,18 +60,20 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<AlertDialogContent onClick={(e) => e.stopPropagation()}>
 						<AlertDialogHeader>
 							<AlertDialogTitle>Delete {EntityLabel}</AlertDialogTitle>
-							<AlertDialogDescription>Are you sure you want to delete this {entityLabel}. This action cannot be undone.</AlertDialogDescription>
+							<AlertDialogDescription>
+								Are you sure you want to delete this {entityLabel}. This action cannot be undone.
+							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
-							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isUpdatingProvider}>
+							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isMutatingProviderKey}>
 								Cancel
 							</AlertDialogCancel>
 							<AlertDialogAction
-								disabled={isUpdatingProvider || !hasDeleteProviderAccess}
+								disabled={isMutatingProviderKey || !hasDeleteProviderAccess}
 								onClick={() => {
-									updateProvider({
-										...provider,
-										keys: provider.keys.filter((_, index) => index !== showDeleteKeyDialog.keyIndex),
+									deleteProviderKey({
+										provider: provider.name,
+										keyId: showDeleteKeyDialog.keyId,
 									})
 										.unwrap()
 										.then(() => {
@@ -91,7 +98,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					show={showAddNewKeyDialog.show}
 					onCancel={() => setShowAddNewKeyDialog(undefined)}
 					provider={provider}
-					keyIndex={showAddNewKeyDialog.keyIndex}
+					keyId={showAddNewKeyDialog.keyId}
 					providerName={providerName}
 				/>
 			)}
@@ -105,7 +112,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								disabled={!hasUpdateProviderAccess}
 								data-testid="add-key-btn"
 								onClick={() => {
-									handleAddKey(provider.keys.length);
+									handleAddKey();
 								}}
 							>
 								<PlusIcon className="h-4 w-4" />
@@ -121,7 +128,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<p>You can edit the provider configuration using the button above.</p>
 				</div>
 			) : (
-				<div className="w-full rounded-sm border flex flex-col gap-2">
+				<div className="flex w-full flex-col gap-2 rounded-sm border">
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>
@@ -132,24 +139,34 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{provider.keys.length === 0 && (
+							{keys.length === 0 && (
 								<TableRow data-testid="keys-table-empty-state">
 									<TableCell colSpan={4} className="py-6 text-center">
 										No {entityLabelPlural} found.
 									</TableCell>
 								</TableRow>
 							)}
-							{provider.keys.map((key, index) => {
+							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
 								return (
-									<TableRow key={index} data-testid={`key-row-${key.name}`} className="text-sm transition-colors hover:bg-white" onClick={() => {}}>
+									<TableRow
+										key={key.id}
+										data-testid={`key-row-${key.name}`}
+										className="text-sm transition-colors hover:bg-white"
+										onClick={() => {}}
+									>
 										<TableCell>
 											<div className="flex items-center space-x-2">
 												{key.status === "success" && (
 													<Tooltip>
 														<TooltipTrigger asChild>
-															<button type="button" aria-label="Key status: list models working" data-testid={`key-status-success-${key.name}`} className="inline-flex">
-																<CheckCircle2 aria-hidden className="text-green-600 h-4 w-4 flex-shrink-0" />
+															<button
+																type="button"
+																aria-label="Key status: list models working"
+																data-testid={`key-status-success-${key.name}`}
+																className="inline-flex"
+															>
+																<CheckCircle2 aria-hidden className="h-4 w-4 flex-shrink-0 text-green-600" />
 															</button>
 														</TooltipTrigger>
 														<TooltipContent>List models working</TooltipContent>
@@ -158,7 +175,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												{key.status === "list_models_failed" && (
 													<Tooltip>
 														<TooltipTrigger asChild>
-															<button type="button" aria-label="Key status: list models failed" data-testid={`key-status-error-${key.name}`} className="inline-flex">
+															<button
+																type="button"
+																aria-label="Key status: list models failed"
+																data-testid={`key-status-error-${key.name}`}
+																className="inline-flex"
+															>
 																<AlertCircle aria-hidden className="text-destructive h-4 w-4 flex-shrink-0" />
 															</button>
 														</TooltipTrigger>
@@ -180,11 +202,13 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												data-testid="key-enabled-switch"
 												checked={isKeyEnabled}
 												size="md"
-												disabled={!hasUpdateProviderAccess}
+												disabled={!hasUpdateProviderAccess || togglingKeyIds.has(key.id)}
 												onCheckedChange={(checked) => {
-													updateProvider({
-														...provider,
-														keys: provider.keys.map((k, i) => (i === index ? { ...k, enabled: checked } : k)),
+													setTogglingKeyIds((prev) => new Set(prev).add(key.id));
+													updateProviderKey({
+														provider: provider.name,
+														keyId: key.id,
+														key: { ...key, enabled: checked },
 													})
 														.unwrap()
 														.then(() => {
@@ -192,6 +216,13 @@ export default function ModelProviderKeysTableView({ provider, className, header
 														})
 														.catch((err) => {
 															toast.error(`Failed to update ${entityLabel}`, { description: getErrorMessage(err) });
+														})
+														.finally(() => {
+															setTogglingKeyIds((prev) => {
+																const next = new Set(prev);
+																next.delete(key.id);
+																return next;
+															});
 														});
 												}}
 											/>
@@ -207,16 +238,16 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													<DropdownMenuContent align="end">
 														<DropdownMenuItem
 															onClick={() => {
-																setShowAddNewKeyDialog({ show: true, keyIndex: index });
+																setShowAddNewKeyDialog({ show: true, keyId: key.id });
 															}}
-															disabled={!hasUpdateProviderAccess || !isKeyEnabled}
+															disabled={!hasUpdateProviderAccess}
 														>
 															<PencilIcon className="mr-1 h-4 w-4" />
 															Edit
 														</DropdownMenuItem>
 														<DropdownMenuItem
 															onClick={() => {
-																setShowDeleteKeyDialog({ show: true, keyIndex: index });
+																setShowDeleteKeyDialog({ show: true, keyId: key.id });
 															}}
 															disabled={!hasDeleteProviderAccess}
 														>

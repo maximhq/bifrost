@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
+import { MultiSelect } from "@/components/ui/multiSelect";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -14,13 +16,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateMCPClientMutation } from "@/lib/store";
-import { MCPClient } from "@/lib/types/mcp";
+import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, ChevronRight, Info } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
+import { useDebouncedValue } from "@/hooks/useDebounce";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
@@ -47,6 +50,73 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
+	// VK access management — search-based dropdown (limit 20), no pagination issue
+	const [vkSearch, setVKSearch] = useState("");
+	const [vkSelectValue, setVKSelectValue] = useState("");
+	const debouncedVkSearch = useDebouncedValue(vkSearch, 300);
+	const { data: vksData } = useGetVirtualKeysQuery({ limit: 20, search: debouncedVkSearch || undefined });
+	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
+
+	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
+	const initialVKConfigs = useMemo<MCPVKConfig[]>(
+		() => (mcpClient.vk_configs ?? []).map((vc) => ({ virtual_key_id: vc.virtual_key_id, tools_to_execute: vc.tools_to_execute })),
+		[mcpClient.vk_configs],
+	);
+
+	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
+	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
+	// Persists names for newly added VKs so they survive search result changes
+	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
+
+	// Sync vkConfigs when mcpClient changes
+	useEffect(() => {
+		setVKConfigs(initialVKConfigs);
+		setVKConfigsDirty(false);
+		setLocalVKNames({});
+	}, [initialVKConfigs]);
+
+	// Name lookup: server response names → search results → locally cached names (highest priority)
+	const vkNameByID = useMemo<Record<string, string>>(() => {
+		const m: Record<string, string> = {};
+		for (const vc of mcpClient.vk_configs ?? []) m[vc.virtual_key_id] = vc.virtual_key_name;
+		for (const vk of vksData?.virtual_keys ?? []) m[vk.id] = vk.name;
+		Object.assign(m, localVKNames);
+		return m;
+	}, [mcpClient.vk_configs, vksData, localVKNames]);
+
+	const vkOptions = useMemo(
+		() =>
+			(vksData?.virtual_keys ?? [])
+				.filter((vk) => !vkConfigs.some((vc) => vc.virtual_key_id === vk.id))
+				.map((vk) => ({ value: vk.id, label: vk.name })),
+		[vksData, vkConfigs],
+	);
+
+	const toolOptions = useMemo(
+		() => [
+			{ value: "*", label: "Allow All Tools", description: "Allow all current and future tools" },
+			...allToolNames.map((n) => ({ value: n, label: n })),
+		],
+		[allToolNames],
+	);
+
+	const addVKConfig = (vkId: string) => {
+		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
+		if (name) setLocalVKNames((prev) => ({ ...prev, [vkId]: name }));
+		setVKConfigs((prev) => [...prev, { virtual_key_id: vkId, tools_to_execute: ["*"] }]);
+		setVKConfigsDirty(true);
+	};
+
+	const removeVKConfig = (vkId: string) => {
+		setVKConfigs((prev) => prev.filter((vc) => vc.virtual_key_id !== vkId));
+		setVKConfigsDirty(true);
+	};
+
+	const updateVKConfigTools = (vkId: string, tools: string[]) => {
+		setVKConfigs((prev) => prev.map((vc) => (vc.virtual_key_id === vkId ? { ...vc, tools_to_execute: tools } : vc)));
+		setVKConfigsDirty(true);
+	};
+
 	const toggleToolExpanded = (toolName: string) => {
 		setExpandedTools((prev) => {
 			const next = new Set(prev);
@@ -66,11 +136,13 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 		},
 	});
 
@@ -80,11 +152,13 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 		});
 	}, [form, mcpClient]);
 
@@ -96,11 +170,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
 					is_ping_available: data.is_ping_available,
+					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
 					headers: data.headers ?? {},
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
+					allowed_extra_headers: data.allowed_extra_headers,
+					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
 			}).unwrap();
 
@@ -235,7 +312,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								<Button
 									className="ml-auto"
 									type="submit"
-									disabled={isUpdating || !form.formState.isDirty || !hasUpdateMCPClientAccess}
+									disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
 									isLoading={isUpdating}
 								>
 									Save Changes
@@ -319,6 +396,38 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								/>
 								<FormField
 									control={form.control}
+									name="allow_on_all_virtual_keys"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<div className="flex items-center gap-2">
+												<FormLabel>Allow on All Virtual Keys</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																When enabled, this MCP server is accessible to all virtual keys without requiring explicit
+																per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP
+																config for this server, that config takes precedence and overrides this behaviour.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value === true}
+													onCheckedChange={field.onChange}
+													data-testid="mcpclient-allow-on-all-virtual-keys-switch"
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
 									name="tool_sync_interval"
 									render={({ field }) => {
 										const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
@@ -377,6 +486,48 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													useEnvVarInput
 												/>
 											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="allowed_extra_headers"
+									render={({ field }) => (
+										<FormItem className="flex flex-col gap-2">
+											<div className="flex items-center gap-2">
+												<FormLabel>Allowed Extra Headers</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																Allowlist of headers that callers can forward to this MCP server at request time.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Input
+													data-testid="mcpclient-input-allowed-extra-headers"
+													placeholder="*, or: authorization, x-user-id"
+													name={field.name}
+													ref={field.ref}
+													value={(field.value || []).join(", ")}
+													onChange={(e) => {
+														const raw = e.target.value;
+														const parsed = raw.trim() ? raw.split(",").map((h) => h.trim()).filter(Boolean) : [];
+														field.onChange(parsed);
+													}}
+													onBlur={field.onBlur}
+												/>
+											</FormControl>
+											<p className="text-muted-foreground text-xs">
+												Comma-separated header names, or <code>*</code> to allow all. Leave empty to block all extra headers.
+											</p>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -660,11 +811,134 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										<p className="text-sm">No tools available</p>
 									</div>
 								)}
+
+								{mcpClient.tools && mcpClient.tools.length > 0 && (
+									<div className="space-y-4 pb-10 mt-6">
+										<div className="flex flex-col gap-2">
+											<div className="flex items-center justify-between">
+												<div className="flex items-center gap-2">
+													<div className="font-semibold text-md">Virtual Key Access</div>
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs">
+																<p>Control which virtual keys can use this MCP server and which specific tools they can call.</p>
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</div>
+												{vkOptions.length > 0 && (
+													<Select value={vkSelectValue} onValueChange={(v) => { addVKConfig(v); setVKSearch(""); setVKSelectValue(""); }}>
+														<SelectTrigger
+															className="h-7.5 w-auto gap-1.5 px-2 py-1 text-sm font-medium"
+															data-testid="mcpclient-virtualkey-add-trigger"
+														>
+															<Plus className="h-4 w-4" />
+															Add Virtual Key
+														</SelectTrigger>
+														<SelectContent>
+															<div className="px-2 pb-1">
+																<Input
+																	placeholder="Search virtual keys..."
+																	value={vkSearch}
+																	onChange={(e) => setVKSearch(e.target.value)}
+																	onKeyDown={(e) => e.stopPropagation()}
+																	className="h-7 text-sm"
+																/>
+															</div>
+															{vkOptions.length > 0 ? vkOptions.map((opt) => (
+																<SelectItem key={opt.value} value={opt.value}>
+																	{opt.label}
+																</SelectItem>
+															)) : (
+																<div className="px-2 py-1.5 text-sm text-muted-foreground">No virtual keys found</div>
+															)}
+														</SelectContent>
+													</Select>
+												)}
+											</div>
+											{form.watch("allow_on_all_virtual_keys") && (
+												<p className="text-muted-foreground flex items-center gap-1 text-xs">
+													<Info className="h-3 w-3 shrink-0" />
+													Configuring access for a virtual key here overrides the{" "}
+													<span className="font-medium">Allow on All Virtual Keys</span>&nbsp;setting for that key.
+												</p>
+											)}
+										</div>
+
+										{vkConfigs.length > 0 ? (
+											<div className="rounded-md border">
+												<Table>
+													<TableHeader>
+														<TableRow>
+															<TableHead>Virtual Key</TableHead>
+															<TableHead>Allowed Tools</TableHead>
+															<TableHead className="w-12"></TableHead>
+														</TableRow>
+													</TableHeader>
+													<TableBody>
+														{vkConfigs.map((vc) => (
+															<TableRow key={vc.virtual_key_id}>
+																<TableCell className="font-medium">{vkNameByID[vc.virtual_key_id] ?? vc.virtual_key_id}</TableCell>
+																<TableCell>
+																	<MultiSelect
+																		data-testid={`mcpclient-virtualkey-tool-selector-${vc.virtual_key_id}`}
+																		options={toolOptions}
+																		defaultValue={vc.tools_to_execute}
+																		resetOnDefaultValueChange
+																		onValueChange={(tools) => {
+																			const hadStar = vc.tools_to_execute.includes("*");
+																			const hasStar = tools.includes("*");
+																			let next: string[];
+																			if (!hadStar && hasStar) {
+																				next = ["*"];
+																			} else if (hadStar && hasStar && tools.length > 1) {
+																				next = tools.filter((t) => t !== "*");
+																			} else {
+																				next = tools;
+																			}
+																			updateVKConfigTools(vc.virtual_key_id, next);
+																		}}
+																		placeholder={vc.tools_to_execute.includes("*") ? "All tools allowed" : vc.tools_to_execute.length === 0 ? "No tools allowed" : "Select tools..."}
+																		maxCount={3}
+																		className="bg-background dark:bg-input/30 border-input rounded-sm text-foreground hover:bg-accent hover:text-accent-foreground font-normal"
+																	/>
+																</TableCell>
+																<TableCell>
+																	<Button
+																		type="button"
+																		variant="ghost"
+																		size="icon"
+																		onClick={() => removeVKConfig(vc.virtual_key_id)}
+																		className="text-muted-foreground hover:text-destructive"
+																		data-testid={`mcpclient-virtualkey-remove-${vc.virtual_key_id}`}
+																	>
+																		<Trash2 className="h-4 w-4" />
+																	</Button>
+																</TableCell>
+															</TableRow>
+														))}
+													</TableBody>
+												</Table>
+											</div>
+										) : form.watch("allow_on_all_virtual_keys") ? (
+											<div className="text-muted-foreground rounded-sm border p-6 text-center">
+												<p className="text-sm">All virtual keys can access this MCP server unless a key has an explicit override.</p>
+											</div>
+										) : (
+											<div className="text-muted-foreground rounded-sm border p-6 text-center">
+												<p className="text-sm">No virtual keys have access to this MCP server</p>
+											</div>
+										)}
+									</div>
+								)}
 							</div>
 						</div>
 					</form>
 				</Form>
 			</SheetContent>
-		</Sheet>
+		</Sheet >
 	);
 }

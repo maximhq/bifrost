@@ -397,7 +397,7 @@ func NewMockConfigStore() *MockConfigStore {
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -449,6 +449,68 @@ func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
+func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	return append([]schemas.Key(nil), config.Keys...), nil
+}
+
+func (m *MockConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
+	config, ok := m.providers[provider]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	for _, key := range config.Keys {
+		if key.ID == keyID {
+			keyCopy := key
+			return &keyCopy, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	config.Keys = append(config.Keys, key)
+	m.providers[provider] = config
+	return nil
+}
+
+func (m *MockConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys[i] = key
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
+	config, ok := m.providers[provider]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			config.Keys = append(config.Keys[:i], config.Keys[i+1:]...)
+			m.providers[provider] = config
+			return nil
+		}
+	}
+	return configstore.ErrNotFound
+}
+
 // MCP config
 func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	return m.mcpConfig, nil
@@ -489,30 +551,32 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		if m.mcpConfig.ClientConfigs[i].ID == id {
 			// Found the entry, update it with the new config
 			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
-				ID:                 clientConfig.ClientID,
-				Name:               clientConfig.Name,
-				IsCodeModeClient:   clientConfig.IsCodeModeClient,
-				ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-				ConnectionString:   clientConfig.ConnectionString,
-				StdioConfig:        clientConfig.StdioConfig,
-				Headers:            clientConfig.Headers,
-				ToolsToExecute:     clientConfig.ToolsToExecute,
-				ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+				ID:                  clientConfig.ClientID,
+				Name:                clientConfig.Name,
+				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+				ConnectionString:    clientConfig.ConnectionString,
+				StdioConfig:         clientConfig.StdioConfig,
+				Headers:             clientConfig.Headers,
+				ToolsToExecute:      clientConfig.ToolsToExecute,
+				ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+				AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 			}
 			return nil
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
 	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
-		ID:                 clientConfig.ClientID,
-		Name:               clientConfig.Name,
-		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-		ConnectionString:   clientConfig.ConnectionString,
-		StdioConfig:        clientConfig.StdioConfig,
-		Headers:            clientConfig.Headers,
-		ToolsToExecute:     clientConfig.ToolsToExecute,
-		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+		ID:                  clientConfig.ClientID,
+		Name:                clientConfig.Name,
+		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+		ConnectionString:    clientConfig.ConnectionString,
+		StdioConfig:         clientConfig.StdioConfig,
+		Headers:             clientConfig.Headers,
+		ToolsToExecute:      clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+		AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 	})
 
 	return nil
@@ -704,6 +768,14 @@ func (m *MockConfigStore) GetVirtualKeyByValue(ctx context.Context, value string
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientID(ctx context.Context, mcpClientID uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Context, mcpClientIDs []uint) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
 // Virtual key provider config
 func (m *MockConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error) {
 	return nil, nil
@@ -850,6 +922,30 @@ func (m *MockConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables
 }
 
 func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilters) ([]tables.TablePricingOverride, error) {
+	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverridesPaginated(ctx context.Context, params configstore.PricingOverridesQueryParams) ([]tables.TablePricingOverride, int64, error) {
+	return []tables.TablePricingOverride{}, 0, nil
+}
+
+func (m *MockConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -12247,13 +12343,13 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	mock := &MockConfigStore{
 		plugins: []*tables.TablePlugin{
 			{
-				Name:      "plugin-a",
-				Enabled:   true,
-				Placement: &postBuiltin,
-				Order:     &order0,
-				Version:   1,
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				Version:    1,
 				ConfigJSON: `{"setting":"db-value"}`,
-				Config:    map[string]any{"setting": "db-value"},
+				Config:     map[string]any{"setting": "db-value"},
 			},
 		},
 	}
@@ -12292,17 +12388,17 @@ func TestGenerateClientConfigHash(t *testing.T) {
 	initTestLogger()
 
 	cc1 := configstore.ClientConfig{
-		DropExcessRequests:      true,
-		InitialPoolSize:         300,
-		PrometheusLabels:        []string{"label1", "label2"},
-		EnableLogging:           new(true),
-		DisableContentLogging:   false,
-		LogRetentionDays:        30,
+		DropExcessRequests:     true,
+		InitialPoolSize:        300,
+		PrometheusLabels:       []string{"label1", "label2"},
+		EnableLogging:          new(true),
+		DisableContentLogging:  false,
+		LogRetentionDays:       30,
 		EnforceAuthOnInference: false,
 		AllowDirectKeys:        true,
-		AllowedOrigins:          []string{"http://localhost:3000"},
-		MaxRequestBodySizeMB:    100,
-		EnableLiteLLMFallbacks:  false,
+		AllowedOrigins:         []string{"http://localhost:3000"},
+		MaxRequestBodySizeMB:   100,
+		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -13341,30 +13437,30 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		labels := []string{"provider", "model", "status"}
 
 		ccToSave := tables.TableClientConfig{
-			DropExcessRequests:      true,
-			InitialPoolSize:         300,
-			PrometheusLabels:        labels,
-			EnableLogging:           new(true),
-			DisableContentLogging:   false,
-			LogRetentionDays:        30,
+			DropExcessRequests:     true,
+			InitialPoolSize:        300,
+			PrometheusLabels:       labels,
+			EnableLogging:          new(true),
+			DisableContentLogging:  false,
+			LogRetentionDays:       30,
 			EnforceAuthOnInference: false,
-			AllowDirectKeys:         true,
-			MaxRequestBodySizeMB:    100,
-			EnableLiteLLMFallbacks:  false,
+			AllowDirectKeys:        true,
+			MaxRequestBodySizeMB:   100,
+			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
 		clientConfig := configstore.ClientConfig{
-			DropExcessRequests:      ccToSave.DropExcessRequests,
-			InitialPoolSize:         ccToSave.InitialPoolSize,
-			PrometheusLabels:        ccToSave.PrometheusLabels,
-			EnableLogging:           ccToSave.EnableLogging,
-			DisableContentLogging:   ccToSave.DisableContentLogging,
-			LogRetentionDays:        ccToSave.LogRetentionDays,
+			DropExcessRequests:     ccToSave.DropExcessRequests,
+			InitialPoolSize:        ccToSave.InitialPoolSize,
+			PrometheusLabels:       ccToSave.PrometheusLabels,
+			EnableLogging:          ccToSave.EnableLogging,
+			DisableContentLogging:  ccToSave.DisableContentLogging,
+			LogRetentionDays:       ccToSave.LogRetentionDays,
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
-			AllowDirectKeys:         ccToSave.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccToSave.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccToSave.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13374,16 +13470,16 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Where("id = ?", ccToSave.ID).First(&ccFromDB)
 
 		clientConfigFromDB := configstore.ClientConfig{
-			DropExcessRequests:      ccFromDB.DropExcessRequests,
-			InitialPoolSize:         ccFromDB.InitialPoolSize,
-			PrometheusLabels:        ccFromDB.PrometheusLabels,
-			EnableLogging:           ccFromDB.EnableLogging,
-			DisableContentLogging:   ccFromDB.DisableContentLogging,
-			LogRetentionDays:        ccFromDB.LogRetentionDays,
+			DropExcessRequests:     ccFromDB.DropExcessRequests,
+			InitialPoolSize:        ccFromDB.InitialPoolSize,
+			PrometheusLabels:       ccFromDB.PrometheusLabels,
+			EnableLogging:          ccFromDB.EnableLogging,
+			DisableContentLogging:  ccFromDB.DisableContentLogging,
+			LogRetentionDays:       ccFromDB.LogRetentionDays,
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
-			AllowDirectKeys:         ccFromDB.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccFromDB.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -15406,12 +15502,13 @@ var enterpriseSchemaPaths = map[string]bool{
 var excludedGoFields = map[string]map[string]bool{
 	// ClientConfig - MCP fields are managed at MCP level, not client level
 	"configstore.ClientConfig": {
-		"ConfigHash":                  true,
-		"allowed_headers":             true, // Internal use
-		"mcp_agent_depth":             true, // Managed via MCP config
-		"mcp_code_mode_binding_level": true,
-		"mcp_tool_execution_timeout":  true,
-		"mcp_tool_sync_interval":      true,
+		"ConfigHash":                   true,
+		"allowed_headers":              true, // Internal use
+		"mcp_agent_depth":              true, // Managed via MCP config
+		"mcp_code_mode_binding_level":  true,
+		"mcp_tool_execution_timeout":   true,
+		"mcp_tool_sync_interval":       true,
+		"mcp_disable_auto_tool_inject": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise

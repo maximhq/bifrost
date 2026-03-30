@@ -1,4 +1,14 @@
-import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProviderName } from "@/lib/types/config";
+import {
+	AddProviderRequest,
+	CreateProviderKeyRequest,
+	ListProviderKeysResponse,
+	ListProvidersResponse,
+	ModelProvider,
+	ModelProviderKey,
+	ModelProviderName,
+	UpdateProviderRequest,
+	UpdateProviderKeyRequest,
+} from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
@@ -64,6 +74,8 @@ export interface ListBaseModelsResponse {
 	total: number;
 }
 
+type UpdateProviderMutationArg = UpdateProviderRequest & { name: ModelProviderName };
+
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
 	base_model: "default",
@@ -108,6 +120,17 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
 		}),
 
+		getProviderKeys: builder.query<ModelProviderKey[], string>({
+			query: (provider) => `/providers/${encodeURIComponent(provider)}/keys`,
+			transformResponse: (response: ListProviderKeysResponse) => response.keys ?? [],
+			providesTags: (result, error, provider) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
 		// Create new provider
 		createProvider: builder.mutation<ModelProvider, AddProviderRequest>({
 			query: (data) => ({
@@ -129,12 +152,13 @@ export const providersApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing provider
-		updateProvider: builder.mutation<ModelProvider, ModelProvider>({
-			query: (provider) => ({
-				url: `/providers/${encodeURIComponent(provider.name)}`,
+		updateProvider: builder.mutation<ModelProvider, UpdateProviderMutationArg>({
+			query: ({ name, ...body }) => ({
+				url: `/providers/${encodeURIComponent(name)}`,
 				method: "PUT",
-				body: provider,
+				body,
 			}),
+			invalidatesTags: (result, error, arg) => [{ type: "ProviderKeys", id: arg.name }, "DBKeys"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: updatedProvider } = await queryFulfilled;
@@ -147,6 +171,101 @@ export const providersApi = baseApi.injectEndpoints({
 						}),
 					);
 					dispatch(providersApi.util.updateQueryData("getProvider", arg.name, () => updatedProvider));
+				} catch {}
+			},
+		}),
+
+		createProviderKey: builder.mutation<ModelProviderKey, { provider: string; key: CreateProviderKeyRequest }>({
+			query: ({ provider, key }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys`,
+				method: "POST",
+				body: key,
+			}),
+			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: newKey } = await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const exists = draft.some((k) => k.id === newKey.id);
+							if (!exists) {
+								draft.push(newKey);
+							}
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const exists = draft.some((k) => k.key_id === newKey.id);
+							if (!exists) {
+								draft.push({
+									key_id: newKey.id,
+									name: newKey.name,
+									provider_id: "",
+									models: newKey.models ?? [],
+									provider: provider as ModelProviderName,
+								});
+							}
+						}),
+					);
+				} catch {}
+			},
+		}),
+
+		updateProviderKey: builder.mutation<ModelProviderKey, { provider: string; keyId: string; key: UpdateProviderKeyRequest }>({
+			query: ({ provider, keyId, key }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+				method: "PUT",
+				body: key,
+			}),
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: updatedKey } = await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft[index] = updatedKey;
+							}
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => updatedKey),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const index = draft.findIndex((k) => k.key_id === keyId);
+							if (index !== -1) {
+								draft[index] = { ...draft[index], name: updatedKey.name, models: updatedKey.models ?? [] };
+							}
+						}),
+					);
+				} catch {}
+			},
+		}),
+
+		deleteProviderKey: builder.mutation<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+				method: "DELETE",
+			}),
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft.splice(index, 1);
+							}
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const index = draft.findIndex((k) => k.key_id === keyId);
+							if (index !== -1) {
+								draft.splice(index, 1);
+							}
+						}),
+					);
 				} catch {}
 			},
 		}),
@@ -167,6 +286,16 @@ export const providersApi = baseApi.injectEndpoints({
 								draft.splice(index, 1);
 							}
 						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", providerName, (draft) => {
+							draft.splice(0, draft.length);
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) =>
+							draft.filter((key) => key.provider !== providerName),
+						),
 					);
 				} catch {}
 			},
@@ -224,14 +353,21 @@ export const providersApi = baseApi.injectEndpoints({
 export const {
 	useGetProvidersQuery,
 	useGetProviderQuery,
+	useGetProviderKeysQuery,
+	useGetProviderKeyQuery,
 	useCreateProviderMutation,
 	useUpdateProviderMutation,
+	useCreateProviderKeyMutation,
+	useUpdateProviderKeyMutation,
+	useDeleteProviderKeyMutation,
 	useDeleteProviderMutation,
 	useGetAllKeysQuery,
 	useGetModelsQuery,
 	useGetBaseModelsQuery,
 	useLazyGetProvidersQuery,
 	useLazyGetProviderQuery,
+	useLazyGetProviderKeysQuery,
+	useLazyGetProviderKeyQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,

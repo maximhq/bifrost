@@ -272,6 +272,7 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_tool_execution_timeout",
 		"mcp_code_mode_binding_level",
 		"mcp_tool_sync_interval",
+		"mcp_disable_auto_tool_inject",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -290,7 +291,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_agent_depth": 5,
 				"mcp_tool_execution_timeout": 60,
 				"mcp_code_mode_binding_level": "server",
-				"mcp_tool_sync_interval": 10
+				"mcp_tool_sync_interval": 10,
+				"mcp_disable_auto_tool_inject": false
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {

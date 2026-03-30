@@ -5,7 +5,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
@@ -64,6 +63,9 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
 	server.WithToolFilter(handler.makeIncludeClientsFilter())(handler.globalMCPServer)
 
+	// Register per-request tool filter so x-bf-mcp-include-clients and x-bf-mcp-include-tools are respected on tools/list
+	server.WithToolFilter(handler.makeIncludeClientsFilter())(handler.globalMCPServer)
+
 	if err := handler.SyncAllMCPServers(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -87,7 +89,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	defer cancel()
 
 	// Use mcp-go server to handle the request
@@ -126,7 +128,7 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Connection", "keep-alive")
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
@@ -235,7 +237,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// Inject tool filter into execution context if present
 			if toolFilter != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), toolFilter)
+				ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, toolFilter)
 			}
 			// Convert to Bifrost tool call format
 			toolCallType := "function"
@@ -323,34 +325,49 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 	ctx := context.Background()
 	var toolFilter []string
 
-	if len(vk.MCPConfigs) > 0 {
-		executeOnlyTools := make([]string, 0)
-		for _, vkMcpConfig := range vk.MCPConfigs {
-			if len(vkMcpConfig.ToolsToExecute) == 0 {
-				// No tools specified in virtual key config - skip this client entirely
-				continue
-			}
+	executeOnlyTools := make([]string, 0)
 
-			// Handle wildcard in virtual key config - allow all tools from this client
-			if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
-				// Virtual key uses wildcard - use client-specific wildcard
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
-				continue
-			}
+	// Build a lookup of AllowOnAllVirtualKeys clients: clientID -> clientName.
+	// Explicit VK MCPConfigs always take precedence over AllowOnAllVirtualKeys.
+	allowAllVKsClients := h.config.GetAllowOnAllVirtualKeysClients()
+	if allowAllVKsClients == nil {
+		allowAllVKsClients = make(map[string]string)
+	}
 
-			for _, tool := range vkMcpConfig.ToolsToExecute {
-				if tool != "" {
-					// Add the tool - client config filtering will be handled by mcp.go
-					// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
-					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
-				}
+	// Process explicit VK MCPConfigs first.
+	handledClients := make(map[string]bool)
+	for _, vkMcpConfig := range vk.MCPConfigs {
+		clientID := vkMcpConfig.MCPClient.ClientID
+		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
+			// Explicit config exists — it takes precedence; mark handled regardless of tool list.
+			handledClients[clientID] = true
+		}
+		if vkMcpConfig.ToolsToExecute.IsEmpty() {
+			continue
+		}
+		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
+			continue
+		}
+		for _, tool := range vkMcpConfig.ToolsToExecute {
+			if tool != "" {
+				// Add the tool - client config filtering will be handled by mcp.go
+				// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
+				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
 			}
 		}
-
-		// Set even when empty to exclude tools when no tools are present in the virtual key config
-		ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), executeOnlyTools)
-		toolFilter = executeOnlyTools
 	}
+
+	// For AllowOnAllVirtualKeys clients with no explicit VK config, allow all their tools.
+	for clientID, clientName := range allowAllVKsClients {
+		if !handledClients[clientID] {
+			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
+		}
+	}
+
+	// Always set the include-tools filter (empty = deny-all when no MCPConfigs and no AllowOnAllVirtualKeys clients)
+	ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, executeOnlyTools)
+	toolFilter = executeOnlyTools
 
 	return h.toolManager.GetAvailableMCPTools(ctx), toolFilter
 }
@@ -360,7 +377,7 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 // When neither header is present the filter is a no-op, preserving existing behaviour.
 func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-		if ctx.Value(schemas.BifrostContextKey("mcp-include-clients")) == nil && ctx.Value(schemas.BifrostContextKey("mcp-include-tools")) == nil {
+		if ctx.Value(schemas.MCPContextKeyIncludeClients) == nil && ctx.Value(schemas.MCPContextKeyIncludeTools) == nil {
 			return tools
 		}
 		allowed := h.toolManager.GetAvailableMCPTools(ctx)

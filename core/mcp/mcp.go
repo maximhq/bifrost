@@ -21,13 +21,6 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
-
-	// Context keys for client filtering in requests
-	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
-	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
-	// Request context filtering takes priority over client config - context can override client exclusions.
-	MCPContextKeyIncludeClients schemas.BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
-	MCPContextKeyIncludeTools   schemas.BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 )
 
 // ============================================================================
@@ -149,7 +142,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
 					}
 					manager.mu.Unlock()
-					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, clientConfig.IsPingAvailable, manager.logger)
+					isPingAvailable := true
+				if clientConfig.IsPingAvailable != nil {
+					isPingAvailable = *clientConfig.IsPingAvailable
+				}
+				monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
 					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
@@ -170,11 +167,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 //
 // Returns:
 //   - *schemas.BifrostRequest: The request with tools added
-func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 }
 
-func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 

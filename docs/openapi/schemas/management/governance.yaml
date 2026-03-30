@@ -130,6 +130,8 @@ VirtualKeyProviderConfig:
       type: string
     weight:
       type: number
+      nullable: true
+      description: Weight for provider load balancing. Null means excluded from weighted routing.
     allowed_models:
       type: array
       items:
@@ -195,6 +197,7 @@ CreateVirtualKeyRequest:
       type: string
     provider_configs:
       type: array
+      description: Provider configurations (empty means no providers allowed, deny-by-default)
       items:
         type: object
         properties:
@@ -202,6 +205,8 @@ CreateVirtualKeyRequest:
             type: string
           weight:
             type: number
+            nullable: true
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
@@ -216,6 +221,7 @@ CreateVirtualKeyRequest:
               type: string
     mcp_configs:
       type: array
+      description: MCP configurations (empty means no MCP tools allowed, deny-by-default)
       items:
         type: object
         properties:
@@ -255,6 +261,8 @@ UpdateVirtualKeyRequest:
             type: string
           weight:
             type: number
+            nullable: true
+            description: Weight for load balancing. Null means excluded from weighted routing.
           allowed_models:
             type: array
             items:
@@ -929,3 +937,334 @@ UpdateProviderGovernanceRequest:
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+
+# Pricing Overrides
+
+PricingOverrideRequestType:
+  type: string
+  description: >
+    Request type for pricing override filtering. Stream variants are treated
+    identically to their base type — specifying `chat_completion` covers both
+    streaming and non-streaming chat requests.
+  enum:
+    - chat_completion
+    - text_completion
+    - responses
+    - embedding
+    - rerank
+    - speech
+    - transcription
+    - image_generation
+    - image_variation
+    - image_edit
+    - video_generation
+    - video_remix
+
+PricingPatch:
+  type: object
+  description: >
+    Pricing fields to override. Only non-zero/non-null fields are applied.
+    All values are cost per unit in USD.
+  properties:
+    input_cost_per_token:
+      type: number
+      minimum: 0
+    output_cost_per_token:
+      type: number
+      minimum: 0
+    input_cost_per_token_batches:
+      type: number
+      minimum: 0
+    output_cost_per_token_batches:
+      type: number
+      minimum: 0
+    input_cost_per_token_priority:
+      type: number
+      minimum: 0
+    output_cost_per_token_priority:
+      type: number
+      minimum: 0
+    input_cost_per_character:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_read_input_image_token_cost:
+      type: number
+      minimum: 0
+    cache_creation_input_audio_token_cost:
+      type: number
+      minimum: 0
+    input_cost_per_image:
+      type: number
+      minimum: 0
+    output_cost_per_image:
+      type: number
+      minimum: 0
+    input_cost_per_pixel:
+      type: number
+      minimum: 0
+    output_cost_per_pixel:
+      type: number
+      minimum: 0
+    input_cost_per_image_token:
+      type: number
+      minimum: 0
+    output_cost_per_image_token:
+      type: number
+      minimum: 0
+    output_cost_per_image_low_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_medium_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_high_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_auto_quality:
+      type: number
+      minimum: 0
+    output_cost_per_image_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_512_and_512_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2048_and_2048_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_4096_and_4096_pixels:
+      type: number
+      minimum: 0
+    input_cost_per_audio_token:
+      type: number
+      minimum: 0
+    output_cost_per_audio_token:
+      type: number
+      minimum: 0
+    input_cost_per_audio_per_second:
+      type: number
+      minimum: 0
+    input_cost_per_second:
+      type: number
+      minimum: 0
+    input_cost_per_video_per_second:
+      type: number
+      minimum: 0
+    output_cost_per_video_per_second:
+      type: number
+      minimum: 0
+    output_cost_per_second:
+      type: number
+      minimum: 0
+    search_context_cost_per_query:
+      type: number
+      minimum: 0
+    code_interpreter_cost_per_session:
+      type: number
+      minimum: 0
+
+PricingOverride:
+  type: object
+  description: A pricing override that applies custom rates to matching requests.
+  properties:
+    id:
+      type: string
+      description: Unique override ID (UUID)
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+      description: Scope that determines which requests this override applies to
+    virtual_key_id:
+      type: string
+      nullable: true
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: string
+      nullable: true
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: string
+      nullable: true
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+      description: How the pattern is matched against the model name
+    pattern:
+      type: string
+      description: Model name or wildcard prefix (e.g. "gpt-4o" or "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to. At least one value is required.
+    pricing_patch:
+      type: string
+      description: JSON-encoded pricing fields to override (as stored in the database)
+    patch:
+      $ref: '#/PricingPatch'
+      description: Decoded pricing fields (present in API responses)
+    config_hash:
+      type: string
+      nullable: true
+      description: Auto-managed hash for config-file-sourced overrides. Do not set manually.
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreatePricingOverrideRequest:
+  type: object
+  description: Request body for creating a pricing override.
+  required:
+    - name
+    - scope_kind
+    - match_type
+    - pattern
+    - request_types
+  properties:
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+    virtual_key_id:
+      type: string
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: string
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: string
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+    pattern:
+      type: string
+      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to. At least one value is required.
+    patch:
+      $ref: '#/PricingPatch'
+
+UpdatePricingOverrideRequest:
+  type: object
+  description: >
+    Request body for updating a pricing override. All fields are optional —
+    omitted fields are merged from the existing record. The `patch` field is
+    always replaced in full when provided.
+  properties:
+    name:
+      type: string
+      description: Human-readable label
+    scope_kind:
+      type: string
+      enum:
+        - global
+        - provider
+        - provider_key
+        - virtual_key
+        - virtual_key_provider
+        - virtual_key_provider_key
+    virtual_key_id:
+      type: string
+      description: Required for virtual_key* scopes
+    provider_id:
+      type: string
+      description: Required for provider and virtual_key_provider scopes
+    provider_key_id:
+      type: string
+      description: Required for provider_key and virtual_key_provider_key scopes
+    match_type:
+      type: string
+      enum:
+        - exact
+        - wildcard
+    pattern:
+      type: string
+      description: Model name or wildcard prefix ending with * (e.g. "claude-3*")
+    request_types:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/PricingOverrideRequestType'
+      description: Request types this override applies to.
+    patch:
+      $ref: '#/PricingPatch'
+
+PricingOverrideResponse:
+  type: object
+  properties:
+    message:
+      type: string
+    pricing_override:
+      $ref: '#/PricingOverride'
+
+ListPricingOverridesResponse:
+  type: object
+  properties:
+    pricing_overrides:
+      type: array
+      items:
+        $ref: '#/PricingOverride'
+    count:
+      type: integer
+      description: Total number of overrides returned

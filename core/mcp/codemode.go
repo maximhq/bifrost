@@ -3,7 +3,6 @@
 package mcp
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -31,7 +30,7 @@ type CodeMode interface {
 
 	// ExecuteTool handles a code mode tool call by name.
 	// Returns the response message and any error that occurred.
-	ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error)
+	ExecuteTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error)
 
 	// IsCodeModeTool returns true if the given tool name is a code mode tool.
 	IsCodeModeTool(toolName string) bool

@@ -46,9 +46,10 @@ type MCPConfig struct {
 }
 
 type MCPToolManagerConfig struct {
-	ToolExecutionTimeout time.Duration        `json:"tool_execution_timeout"`
-	MaxAgentDepth        int                  `json:"max_agent_depth"`
-	CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
+	ToolExecutionTimeout  time.Duration        `json:"tool_execution_timeout"`
+	MaxAgentDepth         int                  `json:"max_agent_depth"`
+	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
+	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
 }
 
 const (
@@ -75,34 +76,36 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID               string            `json:"client_id"`                          // Client ID
-	Name             string            `json:"name"`                        // Client name
-	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString *EnvVar           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
-	AuthType         MCPAuthType       `json:"auth_type"`                   // Authentication type (none, headers, or oauth)
-	OauthConfigID    *string           `json:"oauth_config_id,omitempty"`   // OAuth config ID (references oauth_configs table)
-	State            string            `json:"state,omitempty"`             // Connection state (connected, disconnected, error)
-	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request (for headers auth type)
-	InProcessServer  *server.MCPServer `json:"-"`                           // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
+	ID                  string            `json:"client_id"`                       // Client ID
+	Name                string            `json:"name"`                            // Client name
+	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
+	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString    *EnvVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
+	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
+	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
+	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
+	Headers             map[string]EnvVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	AllowedExtraHeaders WhiteList         `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList         `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => include only the specified tools
-	ToolsToAutoExecute []string `json:"tools_to_auto_execute,omitempty"` // Auto-execute list.
+	ToolsToAutoExecute WhiteList `json:"tools_to_auto_execute,omitempty"` // Auto-execute list.
 	// ToolsToAutoExecute semantics:
 	// - ["*"] => all tools are auto-executed
 	// - []    => no tools are auto-executed (deny-by-default)
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable  bool               `json:"is_ping_available"`            // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
-	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
-	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`         // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`        // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`              // Tool pricing for each tool (cost per execution)
+	ConfigHash            string             `json:"-"`                                   // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.

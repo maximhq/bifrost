@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -166,11 +167,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 
 // convertTableModelPricingToPricingData converts the TableModelPricing struct to a PricingEntry struct
 func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
-	return &PricingEntry{
-		BaseModel: pricing.BaseModel,
-		Provider:  pricing.Provider,
-		Mode:      pricing.Mode,
-
+	options := PricingOptions{
 		// Costs - Text
 		InputCostPerToken:                 pricing.InputCostPerToken,
 		OutputCostPerToken:                pricing.OutputCostPerToken,
@@ -233,4 +230,30 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 	}
+	return &PricingEntry{
+		BaseModel:      pricing.BaseModel,
+		Provider:       pricing.Provider,
+		Mode:           pricing.Mode,
+		PricingOptions: options,
+	}
+}
+
+// convertTablePricingOverrideToPricingOverride converts a TablePricingOverride to a PricingOverride.
+func convertTablePricingOverrideToPricingOverride(override *configstoreTables.TablePricingOverride) (PricingOverride, error) {
+	var options PricingOptions
+	if err := sonic.Unmarshal([]byte(override.PricingPatchJSON), &options); err != nil {
+		return PricingOverride{}, err
+	}
+	return PricingOverride{
+		ID:            override.ID,
+		Name:          override.Name,
+		ScopeKind:     ScopeKind(override.ScopeKind),
+		VirtualKeyID:  override.VirtualKeyID,
+		ProviderID:    override.ProviderID,
+		ProviderKeyID: override.ProviderKeyID,
+		MatchType:     MatchType(override.MatchType),
+		Pattern:       override.Pattern,
+		RequestTypes:  override.RequestTypes,
+		Options:       options,
+	}, nil
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { BifrostImageGenerationOutput } from "@/lib/types/logs";
+import { BifrostImageGenerationOutput, ImageEditInput, ImageVariationInput } from "@/lib/types/logs";
 import { Image, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImageMessage } from "@/components/chat/ImageMessage";
 import { Button } from "@/components/ui/button";
@@ -13,8 +13,19 @@ interface ImageGenerationInput {
 
 interface ImageViewProps {
 	imageInput?: ImageGenerationInput;
+	imageEditInput?: ImageEditInput;
+	imageVariationInput?: ImageVariationInput;
 	imageOutput?: BifrostImageGenerationOutput;
 	requestType?: string;
+}
+
+// Detect MIME type from base64 magic bytes and return a data URL
+function getImageSrc(b64: string): string {
+	if (b64.startsWith("/9j/")) return `data:image/jpeg;base64,${b64}`;
+	if (b64.startsWith("iVBOR")) return `data:image/png;base64,${b64}`;
+	if (b64.startsWith("UklGR")) return `data:image/webp;base64,${b64}`;
+	if (b64.startsWith("R0lGO")) return `data:image/gif;base64,${b64}`;
+	return `data:image/png;base64,${b64}`;
 }
 
 // Helper function to get method type label from request type
@@ -31,7 +42,7 @@ function getMethodTypeLabel(requestType?: string): string {
 	return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Generation";
 }
 
-export default function ImageView({ imageInput, imageOutput, requestType }: ImageViewProps) {
+export default function ImageView({ imageInput, imageEditInput, imageVariationInput, imageOutput, requestType }: ImageViewProps) {
 	const [currentIndex, setCurrentIndex] = useState(0);
 
 	// Get all valid images
@@ -67,6 +78,57 @@ export default function ImageView({ imageInput, imageOutput, requestType }: Imag
 					<div className="space-y-4 p-6">
 						<div className="text-muted-foreground mb-2 text-xs font-medium">PROMPT</div>
 						<div className="font-mono text-xs">{imageInput.prompt}</div>
+					</div>
+				</div>
+			)}
+
+			{/* Image Edit Input */}
+			{imageEditInput && (
+				<div className="w-full rounded-sm border">
+					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
+						<Image className="h-4 w-4" />
+						{methodTypeLabel} Input
+					</div>
+					<div className="space-y-4 p-6">
+						{imageEditInput.images && imageEditInput.images.length > 0 && (
+							<div>
+								<div className="text-muted-foreground mb-2 text-xs font-medium">INPUT IMAGES</div>
+								<div className="flex flex-wrap gap-2">
+									{imageEditInput.images.map((img, i) =>
+										img.image ? (
+											<img
+												key={i}
+												src={getImageSrc(img.image)}
+												alt={`Input image ${i + 1}`}
+												className="max-h-48 max-w-48 rounded border object-contain"
+											/>
+										) : null
+									)}
+								</div>
+							</div>
+						)}
+						<div>
+							<div className="text-muted-foreground mb-2 text-xs font-medium">PROMPT</div>
+							<div className="font-mono text-xs">{imageEditInput.prompt}</div>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Image Variation Input */}
+			{imageVariationInput && imageVariationInput.image?.image && (
+				<div className="w-full rounded-sm border">
+					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
+						<Image className="h-4 w-4" />
+						{methodTypeLabel} Input
+					</div>
+					<div className="space-y-4 p-6">
+						<div className="text-muted-foreground mb-2 text-xs font-medium">INPUT IMAGE</div>
+						<img
+							src={getImageSrc(imageVariationInput.image.image)}
+							alt="Input image"
+							className="max-h-48 max-w-48 rounded border object-contain"
+						/>
 					</div>
 				</div>
 			)}

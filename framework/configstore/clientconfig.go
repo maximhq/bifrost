@@ -55,6 +55,7 @@ type ClientConfig struct {
 	MCPToolExecutionTimeout         int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel         string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval             int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	MCPDisableAutoToolInject        bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
 	HeaderFilterConfig              *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
@@ -139,6 +140,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
 	} else {
 		hash.Write([]byte("mcpToolSyncInterval:0"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPDisableAutoToolInject {
+		hash.Write([]byte("mcpDisableAutoToolInject:true"))
 	}
 
 	if c.AsyncJobResultTTL > 0 {
@@ -258,7 +264,6 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
-	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -279,7 +284,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
-		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -462,15 +466,6 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
-	// Hash PricingOverrides
-	if p.PricingOverrides != nil {
-		data, err := sonic.Marshal(p.PricingOverrides)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -605,7 +600,7 @@ type VirtualKeyHashInput struct {
 // VirtualKeyProviderConfigHashInput represents provider config fields for hashing
 type VirtualKeyProviderConfigHashInput struct {
 	Provider      string
-	Weight        float64
+	Weight        *float64
 	AllowedModels []string
 	BudgetID      *string
 	RateLimitID   *string
@@ -680,7 +675,14 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			if ri != rj {
 				return ri < rj
 			}
-			return getWeight(sortedProviderConfigs[i].Weight) < getWeight(sortedProviderConfigs[j].Weight)
+			wi, wj := sortedProviderConfigs[i].Weight, sortedProviderConfigs[j].Weight
+			if (wi == nil) != (wj == nil) {
+				return wi == nil
+			}
+			if wi != nil && wj != nil && *wi != *wj {
+				return *wi < *wj
+			}
+			return false
 		})
 		// Filter out provider configs that are not available
 		providerConfigsForHash := make([]VirtualKeyProviderConfigHashInput, len(sortedProviderConfigs))
@@ -698,7 +700,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sort.Strings(sortedAllowedModels)
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
 				Provider:      pc.Provider,
-				Weight:        getWeight(pc.Weight),
+				Weight:        pc.Weight,
 				AllowedModels: sortedAllowedModels,
 				BudgetID:      pc.BudgetID,
 				RateLimitID:   pc.RateLimitID,
@@ -994,6 +996,23 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GeneratePricingOverrideHash generates a SHA256 hash for a pricing override.
+// Skips: CreatedAt, UpdatedAt, ConfigHash (dynamic/meta fields).
+func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) {
+	hash := sha256.New()
+	hash.Write([]byte(p.ID))
+	hash.Write([]byte(p.Name))
+	hash.Write([]byte(p.ScopeKind))
+	hash.Write([]byte(derefStr(p.VirtualKeyID)))
+	hash.Write([]byte(derefStr(p.ProviderID)))
+	hash.Write([]byte(derefStr(p.ProviderKeyID)))
+	hash.Write([]byte(p.MatchType))
+	hash.Write([]byte(p.Pattern))
+	hash.Write([]byte(p.RequestTypesJSON))
+	hash.Write([]byte(p.PricingPatchJSON))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -1117,14 +1136,17 @@ type AuthConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// GovernanceConfig contains governance entities loaded from the config store or
+// reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        []tables.TableTeam        `json:"teams"`
-	Customers    []tables.TableCustomer    `json:"customers"`
-	Budgets      []tables.TableBudget      `json:"budgets"`
-	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
-	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
-	Providers    []tables.TableProvider    `json:"providers"`
-	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
-	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
+	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams            []tables.TableTeam            `json:"teams"`
+	Customers        []tables.TableCustomer        `json:"customers"`
+	Budgets          []tables.TableBudget          `json:"budgets"`
+	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
+	Providers        []tables.TableProvider        `json:"providers"`
+	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
 }

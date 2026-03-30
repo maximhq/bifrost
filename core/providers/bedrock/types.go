@@ -754,11 +754,79 @@ type BedrockBackgroundRemovalParams struct {
 	Image string `json:"image"` // Base64-encoded image
 }
 
-// BedrockImageGenerationResponse represents a Bedrock image generation response
+// StabilityAIImageGenerationRequest represents the request format for Stability AI models on Bedrock
+// (e.g. stability.stable-image-core-v1:1, stability.stable-image-ultra-v1:1)
+type StabilityAIImageGenerationRequest struct {
+	Prompt         string                 `json:"prompt"`
+	AspectRatio    *string                `json:"aspect_ratio,omitempty"`
+	OutputFormat   *string                `json:"output_format,omitempty"`
+	Seed           *int                   `json:"seed,omitempty"`
+	NegativePrompt *string                `json:"negative_prompt,omitempty"`
+	ExtraParams    map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (req *StabilityAIImageGenerationRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
+// StabilityAIImageEditRequest is the flat JSON body for Stability AI image-edit models on Bedrock.
+// Only the fields valid for the detected task type are populated.
+type StabilityAIImageEditRequest struct {
+	// Shared params
+	Image          *string `json:"image,omitempty"` // base64, primary input image
+	Prompt         *string `json:"prompt,omitempty"`
+	NegativePrompt *string `json:"negative_prompt,omitempty"`
+	Seed           *int    `json:"seed,omitempty"`
+	OutputFormat   *string `json:"output_format,omitempty"`
+	StylePreset    *string `json:"style_preset,omitempty"`
+	Mask           *string `json:"mask,omitempty"` // base64 mask image
+	GrowMask       *int    `json:"grow_mask,omitempty"`
+
+	// Outpaint
+	Left  *int `json:"left,omitempty"`
+	Right *int `json:"right,omitempty"`
+	Up    *int `json:"up,omitempty"`
+	Down  *int `json:"down,omitempty"`
+
+	// Upscale-creative / upscale-conservative / outpaint
+	Creativity *float64 `json:"creativity,omitempty"`
+
+	// Recolor
+	SelectPrompt *string `json:"select_prompt,omitempty"`
+
+	// Search-replace
+	SearchPrompt *string `json:"search_prompt,omitempty"`
+
+	// Control-sketch / control-structure
+	ControlStrength *float64 `json:"control_strength,omitempty"`
+
+	// Style-guide
+	AspectRatio *string  `json:"aspect_ratio,omitempty"`
+	Fidelity    *float64 `json:"fidelity,omitempty"`
+
+	// Style-transfer (uses different image field names)
+	InitImage           *string  `json:"init_image,omitempty"`
+	StyleImage          *string  `json:"style_image,omitempty"`
+	StyleStrength       *float64 `json:"style_strength,omitempty"`
+	CompositionFidelity *float64 `json:"composition_fidelity,omitempty"`
+	ChangeStrength      *float64 `json:"change_strength,omitempty"`
+
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (req *StabilityAIImageEditRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
+// BedrockImageGenerationResponse represents a Bedrock image generation response.
+// The Seeds and FinishReasons fields are populated by Stability AI edit models only.
 type BedrockImageGenerationResponse struct {
-	Images    []string `json:"images"`    // list of Base64 encoded images
-	MaskImage string   `json:"maskImage"` // Base64 encoded mask image (optional)
-	Error     string   `json:"error"`     // error message (if present)
+	Images        []string  `json:"images"`         // list of Base64 encoded images
+	MaskImage     string    `json:"maskImage"`      // Base64 encoded mask image (optional)
+	Error         string    `json:"error"`          // error message (if present)
+	Seeds         []int     `json:"seeds"`          // Stability AI: seeds used per image
+	FinishReasons []*string `json:"finish_reasons"` // Stability AI: finish reason per image (may be null)
 }
 
 // ==================== MODELS TYPES ====================

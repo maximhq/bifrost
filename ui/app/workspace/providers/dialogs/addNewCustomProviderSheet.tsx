@@ -100,7 +100,6 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				retry_backoff_initial: 500,
 				retry_backoff_max: 5000,
 			},
-			keys: [],
 		};
 
 		addProvider(payload)

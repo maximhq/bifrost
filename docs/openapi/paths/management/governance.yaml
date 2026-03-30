@@ -898,3 +898,134 @@ provider-governance-by-name:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+# Pricing Overrides CRUD
+
+pricing-overrides:
+  get:
+    operationId: listPricingOverrides
+    summary: List pricing overrides
+    description: Returns all pricing overrides, optionally filtered by scope.
+    tags:
+      - Governance
+    parameters:
+      - name: scope_kind
+        in: query
+        description: Filter by scope kind
+        schema:
+          type: string
+          enum:
+            - global
+            - provider
+            - provider_key
+            - virtual_key
+            - virtual_key_provider
+            - virtual_key_provider_key
+      - name: virtual_key_id
+        in: query
+        description: Filter by virtual key ID (for virtual_key* scopes)
+        schema:
+          type: string
+      - name: provider_id
+        in: query
+        description: Filter by provider ID
+        schema:
+          type: string
+      - name: provider_key_id
+        in: query
+        description: Filter by provider key ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListPricingOverridesResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createPricingOverride
+    summary: Create pricing override
+    description: Creates a new pricing override. The most specific matching scope always wins during cost resolution.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+    responses:
+      '201':
+        description: Pricing override created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/PricingOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+pricing-overrides-by-id:
+  put:
+    operationId: updatePricingOverride
+    summary: Update pricing override
+    description: Updates an existing pricing override. Omitted fields are merged from the existing record. The `patch` field is always replaced in full when provided.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Pricing override ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+    responses:
+      '200':
+        description: Pricing override updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/PricingOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Pricing override not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deletePricingOverride
+    summary: Delete pricing override
+    description: Deletes a pricing override by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Pricing override ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Pricing override deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -8,18 +8,18 @@ import (
 )
 
 const (
-	DefaultMaxRetries              = 0
-	DefaultRetryBackoffInitial     = 500 * time.Millisecond
-	DefaultRetryBackoffMax         = 5 * time.Second
+	DefaultMaxRetries                 = 0
+	DefaultRetryBackoffInitial        = 500 * time.Millisecond
+	DefaultRetryBackoffMax            = 5 * time.Second
 	DefaultRequestTimeoutInSeconds    = 30
-	DefaultMaxConnDurationInSeconds  = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
-	DefaultBufferSize                = 5000
-	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize              = 256
-	DefaultStreamIdleTimeoutInSeconds    = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
-	DefaultMaxConnsPerHost               = 5000
-	MaxConnsPerHostUpperBound            = 10000
-	DefaultMaxIdleConnsPerHost           = 40
+	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultBufferSize                 = 5000
+	DefaultConcurrency                = 1000
+	DefaultStreamBufferSize           = 256
+	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultMaxConnsPerHost            = 5000
+	MaxConnsPerHostUpperBound         = 10000
+	DefaultMaxIdleConnsPerHost        = 40
 )
 
 // Pre-defined errors for provider operations
@@ -52,17 +52,17 @@ const (
 //   - When marshaling to JSON: a time.Duration is converted to milliseconds
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
-	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`     // Disables TLS certificate verification for provider connections
-	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`              // PEM-encoded CA certificate to trust for provider endpoint connections
+	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
+	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
-	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`              // Max TCP connections per provider host (default: 5000)
-	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                   // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
+	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -401,67 +401,6 @@ type CustomProviderConfig struct {
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 }
 
-type PricingOverrideMatchType string
-
-const (
-	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
-	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
-	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
-)
-
-// ProviderPricingOverride contains a partial pricing patch applied at lookup time.
-// Any nil field falls back to the base pricing data.
-type ProviderPricingOverride struct {
-	ModelPattern string                   `json:"model_pattern"`
-	MatchType    PricingOverrideMatchType `json:"match_type"`
-	RequestTypes []RequestType            `json:"request_types,omitempty"`
-
-	// Basic token pricing
-	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
-
-	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-
-	// Character-based pricing
-	InputCostPerCharacter *float64 `json:"input_cost_per_character,omitempty"`
-
-	// Pricing above 128k tokens
-	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-
-	// Pricing above 200k tokens
-	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
-
-	// Cache and batch pricing
-	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
-	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
-	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
-
-	// Image generation pricing
-	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
-	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
-	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
-	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
-	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
-	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
-	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
-	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
-	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
-	CacheReadInputImageTokenCost                  *float64 `json:"cache_read_input_image_token_cost,omitempty"`
-}
-
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
 func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
@@ -477,14 +416,13 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger               Logger                    `json:"-"`
-	ProxyConfig          *ProxyConfig              `json:"proxy_config,omitempty"` // Proxy configuration
-	SendBackRawRequest        bool                      `json:"send_back_raw_request"`         // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse       bool                      `json:"send_back_raw_response"`        // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse   bool                      `json:"store_raw_request_response"`    // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig         *OpenAIConfig             `json:"openai_config,omitempty"`
-	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	Logger                  Logger                `json:"-"`
+	ProxyConfig             *ProxyConfig          `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
