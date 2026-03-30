@@ -94,6 +94,17 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		}
 	}
 
+	// Extract imageConfig from GenerationConfig if present
+	if request.GenerationConfig.ImageConfig != nil {
+		size := convertImagenFormatToSize(
+			&request.GenerationConfig.ImageConfig.ImageSize,
+			&request.GenerationConfig.ImageConfig.AspectRatio,
+		)
+		if size != "" {
+			bifrostReq.Params.Size = &size
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -285,6 +296,17 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		}
 		if len(images) > 0 {
 			bifrostReq.Input.Images = images
+		}
+	}
+
+	// Extract imageConfig from GenerationConfig if present
+	if request.GenerationConfig.ImageConfig != nil {
+		size := convertImagenFormatToSize(
+			&request.GenerationConfig.ImageConfig.ImageSize,
+			&request.GenerationConfig.ImageConfig.AspectRatio,
+		)
+		if size != "" {
+			bifrostReq.Params.Size = &size
 		}
 	}
 
@@ -744,6 +766,17 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Handle size conversion
+		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
+			imageSize, aspectRatio := convertSizeToImagenFormat(*bifrostReq.Params.Size)
+			if imageSize != "" && aspectRatio != "" {
+				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
+					ImageSize:   imageSize,
+					AspectRatio: aspectRatio,
+				}
+			}
+		}
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
