@@ -57,7 +57,7 @@ type ClientConfig struct {
 	MCPToolSyncInterval             int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig              *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
+	RequiredHeaders                 map[string]string                `json:"required_headers,omitempty"`           // Headers that must be present on every request; keys are header names (case-insensitive), values are regex patterns ("*" = any value, "env.VAR" resolved at runtime)
 	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
 	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
@@ -202,12 +202,18 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
-	// Hash RequiredHeaders (sorted for deterministic hashing)
+	// Hash RequiredHeaders (sorted key-value pairs for deterministic hashing)
 	if len(c.RequiredHeaders) > 0 {
-		sortedRequired := make([]string, len(c.RequiredHeaders))
-		copy(sortedRequired, c.RequiredHeaders)
-		sort.Strings(sortedRequired)
-		data, err := sonic.Marshal(sortedRequired)
+		sortedKeys := make([]string, 0, len(c.RequiredHeaders))
+		for k := range c.RequiredHeaders {
+			sortedKeys = append(sortedKeys, k)
+		}
+		sort.Strings(sortedKeys)
+		sortedPairs := make([][2]string, 0, len(sortedKeys))
+		for _, k := range sortedKeys {
+			sortedPairs = append(sortedPairs, [2]string{k, c.RequiredHeaders[k]})
+		}
+		data, err := sonic.Marshal(sortedPairs)
 		if err != nil {
 			return "", err
 		}
