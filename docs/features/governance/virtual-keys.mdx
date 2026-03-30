@@ -70,7 +70,8 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-sonnet-20240229"]
+        "allowed_models": ["claude-3-sonnet-20240229"],
+        "key_ids": ["d7a1b3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"]
       }
     ],
     "team_id": "team-eng-001",
@@ -84,7 +85,6 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       "request_max_limit": 100,
       "request_reset_duration": "1m"
     },
-    "key_ids": ["8c52039e-38c6-48b2-8016-0bd884b7befb"],
     "is_active": true
   }'
 ```
@@ -105,7 +105,8 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "anthropic",
         "weight": 0.5,
-        "allowed_models": ["claude-3-opus-20240229"]
+        "allowed_models": ["claude-3-opus-20240229"],
+        "key_ids": ["d7a1b3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"]
       }
     ],
     "customer_id": "customer-acme-corp",
@@ -173,15 +174,17 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-sonnet-20240229"]
+            "allowed_models": ["claude-3-sonnet-20240229"],
+            "keys": [
+              {
+                "key_id": "d7a1b3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+              }
+            ]
           }
         ],
         "team_id": "team-eng-001",
         "budget_id": "budget-eng-vk",
-        "rate_limit_id": "rate-limit-eng-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "rate_limit_id": "rate-limit-eng-vk"
       },
       {
         "id": "vk-002",
@@ -198,14 +201,16 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
           {
             "provider": "anthropic",
             "weight": 0.5,
-            "allowed_models": ["claude-3-opus-20240229"]
+            "allowed_models": ["claude-3-opus-20240229"],
+            "keys": [
+              {
+                "key_id": "d7a1b3c4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+              }
+            ]
           }
         ],
         "customer_id": "customer-acme-corp",
-        "budget_id": "budget-exec-vk",
-        "keys": [
-          {"key_id": "8c52039e-38c6-48b2-8016-0bd884b7befb"}
-        ]
+        "budget_id": "budget-exec-vk"
       }
     ],
     "budgets": [
