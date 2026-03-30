@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -14,15 +15,35 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// PromptsHandler handles prompt repository endpoints
-type PromptsHandler struct {
-	store configstore.ConfigStore
+// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
+// to trigger an in-memory cache refresh after any repository mutation.
+type PromptCacheReloader interface {
+	Reload(ctx context.Context) error
 }
 
-// NewPromptsHandler creates a new PromptsHandler
-func NewPromptsHandler(store configstore.ConfigStore) *PromptsHandler {
-	return &PromptsHandler{
-		store: store,
+// PromptsHandler handles prompt repository endpoints
+type PromptsHandler struct {
+	store    configstore.ConfigStore
+	reloader PromptCacheReloader // optional; nil when the prompts plugin is not loaded
+}
+
+// NewPromptsHandler creates a new PromptsHandler.
+// reloader may be nil; when set, the in-memory prompt cache is refreshed after mutations.
+func NewPromptsHandler(store configstore.ConfigStore, reloader PromptCacheReloader) *PromptsHandler {
+	if store == nil {
+		return nil
+	}
+	return &PromptsHandler{store: store, reloader: reloader}
+}
+
+// reloadCache triggers a cache refresh if a reloader is configured.
+// Errors are logged but do not fail the originating request.
+func (h *PromptsHandler) reloadCache(ctx context.Context) {
+	if h.reloader == nil {
+		return
+	}
+	if err := h.reloader.Reload(ctx); err != nil {
+		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
 
@@ -294,6 +315,7 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "folder deleted successfully",
 	})
@@ -392,6 +414,7 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -465,6 +488,7 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -493,6 +517,7 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "prompt deleted successfully",
 	})
@@ -619,6 +644,7 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -652,6 +678,7 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "version deleted successfully",
 	})
@@ -1027,6 +1054,7 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
