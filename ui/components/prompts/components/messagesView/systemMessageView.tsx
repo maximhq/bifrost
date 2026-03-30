@@ -119,7 +119,7 @@ export function SystemMessageView({
 				</div>
 			</div>
 
-			<div onClick={() => { if (!disabled && !editMode) setEditMode(true); }} className={!disabled && !editMode ? "cursor-text" : ""}>
+			<div onClick={(e) => { if (!disabled && !editMode && !(e.target as HTMLElement).closest("button, a, [role='button']")) setEditMode(true); }} className={!disabled && !editMode ? "cursor-text" : ""}>
 				{editMode ? (
 					<RichTextarea
 						autoFocus
@@ -168,8 +168,10 @@ export function SystemMessageView({
 				) : (
 					<div
 						className={!disabled ? "cursor-text" : undefined}
-						onClick={() => {
-							if (!disabled) setEditMode(true);
+						onClick={(e) => {
+							if (disabled || editMode) return;
+							if ((e.target as HTMLElement).closest("button, a, [role='button']")) return;
+							setEditMode(true);
 						}}
 					>
 						<Markdown content={content} className="text-muted-foreground" />

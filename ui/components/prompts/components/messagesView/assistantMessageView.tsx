@@ -156,8 +156,10 @@ export function AssistantMessageView({
 				) : (
 					<div
 						className={!disabled && !isStreaming ? "cursor-text" : undefined}
-						onClick={() => {
-							if (!disabled && !isStreaming) setEditMode(true);
+						onClick={(e) => {
+							if (disabled || isStreaming || editMode) return;
+							if ((e.target as HTMLElement).closest("button, a, [role='button']")) return;
+							setEditMode(true);
 						}}
 					>
 						<Markdown content={content} isStreaming={isStreaming} className="text-muted-foreground" />
