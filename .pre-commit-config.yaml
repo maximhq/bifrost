@@ -4,17 +4,22 @@ repos:
   hooks:
   - id: gitleaks
 - repo: https://github.com/golangci/golangci-lint
-  rev: v1.52.2
+  rev: v2.9.0
   hooks:
   - id: golangci-lint
 - repo: https://github.com/jumanjihouse/pre-commit-hooks
   rev: 3.0.0
   hooks:
   - id: shellcheck
-- repo: https://github.com/pre-commit/mirrors-eslint
-  rev: v8.38.0
+- repo: local
   hooks:
   - id: eslint
+    name: eslint (ui)
+    language: system
+    entry: ui/node_modules/.bin/eslint
+    args: [-c, ui/eslint.config.mjs, --max-warnings=0, --fix]
+    files: ^ui/.*\.(mjs|cjs|jsx|tsx?|js)$
+    exclude: ^ui/node_modules/
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v4.4.0
   hooks:
