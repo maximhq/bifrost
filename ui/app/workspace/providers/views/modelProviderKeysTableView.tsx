@@ -31,13 +31,14 @@ interface Props {
 	provider: ModelProvider;
 	headerActions?: ReactNode;
 	isKeyless?: boolean;
-	providerName?: string;
 }
 
-export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless, providerName }: Props) {
-	const isVLLM = (providerName ?? "").toLowerCase() === "vllm";
-	const entityLabel = isVLLM ? "model" : "key";
-	const entityLabelPlural = isVLLM ? "models" : "keys";
+export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
+	const providerName = provider.name?.toLowerCase() ?? "";
+	const isVLLM = providerName === "vllm";
+	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
+	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
+	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -132,7 +133,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : "API Key"}</TableHead>
+								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>

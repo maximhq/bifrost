@@ -164,6 +164,20 @@ export const vllmKeyConfigSchema = z.object({
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
 
+// Ollama key config schema
+export const ollamaKeyConfigSchema = z.object({
+	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+		message: "Server URL is required",
+	}),
+});
+
+// SGL key config schema
+export const sglKeyConfigSchema = z.object({
+	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+		message: "Server URL is required",
+	}),
+});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -197,13 +211,22 @@ export const modelProviderKeySchema = z
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		ollama_key_config: ollamaKeyConfigSchema.optional(),
+		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+			// If a provider-specific key config is present, value is not required
+			if (
+				data.bedrock_key_config ||
+				data.azure_key_config ||
+				data.vertex_key_config ||
+				data.vllm_key_config ||
+				data.ollama_key_config ||
+				data.sgl_key_config
+			) {
 				return true;
 			}
 			// Otherwise, value is required

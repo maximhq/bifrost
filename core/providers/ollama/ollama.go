@@ -3,7 +3,6 @@
 package ollama
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -50,11 +49,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
-	// BaseURL is required for Ollama
-	if config.NetworkConfig.BaseURL == "" {
-		return nil, fmt.Errorf("base_url is required for ollama provider")
-	}
-
+	// BaseURL is optional when keys have ollama_key_config with per-key URLs
 	return &OllamaProvider{
 		logger:              logger,
 		client:              client,
@@ -69,17 +64,42 @@ func (provider *OllamaProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Ollama
 }
 
-// ListModels performs a list models request to Ollama's API.
-func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if provider.networkConfig.BaseURL == "" {
-		return nil, providerUtils.NewConfigurationError("base_url is not set", provider.GetProviderKey())
+// getBaseURL resolves the base URL for a request from the per-key ollama_key_config.
+// Each Ollama key must have its own URL configured — there is no provider-level fallback.
+func (provider *OllamaProvider) getBaseURL(key schemas.Key) string {
+	if key.OllamaKeyConfig != nil && key.OllamaKeyConfig.URL.GetValue() != "" {
+		return strings.TrimRight(key.OllamaKeyConfig.URL.GetValue(), "/")
 	}
-	return openai.HandleOpenAIListModelsRequest(
+	return ""
+}
+
+// baseURLOrError returns the resolved base URL or a BifrostError when none is configured.
+func (provider *OllamaProvider) baseURLOrError(key schemas.Key) (string, *schemas.BifrostError) {
+	u := provider.getBaseURL(key)
+	if u == "" {
+		return "", providerUtils.NewBifrostOperationError(
+			"no base URL configured: set ollama_key_config.url on the key",
+			nil,
+			provider.GetProviderKey(),
+		)
+	}
+	return u, nil
+}
+
+// listModelsByKey performs a list models request for a single Ollama key,
+// resolving the per-key URL so each backend is queried individually.
+func (provider *OllamaProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/models")
+	return openai.ListModelsByKey(
 		ctx,
 		provider.client,
-		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
-		keys,
+		url,
+		key,
+		request.Unfiltered,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -87,12 +107,28 @@ func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	)
 }
 
+// ListModels performs a list models request to Ollama's API.
+// Requests are made concurrently per key so that each backend is queried
+// with its own URL (from ollama_key_config).
+func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return providerUtils.HandleMultipleListModelsRequests(
+		ctx,
+		keys,
+		request,
+		provider.listModelsByKey,
+	)
+}
+
 // TextCompletion performs a text completion request to the Ollama API.
 func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -109,10 +145,14 @@ func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 // It formats the request, sends it to Ollama, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *OllamaProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -129,10 +169,14 @@ func (provider *OllamaProvider) TextCompletionStream(ctx *schemas.BifrostContext
 
 // ChatCompletion performs a chat completion request to the Ollama API.
 func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -150,11 +194,15 @@ func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // Uses Ollama's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+"/v1/chat/completions",
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
@@ -199,10 +247,14 @@ func (provider *OllamaProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 // Embedding performs an embedding request to the Ollama API.
 func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	baseURL, bifrostErr := provider.baseURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

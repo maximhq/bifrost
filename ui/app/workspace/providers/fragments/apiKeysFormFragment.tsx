@@ -55,6 +55,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isOllama = providerName === "ollama";
+	const isSGL = providerName === "sgl";
+	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
@@ -171,7 +174,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!isAzure && !isBedrock && (
+			{!isAzure && !isBedrock && !isKeylessProvider && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -203,7 +206,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												</span>
 											</TooltipTrigger>
 											<TooltipContent>
-												<p>Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.</p>
+												<p>
+													Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.
+												</p>
 											</TooltipContent>
 										</Tooltip>
 									</TooltipProvider>
@@ -255,8 +260,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											</TooltipTrigger>
 											<TooltipContent className="max-w-sm">
 												<p>
-													Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here, it is blocked.
-													Select "All Models" to block every model on this key.
+													Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here,
+													it is blocked. Select "All Models" to block every model on this key.
 												</p>
 											</TooltipContent>
 										</Tooltip>
@@ -686,6 +691,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormDescription>Exact model name served on this vLLM instance</FormDescription>
 								<FormControl>
 									<Input data-testid="key-input-vllm-model-name" placeholder="meta-llama/Llama-3-70b-hf" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isKeylessProvider && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name={`key.${isOllama ? "ollama_key_config" : "sgl_key_config"}.url`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Server URL (Required)</FormLabel>
+								<FormDescription>
+									Base URL of the {isOllama ? "Ollama" : "SGLang"} server (e.g.{" "}
+									{isOllama ? "http://localhost:11434" : "http://localhost:30000"} or {isOllama ? "env.OLLAMA_URL" : "env.SGL_URL"})
+								</FormDescription>
+								<FormControl>
+									<EnvVarInput
+										data-testid={`key-input-${isOllama ? "ollama" : "sgl"}-url`}
+										placeholder={isOllama ? "http://localhost:11434" : "http://localhost:30000"}
+										{...field}
+									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>

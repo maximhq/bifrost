@@ -139,14 +139,34 @@ BedrockKeyConfig:
               is_default:
                 type: boolean
 
-HuggingFaceKeyConfig:
+VllmKeyConfig:
   type: object
-  description: Hugging Face-specific key configuration
+  description: VLLM-specific key configuration
   properties:
-    deployments:
-      type: object
-      additionalProperties:
-        type: string
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    model_name:
+      type: string
+  required:
+    - url
+
+OllamaKeyConfig:
+  type: object
+  description: Ollama-specific key configuration
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - url
+
+SglKeyConfig:
+  type: object
+  description: SGLang-specific key configuration
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - url
 
 ReplicateKeyConfig:
   type: object
@@ -200,12 +220,14 @@ Key:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
-    huggingface_key_config:
-      $ref: '#/HuggingFaceKeyConfig'
     replicate_key_config:
       $ref: '#/ReplicateKeyConfig'
     vllm_key_config:
-      $ref: '#/VLLMKeyConfig'
+      $ref: '#/VllmKeyConfig'
+    ollama_key_config:
+      $ref: '#/OllamaKeyConfig'
+    sgl_key_config:
+      $ref: '#/SglKeyConfig'
     enabled:
       type: boolean
       description: Whether the key is active (defaults to true)
