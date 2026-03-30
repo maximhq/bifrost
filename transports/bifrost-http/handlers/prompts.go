@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -143,7 +144,8 @@ type RenameSessionRequest struct {
 
 // CommitSessionRequest represents the request body for committing a session as a version
 type CommitSessionRequest struct {
-	CommitMessage string `json:"commit_message"`
+	CommitMessage  string `json:"commit_message"`
+	MessageIndices []int  `json:"message_indices,omitempty"` // optional: indices of messages to include (0-based). If empty, all messages are included.
 }
 
 // ============================================================================
@@ -1005,11 +1007,26 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 
 	// Convert session messages to version messages
 	var messages []tables.TablePromptVersionMessage
-	for _, msg := range session.Messages {
-		messages = append(messages, tables.TablePromptVersionMessage{
-			PromptID: session.PromptID,
-			Message:  msg.Message,
-		})
+	if len(req.MessageIndices) > 0 {
+		// Only include messages at the specified indices
+		for _, idx := range req.MessageIndices {
+			if idx < 0 || idx >= len(session.Messages) {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("message index %d out of range (0-%d)", idx, len(session.Messages)-1))
+				return
+			}
+			msg := session.Messages[idx]
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
+	} else {
+		for _, msg := range session.Messages {
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
 	}
 
 	version := &tables.TablePromptVersion{
