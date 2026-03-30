@@ -319,6 +319,7 @@ type ConfigStore interface {
 	DeletePrompt(ctx context.Context, id string) error
 
 	// Prompt Repository - Versions
+	GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error)
 	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
 	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
