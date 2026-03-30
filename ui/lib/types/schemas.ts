@@ -405,6 +405,13 @@ export const proxyFormConfigSchema = z
 		},
 	);
 
+// OpenAI Config tab
+export const openaiConfigFormSchema = z.object({
+	disable_store: z.boolean(),
+});
+
+export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -523,6 +530,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Update provider request schema
@@ -535,6 +543,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
+	openai_config: openaiConfigFormSchema.optional(),
 });
 
 // Cache config schema
@@ -639,13 +648,6 @@ export const betaHeadersFormSchema = z.object({
 });
 
 export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
-
-// OpenAI Config tab
-export const openaiConfigFormSchema = z.object({
-	disable_store: z.boolean(),
-});
-
-export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z

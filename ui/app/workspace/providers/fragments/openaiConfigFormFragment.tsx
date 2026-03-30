@@ -1,12 +1,12 @@
 "use client";
 
+import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
-import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { openaiConfigFormSchema, type OpenAIConfigFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -72,9 +72,9 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 									<div className="space-y-0.5">
 										<FormLabel>Disable Store</FormLabel>
 										<p className="text-muted-foreground text-xs">
-											With the Responses API, store defaults to true, and when it is on, the generated response is stored for later retrieval via API. OpenAI
-											exposes endpoints to retrieve and delete stored responses, so your response IDs become durable server-side objects instead of one-shot
-											IDs.
+											With the Responses API, store defaults to true, and when it is on, the generated response is stored for later
+											retrieval via API. OpenAI exposes endpoints to retrieve and delete stored responses, so your response IDs become
+											durable server-side objects instead of one-shot IDs.
 										</p>
 									</div>
 									<FormControl>
