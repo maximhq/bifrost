@@ -285,8 +285,9 @@ type LargePayloadMetadata struct {
 
 // Fallback represents a fallback model to be used if the primary model is not available.
 type Fallback struct {
-	Provider ModelProvider `json:"provider"`
-	Model    string        `json:"model"`
+	Provider ModelProvider  `json:"provider"`
+	Model    string         `json:"model"`
+	Params   map[string]any `json:"params,omitempty"`
 }
 
 // BifrostRequest is the request struct for all bifrost requests.

@@ -19,6 +19,23 @@ import (
 
 var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
 
+const invalidFallbackEntryError = "invalid fallback entry: provider and model must be specified"
+
+func normalizeAndValidateFallbackEntryForIntegration(fallback schemas.Fallback, index int) (schemas.Fallback, error) {
+	if fallback.Provider == "" || strings.TrimSpace(fallback.Model) == "" {
+		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
+	}
+
+	parsedProvider, parsedModel := schemas.ParseModelString(fallback.Model, fallback.Provider)
+	if parsedProvider == "" || parsedModel == "" || parsedProvider != fallback.Provider {
+		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
+	}
+
+	fallback.Provider = parsedProvider
+	fallback.Model = parsedModel
+	return fallback, nil
+}
+
 var availableIntegrations = []string{
 	"openai",
 	"anthropic",
@@ -276,8 +293,10 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 
 // extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
 func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
-	// Check if the request has a fallbacks field ([]string)
-	fallbacks, err := g.extractFallbacksFromRequest(req)
+	provider, _, _ := bifrostReq.GetRequestFields()
+
+	// Check if the request has a fallbacks field ([]string or []schemas.Fallback)
+	fallbacks, err := g.extractFallbacksFromRequest(req, provider)
 	if err != nil {
 		return fmt.Errorf("failed to extract fallbacks: %w", err)
 	}
@@ -286,65 +305,42 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 		return nil // No fallbacks to process
 	}
 
-	provider, _, _ := bifrostReq.GetRequestFields()
-
-	// Parse fallbacks from strings to Fallback structs
-	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
-	for _, fallbackStr := range fallbacks {
-		if fallbackStr == "" {
-			continue // Skip empty strings
-		}
-
-		// Use ParseModelString to extract provider and model
-		provider, model := schemas.ParseModelString(fallbackStr, provider)
-
-		parsedFallback := schemas.Fallback{
-			Provider: provider,
-			Model:    model,
-		}
-		parsedFallbacks = append(parsedFallbacks, parsedFallback)
-	}
-
-	if len(parsedFallbacks) == 0 {
-		return nil // No valid fallbacks found
-	}
-
 	// Add fallbacks to the main BifrostRequest
-	bifrostReq.SetFallbacks(parsedFallbacks)
+	bifrostReq.SetFallbacks(fallbacks)
 
 	// Also add fallbacks to the specific request type if it exists
 	switch bifrostReq.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if bifrostReq.TextCompletionRequest != nil {
-			bifrostReq.TextCompletionRequest.Fallbacks = parsedFallbacks
+			bifrostReq.TextCompletionRequest.Fallbacks = fallbacks
 		}
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if bifrostReq.ChatRequest != nil {
-			bifrostReq.ChatRequest.Fallbacks = parsedFallbacks
+			bifrostReq.ChatRequest.Fallbacks = fallbacks
 		}
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		if bifrostReq.ResponsesRequest != nil {
-			bifrostReq.ResponsesRequest.Fallbacks = parsedFallbacks
+			bifrostReq.ResponsesRequest.Fallbacks = fallbacks
 		}
 	case schemas.EmbeddingRequest:
 		if bifrostReq.EmbeddingRequest != nil {
-			bifrostReq.EmbeddingRequest.Fallbacks = parsedFallbacks
+			bifrostReq.EmbeddingRequest.Fallbacks = fallbacks
 		}
 	case schemas.RerankRequest:
 		if bifrostReq.RerankRequest != nil {
-			bifrostReq.RerankRequest.Fallbacks = parsedFallbacks
+			bifrostReq.RerankRequest.Fallbacks = fallbacks
 		}
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if bifrostReq.SpeechRequest != nil {
-			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
+			bifrostReq.SpeechRequest.Fallbacks = fallbacks
 		}
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if bifrostReq.TranscriptionRequest != nil {
-			bifrostReq.TranscriptionRequest.Fallbacks = parsedFallbacks
+			bifrostReq.TranscriptionRequest.Fallbacks = fallbacks
 		}
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if bifrostReq.ImageGenerationRequest != nil {
-			bifrostReq.ImageGenerationRequest.Fallbacks = parsedFallbacks
+			bifrostReq.ImageGenerationRequest.Fallbacks = fallbacks
 		}
 	}
 
@@ -352,7 +348,7 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 }
 
 // extractFallbacksFromRequest uses reflection to extract fallbacks field from any request type
-func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, error) {
+func (g *GenericRouter) extractFallbacksFromRequest(req interface{}, defaultProvider schemas.ModelProvider) ([]schemas.Fallback, error) {
 	if req == nil {
 		return nil, nil
 	}
@@ -367,8 +363,8 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 		return nil, nil // Not a struct, no fallbacks
 	}
 
-	// Look for the "fallbacks" field
-	fallbacksField := reqValue.FieldByName("fallbacks")
+	// Look for the "Fallbacks" field
+	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
 		return nil, nil // No fallbacks field found
 	}
@@ -378,15 +374,41 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	case reflect.Slice:
 		if fallbacksField.Type().Elem().Kind() == reflect.String {
 			// []string case
-			fallbacks := make([]string, fallbacksField.Len())
+			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
 			for i := 0; i < fallbacksField.Len(); i++ {
-				fallbacks[i] = fallbacksField.Index(i).String()
+				fallbackStr := fallbacksField.Index(i).String()
+				provider, model := schemas.ParseModelString(fallbackStr, defaultProvider)
+				if provider == "" || model == "" {
+					return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+				}
+				fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+			}
+			return fallbacks, nil
+		}
+
+		fallbackType := reflect.TypeOf(schemas.Fallback{})
+		if fallbacksField.Type().Elem() == fallbackType {
+			fallbacks := make([]schemas.Fallback, 0, fallbacksField.Len())
+			for i := 0; i < fallbacksField.Len(); i++ {
+				fallback, ok := fallbacksField.Index(i).Interface().(schemas.Fallback)
+				if !ok {
+					return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+				}
+				normalized, normalizeErr := normalizeAndValidateFallbackEntryForIntegration(fallback, i)
+				if normalizeErr != nil {
+					return nil, normalizeErr
+				}
+				fallbacks = append(fallbacks, normalized)
 			}
 			return fallbacks, nil
 		}
 	case reflect.String:
 		// Single string case - treat as one fallback
-		return []string{fallbacksField.String()}, nil
+		provider, model := schemas.ParseModelString(fallbacksField.String(), defaultProvider)
+		if provider != "" && model != "" {
+			return []schemas.Fallback{{Provider: provider, Model: model}}, nil
+		}
+		return nil, fmt.Errorf("%s (index 0)", invalidFallbackEntryError)
 	}
 
 	return nil, nil
