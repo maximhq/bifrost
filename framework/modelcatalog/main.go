@@ -65,6 +65,11 @@ type PricingEntry struct {
 	Provider  string `json:"provider"`
 	Mode      string `json:"mode"`
 
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
 	// Costs - Text
 	InputCostPerToken          float64  `json:"input_cost_per_token"`
 	OutputCostPerToken         float64  `json:"output_cost_per_token"`
@@ -121,9 +126,6 @@ type PricingEntry struct {
 	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
-
-	// Model parameters
-	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 
 	// Costs - Other
 	//
@@ -391,6 +393,43 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		}
 	}
 	return nil
+}
+
+// GetModelCapabilityEntryForModel returns capability metadata for a model/provider pair.
+// It prefers chat, then responses, then text-completion entries; if none exist,
+// it falls back to the lexicographically first available mode for deterministic behavior.
+func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	preferredModes := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+
+	for _, mode := range preferredModes {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+
+	prefix := model + "|" + string(provider) + "|"
+	matchingKeys := make([]string, 0)
+	for key := range mc.pricingData {
+		if strings.HasPrefix(key, prefix) {
+			matchingKeys = append(matchingKeys, key)
+		}
+	}
+	if len(matchingKeys) == 0 {
+		return nil
+	}
+
+	slices.Sort(matchingKeys)
+	pricing := mc.pricingData[matchingKeys[0]]
+	return convertTableModelPricingToPricingData(&pricing)
 }
 
 // GetModelsForProvider returns all available models for a given provider (thread-safe)
