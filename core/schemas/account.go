@@ -130,5 +130,8 @@ type Account interface {
 	// GetConfigForProvider returns the configuration for a specific provider.
 	// This includes network settings, authentication details, and other provider-specific
 	// configurations.
+	// Return (nil, nil) when the provider has no static configuration — Bifrost treats this
+	// as "not configured" and may auto-initialise the provider for dynamic routing.
+	// Return (nil, error) only for genuine lookup failures (e.g. database errors).
 	GetConfigForProvider(providerKey ModelProvider) (*ProviderConfig, error)
 }
