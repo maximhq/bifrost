@@ -155,7 +155,32 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 				model := routingCtx.Model
 				if target.Model != nil && *target.Model != "" {
-					model = *target.Model
+					targetModel := strings.TrimSpace(*target.Model)
+					// Model transform: cached sync.Map lookup (zero allocs), then either
+					// static passthrough or precompiled CEL eval. Errors are also cached
+					// so misconfigured rules cost only one map lookup per request, not
+					// repeated compilation or log-spam.
+					modelProg, modelErr := re.store.GetModelTransformProgram(targetModel)
+					if modelErr != nil {
+						// Log at Debug — the operator was already warned at rule-load time
+						// in UpdateRoutingRuleInMemory. Debug avoids per-request log spam.
+						re.logger.Debug("[RoutingEngine] Rule %s skipped: model expression error: %v", rule.Name, modelErr)
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → skipped: model expression error: %v", rule.Name, rule.CelExpression, modelErr))
+						continue
+					}
+					if modelProg != nil {
+						// CEL string expression — evaluate with routing variables (already extracted above)
+						resolved, evalErr := evaluateCELStringExpression(modelProg, variables)
+						if evalErr != nil {
+							re.logger.Debug("[RoutingEngine] Rule %s skipped: model CEL evaluation failed: %v", rule.Name, evalErr)
+							ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → skipped: model CEL eval failed: %v", rule.Name, rule.CelExpression, evalErr))
+							continue
+						}
+						model = resolved
+					} else {
+						// Static model string — use directly (already trimmed), no computation
+						model = targetModel
+					}
 				}
 
 				keyID := ""
@@ -186,6 +211,27 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// evaluateCELStringExpression evaluates a precompiled CEL program that produces a string result.
+// Used for model transformation expressions (e.g., "anthropic/" + model).
+// The program must have been compiled against the routing CEL environment.
+func evaluateCELStringExpression(program cel.Program, variables map[string]interface{}) (string, error) {
+	if program == nil {
+		return "", fmt.Errorf("CEL program is nil")
+	}
+
+	out, _, err := program.Eval(variables)
+	if err != nil {
+		return "", fmt.Errorf("CEL evaluation error: %w", err)
+	}
+
+	result, ok := out.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("CEL expression did not return string, got: %T", out.Value())
+	}
+
+	return result, nil
 }
 
 // selectWeightedTarget picks one target from the slice using weighted random selection.
@@ -307,8 +353,13 @@ func evaluateCELExpression(program cel.Program, variables map[string]interface{}
 	return matched, nil
 }
 
-// extractRoutingVariables builds a map of CEL variables from routing context
-// This map is used to evaluate CEL expressions in routing rules
+// extractRoutingVariables builds a map of CEL variables from routing context.
+// This map is used to evaluate CEL expressions in routing rules.
+//
+// NOTE: This allocates a new map per call (one per EvaluateRoutingRules invocation).
+// The allocation is acceptable given that CEL evaluation itself dominates the cost,
+// and the map is needed for both boolean rule matching and model transformation.
+// If profiling shows this as a bottleneck, the map can be pooled via sync.Pool.
 func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("routing context cannot be nil")
