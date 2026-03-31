@@ -2546,13 +2546,14 @@
           "enum": [
             "none",
             "headers",
-            "oauth"
+            "oauth",
+            "per_user_oauth"
           ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
           "type": "string",
-          "description": "OAuth config ID reference (for oauth auth type)"
+          "description": "OAuth config ID reference (required when auth_type is 'oauth' or 'per_user_oauth')"
         },
         "headers": {
           "type": "object",
@@ -2665,6 +2666,17 @@
         "connection_type"
       ],
       "additionalProperties": false,
+      "if": {
+        "properties": {
+          "auth_type": {
+            "enum": ["oauth", "per_user_oauth"]
+          }
+        },
+        "required": ["auth_type"]
+      },
+      "then": {
+        "required": ["oauth_config_id"]
+      },
       "oneOf": [
         {
           "properties": {

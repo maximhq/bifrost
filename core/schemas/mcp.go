@@ -20,7 +20,22 @@ var (
 	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
 	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
 	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
+	ErrOAuth2NotPerUserSession    = errors.New("state does not match a per-user oauth session")
 )
+
+// MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires
+// the user to authenticate before tool execution can proceed.
+type MCPUserOAuthRequiredError struct {
+	MCPClientID   string `json:"mcp_client_id"`
+	MCPClientName string `json:"mcp_client_name"`
+	AuthorizeURL  string `json:"authorize_url"`
+	SessionID     string `json:"session_id"`
+	Message       string `json:"message"`
+}
+
+func (e *MCPUserOAuthRequiredError) Error() string {
+	return e.Message
+}
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
@@ -69,9 +84,10 @@ const (
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone    MCPAuthType = "none"    // No authentication
-	MCPAuthTypeHeaders MCPAuthType = "headers" // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth   MCPAuthType = "oauth"   // OAuth 2.0 authentication
+	MCPAuthTypeNone         MCPAuthType = "none"           // No authentication
+	MCPAuthTypeHeaders      MCPAuthType = "headers"        // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth        MCPAuthType = "oauth"          // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth MCPAuthType = "per_user_oauth" // Per-user OAuth 2.0 authentication (each user authenticates individually)
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.
@@ -106,6 +122,10 @@ type MCPClientConfig struct {
 	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`              // Tool pricing for each tool (cost per execution)
 	ConfigHash            string             `json:"-"`                                   // Config hash for reconciliation (not serialized)
 	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+
+	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
+	DiscoveredTools          map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
+	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
@@ -150,6 +170,9 @@ func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2
 		for key, value := range c.Headers {
 			headers[key] = value.GetValue()
 		}
+	case MCPAuthTypePerUserOauth:
+		// Per-user OAuth: headers are injected per-call in executeToolInternal, not at connection level
+		return headers, nil
 	case MCPAuthTypeNone:
 		// No headers to add
 	default:
@@ -182,9 +205,10 @@ type MCPStdioConfig struct {
 type MCPConnectionState string
 
 const (
-	MCPConnectionStateConnected    MCPConnectionState = "connected"    // Client is connected and ready to use
-	MCPConnectionStateDisconnected MCPConnectionState = "disconnected" // Client is not connected
-	MCPConnectionStateError        MCPConnectionState = "error"        // Client is in an error state, and cannot be used
+	MCPConnectionStateConnected    MCPConnectionState = "connected"     // Client is connected and ready to use
+	MCPConnectionStateDisconnected MCPConnectionState = "disconnected"  // Client is not connected
+	MCPConnectionStateError        MCPConnectionState = "error"         // Client is in an error state, and cannot be used
+	MCPConnectionStatePendingTools MCPConnectionState = "pending_tools" // Connected but tools not yet populated
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.

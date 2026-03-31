@@ -5,7 +5,7 @@ export type MCPConnectionType = "http" | "stdio" | "sse";
 
 export type MCPConnectionState = "connected" | "disconnected" | "error";
 
-export type MCPAuthType = "none" | "headers" | "oauth";
+export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth";
 
 export type { EnvVar };
 

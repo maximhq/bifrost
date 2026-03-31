@@ -367,6 +367,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMultiBudgetTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPerUserOAuthTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientDiscoveredToolsColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5885,7 +5891,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			// Drop legacy budget_id columns from VK and ProviderConfig (raw SQL to avoid GORM FK lookup issues)
 			_ = tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN IF EXISTS budget_id")
 			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
-
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -5899,6 +5904,7 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			if mg.HasColumn(&tables.TableBudget{}, "provider_config_id") {
 				if err := mg.DropColumn(&tables.TableBudget{}, "provider_config_id"); err != nil {
 					return err
+
 				}
 			}
 			return nil
@@ -5906,6 +5912,96 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_multi_budget_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPerUserOAuthTables adds the oauth_user_sessions and oauth_user_tokens tables
+func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_per_user_oauth_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(&tables.TablePerUserOAuthClient{}); err != nil {
+				return fmt.Errorf("failed to create oauth_per_user_clients table: %w", err)
+			}
+			if err := tx.AutoMigrate(&tables.TablePerUserOAuthSession{}); err != nil {
+				return fmt.Errorf("failed to create oauth_per_user_sessions table: %w", err)
+			}
+			if err := tx.AutoMigrate(&tables.TablePerUserOAuthCode{}); err != nil {
+				return fmt.Errorf("failed to create oauth_per_user_codes table: %w", err)
+			}
+			if err := tx.AutoMigrate(&tables.TableOauthUserToken{}); err != nil {
+				return fmt.Errorf("failed to add identity columns to oauth_user_tokens: %w", err)
+			}
+			if err := tx.AutoMigrate(&tables.TableOauthUserSession{}); err != nil {
+				return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, table := range []any{
+				&tables.TablePerUserOAuthCode{},
+				&tables.TablePerUserOAuthSession{},
+				&tables.TablePerUserOAuthClient{},
+				&tables.TableOauthUserToken{},
+				&tables.TableOauthUserSession{},
+			} {
+				if mg.HasTable(table) {
+					if err := mg.DropTable(table); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_per_user_oauth_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientDiscoveredToolsColumns adds discovered_tools_json and tool_name_mapping_json columns to the mcp_client table
+func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_discovered_tools_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "discovered_tools_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "discovered_tools_json"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableMCPClient{}, "tool_name_mapping_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_name_mapping_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
 	}
 	return nil
 }

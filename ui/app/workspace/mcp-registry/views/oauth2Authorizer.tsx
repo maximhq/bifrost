@@ -15,6 +15,7 @@ interface OAuth2AuthorizerProps {
 	authorizeUrl: string
 	oauthConfigId: string
 	mcpClientId: string
+	isPerUserOauth?: boolean
 }
 
 export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
@@ -25,8 +26,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	authorizeUrl,
 	oauthConfigId,
 	mcpClientId,
+	isPerUserOauth,
 }) => {
-	const [status, setStatus] = useState<"pending" | "polling" | "success" | "failed">("pending")
+	const [status, setStatus] = useState<"confirm" | "pending" | "polling" | "success" | "failed">(isPerUserOauth ? "confirm" : "pending")
 	const [errorMessage, setErrorMessage] = useState<string | null>(null)
 	const popupRef = useRef<Window | null>(null)
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
@@ -169,12 +171,18 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		}
 	}, [checkOAuthStatus])
 
-	// Open popup when dialog opens
+	// Open popup when dialog opens (skip if waiting for user confirmation)
 	useEffect(() => {
 		if (open && status === "pending") {
 			openPopup()
 		}
 	}, [open, status, openPopup])
+
+	// Handle user confirming per-user OAuth test
+	const handleConfirmPerUserOAuth = () => {
+		setStatus("pending")
+		openPopup()
+	}
 
 	// Cleanup on unmount
 	useEffect(() => {
@@ -187,9 +195,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	}, [stopPolling])
 
 	const handleRetry = () => {
-		setStatus("pending")
 		setErrorMessage(null)
-		openPopup()
+		if (isPerUserOauth) {
+			setStatus("confirm")
+		} else {
+			setStatus("pending")
+			openPopup()
+		}
 	}
 
 	const handleCancel = () => {
@@ -204,8 +216,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		<Dialog open={open}>
 			<DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
 				<DialogHeader>
-					<DialogTitle>OAuth Authorization</DialogTitle>
+					<DialogTitle>{status === "confirm" ? "Test OAuth Configuration" : "OAuth Authorization"}</DialogTitle>
 					<DialogDescription>
+						{status === "confirm" && "A one-time login is needed to verify your OAuth setup."}
 						{status === "pending" && "Opening authorization window..."}
 						{status === "polling" && "Waiting for authorization..."}
 						{status === "success" && "Authorization successful!"}
@@ -214,6 +227,30 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 				</DialogHeader>
 
 				<div className="flex flex-col items-center justify-center space-y-4">
+					{status === "confirm" && (
+						<>
+							<div className="text-muted-foreground space-y-3 text-sm">
+								<p>
+									To set up this MCP server, we need to verify that your OAuth configuration is correct and discover the available tools.
+								</p>
+								<p>
+									You will be asked to log in to the OAuth provider. This is a <strong>one-time test</strong> to confirm the setup works. Your credentials will <strong>not</strong> be stored or used for any other purpose.
+								</p>
+								<p>
+									Once verified, each user will authenticate individually when they use this MCP server.
+								</p>
+							</div>
+							<div className="flex w-full justify-end space-x-2">
+								<Button onClick={handleCancel} variant="outline" data-testid="per-user-oauth-cancel">
+									Cancel
+								</Button>
+								<Button onClick={handleConfirmPerUserOAuth} data-testid="per-user-oauth-confirm">
+									Continue with Test Login
+								</Button>
+							</div>
+						</>
+					)}
+
 					{status === "polling" && (
 						<>
 							<Loader2 className="text-secondary-foreground h-4 w-4 animate-spin" />

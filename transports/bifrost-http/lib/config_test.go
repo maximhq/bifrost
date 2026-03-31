@@ -585,6 +585,10 @@ func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params con
 	return nil, 0, nil
 }
 
+func (m *MockConfigStore) UpdateMCPClientDiscoveredTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+	return nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
 	return nil
 }
@@ -1114,6 +1118,81 @@ func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Ta
 }
 
 func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
+	return nil
+}
+
+// Per-user OAuth session CRUD
+func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	return nil
+}
+func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	return nil
+}
+
+// Per-user OAuth token CRUD
+func (m *MockConfigStore) GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	return nil
+}
+func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+
+// Per-user OAuth Authorization Server CRUD
+func (m *MockConfigStore) GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error {
+	return nil
+}
+func (m *MockConfigStore) GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
+	return nil
+}
+func (m *MockConfigStore) UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
+	return nil
+}
+func (m *MockConfigStore) DeletePerUserOAuthSession(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
+	return nil
+}
+func (m *MockConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
 	return nil
 }
 

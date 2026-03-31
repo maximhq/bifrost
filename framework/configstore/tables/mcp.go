@@ -28,6 +28,10 @@ type TableMCPClient struct {
 	ToolPricingJSON         string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
 	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
 
+	// Per-user OAuth: discovered tools persisted so they survive restart
+	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
@@ -45,12 +49,14 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig         *schemas.MCPStdioConfig   `gorm:"-" json:"stdio_config,omitempty"`
-	ToolsToExecute      schemas.WhiteList         `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute  schemas.WhiteList         `gorm:"-" json:"tools_to_auto_execute"`
-	Headers             map[string]schemas.EnvVar `gorm:"-" json:"headers"`
-	AllowedExtraHeaders schemas.WhiteList         `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing         map[string]float64        `gorm:"-" json:"tool_pricing"`
+	StdioConfig               *schemas.MCPStdioConfig    `gorm:"-" json:"stdio_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList          `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList          `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.EnvVar  `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList          `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64         `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools           map[string]schemas.ChatTool `gorm:"-" json:"-"`
+	DiscoveredToolNameMapping map[string]string           `gorm:"-" json:"-"`
 }
 
 // TableName sets the table name for each model
@@ -138,6 +144,22 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolPricingJSON = "{}"
 	}
 
+	if c.DiscoveredTools != nil {
+		data, err := json.Marshal(c.DiscoveredTools)
+		if err != nil {
+			return err
+		}
+		c.DiscoveredToolsJSON = string(data)
+	}
+
+	if c.DiscoveredToolNameMapping != nil {
+		data, err := json.Marshal(c.DiscoveredToolNameMapping)
+		if err != nil {
+			return err
+		}
+		c.ToolNameMappingJSON = string(data)
+	}
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
@@ -213,6 +235,16 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	}
 	if c.ToolPricingJSON != "" {
 		if err := json.Unmarshal([]byte(c.ToolPricingJSON), &c.ToolPricing); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredToolsJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.DiscoveredToolsJSON), &c.DiscoveredTools); err != nil {
+			return err
+		}
+	}
+	if c.ToolNameMappingJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
 			return err
 		}
 	}

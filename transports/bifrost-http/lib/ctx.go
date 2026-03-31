@@ -8,6 +8,7 @@ package lib
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -431,6 +432,26 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		return true
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+
+	// Extract per-user MCP OAuth session token from X-Bifrost-MCP-Session header
+	if mcpSession := string(ctx.Request.Header.Peek("X-Bifrost-MCP-Session")); mcpSession != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, mcpSession)
+	}
+
+	// Extract per-user MCP OAuth user identifier from X-Bf-User-Id header
+	if mcpUserID := string(ctx.Request.Header.Peek("X-Bf-User-Id")); mcpUserID != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)
+	}
+
+	// Build and set OAuth redirect URI for per-user OAuth flows
+	scheme := "http"
+	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+		scheme = "https"
+	}
+	host := string(ctx.Host())
+	if host != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyOAuthRedirectURI, fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host))
+	}
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header
