@@ -7,6 +7,7 @@
 }:
 let
   lib = pkgs.lib;
+  vendorHash = builtins.replaceStrings [ "\n" ] [ "" ] (builtins.readFile ../http-vendor-hash.txt);
 
   # Bifrost requires Go 1.26 (go.mod/go.work). Force Go 1.26 for buildGoModule.
   buildGoModule = pkgs.callPackage "${inputs.nixpkgs}/pkgs/build-support/go/module.nix" {
@@ -37,7 +38,7 @@ buildGoModule {
 
   modRoot = "transports";
   subPackages = [ "bifrost-http" ];
-  vendorHash = "sha256-Ck1cwv/DYI9EXmp7U2ZSNXlU+Qok8BFn5bcN1Pv7Nmc=";
+  inherit vendorHash;
 
   doCheck = false;
 

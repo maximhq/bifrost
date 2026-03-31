@@ -23,7 +23,9 @@
         inputs.nixpkgs.lib.genAttrs supportedSystems (
           system:
           f {
+            inherit self;
             inherit system;
+            lib = inputs.nixpkgs.lib;
             # Provides a system-specific, configured Nixpkgs
             pkgs = import inputs.nixpkgs {
               inherit system;
