@@ -18,6 +18,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -557,6 +559,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/completions":            schemas.TextCompletionRequest,
 	"/v1/chat/completions":       schemas.ChatCompletionRequest,
 	"/v1/responses":              schemas.ResponsesRequest,
+	"/v1/responses/compact":      schemas.PassthroughRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
@@ -601,6 +604,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
 	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
 	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
+	r.POST("/v1/responses/compact", lib.ChainMiddlewares(h.responsesCompact, baseMiddlewares...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
@@ -1041,6 +1045,83 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+func extractPassthroughSafeHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	safeHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		keyStr := strings.ToLower(string(key))
+		switch keyStr {
+		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
+			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
+		default:
+			if strings.HasPrefix(keyStr, "x-bf-") {
+				return true
+			}
+			safeHeaders[keyStr] = string(value)
+		}
+		return true
+	})
+	return safeHeaders
+}
+
+// responsesCompact handles POST /v1/responses/compact - Process OpenAI responses compact requests
+func (h *CompletionHandler) responsesCompact(ctx *fasthttp.RequestCtx) {
+	body := string(ctx.PostBody())
+
+	model := gjson.Get(body, "model")
+	if !model.Exists() || model.String() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model field is required")
+		return
+	}
+
+	provider, modelName := schemas.ParseModelString(model.String(), "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	rewritten, err := sjson.Set(body, "model", modelName)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to rewrite model: %v", err))
+		return
+	}
+	rewritten, _ = sjson.Delete(rewritten, "fallbacks")
+	rewrittenBody := []byte(rewritten)
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	passthroughReq := &schemas.BifrostPassthroughRequest{
+		Method:      http.MethodPost,
+		Path:        "/v1/responses/compact",
+		RawQuery:    string(ctx.URI().QueryString()),
+		Body:        rewrittenBody,
+		SafeHeaders: extractPassthroughSafeHeaders(ctx),
+		Provider:    schemas.ModelProvider(provider),
+		Model:       modelName,
+	}
+
+	resp, bifrostErr := h.client.Passthrough(bifrostCtx, schemas.ModelProvider(provider), passthroughReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	ctx.SetStatusCode(resp.StatusCode)
+	for k, v := range resp.Headers {
+		switch strings.ToLower(k) {
+		case "connection", "transfer-encoding", "set-cookie", "proxy-authenticate", "www-authenticate":
+		default:
+			ctx.Response.Header.Set(k, v)
+		}
+	}
+	ctx.Response.SetBody(resp.Body)
 }
 
 // prepareEmbeddingRequest prepares a BifrostEmbeddingRequest from the HTTP request body
