@@ -1,0 +1,1 @@
+- feat: Adds image generation logging support
