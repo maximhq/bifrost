@@ -23,6 +23,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line("markers", "google: mark test as requiring Google API key")
     config.addinivalue_line("markers", "litellm: mark test as requiring LiteLLM setup")
+    config.addinivalue_line("markers", "azure: Azure OpenAI integration tests")
     config.addinivalue_line(
         "markers", "flaky: mark test as flaky with automatic retries (reruns=3, reruns_delay=2)"
     )
@@ -46,6 +47,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.google)
         elif "test_litellm" in item.nodeid:
             item.add_marker(pytest.mark.litellm)
+        elif "test_azure" in item.nodeid:
+            item.add_marker(pytest.mark.azure)
 
 
 @pytest.fixture(scope="session")
@@ -56,6 +59,7 @@ def api_keys():
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
         "google": os.getenv("GOOGLE_API_KEY"),
         "litellm": os.getenv("LITELLM_API_KEY"),
+        "azure": os.getenv("AZURE_API_KEY"),
     }
 
 
@@ -72,6 +76,8 @@ def available_integrations(api_keys):
         available.append("google")
     if api_keys["litellm"]:
         available.append("litellm")
+    if api_keys["azure"]:
+        available.append("azure")
 
     return available
 
@@ -97,6 +103,8 @@ def pytest_runtest_makereport(item, call):
             integration = "google"
         elif "test_litellm" in item.nodeid:
             integration = "litellm"
+        elif "test_azure" in item.nodeid:
+            integration = "azure"
 
         test_name = item.name
 

@@ -21,6 +21,10 @@ Bifrost exposes Prometheus metrics via two methods:
 
 Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
 
+<Info>
+  When Bifrost's authentication is enabled (`auth_config.is_enabled = true`), the `/metrics` endpoint requires Basic auth credentials. You must include the same `admin_username` and `admin_password` from your `auth_config` in the Prometheus scrape configuration. Without this, Prometheus will receive `401 Unauthorized` responses and scraping will silently fail.
+</Info>
+
 ### Prometheus Configuration
 
 Add Bifrost to your Prometheus `prometheus.yml`:
@@ -31,6 +35,19 @@ scrape_configs:
     static_configs:
       - targets: ['bifrost-host:8080']
     scrape_interval: 15s
+```
+
+If Bifrost authentication is enabled, add `basic_auth` to your scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'bifrost'
+    static_configs:
+      - targets: ['bifrost-host:8080']
+    scrape_interval: 15s
+    basic_auth:
+      username: '<admin_username>'
+      password: '<admin_password>'
 ```
 
 ### Endpoint

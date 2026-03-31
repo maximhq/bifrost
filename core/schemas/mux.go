@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -269,13 +271,13 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 
 		case ChatToolChoiceTypeFunction:
 			// Map function choice
-			if ctc.ChatToolChoiceStruct.Function.Name != "" {
+			if ctc.ChatToolChoiceStruct.Function != nil && ctc.ChatToolChoiceStruct.Function.Name != "" {
 				rtc.ResponsesToolChoiceStruct.Name = &ctc.ChatToolChoiceStruct.Function.Name
 			}
 
 		case ChatToolChoiceTypeAllowedTools:
 			// Map allowed tools
-			if len(ctc.ChatToolChoiceStruct.AllowedTools.Tools) > 0 {
+			if ctc.ChatToolChoiceStruct.AllowedTools != nil && len(ctc.ChatToolChoiceStruct.AllowedTools.Tools) > 0 {
 				tools := make([]ResponsesToolChoiceAllowedToolDef, len(ctc.ChatToolChoiceStruct.AllowedTools.Tools))
 				for i, tool := range ctc.ChatToolChoiceStruct.AllowedTools.Tools {
 					tools[i] = ResponsesToolChoiceAllowedToolDef{
@@ -289,14 +291,14 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 				rtc.ResponsesToolChoiceStruct.Tools = tools
 			}
 			// Copy the mode (e.g., "auto", "required")
-			if ctc.ChatToolChoiceStruct.AllowedTools.Mode != "" {
+			if ctc.ChatToolChoiceStruct.AllowedTools != nil && ctc.ChatToolChoiceStruct.AllowedTools.Mode != "" {
 				mode := ctc.ChatToolChoiceStruct.AllowedTools.Mode
 				rtc.ResponsesToolChoiceStruct.Mode = &mode
 			}
 
 		case ChatToolChoiceTypeCustom:
 			// Map custom choice
-			if ctc.ChatToolChoiceStruct.Custom.Name != "" {
+			if ctc.ChatToolChoiceStruct.Custom != nil && ctc.ChatToolChoiceStruct.Custom.Name != "" {
 				rtc.ResponsesToolChoiceStruct.Name = &ctc.ChatToolChoiceStruct.Custom.Name
 			}
 		}
@@ -339,14 +341,14 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 
 		// Handle function choice
 		if tc.ResponsesToolChoiceStruct.Type == ResponsesToolChoiceTypeFunction && tc.ResponsesToolChoiceStruct.Name != nil {
-			ctc.ChatToolChoiceStruct.Function = ChatToolChoiceFunction{
+			ctc.ChatToolChoiceStruct.Function = &ChatToolChoiceFunction{
 				Name: *tc.ResponsesToolChoiceStruct.Name,
 			}
 		}
 
 		// Handle custom choice
 		if tc.ResponsesToolChoiceStruct.Type == ResponsesToolChoiceTypeCustom && tc.ResponsesToolChoiceStruct.Name != nil {
-			ctc.ChatToolChoiceStruct.Custom = ChatToolChoiceCustom{
+			ctc.ChatToolChoiceStruct.Custom = &ChatToolChoiceCustom{
 				Name: *tc.ResponsesToolChoiceStruct.Name,
 			}
 		}
@@ -368,7 +370,7 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 			if tc.ResponsesToolChoiceStruct.Mode != nil && *tc.ResponsesToolChoiceStruct.Mode != "" {
 				mode = *tc.ResponsesToolChoiceStruct.Mode
 			}
-			ctc.ChatToolChoiceStruct.AllowedTools = ChatToolChoiceAllowedTools{
+			ctc.ChatToolChoiceStruct.AllowedTools = &ChatToolChoiceAllowedTools{
 				Mode:  mode,
 				Tools: tools,
 			}
@@ -848,10 +850,11 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
-			TextTokens:   cu.PromptTokensDetails.TextTokens,
-			AudioTokens:  cu.PromptTokensDetails.AudioTokens,
-			ImageTokens:  cu.PromptTokensDetails.ImageTokens,
-			CachedTokens: cu.PromptTokensDetails.CachedTokens,
+			TextTokens:        cu.PromptTokensDetails.TextTokens,
+			AudioTokens:       cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:       cu.PromptTokensDetails.ImageTokens,
+			CachedReadTokens:  cu.PromptTokensDetails.CachedReadTokens,
+			CachedWriteTokens: cu.PromptTokensDetails.CachedWriteTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -863,7 +866,6 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
-			CachedTokens:             cu.CompletionTokensDetails.CachedTokens,
 		}
 	}
 
@@ -884,10 +886,11 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:   ru.InputTokensDetails.TextTokens,
-			AudioTokens:  ru.InputTokensDetails.AudioTokens,
-			ImageTokens:  ru.InputTokensDetails.ImageTokens,
-			CachedTokens: ru.InputTokensDetails.CachedTokens,
+			TextTokens:        ru.InputTokensDetails.TextTokens,
+			AudioTokens:       ru.InputTokensDetails.AudioTokens,
+			ImageTokens:       ru.InputTokensDetails.ImageTokens,
+			CachedReadTokens:  ru.InputTokensDetails.CachedReadTokens,
+			CachedWriteTokens: ru.InputTokensDetails.CachedWriteTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -900,7 +903,6 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
-			CachedTokens:             ru.OutputTokensDetails.CachedTokens,
 		}
 	}
 
@@ -974,7 +976,7 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
@@ -1009,6 +1011,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+	normalizeDeveloperRoleForChatFallback(bcr.Input)
 
 	// Convert Parameters
 	if brr.Params != nil {
@@ -1037,20 +1040,13 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			}
 		}
 
-		// Convert Tools using existing ResponsesTool.ToChatTool()
-		if len(brr.Params.Tools) > 0 {
-			chatTools := make([]ChatTool, 0, len(brr.Params.Tools))
-			for _, responsesTool := range brr.Params.Tools {
-				chatTool := responsesTool.ToChatTool()
-				chatTools = append(chatTools, *chatTool)
-			}
-			bcr.Params.Tools = chatTools
-		}
+		// Responses -> Chat fallback only supports function tools in a valid chat shape.
+		bcr.Params.Tools = sanitizeResponsesToolsForChatFallback(brr.Params.Tools)
 
 		// Convert ToolChoice using existing ResponsesToolChoice.ToChatToolChoice()
 		if brr.Params.ToolChoice != nil {
 			chatToolChoice := brr.Params.ToolChoice.ToChatToolChoice()
-			bcr.Params.ToolChoice = chatToolChoice
+			bcr.Params.ToolChoice = sanitizeChatToolChoiceForFallback(chatToolChoice, bcr.Params.Tools)
 		}
 
 		// Handle Reasoning from Reasoning
@@ -1072,9 +1068,112 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	return bcr
 }
 
+func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	chatTools := make([]ChatTool, 0, len(tools))
+	for _, responsesTool := range tools {
+		if responsesTool.Type != ResponsesToolTypeFunction {
+			continue
+		}
+		if responsesTool.Name == nil || strings.TrimSpace(*responsesTool.Name) == "" {
+			continue
+		}
+
+		chatTool := responsesTool.ToChatTool()
+		if chatTool == nil || chatTool.Function == nil || strings.TrimSpace(chatTool.Function.Name) == "" {
+			continue
+		}
+
+		chatTool.Type = ChatToolTypeFunction
+		chatTool.Custom = nil
+		chatTools = append(chatTools, *chatTool)
+	}
+
+	if len(chatTools) == 0 {
+		return nil
+	}
+
+	return chatTools
+}
+
+func normalizeDeveloperRoleForChatFallback(messages []ChatMessage) {
+	for i := range messages {
+		if messages[i].Role == ChatMessageRoleDeveloper {
+			messages[i].Role = ChatMessageRoleSystem
+		}
+	}
+}
+
+func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatTool) *ChatToolChoice {
+	if toolChoice == nil {
+		return nil
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+
+	validToolNames := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && strings.TrimSpace(tool.Function.Name) != "" {
+			validToolNames[tool.Function.Name] = struct{}{}
+		}
+	}
+
+	if toolChoice.ChatToolChoiceStruct != nil {
+		switch toolChoice.ChatToolChoiceStruct.Type {
+		case ChatToolChoiceTypeFunction:
+			if toolChoice.ChatToolChoiceStruct.Function == nil {
+				return nil
+			}
+			if _, ok := validToolNames[toolChoice.ChatToolChoiceStruct.Function.Name]; !ok {
+				return nil
+			}
+		case ChatToolChoiceTypeAllowedTools, ChatToolChoiceTypeCustom:
+			return nil
+		}
+	}
+
+	return toolChoice
+}
+
 // =============================================================================
 // RESPONSE CONVERSION METHODS
 // =============================================================================
+
+func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
+	switch finishReason {
+	case string(BifrostFinishReasonLength):
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
+		return "completed", nil, true
+	default:
+		return "", nil, false
+	}
+}
+
+func responsesTerminalFromChatFinishReason(finishReason *string) (eventType ResponsesStreamResponseType, status string, incompleteDetails *ResponsesResponseIncompleteDetails) {
+	// Unknown/empty finish reasons preserve prior behavior: treat as completed.
+	eventType = ResponsesStreamResponseTypeCompleted
+	status = "completed"
+
+	if finishReason == nil || *finishReason == "" {
+		return eventType, status, nil
+	}
+
+	mappedStatus, mappedIncompleteDetails, mapped := responsesStatusFromChatFinishReason(*finishReason)
+	if !mapped {
+		return eventType, status, nil
+	}
+
+	if mappedStatus == "incomplete" {
+		eventType = ResponsesStreamResponseTypeIncomplete
+	}
+
+	return eventType, mappedStatus, mappedIncompleteDetails
+}
 
 // ToBifrostResponsesResponse converts the BifrostChatResponse to BifrostResponsesResponse format
 // This converts Chat-style fields (Choices) to Responses API format
@@ -1111,6 +1210,28 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	// Convert Usage if needed
 	if cr.Usage != nil {
 		responsesResp.Usage = cr.Usage.ToResponsesResponseUsage()
+	}
+
+	// Map finish reason to Responses status.
+	hasCompletedFinishReason := false
+	for _, choice := range cr.Choices {
+		if choice.FinishReason == nil || *choice.FinishReason == "" {
+			continue
+		}
+		status, incompleteDetails, mapped := responsesStatusFromChatFinishReason(*choice.FinishReason)
+		if !mapped {
+			continue
+		}
+		if status == "incomplete" {
+			responsesResp.Status = Ptr(status)
+			responsesResp.IncompleteDetails = incompleteDetails
+			hasCompletedFinishReason = false
+			break
+		}
+		hasCompletedFinishReason = true
+	}
+	if responsesResp.Status == nil && hasCompletedFinishReason {
+		responsesResp.Status = Ptr("completed")
 	}
 
 	// Copy other relevant fields
@@ -1185,6 +1306,7 @@ type ChatToResponsesStreamState struct {
 	TextItemAdded         bool              // Whether text item has been added
 	TextItemClosed        bool              // Whether text item has been closed
 	TextItemHasContent    bool              // Whether text item has received any content deltas
+	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
@@ -1207,6 +1329,7 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			TextItemAdded:         false,
 			TextItemClosed:        false,
 			TextItemHasContent:    false,
+			TextBuffer:            strings.Builder{},
 		}
 	},
 }
@@ -1251,6 +1374,7 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemAdded = false
 	state.TextItemClosed = false
 	state.TextItemHasContent = false
+	state.TextBuffer = strings.Builder{}
 	state.SequenceNumber = 0
 	return state
 }
@@ -1284,6 +1408,7 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemAdded = false
 		state.TextItemClosed = false
 		state.TextItemHasContent = false
+		state.TextBuffer = strings.Builder{}
 		state.SequenceNumber = 0
 		chatToResponsesStreamStatePool.Put(state)
 	}
@@ -1423,6 +1548,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			var contentDelta string
 			if hasContent {
 				contentDelta = *delta.Content
+				state.TextBuffer.WriteString(contentDelta)
 			} else {
 				// For reasoning-only responses, emit empty delta on first chunk
 				contentDelta = ""
@@ -1474,15 +1600,14 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					outputIndex := 0
 					itemID := state.ItemIDs["text"]
 
-					// Emit output_text.done (without accumulated text, just the event)
-					emptyText := ""
+					finalText := state.TextBuffer.String()
 					responses = append(responses, &BifrostResponsesStreamResponse{
 						Type:           ResponsesStreamResponseTypeOutputTextDone,
 						SequenceNumber: state.SequenceNumber,
 						OutputIndex:    Ptr(outputIndex),
 						ContentIndex:   Ptr(0),
 						ItemID:         &itemID,
-						Text:           &emptyText,
+						Text:           &finalText,
 						LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 						ExtraFields:    cr.ExtraFields,
 					})
@@ -1491,7 +1616,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					// Emit content_part.done
 					part := &ResponsesMessageContentBlock{
 						Type: ResponsesOutputMessageContentTypeText,
-						Text: &emptyText,
+						Text: &finalText,
 						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
 							LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
 							Annotations: []ResponsesOutputMessageContentTextAnnotation{},
@@ -1512,12 +1637,22 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					statusCompleted := "completed"
 					messageType := ResponsesMessageTypeMessage
 					role := ResponsesInputMessageRoleAssistant
+					textType := ResponsesOutputMessageContentTypeText
 					doneItem := &ResponsesMessage{
 						Type:   &messageType,
 						Role:   &role,
 						Status: &statusCompleted,
 						Content: &ResponsesMessageContent{
-							ContentBlocks: []ResponsesMessageContentBlock{},
+							ContentBlocks: []ResponsesMessageContentBlock{
+								{
+									Type: textType,
+									Text: &finalText,
+									ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+										LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+										Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+									},
+								},
+							},
 						},
 					}
 					if itemID != "" {
@@ -1629,20 +1764,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	// Check if this is a completion chunk with finish_reason
 	if choice.FinishReason != nil {
+		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
+
 		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
 		if state.TextItemAdded && !state.TextItemClosed {
 			outputIndex := 0
 			itemID := state.ItemIDs["text"]
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			finalText := state.TextBuffer.String()
 			responses = append(responses, &BifrostResponsesStreamResponse{
 				Type:           ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: state.SequenceNumber,
 				OutputIndex:    Ptr(outputIndex),
 				ContentIndex:   Ptr(0),
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &finalText,
 				LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 				ExtraFields:    cr.ExtraFields,
 			})
@@ -1651,7 +1787,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			// Emit content_part.done
 			part := &ResponsesMessageContentBlock{
 				Type: ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &finalText,
 				ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
 					LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []ResponsesOutputMessageContentTextAnnotation{},
@@ -1669,15 +1805,25 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.SequenceNumber++
 
 			// Emit output_item.done
-			statusCompleted := "completed"
+			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeMessage
 			role := ResponsesInputMessageRoleAssistant
+			textType := ResponsesOutputMessageContentTypeText
 			doneItem := &ResponsesMessage{
 				Type:   &messageType,
 				Role:   &role,
-				Status: &statusCompleted,
+				Status: &statusFinal,
 				Content: &ResponsesMessageContent{
-					ContentBlocks: []ResponsesMessageContentBlock{},
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: textType,
+							Text: &finalText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
 				},
 			}
 			if itemID != "" {
@@ -1718,7 +1864,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				state.SequenceNumber++
 
 				// Emit output_item.done for function call
-				statusCompleted := "completed"
+				statusFinal := terminalStatus
 				messageType := ResponsesMessageTypeFunctionCall
 				callName, hasName := state.ToolCallNames[toolCallID]
 				var callNamePtr *string
@@ -1728,7 +1874,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				argsValue := args
 				outputItemDone := &ResponsesMessage{
 					Type:   &messageType,
-					Status: &statusCompleted,
+					Status: &statusFinal,
 					ResponsesToolMessage: &ResponsesToolMessage{
 						CallID:    &toolCallID,
 						Name:      callNamePtr,
@@ -1750,24 +1896,103 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			}
 		}
 
-		// Emit response.completed
+		// Emit terminal response event.
 		var usage *ResponsesResponseUsage
 		if cr.Usage != nil {
 			usage = cr.Usage.ToResponsesResponseUsage()
 		}
 
+		responseStatus := terminalStatus
+
 		response := &BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-			Usage:     usage,
+			ID:                state.MessageID,
+			CreatedAt:         state.CreatedAt,
+			Usage:             usage,
+			Status:            &responseStatus,
+			IncompleteDetails: terminalIncompleteDetails,
 		}
 
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
+		var allOutput []ResponsesMessage
+
+		if state.TextItemAdded {
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeMessage
+			role := ResponsesInputMessageRoleAssistant
+			textType := ResponsesOutputMessageContentTypeText
+			finalText := state.TextBuffer.String()
+			itemID := state.ItemIDs["text"]
+
+			msg := ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
+				Status: &statusFinal,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: textType,
+							Text: &finalText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			}
+			if itemID != "" {
+				msg.ID = &itemID
+			}
+			allOutput = append(allOutput, msg)
+		}
+
+		// Collect tool call IDs sorted by outputIndex for deterministic order
+		type toolCallEntry struct {
+			toolCallID  string
+			outputIndex int
+		}
+		var toolCallEntries []toolCallEntry
+		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
+			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
+		}
+		sort.Slice(toolCallEntries, func(i, j int) bool {
+			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
+		})
+
+		for _, entry := range toolCallEntries {
+			toolCallID := entry.toolCallID
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeFunctionCall
+			callName, hasName := state.ToolCallNames[toolCallID]
+			var callNamePtr *string
+			if hasName && callName != "" {
+				callNamePtr = &callName
+			}
+			args := state.ToolArgumentBuffers[toolCallID]
+			fcMsg := ResponsesMessage{
+				Type:   &messageType,
+				Status: &statusFinal,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    &toolCallID,
+					Name:      callNamePtr,
+					Arguments: &args,
+				},
+			}
+			itemID := state.ItemIDs[toolCallID]
+			if itemID != "" {
+				fcMsg.ID = &itemID
+			}
+			allOutput = append(allOutput, fcMsg)
+		}
+
+		if len(allOutput) > 0 {
+			response.Output = allOutput
+		}
 
 		responses = append(responses, &BifrostResponsesStreamResponse{
-			Type:           ResponsesStreamResponseTypeCompleted,
+			Type:           terminalEventType,
 			SequenceNumber: state.SequenceNumber,
 			Response:       response,
 			ExtraFields:    cr.ExtraFields,

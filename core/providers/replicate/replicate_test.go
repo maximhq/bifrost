@@ -23,6 +23,7 @@ func TestReplicate(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Replicate,
@@ -30,6 +31,7 @@ func TestReplicate(t *testing.T) {
 		TextModel:            "openai/gpt-4.1-mini",
 		ImageGenerationModel: "black-forest-labs/flux-dev",
 		ImageEditModel:       "black-forest-labs/flux-dev",
+		VideoGenerationModel: "openai/sora-2-pro",
 		FileExtraParams: map[string]interface{}{
 			"owner":  os.Getenv("REPLICATE_OWNER"),
 			"expiry": 1830297599,
@@ -62,13 +64,18 @@ func TestReplicate(t *testing.T) {
 			FileRetrieve:          true,
 			FileDelete:            true,
 			FileContent:           false,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoDownload:         false,
+			VideoList:             false,
+			VideoDelete:           false,
 		},
 	}
 
 	t.Run("ReplicateTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestBifrostToReplicateChatRequestConversion tests the conversion from Bifrost chat request to Replicate format

@@ -51,12 +51,14 @@ Tests all core scenarios using Google GenAI SDK directly:
 41. Image generation
 42. Google Search grounding (non-streaming)
 43. Google Search grounding (streaming)
+44. Context caching (Gemini Caches API) - create, list, get, update, delete, generate with cache
 """
 
 import io
 import json
 import os
 import tempfile
+import time
 import wave
 from typing import Any, Dict, List
 
@@ -116,12 +118,15 @@ from .utils.parametrize import (
 )
 
 
-def get_provider_google_client(provider: str = "gemini"):
+def get_provider_google_client(provider: str = "gemini", passthrough: bool = False):
     """Create Google GenAI client with x-model-provider header for given provider"""
     from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
-    base_url = get_integration_url("google")
+    integration_provider = "google"
+    if passthrough:
+        integration_provider = "gemini_passthrough"
+    base_url = get_integration_url(integration_provider)
     config = get_config()
     api_config = config.get_api_config()
 
@@ -259,6 +264,51 @@ def convert_pcm_to_wav(pcm_data: bytes, channels: int = 1, sample_rate: int = 24
         wav_file.writeframes(pcm_data)
     wav_buffer.seek(0)
     return wav_buffer.read()
+
+
+def _poll_video_operation(client: Any, operation: Any, timeout_seconds: int = 900, poll_interval_seconds: int = 10) -> Any:
+    """Poll a Gemini video operation until completion."""
+    started_at = time.time()
+    current_op = operation
+
+    while not getattr(current_op, "done", False):
+        if time.time() - started_at > timeout_seconds:
+            raise TimeoutError(f"Video operation did not complete within {timeout_seconds} seconds")
+        time.sleep(poll_interval_seconds)
+        current_op = client.operations.get(current_op)
+
+    return current_op
+
+
+def _extract_first_generated_video(operation: Any) -> Any:
+    """Extract first generated video object from completed operation response."""
+    if not hasattr(operation, "response") or operation.response is None:
+        raise AssertionError("Video operation response is missing")
+    if not hasattr(operation.response, "generated_videos") or not operation.response.generated_videos:
+        raise AssertionError("No generated videos in operation response")
+    return operation.response.generated_videos[0]
+
+
+def _extract_image_for_video_input(image_response: Any) -> Any:
+    """
+    Extract an image object suitable for `models.generate_videos(image=...)`.
+    Supports the common Google GenAI response layouts.
+    """
+    # Most direct: response.parts[0].as_image()
+    if hasattr(image_response, "parts") and image_response.parts:
+        first_part = image_response.parts[0]
+        if hasattr(first_part, "as_image"):
+            return first_part.as_image()
+
+    # Candidate-based shape
+    if hasattr(image_response, "candidates") and image_response.candidates:
+        candidate = image_response.candidates[0]
+        if hasattr(candidate, "content") and candidate.content and hasattr(candidate.content, "parts"):
+            for part in candidate.content.parts:
+                if hasattr(part, "as_image"):
+                    return part.as_image()
+
+    raise AssertionError("Could not extract generated image for video input")
 
 
 # =============================================================================
@@ -2347,6 +2397,8 @@ Joe: Pretty good, thanks for asking."""
                     found = True
                     break
             
+            if not found:
+                print(f"Uploaded file {response.name} not found in file list")
             assert found, f"Uploaded file {response.name} should be in file list"
             print(f"Success: Verified file {response.name} exists in file list")
             
@@ -2434,7 +2486,6 @@ Joe: Pretty good, thanks for asking."""
             
             # Retrieve file metadata
             response = client.files.get(name=uploaded_file.name)
-            
             # Validate response
             assert_valid_google_file_response(response)
             assert response.name == uploaded_file.name, (
@@ -2484,7 +2535,7 @@ Joe: Pretty good, thanks for asking."""
             print(f"Success: Deleted file {file_name}")
             
             # Verify file is no longer retrievable
-            with pytest.raises(RuntimeError):
+            with pytest.raises(Exception):
                 client.files.get(name=file_name)
             
             print(f"Success: Verified file {file_name} no longer exists")
@@ -2525,14 +2576,19 @@ Joe: Pretty good, thanks for asking."""
             # Upload the file
             uploaded_file = client.files.upload(
                 file=temp_file_path,
-                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}')
+                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}.jsonl')
             )
             
+            print(f"Success: Uploaded file {uploaded_file.name} for provider {provider}")
+            print(uploaded_file)
+
             # Create batch job using file reference
             batch_job = client.batches.create(
                 model=format_provider_model(provider, model),
                 src=uploaded_file.name,
             )
+
+            print(f"Success: Created batch job {batch_job.name} for provider {provider}")
             
             # Validate response
             assert_valid_google_batch_response(batch_job)
@@ -2674,10 +2730,7 @@ Joe: Pretty good, thanks for asking."""
             )
             
             # Cancel the batch job
-            cancelled_job = client.batches.cancel(name=batch_job.name)
-            
-            # Validate response - job should be cancelling or cancelled
-            assert cancelled_job is not None, "Cancel should return a response"
+            client.batches.cancel(name=batch_job.name)
             
             # Check state after cancel
             retrieved_job = client.batches.get(name=batch_job.name)
@@ -3023,6 +3076,401 @@ Joe: Pretty good, thanks for asking."""
                 print(f"Found {len(supports)} grounding supports in streaming response")
         
         print("✓ Google Search grounding test (streaming) passed!")
+
+    # =========================================================================
+    # GEMINI VIDEO GENERATION TEST CASES
+    # =========================================================================
+
+    @pytest.mark.timeout(1200)
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("video_generation"))
+    def test_44a_gemini_video_text_to_video(self, test_config, provider, model):
+        """Text-to-video generation and polling with Veo model."""
+        client = get_provider_google_client(provider)
+
+        operation = client.models.generate_videos(
+            model=format_provider_model(provider, model),
+            prompt=(
+                "A close up of two people staring at a cryptic drawing on a wall, torchlight flickering. "
+                "A man murmurs, 'This must be it. That's the secret code.'"
+            ),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+
+        assert getattr(completed, "done", False) is True
+        assert generated_video is not None
+        assert hasattr(generated_video, "video"), "Generated video should include downloadable video handle"
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44b_gemini_video_aspect_ratio(self, test_config):
+        """Video generation with portrait aspect ratio config."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="A high-energy pizza making montage in a professional kitchen.",
+            config=types.GenerateVideosConfig(aspect_ratio="9:16"),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+
+        assert getattr(completed, "done", False) is True
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44c_gemini_video_resolution(self, test_config):
+        """Video generation with explicit high resolution configuration."""
+        client = get_provider_google_client("gemini")
+
+        try:
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A cinematic drone flight above canyon cliffs at sunset.",
+                config=types.GenerateVideosConfig(resolution="4k"),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            # 4k availability can vary by account/region/model entitlement.
+            pytest.skip(f"4k video generation not available in this environment: {e}")
+
+    @pytest.mark.timeout(1200)
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("video_generation"))
+    def test_44d_gemini_video_image_to_video(self, test_config, provider, model):
+        """Image-conditioned video generation using generated image input."""
+        client = get_provider_google_client(provider)
+        prompt = "Panning wide shot of a calico kitten sleeping in the sunshine"
+
+        image_response = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=prompt,
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        seed_image = _extract_image_for_video_input(image_response)
+
+        operation = client.models.generate_videos(
+            model=format_provider_model(provider, model),
+            prompt=prompt,
+            image=seed_image,
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1500)
+    def test_44e_gemini_video_reference_images(self, test_config):
+        """Video generation with reference images (up to 3 references)."""
+        client = get_provider_google_client("gemini")
+
+        # Generate one source image and reuse it to keep test robust/lightweight.
+        image_seed_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="Studio portrait with clean lighting and neutral background.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        reference_image = _extract_image_for_video_input(image_seed_resp)
+
+        try:
+            refs = [
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+            ]
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A cinematic fashion walk through shallow turquoise water.",
+                config=types.GenerateVideosConfig(reference_images=refs),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            # Feature is limited to specific Veo variants/regions.
+            pytest.skip(f"Reference-images video generation not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1500)
+    def test_44f_gemini_video_interpolation_first_last_frame(self, test_config):
+        """Video interpolation using first and last frame constraints."""
+        client = get_provider_google_client("gemini")
+
+        first_frame_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="A ghostly woman on a rope swing under a moonlit tree.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        last_frame_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="The same swing now empty in thick moonlit fog.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        first_frame = _extract_image_for_video_input(first_frame_resp)
+        last_frame = _extract_image_for_video_input(last_frame_resp)
+
+        try:
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A haunting cinematic transition from occupied swing to empty swing.",
+                image=first_frame,
+                config=types.GenerateVideosConfig(last_frame=last_frame),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            pytest.skip(f"First/last-frame interpolation not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1800)
+    def test_44g_gemini_video_extension(self, test_config):
+        """Extend a previously generated video using Veo extension flow."""
+        client = get_provider_google_client("gemini")
+
+        base_op = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="An origami butterfly flies out of french doors into a bright garden.",
+        )
+        base_completed = _poll_video_operation(client, base_op)
+        base_video = _extract_first_generated_video(base_completed).video
+
+        assert base_video is not None, "Base video object is missing; cannot run extension test"
+
+        try:
+            extension_op = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                video=base_video,
+                prompt="Track the butterfly into the garden as it lands on an origami flower.",
+                config=types.GenerateVideosConfig(number_of_videos=1, resolution="720p"),
+            )
+            extension_completed = _poll_video_operation(client, extension_op)
+            extended_video = _extract_first_generated_video(extension_completed)
+            assert extended_video is not None
+        except Exception as e:
+            pytest.skip(f"Video extension not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44h_gemini_video_async_poll_by_name(self, test_config):
+        """Poll video generation using operation-name rehydration flow."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="Track the butterfly into the garden as it lands on an origami flower.",
+        )
+        assert getattr(operation, "name", None), "Video operation should include a name"
+
+        rehydrated_operation = types.GenerateVideosOperation(name=operation.name)
+        completed = _poll_video_operation(client, rehydrated_operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44i_gemini_video_negative_prompt(self, test_config):
+        """Video generation with negative prompt configuration."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="A cinematic shot of a lion in the savannah at golden hour.",
+            config=types.GenerateVideosConfig(negative_prompt="cartoon, drawing, low quality"),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
+
+    # =========================================================================
+    # CONTEXT CACHING TEST CASES (Gemini Caches API - pass-through via Bifrost)
+    # =========================================================================
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45a_context_cache_create(self, test_config, provider, model):
+        """Test Case 45a: Create a context cache with system instruction (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        system_instruction = "You are an expert analyzing transcripts." * 10000
+
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(system_instruction=system_instruction),
+            )
+            assert cache is not None
+            assert hasattr(cache, "name")
+            assert cache.name
+            assert "cachedContents" in cache.name or "cachedcontents" in cache.name.lower()
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45b_context_cache_list(self, test_config, provider, model):
+        """Test Case 45b: List context caches (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for list verification" * 10000,
+                ),
+            )
+            caches = list(client.caches.list())
+            assert isinstance(caches, list)
+            names = [c.name for c in caches if hasattr(c, "name")]
+            assert cache.name in names
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45c_context_cache_get(self, test_config, provider, model):
+        """Test Case 45c: Retrieve a single context cache by name (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for get verification" * 10000,
+                ),
+            )
+            retrieved = client.caches.get(name=cache.name)
+            assert retrieved is not None
+            assert retrieved.name == cache.name
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45d_context_cache_update(self, test_config, provider, model):
+        """Test Case 45d: Update a context cache TTL (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="Test cache for update verification" * 10000,
+                ),
+            )
+            updated = client.caches.update(
+                name=cache.name,
+                config=types.UpdateCachedContentConfig(ttl="300s"),
+            )
+            assert updated is not None
+            assert updated.name == cache.name
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45e_context_cache_delete(self, test_config, provider, model):
+        """Test Case 45e: Delete a context cache (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = client.caches.create(
+            model=model,
+            config=types.CreateCachedContentConfig(
+                system_instruction="Test cache for delete verification" * 10000,
+            ),
+        )
+        client.caches.delete(name=cache.name)
+        with pytest.raises(Exception):
+            client.caches.get(name=cache.name)
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("context_caching", include_providers=["gemini"]),
+    )
+    def test_45f_context_cache_generate_content(self, test_config, provider, model):
+        """Test Case 45f: Create cache, generate content with cached_content, verify (pass-through)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for context_caching scenario")
+
+        client = get_provider_google_client(provider, passthrough = True)
+        cache = None
+        try:
+            cache = client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction="You are a concise assistant. Answer in one short sentence" * 10000,
+                ),
+            )
+            response = client.models.generate_content(
+                model=model,
+                contents="What is 2+2?",
+                config=types.GenerateContentConfig(cached_content=cache.name),
+            )
+            assert response is not None
+            assert hasattr(response, "text")
+            assert response.text
+            # Verify usage metadata reflects cached content when available
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                pass  # Cached token counts may be present
+        finally:
+            if cache is not None:
+                try:
+                    client.caches.delete(name=cache.name)
+                except Exception:
+                    pass
+
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

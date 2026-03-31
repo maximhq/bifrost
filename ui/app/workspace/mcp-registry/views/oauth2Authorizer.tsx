@@ -2,8 +2,8 @@
 
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi"
-import { getErrorMessage } from "@/lib/store/apis/baseApi"
+import { getErrorMessage } from "@/lib/store/apis/baseApi";
+import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
 import { Loader2 } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
 
@@ -104,7 +104,21 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		pollIntervalRef.current = setInterval(async () => {
 			// Check if popup is still open
 			if (popupRef.current && popupRef.current.closed) {
-				handleOAuthFailed("Authorization cancelled")
+				// Popup closed - check status before assuming cancellation
+				// (OAuth callback page closes the popup after success)
+				try {
+					const result = await getOAuthStatus(oauthConfigId).unwrap()
+					if (result.status === "authorized") {
+						stopPolling()
+						await handleOAuthComplete()
+					} else if (result.status === "failed" || result.status === "expired") {
+						stopPolling()
+						handleOAuthFailed("Authorization failed")
+					}
+					// pending or other non-terminal: let polling continue
+				} catch {
+					// transient fetch error: let polling continue
+				}
 				return
 			}
 
@@ -142,9 +156,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const handleMessage = (event: MessageEvent) => {
 			// Verify message is from OAuth callback
 			if (event.data?.type === "oauth_success") {
-				// OAuth succeeded, stop polling and check status immediately
-				stopPolling()
-				// Trigger immediate status check
+				// Trigger immediate status check; stopPolling is called inside
+				// checkOAuthStatus only after a confirmed terminal state, so
+				// transient fetch errors still allow polling to continue.
 				checkOAuthStatus()
 			}
 		}
@@ -153,7 +167,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		return () => {
 			window.removeEventListener("message", handleMessage)
 		}
-	}, [stopPolling, checkOAuthStatus])
+	}, [checkOAuthStatus])
 
 	// Open popup when dialog opens
 	useEffect(() => {

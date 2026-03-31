@@ -1,8 +1,8 @@
 import { ChatMessage, ContentBlock } from "@/lib/types/logs"
 import { cleanJson, isJson } from "@/lib/utils/validation"
 import AudioPlayer from "./audioPlayer"
-import { CodeEditor } from "./codeEditor"
 import CollapsibleBox from "./collapsibleBox"
+import { CodeEditor } from "@/components/ui/codeEditor"
 
 interface LogChatMessageViewProps {
 	message: ChatMessage

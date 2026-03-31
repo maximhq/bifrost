@@ -1,0 +1,95 @@
+---
+title: "v1.4.18"
+description: "v1.4.18 changelog - 2026-03-29"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.18
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.18
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.18
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.18">
+## ✨ Features
+
+- **Calendar-Aligned Budgets** — Added calendar alignment support for budget periods in governance
+
+## 🐞 Fixed
+
+- **SSE Error Events** — Handle SSE error events for 429 rate-limit and other error status codes during streaming
+- **Anthropic Max Tokens** — Pick max tokens for Anthropic from model params cache instead of hardcoded values
+- **Anthropic Streaming Usage** — Fixed usage token reporting for Anthropic streaming responses
+- **Anthropic Cache Tokens** — Fixed Anthropic cache token reporting in non-streaming responses
+- **Embedding Precision** — Preserved provider precision in embedding responses instead of truncating float values
+- **Provider Caching** — Removed pending marshal-to-map to fix caching issues at provider level
+- **Claude Office Suite** — Fixed support for Claude office suite add-on model routing
+- **Semantic Cache Config** — Hardened direct-only config handling and aligned UI types for semantic cache
+- **Semantic Cache Count Tokens** — Skip unsupported count_tokens requests in semantic cache plugin
+- **Telemetry Events** — Removed reason field from telemetry events
+- **CORS Headers** — Fixed wildcard allowed headers for CORS
+- **UI Routing Display** — Shows selected virtual key and routing rule in UI
+
+</Update>
+<Update label="Core" description="1.4.15">
+- fix: handle SSE error events for 429s and other error status codes during streaming
+- fix: pick max tokens for Anthropic from model params cache
+- fix: fixed Anthropic streaming usage token reporting
+- fix: fixed Anthropic cache token reporting
+- fix: preserved provider precision in embedding responses
+- fix: removed pending marshal-to-map to fix caching issues at provider level
+- fix: fixed support for Claude office suite add-on model routing
+
+</Update>
+<Update label="Framework" description="1.2.34">
+- feat: added CalendarAligned budget field, GetCalendarPeriodStart and IsCalendarAlignableDuration helpers
+- fix: pick max tokens for Anthropic from model params cache (model catalog)
+- fix: preserved provider precision in embedding responses (log store)
+- fix: added migration for calendar_aligned field
+
+</Update>
+<Update label="governance" description="1.4.34">
+- feat: snap LastReset to calendar boundary for calendar-aligned budgets
+- feat: added calendar alignment support for budget periods
+
+</Update>
+<Update label="jsonparser" description="1.4.33">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="litellmcompat" description="0.0.23">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="logging" description="1.4.34">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="maxim" description="1.5.33">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="mocker" description="1.4.33">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="otel" description="1.1.33">
+- chore: upgraded core to v1.4.15 and framework to v1.2.34
+
+</Update>
+<Update label="semanticcache" description="1.4.32">
+- fix: hardened direct-only config handling and aligned UI types
+- fix: preserved provider precision in embedding responses
+- fix: skip unsupported count_tokens requests
+
+</Update>
+<Update label="telemetry" description="1.4.34">
+- fix: removed reason field from telemetry events
+
+</Update>

@@ -1,0 +1,276 @@
+# Prompt Repository schemas
+
+Folder:
+  type: object
+  description: Prompt folder
+  properties:
+    id:
+      type: string
+      description: Unique folder ID (UUID)
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    prompts_count:
+      type: integer
+      description: Number of prompts in this folder (virtual field)
+
+Prompt:
+  type: object
+  description: Prompt
+  properties:
+    id:
+      type: string
+      description: Unique prompt ID (UUID)
+    name:
+      type: string
+    folder_id:
+      type: string
+      nullable: true
+    folder:
+      $ref: '#/Folder'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    versions:
+      type: array
+      items:
+        $ref: '#/PromptVersion'
+    sessions:
+      type: array
+      items:
+        $ref: '#/PromptSession'
+    latest_version:
+      $ref: '#/PromptVersion'
+
+PromptVersion:
+  type: object
+  description: Prompt version (immutable snapshot)
+  properties:
+    id:
+      type: integer
+      description: Auto-increment version ID
+    prompt_id:
+      type: string
+    version_number:
+      type: integer
+    commit_message:
+      type: string
+    model_params:
+      type: object
+      additionalProperties: true
+      description: Model parameters (flexible JSON object)
+    provider:
+      type: string
+    model:
+      type: string
+    is_latest:
+      type: boolean
+    created_at:
+      type: string
+      format: date-time
+    messages:
+      type: array
+      items:
+        $ref: '#/PromptVersionMessage'
+
+PromptVersionMessage:
+  type: object
+  description: Message within a prompt version
+  properties:
+    id:
+      type: integer
+    order_index:
+      type: integer
+    message:
+      type: object
+      additionalProperties: true
+      description: Opaque message content (JSON)
+
+PromptSession:
+  type: object
+  description: Prompt playground session
+  properties:
+    id:
+      type: integer
+      description: Auto-increment session ID
+    prompt_id:
+      type: string
+    version_id:
+      type: integer
+      nullable: true
+      description: Version this session was forked from
+    name:
+      type: string
+    model_params:
+      type: object
+      additionalProperties: true
+      description: Model parameters (flexible JSON object)
+    provider:
+      type: string
+    model:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    messages:
+      type: array
+      items:
+        $ref: '#/PromptSessionMessage'
+
+PromptSessionMessage:
+  type: object
+  description: Message within a prompt session
+  properties:
+    id:
+      type: integer
+    order_index:
+      type: integer
+    message:
+      type: object
+      additionalProperties: true
+      description: Opaque message content (JSON)
+
+# Request schemas
+
+CreateFolderRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+
+UpdateFolderRequest:
+  type: object
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+
+CreatePromptRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    folder_id:
+      type: string
+
+UpdatePromptRequest:
+  type: object
+  properties:
+    name:
+      type: string
+    folder_id:
+      type: string
+      nullable: true
+
+CreateVersionRequest:
+  type: object
+  required:
+    - commit_message
+    - messages
+    - model_params
+    - provider
+    - model
+  properties:
+    commit_message:
+      type: string
+    messages:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+      description: Array of message objects
+    model_params:
+      type: object
+      additionalProperties: true
+    provider:
+      type: string
+    model:
+      type: string
+
+CreateSessionRequest:
+  type: object
+  required:
+    - name
+    - model_params
+    - provider
+    - model
+  properties:
+    name:
+      type: string
+    version_id:
+      type: integer
+      description: Fork from this version
+    messages:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+    model_params:
+      type: object
+      additionalProperties: true
+    provider:
+      type: string
+    model:
+      type: string
+
+UpdateSessionRequest:
+  type: object
+  required:
+    - name
+    - messages
+    - model_params
+    - provider
+    - model
+  properties:
+    name:
+      type: string
+    messages:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+    model_params:
+      type: object
+      additionalProperties: true
+    provider:
+      type: string
+    model:
+      type: string
+
+RenameSessionRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+CommitSessionRequest:
+  type: object
+  required:
+    - commit_message
+  properties:
+    commit_message:
+      type: string

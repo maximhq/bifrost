@@ -21,6 +21,7 @@ func TestOpenAI(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.OpenAI,
@@ -40,8 +41,10 @@ func TestOpenAI(t *testing.T) {
 		ReasoningModel:       "o4-mini", // o4-mini properly returns both reasoning items and message output
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
-		ImageVariationModel:  "dall-e-2",
+		ImageVariationModel:  "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
+		VideoGenerationModel: "sora-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
+		PassthroughModel:     "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
@@ -50,7 +53,8 @@ func TestOpenAI(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			WebSearchTool:         true,
@@ -71,7 +75,13 @@ func TestOpenAI(t *testing.T) {
 			ImageGenerationStream: true,
 			ImageEdit:             true,
 			ImageEditStream:       true,
-			ImageVariation:        true,
+			ImageVariation:        false, // dall-e-2 is deprecated and no other OpenAI model supports image variations
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoDownload:         false,
+			VideoList:             false,
+			VideoDelete:           false,
 			BatchCreate:           true,
 			BatchList:             true,
 			BatchRetrieve:         true,
@@ -95,11 +105,15 @@ func TestOpenAI(t *testing.T) {
 			ContainerFileRetrieve: true,
 			ContainerFileContent:  true,
 			ContainerFileDelete:   true,
+			PromptCaching:         true,
+			PassthroughAPI:        true,
+			WebSocketResponses:    true,
+			Realtime:              false,
 		},
+		RealtimeModel: "gpt-4o-realtime-preview",
 	}
 
 	t.Run("OpenAITests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

@@ -41,6 +41,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 | Image Generation | ✅ | ❌ | `invoke` |
 | Image Edit | ✅ | ❌ | `invoke` |
 | Image Variation | ✅ | ❌ | `invoke` |
+| Count Tokens | ✅ | - | `count-tokens` |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 
@@ -103,7 +104,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Bedrock,
     Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
     Input:    messages,
@@ -170,14 +171,14 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Bedrock,
     Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
     Input: []schemas.ChatMessage{
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("This context will be cached"),
                         CacheControl: &schemas.CacheControl{
@@ -192,7 +193,7 @@ resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
         {
             Role: schemas.ChatMessageRoleSystem,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("You are a helpful assistant"),
                         CacheControl: &schemas.CacheControl{
@@ -254,13 +255,172 @@ Reasoning/thinking support varies by model family:
 - **System message extraction**: System messages are **removed from messages array** and placed in separate `system` field
 - **Tool message grouping**: Consecutive tool messages are **merged into single user message** with tool result content blocks
 - **Image format**: **Only base64/data URI supported**; remote image URLs are **not supported** by Bedrock Converse API
-- **Document support**: PDF, CSV, DOC, DOCX, XLS, XLSX, HTML, TXT, MD formats supported
+- **Document support**: Bifrost's Bedrock conversion path currently supports PDF, CSV, DOC, DOCX, XLS, XLSX, HTML, TXT, MD formats
+
+### Supported Chat Content Blocks
+
+The Chat Completions request format is OpenAI-compatible for standard blocks (`type: "text"`, `type: "image_url"`, `type: "file"`). Bifrost converts these blocks to Bedrock Converse blocks internally. Bedrock-specific extensions (for example, standalone `cachePoint`) are also accepted when using the Bedrock provider.
+
+| Block Type | Request Shape (Bifrost/OpenAI) | Bedrock Handling | Support |
+|------------|--------------------------------|------------------|---------|
+| Text | `{"type":"text","text":"..."}` | Converted to Bedrock `text` block | ✅ |
+| Image | `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` | Converted to Bedrock `image.source.bytes` | ✅ (base64/data URI only) |
+| File | `{"type":"file","file":{...}}` | Converted to Bedrock `document` block | ✅ |
+| Input audio | `{"type":"input_audio",...}` | Returns `audio input not supported in Bedrock Converse API` | ❌ |
+| Standalone cache point | `{"cachePoint":{"type":"default"}}` (no outer `type` field) | Converted to Bedrock `cachePoint` marker | ✅ (Bedrock-specific extension) |
 
 ### Image Conversion
 
-- **Base64 images**: Data URL → `{type: "image", source: {type: "base64", mediaType: "image/png", data: "..."}}`
+- **Request shape (client → Bifrost)**: `type: "image_url"` with `image_url.url` set to a data URI/base64 image
+- **Internal Bedrock shape (Bifrost → Bedrock)**: Converted to `image: { format, source: { bytes } }`
 - **URL images**: ❌ **Not supported** - Will fail if attempted
 - **Documents**: Converted to document content blocks with MIME types
+
+### Image Block Example (`image_url`)
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "What is in this image?"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+// Note: In the Go SDK, ChatContentBlockTypeImage maps to the OpenAI-compatible "image_url" block.
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatContentBlock{
+                    {
+                        Type: schemas.ChatContentBlockTypeText,
+                        Text: schemas.Ptr("What is in this image?"),
+                    },
+                    {
+                        Type: schemas.ChatContentBlockTypeImage,
+                        ImageURLStruct: &schemas.ChatInputImage{
+                            URL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+                        },
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### File Block Example (`file` → Bedrock `document`)
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "Summarize this document."},
+          {
+            "type": "file",
+            "file": {
+              "file_data": "JVBERi0xLjQKJcfs...",
+              "filename": "report.pdf",
+              "file_type": "application/pdf"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatContentBlock{
+                    {
+                        Type: schemas.ChatContentBlockTypeText,
+                        Text: schemas.Ptr("Summarize this document."),
+                    },
+                    {
+                        Type: schemas.ChatContentBlockTypeFile,
+                        File: &schemas.ChatInputFile{
+                            FileData: schemas.Ptr("JVBERi0xLjQKJcfs..."),
+                            Filename: schemas.Ptr("report.pdf"),
+                            FileType: schemas.Ptr("application/pdf"),
+                        },
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+Note: `file_data` is raw base64-encoded content (no `data:` URI prefix, unlike `image_url`).
+
+Formats currently supported by Bifrost's Bedrock document conversion path: `pdf`, `txt`, `md`, `html`, `csv`, `doc`, `docx`, `xls`, `xlsx`.
+
+### Standalone Cache Point Example (Bedrock-specific)
+
+```json
+{
+  "role": "system",
+  "content": [
+    {"type": "text", "text": "Long context to cache"},
+    {"cachePoint": {"type": "default"}}
+  ]
+}
+```
+
+This standalone `cachePoint` block is a Bifrost/Bedrock extension (not OpenAI-standard) and should be used only with the Bedrock provider.
+
+### Unsupported Block Notes
+
+- `input_audio` blocks are not supported by Bedrock Converse and return an error.
+- For chat content conversion, use `file.file_data` for document payloads. `file_url` and `file_id` are not the documented Bedrock chat-content path here.
 
 ### Cache Control Locations
 
@@ -336,8 +496,11 @@ Structured output uses a special tool-based approach:
 ### Field Mapping
 
 - `stopReason` → `finish_reason`: `endTurn`/`stopSequence` → `stop`, `maxTokens` → `length`, `toolUse` → `tool_calls`
-- `usage.inputTokens` → `prompt_tokens` | `usage.outputTokens` → `completion_tokens`
-- Cache tokens: `cacheReadInputTokens`, `cacheWriteInputTokens` → `prompt_tokens_details`/`completion_tokens_details`
+- `usage.inputTokens + usage.cacheReadInputTokens + usage.cacheWriteInputTokens` → `prompt_tokens` (all cache counts rolled into the total)
+- Cache token breakdown surfaced in `prompt_tokens_details`:
+  - `usage.cacheReadInputTokens` → `prompt_tokens_details.cached_read_tokens`
+  - `usage.cacheWriteInputTokens` → `prompt_tokens_details.cached_write_tokens`
+- `usage.outputTokens` → `completion_tokens`
 - `reasoning`/`thinking` blocks → `reasoning_details` with index, type, text, and signature
 - Tool call `input` (object) → `arguments` (JSON string)
 
@@ -433,7 +596,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Bedrock,
     Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
     Input:    messages,
@@ -457,7 +620,8 @@ resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
 ## Response Conversion
 
 - `stopReason` → `status`: `endTurn`/`stopSequence` → `completed`, `maxTokens` → `incomplete`
-- `usage.inputTokens`/`usage.outputTokens` preserved with cache tokens → `*_tokens_details.cached_tokens`
+- `usage.inputTokens` is aggregated into `input_tokens` (same semantics as [Chat](#1-chat-completions): Bedrock's `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` rolled up into `input_tokens`); `usage.outputTokens` → `output_tokens` (preserved as-is)
+- Cache tokens: `cacheReadInputTokens` → `input_tokens_details.cached_read_tokens` | `cacheWriteInputTokens` → `input_tokens_details.cached_write_tokens`
 - Output items: `text` → `message` | `toolUse` → `function_call` | `thinking` → `reasoning`
 
 ## Streaming
@@ -577,7 +741,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Bedrock,
     Model:    "amazon.nova-canvas-v1:0",
     Input: &schemas.ImageGenerationInput{
@@ -806,9 +970,114 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 # 11. AWS Authentication & Configuration
 
-Bifrost automatically handles AWS Bedrock authentication via multiple methods including explicit credentials, IAM roles, and bearer tokens with automatic Signature Version 4 (SigV4) signing.
+Bifrost signs every Bedrock request with AWS Signature Version 4 (SigV4). Credentials are resolved in the following priority order, and STS AssumeRole can be layered on top of any of them.
+
+## Authentication Methods
+
+### 1. Explicit Credentials
+
+Provide `access_key` and `secret_key` directly in `bedrock_key_config`. Optionally include a `session_token` for pre-obtained temporary credentials.
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "us-east-1"
+  }
+}
+```
+
+### 2. Default Credential Chain (IAM Role / Instance Profile)
+
+Leave `access_key` and `secret_key` empty (or omit them). Bifrost calls AWS `LoadDefaultConfig` which automatically resolves credentials from the environment in this order:
+
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
+- EKS IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`)
+- ECS task role
+- EC2 instance profile (IMDS)
+- `~/.aws/credentials` default profile
+
+```json
+{
+  "bedrock_key_config": {
+    "region": "us-east-1"
+  }
+}
+```
+
+### 3. STS AssumeRole
+
+Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity — it works when credentials are available either via explicit `access_key`/`secret_key` in key config, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from either source, AssumeRole will fail.**
+
+```json
+{
+  "bedrock_key_config": {
+    "role_arn": "arn:aws:iam::123456789012:role/BedrockRole",
+    "external_id": "optional-external-id",
+    "session_name": "my-session",
+    "region": "us-east-1"
+  }
+}
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `role_arn` | Yes (for STS) | - | IAM role ARN to assume |
+| `external_id` | No | - | Required when the role's trust policy demands it |
+| `session_name` | No | `bifrost-session` | Identifies the session in CloudTrail logs |
+
 
 ## Setup & Configuration
+
+### How to Use ARNs and Application Inference Profiles
+
+When using AWS Bedrock inference profiles or application inference profiles, you must split the configuration correctly to avoid `UnknownOperationException`:
+
+| Field | Purpose |
+|-------|---------|
+| **`arn`** | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles. |
+| **`deployments`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. |
+
+<Warning>
+**Do not** put the full ARN in the deployments mapping. The resource ID (e.g., `abc12xyz`) goes in `deployments`; the ARN prefix goes in the dedicated `arn` field. Putting the full ARN in `deployments` causes malformed URLs and `UnknownOperationException`.
+</Warning>
+
+**Application inference profiles** — use the resource ID (short alphanumeric suffix) in deployments:
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "eu-west-1",
+    "arn": "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile",
+    "deployments": {
+      "claude-opus-4-6": "ghi56rst",
+      "claude-sonnet-4-5": "jkl78mno"
+    }
+  }
+}
+```
+
+**Cross-region inference profiles** — use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in deployments:
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "us-east-1",
+    "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile",
+    "deployments": {
+      "claude-sonnet": "us.anthropic.claude-3-5-sonnet-v1:0"
+    }
+  }
+}
+```
 
 For detailed instructions on setting up AWS Bedrock authentication including credentials, IAM roles, regions, and deployment mapping, see the quickstart guides:
 

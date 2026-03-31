@@ -38,6 +38,13 @@ Prompt Caching Tests:
 21. Prompt caching with system message checkpoint
 22. Prompt caching with messages checkpoint
 23. Prompt caching with tools checkpoint
+
+Count Tokens Tests:
+24. Count tokens from simple messages - Cross-provider
+25. Count tokens with system message - Cross-provider
+26. Count tokens with tool definitions - Cross-provider
+27. Count tokens from long text - Cross-provider
+28. Count tokens from multi-turn conversation - Cross-provider
 """
 
 import base64
@@ -383,7 +390,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 500}
+            inferenceConfig={"maxTokens": 500},
         )
 
         assert_has_tool_calls(response, expected_count=1)
@@ -421,7 +428,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 500}
+            inferenceConfig={"maxTokens": 500},
         )
 
         # Validate response structure
@@ -476,9 +483,7 @@ class TestBedrockIntegration:
 
         model_id = format_provider_model(provider, model)
         response = bedrock_client.converse(
-            modelId=model_id,
-            messages=messages,
-            inferenceConfig={"maxTokens": 500}
+            modelId=model_id, messages=messages, inferenceConfig={"maxTokens": 500}
         )
 
         # First validate basic response structure
@@ -902,7 +907,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 500}
+            inferenceConfig={"maxTokens": 500},
         )
 
         assert_has_tool_calls(response, expected_count=1)
@@ -949,7 +954,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 500}
+            inferenceConfig={"maxTokens": 500},
         )
 
         # Validate final response
@@ -1185,7 +1190,7 @@ class TestBedrockIntegration:
         """
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for file_content scenario")
-        
+
         if provider != "bedrock":
             pytest.skip("Bedrock does not support file content download")
 
@@ -1253,7 +1258,7 @@ class TestBedrockIntegration:
 
         if provider == "anthropic":
             pytest.skip("Batch API with files is not supported for Anthropic provider")
-                        
+
         # Get provider-specific clients with x-model-provider header
         s3_client = get_provider_s3_client(provider)
         bedrock_client = get_provider_bedrock_batch_client(provider)
@@ -1557,7 +1562,7 @@ class TestBedrockIntegration:
         bedrock_client = get_provider_bedrock_batch_client(provider)
 
         # Step 1: Upload input file to S3
-        jsonl_content = create_batch_jsonl_for_provider(provider,  model, num_requests=2)
+        jsonl_content = create_batch_jsonl_for_provider(provider, model, num_requests=2)
 
         s3_key = f"bifrost-batch-e2e/batch_e2e_{int(time.time())}.jsonl"
         upload_response = s3_client.put_object(
@@ -1612,22 +1617,23 @@ class TestBedrockIntegration:
                 pytest.skip(f"Batch API not authorized: {e}")
             raise
 
-
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("prompt_caching")
+    )
     def test_21_prompt_caching_system(self, bedrock_client, provider, model):
         """Test Case 21: Prompt caching with system message checkpoint"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for prompt_caching scenario")
-        
+
         print(f"\n=== Testing System Message Caching for provider {provider} ===")
         print("First request: Creating cache with system message checkpoint...")
-        
+
         system_with_cache = [
             {"text": "You are an AI assistant tasked with analyzing legal documents."},
             {"text": PROMPT_CACHING_LARGE_CONTEXT},
-            {"cachePoint": {"type": "default"}}  # Cache all preceding system content
+            {"cachePoint": {"type": "default"}},  # Cache all preceding system content
         ]
-        
+
         # First request - should create cache
         response1 = bedrock_client.converse(
             modelId=format_provider_model(provider, model),
@@ -1635,16 +1641,16 @@ class TestBedrockIntegration:
             messages=[
                 {
                     "role": "user",
-                    "content": [{"text": "What are the key elements of contract formation?"}]
+                    "content": [{"text": "What are the key elements of contract formation?"}],
                 }
-            ]
+            ],
         )
-        
+
         # Validate first response
         assert response1 is not None
         assert "usage" in response1
         cache_write_tokens = validate_cache_write(response1["usage"], "First request")
-        
+
         # Second request with same system - should hit cache
         print("\nSecond request: Hitting cache with same system checkpoint...")
         response2 = bedrock_client.converse(
@@ -1653,29 +1659,34 @@ class TestBedrockIntegration:
             messages=[
                 {
                     "role": "user",
-                    "content": [{"text": "Explain the purpose of force majeure clauses."}]
+                    "content": [{"text": "Explain the purpose of force majeure clauses."}],
                 }
-            ]
+            ],
         )
-        
-        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
-        
-        # Validate that cache read tokens are approximately equal to cache write tokens
-        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
-            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
-        
-        print(f"✓ System caching validated - Cache created: {cache_write_tokens} tokens, "
-              f"Cache read: {cache_read_tokens} tokens")
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
+
+        # Validate that cache read tokens are approximately equal to cache write tokens
+        assert (
+            abs(cache_write_tokens - cache_read_tokens) < 100
+        ), f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+
+        print(
+            f"✓ System caching validated - Cache created: {cache_write_tokens} tokens, "
+            f"Cache read: {cache_read_tokens} tokens"
+        )
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("prompt_caching")
+    )
     def test_22_prompt_caching_messages(self, bedrock_client, provider, model):
         """Test Case 22: Prompt caching with messages checkpoint"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for prompt_caching scenario")
-        
+
         print(f"\n=== Testing Messages Caching for provider {provider} ===")
         print("First request: Creating cache with messages checkpoint...")
-        
+
         # First request with cache point in user message
         response1 = bedrock_client.converse(
             modelId=format_provider_model(provider, model),
@@ -1686,16 +1697,16 @@ class TestBedrockIntegration:
                         {"text": "Here is a large legal document to analyze:"},
                         {"text": PROMPT_CACHING_LARGE_CONTEXT},
                         {"cachePoint": {"type": "default"}},  # Cache all preceding message content
-                        {"text": "What are the main indemnification principles?"}
-                    ]
+                        {"text": "What are the main indemnification principles?"},
+                    ],
                 }
-            ]
+            ],
         )
-        
+
         assert response1 is not None
         assert "usage" in response1
         cache_write_tokens = validate_cache_write(response1["usage"], "First request")
-        
+
         # Second request with same cached content
         print("\nSecond request: Hitting cache with same messages checkpoint...")
         response2 = bedrock_client.converse(
@@ -1707,108 +1718,323 @@ class TestBedrockIntegration:
                         {"text": "Here is a large legal document to analyze:"},
                         {"text": PROMPT_CACHING_LARGE_CONTEXT},
                         {"cachePoint": {"type": "default"}},
-                        {"text": "Summarize the dispute resolution methods."}
-                    ]
+                        {"text": "Summarize the dispute resolution methods."},
+                    ],
                 }
-            ]
+            ],
         )
-        
-        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
-        
-        # Validate that cache read tokens are approximately equal to cache write tokens
-        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
-            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
-        
-        print(f"✓ Messages caching validated - Cache created: {cache_write_tokens} tokens, "
-              f"Cache read: {cache_read_tokens} tokens")
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
+
+        # Validate that cache read tokens are approximately equal to cache write tokens
+        assert (
+            abs(cache_write_tokens - cache_read_tokens) < 100
+        ), f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+
+        print(
+            f"✓ Messages caching validated - Cache created: {cache_write_tokens} tokens, "
+            f"Cache read: {cache_read_tokens} tokens"
+        )
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("prompt_caching")
+    )
     def test_23_prompt_caching_tools(self, bedrock_client, provider, model):
         """Test Case 23: Prompt caching with tools checkpoint (12 tools)"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for prompt_caching scenario")
-        
+
         print(f"\n=== Testing Tools Caching for provider {provider} ===")
         print("First request: Creating cache with tools checkpoint...")
-        
+
         # Convert tools to Bedrock format (using 12 tools for larger cache test)
         bedrock_tools = []
         for tool in PROMPT_CACHING_TOOLS:
-            bedrock_tools.append({
-                "toolSpec": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "inputSchema": {"json": tool["parameters"]}
+            bedrock_tools.append(
+                {
+                    "toolSpec": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "inputSchema": {"json": tool["parameters"]},
+                    }
                 }
-            })
-        
+            )
+
         # Add cache point after all tools
-        bedrock_tools.append({
-            "cachePoint": {"type": "default"}  # Cache all 12 tool definitions
-        })
-        
+        bedrock_tools.append({"cachePoint": {"type": "default"}})  # Cache all 12 tool definitions
+
         # First request with tool cache point
         tool_config = {
             "tools": bedrock_tools,
         }
-        
+
         response1 = bedrock_client.converse(
             modelId=format_provider_model(provider, model),
             toolConfig=tool_config,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": "What's the weather in Boston?"}]
-                }
-            ]
+            messages=[{"role": "user", "content": [{"text": "What's the weather in Boston?"}]}],
         )
-        
+
         assert response1 is not None
         assert "usage" in response1
         cache_write_tokens = validate_cache_write(response1["usage"], "First request")
-        
+
         # Second request with same tools
         print("\nSecond request: Hitting cache with same tools checkpoint...")
         response2 = bedrock_client.converse(
             modelId=format_provider_model(provider, model),
             toolConfig=tool_config,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [{"text": "Calculate 42 * 17"}]
-                }
-            ]
+            messages=[{"role": "user", "content": [{"text": "Calculate 42 * 17"}]}],
         )
-        
+
         cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
-        
+
         # Validate that cache read tokens are approximately equal to cache write tokens
-        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
-            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
-        
-        print(f"✓ Tools caching validated - Cache created: {cache_write_tokens} tokens, "
-              f"Cache read: {cache_read_tokens} tokens")
+        assert (
+            abs(cache_write_tokens - cache_read_tokens) < 100
+        ), f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+
+        print(
+            f"✓ Tools caching validated - Cache created: {cache_write_tokens} tokens, "
+            f"Cache read: {cache_read_tokens} tokens"
+        )
+
 
 def validate_cache_write(usage: Dict[str, Any], operation: str) -> int:
     """Validate cache write operation and return tokens written"""
-    print(f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
-            f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
-            f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}")
-    
-    cache_write_tokens = usage.get('cacheWriteInputTokens', 0)
-    assert cache_write_tokens > 0, \
-        f"{operation} should write to cache (got {cache_write_tokens} tokens)"
-    
+    print(
+        f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
+        f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
+        f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}"
+    )
+
+    cache_write_tokens = usage.get("cacheWriteInputTokens", 0)
+    assert (
+        cache_write_tokens > 0
+    ), f"{operation} should write to cache (got {cache_write_tokens} tokens)"
+
     return cache_write_tokens
-    
+
+
 def validate_cache_read(usage: Dict[str, Any], operation: str) -> int:
     """Validate cache read operation and return tokens read"""
-    print(f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
-            f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
-            f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}")
-    
-    cache_read_tokens = usage.get('cacheReadInputTokens', 0)
-    assert cache_read_tokens > 0, \
-        f"{operation} should read from cache (got {cache_read_tokens} tokens)"
-    
+    print(
+        f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
+        f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
+        f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}"
+    )
+
+    cache_read_tokens = usage.get("cacheReadInputTokens", 0)
+    assert (
+        cache_read_tokens > 0
+    ), f"{operation} should read from cache (got {cache_read_tokens} tokens)"
+
     return cache_read_tokens
+
+
+class TestBedrockCountTokens:
+    """Test suite for Bedrock Count Tokens API"""
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("count_tokens")
+    )
+    def test_24_count_tokens_simple_messages(self, bedrock_client, provider, model):
+        """Test Case 24: Count tokens from simple messages"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for count_tokens scenario")
+
+        print(f"\n=== Testing Count Tokens (Simple Messages) for provider {provider} ===")
+
+        # Prepare the count tokens request with simple messages
+        input_data = {
+            "converse": {
+                "messages": [{"role": "user", "content": [{"text": "Hello, how are you?"}]}]
+            }
+        }
+
+        # Call the count_tokens method
+        response = bedrock_client.count_tokens(
+            modelId=format_provider_model(provider, model), input=input_data
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert "inputTokens" in response, "Response should have inputTokens field"
+        assert isinstance(response["inputTokens"], int), "inputTokens should be an integer"
+        assert (
+            response["inputTokens"] > 0
+        ), f"inputTokens should be positive, got {response['inputTokens']}"
+
+        # Simple text should have a reasonable token count (between 3-20 tokens)
+        assert (
+            3 <= response["inputTokens"] <= 20
+        ), f"Simple text should have 3-20 tokens, got {response['inputTokens']}"
+
+        print(f"✓ Simple messages token count: {response['inputTokens']} tokens")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("count_tokens")
+    )
+    def test_25_count_tokens_with_system_message(self, bedrock_client, provider, model):
+        """Test Case 25: Count tokens with system message"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for count_tokens scenario")
+
+        print(f"\n=== Testing Count Tokens (With System) for provider {provider} ===")
+
+        # Prepare the count tokens request with system message
+        input_data = {
+            "converse": {
+                "system": [{"text": "You are a helpful assistant that provides concise answers."}],
+                "messages": [
+                    {"role": "user", "content": [{"text": "What is the capital of France?"}]}
+                ],
+            }
+        }
+
+        # Call the count_tokens method
+        response = bedrock_client.count_tokens(
+            modelId=format_provider_model(provider, model), input=input_data
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert "inputTokens" in response, "Response should have inputTokens field"
+        assert isinstance(response["inputTokens"], int), "inputTokens should be an integer"
+        assert (
+            response["inputTokens"] > 0
+        ), f"inputTokens should be positive, got {response['inputTokens']}"
+
+        # With system message should have more tokens than simple text
+        assert (
+            response["inputTokens"] > 5
+        ), f"With system message should have >5 tokens, got {response['inputTokens']}"
+
+        print(f"✓ With system message token count: {response['inputTokens']} tokens")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("count_tokens")
+    )
+    def test_26_count_tokens_with_tools(self, bedrock_client, provider, model):
+        """Test Case 26: Count tokens with tool definitions"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for count_tokens scenario")
+
+        print(f"\n=== Testing Count Tokens (With Tools) for provider {provider} ===")
+
+        # Convert tools to Bedrock format
+        bedrock_tools = []
+        for tool in [WEATHER_TOOL, CALCULATOR_TOOL]:
+            bedrock_tools.append(
+                {
+                    "toolSpec": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "inputSchema": {"json": tool["parameters"]},
+                    }
+                }
+            )
+
+        input_data = {
+            "converse": {
+                "toolConfig": {"tools": bedrock_tools},
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"text": "What's the weather in Boston and what is 25 + 17?"}],
+                    }
+                ],
+            }
+        }
+
+        # Call the count_tokens method
+        response = bedrock_client.count_tokens(
+            modelId=format_provider_model(provider, model), input=input_data
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert "inputTokens" in response, "Response should have inputTokens field"
+        assert isinstance(response["inputTokens"], int), "inputTokens should be an integer"
+        assert (
+            response["inputTokens"] > 0
+        ), f"inputTokens should be positive, got {response['inputTokens']}"
+
+        # With tools should have significantly more tokens
+        assert (
+            response["inputTokens"] > 20
+        ), f"With tools should have >20 tokens, got {response['inputTokens']}"
+
+        print(f"✓ With tools token count: {response['inputTokens']} tokens")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("count_tokens")
+    )
+    def test_27_count_tokens_long_text(self, bedrock_client, provider, model):
+        """Test Case 27: Count tokens from long text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for count_tokens scenario")
+
+        print(f"\n=== Testing Count Tokens (Long Text) for provider {provider} ===")
+
+        # Prepare a long text message
+        long_text = "This is a longer text that should have more tokens. " * 20
+
+        input_data = {
+            "converse": {"messages": [{"role": "user", "content": [{"text": long_text}]}]}
+        }
+
+        # Call the count_tokens method
+        response = bedrock_client.count_tokens(
+            modelId=format_provider_model(provider, model), input=input_data
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert "inputTokens" in response, "Response should have inputTokens field"
+        assert isinstance(response["inputTokens"], int), "inputTokens should be an integer"
+        assert (
+            response["inputTokens"] > 50
+        ), f"Long text should have >50 tokens, got {response['inputTokens']}"
+
+        print(f"✓ Long text token count: {response['inputTokens']} tokens")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("count_tokens")
+    )
+    def test_28_count_tokens_multi_turn_conversation(self, bedrock_client, provider, model):
+        """Test Case 28: Count tokens from multi-turn conversation"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for count_tokens scenario")
+
+        print(f"\n=== Testing Count Tokens (Multi-Turn) for provider {provider} ===")
+
+        # Prepare multi-turn conversation
+        input_data = {
+            "converse": {
+                "messages": [
+                    {"role": "user", "content": [{"text": "What is the capital of France?"}]},
+                    {"role": "assistant", "content": [{"text": "The capital of France is Paris."}]},
+                    {"role": "user", "content": [{"text": "What is the population?"}]},
+                ]
+            }
+        }
+
+        # Call the count_tokens method
+        response = bedrock_client.count_tokens(
+            modelId=format_provider_model(provider, model), input=input_data
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert "inputTokens" in response, "Response should have inputTokens field"
+        assert isinstance(response["inputTokens"], int), "inputTokens should be an integer"
+        assert (
+            response["inputTokens"] > 0
+        ), f"inputTokens should be positive, got {response['inputTokens']}"
+
+        # Multi-turn should have more tokens than simple messages
+        assert (
+            response["inputTokens"] > 15
+        ), f"Multi-turn conversation should have >15 tokens, got {response['inputTokens']}"
+
+        print(f"✓ Multi-turn conversation token count: {response['inputTokens']} tokens")

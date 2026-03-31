@@ -33,8 +33,9 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 	params := bifrostReq.Params
 
 	openaiReq := &OpenAITranscriptionRequest{
-		Model: bifrostReq.Model,
-		File:  transcriptionInput.File,
+		Model:    bifrostReq.Model,
+		File:     transcriptionInput.File,
+		Filename: transcriptionInput.Filename,
 	}
 
 	if params != nil {
@@ -44,10 +45,14 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 	return openaiReq
 }
 
-// parseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
-func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+// ParseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
+func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add file field
-	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
+	filename := openaiReq.Filename
+	if filename == "" {
+		filename = utils.AudioFilenameFromBytes(openaiReq.File)
+	}
+	fileWriter, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		return utils.NewBifrostOperationError("failed to create form file", err, providerName)
 	}

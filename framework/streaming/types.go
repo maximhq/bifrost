@@ -40,6 +40,7 @@ type AccumulatedData struct {
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
 	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
 	FinishReason          *string
+	LogProbs              *schemas.BifrostLogProbs
 	RawResponse           *string
 }
 
@@ -74,6 +75,7 @@ type ChatStreamChunk struct {
 	Timestamp          time.Time                              // When chunk was received
 	Delta              *schemas.ChatStreamResponseChoiceDelta // The actual delta content
 	FinishReason       *string                                // If this is the final chunk
+	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
@@ -236,6 +238,10 @@ type ProcessedStreamResponse struct {
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
 func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
+	if p.Data == nil {
+		return nil
+	}
+
 	resp := &schemas.BifrostResponse{}
 
 	switch p.StreamType {
@@ -252,6 +258,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 				{
 					Index:        0,
 					FinishReason: p.Data.FinishReason,
+					LogProbs:     p.Data.LogProbs,
 					TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
 						Text: &text,
 					},
@@ -296,6 +303,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 				{
 					Index:        0,
 					FinishReason: p.Data.FinishReason,
+					LogProbs:     p.Data.LogProbs,
 					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 						Message: message,
 					},

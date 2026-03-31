@@ -27,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -92,7 +92,7 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 				echo "$(YELLOW)You can install it manually: npm install -g junit-viewer$(NC)"; \
 				exit 0; \
 			fi; \
-		fi \
+		fi; \
 	else \
 		echo "$(YELLOW)CI environment detected, skipping junit-viewer installation$(NC)"; \
 	fi
@@ -105,6 +105,11 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	@echo "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
 	@if [ -n "$(DEBUG)" ]; then \
 		echo "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
+	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		echo "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
 	fi
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
@@ -208,6 +213,12 @@ build: build-ui ## Build bifrost-http binary
 		$(MAKE) _build-with-docker TARGET_OS=$$TARGET_OS TARGET_ARCH=$$TARGET_ARCH $(if $(DYNAMIC),DYNAMIC=$(DYNAMIC)); \
 	fi
 
+build-cli: ## Build bifrost CLI binary
+	@echo "$(GREEN)Building bifrost CLI...$(NC)"
+	@mkdir -p ./tmp
+	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -ldflags "-X main.version=v0.1.1-dev" -o ../tmp/bifrost .
+	@echo "$(GREEN)Built: tmp/bifrost$(NC)"
+
 _build-with-docker: # Internal target for Docker-based cross-compilation
 	@echo "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
 	if [ "$(TARGET_OS)" = "linux" ]; then \
@@ -221,7 +232,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26-alpine3.22 \
+				golang:1.26.1-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -238,7 +249,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26-alpine3.22 \
+				golang:1.26.1-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -254,15 +265,25 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
-docker-image: build-ui ## Build Docker image
+docker-image: build-ui ## Build Docker image (LOCAL=1 to use Dockerfile.local)
 	@echo "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))
-	@docker build -f transports/Dockerfile -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
-	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest$(NC)"
+	$(eval DOCKERFILE=$(if $(LOCAL),transports/Dockerfile.local,transports/Dockerfile))
+	@docker build -f $(DOCKERFILE) -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
+	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest (using $(DOCKERFILE))$(NC)"
 
-docker-run: ## Run Docker container
+docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/config.json or path/to/dir/])
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data  bifrost
+	@CONFIG_PATH="$(abspath $(CONFIG))"; \
+	if [ -n "$(CONFIG)" ]; then \
+		if [ -d "$$CONFIG_PATH" ]; then \
+			CONFIG_PATH="$$CONFIG_PATH/config.json"; \
+		fi; \
+		CONFIG_MOUNT="-v $$CONFIG_PATH:/app/data/config.json"; \
+	else \
+		CONFIG_MOUNT=""; \
+	fi; \
+	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
@@ -277,6 +298,10 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
 		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
+
+run-cli: build-cli ## Run bifrost CLI (Usage: make run-cli [ARGS="--config ~/.bifrost/config.json"])
+	@echo "$(GREEN)Running bifrost CLI...$(NC)"
+	@./tmp/bifrost $(ARGS)
 
 clean: ## Clean build artifacts and temporary files
 	@echo "$(YELLOW)Cleaning build artifacts...$(NC)"
@@ -335,7 +360,7 @@ test: install-gotestsum ## Run tests for bifrost-http
 			echo ""; \
 			echo "$(YELLOW)junit-viewer not installed. Install with: make install-junit-viewer$(NC)"; \
 			echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
-		fi \
+		fi; \
 	else \
 		echo ""; \
 		echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
@@ -383,7 +408,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -411,7 +436,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -439,7 +464,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -458,7 +483,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				echo ""; \
 				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
 			fi; \
-		fi \
+		fi; \
 	else \
 		if [ -n "$(TESTCASE)" ]; then \
 			echo "$(RED)Error: TESTCASE requires PROVIDER to be specified$(NC)"; \
@@ -474,7 +499,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
-					-- -v -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
 			fi; \
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
@@ -573,7 +598,11 @@ cleanup-junit-xml: ## Internal: Clean up JUnit XML to remove parent test cases w
 test-plugins: install-gotestsum ## Run plugin tests
 	@echo "$(GREEN)Running plugin tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
-	@cd plugins && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd plugins && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
 		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
 			plugin_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			echo "Testing $$dir..."; \
@@ -593,6 +622,64 @@ test-plugins: install-gotestsum ## Run plugin tests
 		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/plugin-*.html$(NC)"; \
 	else \
 		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
+	fi
+
+test-framework: install-gotestsum ## Run framework tests
+	@echo "$(GREEN)Running framework tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd framework && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
+			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
+			echo "Testing $$dir..."; \
+			cd $$dir && gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
+				-- -v ./... && cd - > /dev/null; \
+			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+				if which junit-viewer > /dev/null 2>&1; then \
+					echo "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
+					junit-viewer --results=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
+				fi; \
+			fi; \
+		done || echo "No framework tests found"
+	@echo ""
+	@if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/framework-*.html$(NC)"; \
+	else \
+		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/framework-*.xml$(NC)"; \
+	fi
+
+test-http-transport: install-gotestsum ## Run HTTP transport tests
+	@echo "$(GREEN)Running HTTP transport tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd transports/bifrost-http && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
+			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
+			echo "Testing $$dir..."; \
+			cd $$dir && gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml \
+				-- -v ./... && cd - > /dev/null; \
+			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+				if which junit-viewer > /dev/null 2>&1; then \
+					echo "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
+					junit-viewer --results=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.xml --save=../../$(TEST_REPORTS_DIR)/http-transport-$$pkg_name.html 2>/dev/null || true; \
+				fi; \
+			fi; \
+		done || echo "No HTTP transport tests found"
+	@echo ""
+	@if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/http-transport-*.html$(NC)"; \
+	else \
+		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/http-transport-*.xml$(NC)"; \
 	fi
 
 test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governance tests (Usage: make test-governance TESTCASE=TestName or PATTERN=substring, DEBUG=1 for debugger)
@@ -885,7 +972,7 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 		exit 1; \
 	fi
 
-test-all: test-core test-plugins test ## Run all tests
+test-all: test-core test-framework test-plugins test-http-transport test test-cli ## Run all tests
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)              All Tests Complete - Summary                 $(NC)"
@@ -1246,7 +1333,7 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 	@echo "$(YELLOW)Cleaning existing workspace...$(NC)"
 	@rm -f go.work go.work.sum || true
 	@echo "$(YELLOW)Initializing new workspace...$(NC)"
-	@go work init ./core ./framework ./transports
+	@go work init ./cli ./core ./framework ./transports
 	@echo "$(YELLOW)Adding plugin modules...$(NC)"
 	@for plugin_dir in ./plugins/*/; do \
 		if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
@@ -1277,8 +1364,12 @@ work-clean: ## Remove local go.work
 # Module parameter for mod-tidy (all/core/plugins/framework/transport)
 MODULE ?= all
 
-mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|core|plugins|framework|transport])
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport])
 	@echo "$(GREEN)Running go mod tidy...$(NC)"
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
+		echo "$(CYAN)Tidying cli...$(NC)"; \
+		cd cli && $(if $(LOCAL),,GOWORK=off) go mod tidy && echo "$(GREEN)  ✓ cli$(NC)"; \
+	fi
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "core" ]; then \
 		echo "$(CYAN)Tidying core...$(NC)"; \
 		cd core && go mod tidy && echo "$(GREEN)  ✓ core$(NC)"; \
@@ -1302,3 +1393,11 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|core|p
 	fi
 	@echo ""
 	@echo "$(GREEN)✓ go mod tidy complete$(NC)"
+
+test-cli: install-gotestsum ## Run CLI tests
+	@echo "$(GREEN)Running CLI tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@cd cli && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
+		-- ./...

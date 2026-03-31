@@ -1,0 +1,144 @@
+---
+title: "Codex CLI"
+description: "Use OpenAI's Codex CLI with Bifrost for powerful code generation with any provider."
+icon: "openai"
+---
+
+[Codex CLI](https://developers.openai.com/codex/cli/) provides powerful code generation and completion capabilities directly in your terminal.
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Codex CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
+## To install Codex CLI
+
+```bash
+npm install -g @openai/codex
+```
+
+## Configuring Codex CLI to work with Bifrost
+
+### Setting the base URL manually
+
+Codex talks to Bifrost through the **OpenAI-compatible HTTP integration**. Like the official OpenAI API, Codex expects the base URL to end with **`/v1`**. It then calls paths such as `/chat/completions` under that base.
+
+Set **`OPENAI_BASE_URL`** to your Bifrost gateway origin **plus `/openai/v1`** (not only `/openai`, and not the bare gateway root).
+
+| Deployment | Example `OPENAI_BASE_URL` |
+| --- | --- |
+| Local bifrost-http (default listen) | `http://localhost:8080/openai/v1` |
+| Custom host or port | `http://127.0.0.1:3000/openai/v1` |
+| HTTPS in production | `https://bifrost.example.com/openai/v1` |
+
+Using only `http://localhost:8080` (without `/openai/v1`) will not hit the OpenAI integration layer.
+
+Some HTTP clients instead append `/v1/...` to a host that ends at `/openai`. That can still reach Bifrost, but **Codex expects the base to include `/v1`** — use `…/openai/v1` (same idea as OpenAI's `openai_base_url = "https://api.openai.com/v1"` in [Codex advanced configuration](https://developers.openai.com/codex/config-advanced)).
+
+If you launch Codex through the **Bifrost CLI** (launcher TUI), it sets `OPENAI_BASE_URL` for you from your saved `base_url` in `~/.bifrost/config.json` by appending `/openai/v1`. You only need the exports below when running the `codex` binary directly.
+
+To persist values, add the same `export` lines to your shell profile (for example `~/.zshrc`).
+
+#### If `OPENAI_BASE_URL` seems ignored
+
+Codex loads **`~/.codex/config.toml`** and project **`.codex/config.toml`** with a defined [precedence order](https://developers.openai.com/codex/config-basic#configuration-precedence) (CLI flags and config files rank above ad-hoc defaults). If you already set **`openai_base_url`** there, it can override what you expect from the shell.
+
+Use **`openai_base_url`** in config so routing is explicit:
+
+```toml
+# ~/.codex/config.toml — use your real host and scheme
+openai_base_url = "http://localhost:8080/openai/v1"
+```
+
+For a one-off run without editing the file:
+
+```bash
+codex -c 'openai_base_url="http://localhost:8080/openai/v1"'
+```
+
+Always run `codex` from the same terminal session where you exported variables (or restart the terminal after changing your profile). GUI-launched terminals or IDEs may not see shell-profile exports unless the environment is configured there too.
+
+Codex CLI supports multiple authentication methods. Choose the one that matches your account type.
+
+### ChatGPT account (OAuth)
+
+If you have a ChatGPT Plus, Pro, Team, Enterprise, or Edu subscription, Codex CLI authenticates via browser-based OAuth — no API key needed.
+
+1. **Set the Bifrost OpenAI base URL** (see [Setting the base URL manually](#setting-the-base-url-manually))
+   ```bash
+   export OPENAI_BASE_URL=http://localhost:8080/openai/v1
+   ```
+
+2. **Run Codex and sign in**
+   ```bash
+   codex
+   ```
+   Select **Sign in with ChatGPT** and authenticate via your browser. All traffic automatically routes through Bifrost.
+
+### API key based usage
+
+For users with OpenAI API keys or Bifrost virtual keys:
+
+1. **Configure environment variables** (`OPENAI_BASE_URL` must be `…/openai/v1`; see [Setting the base URL manually](#setting-the-base-url-manually))
+   ```bash
+   export OPENAI_API_KEY=your-api-key  # OpenAI API key or Bifrost virtual key
+   export OPENAI_BASE_URL=http://localhost:8080/openai/v1
+   ```
+
+2. **Run Codex**
+   ```bash
+   codex
+   ```
+
+Now all Codex CLI traffic flows through Bifrost, giving you access to any provider/model configured in your Bifrost setup, plus observability and governance.
+
+<Tip>
+Check that Bifrost is reachable at the same base Codex will use (replace host, key, and URL as needed):
+
+```bash
+curl -sS "${OPENAI_BASE_URL}/models" -H "Authorization: Bearer ${OPENAI_API_KEY}"
+```
+
+You should get JSON with a `data` array of models. A 404 usually means the URL is missing `/openai/v1` or your gateway is bound to a different host or port.
+</Tip>
+
+## Model Configuration
+
+Use the `--model` flag to start Codex with a specific model:
+
+```bash
+codex --model gpt-5-codex
+codex --model gpt-5.4-pro
+```
+
+Switch models mid-session with the `/model` command:
+
+```bash
+/model gpt-5.4-pro
+/model gpt-5-codex
+```
+
+## Using Non-OpenAI Models with Codex CLI
+
+Bifrost automatically translates OpenAI API requests to other providers, so you can use Codex CLI with models from Anthropic, Google, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model.
+
+```bash
+# Start with an Anthropic model
+codex --model anthropic/claude-sonnet-4-5-20250929
+
+# Start with a Google model
+codex --model gemini/gemini-2.5-pro
+
+# Switch mid-session
+/model anthropic/claude-sonnet-4-5-20250929
+/model mistral/mistral-large-latest
+```
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Warning>
+Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
+</Warning>

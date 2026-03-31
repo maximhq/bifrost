@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // CohereResponsesStreamState tracks state during streaming conversion for responses API
@@ -878,16 +879,21 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				}
 
 				if source.Document != nil {
-					if title, ok := (*source.Document)["title"].(string); ok {
+					doc := []byte(*source.Document)
+					if t := providerUtils.GetJSONField(doc, "title"); t.Exists() && t.Type == gjson.String {
+						title := t.String()
 						annotation.Title = &title
 					}
-					if id, ok := (*source.Document)["id"].(string); ok && annotation.FileID == nil {
-						annotation.FileID = &id
+					if id := providerUtils.GetJSONField(doc, "id"); id.Exists() && id.Type == gjson.String && annotation.FileID == nil {
+						idStr := id.String()
+						annotation.FileID = &idStr
 					}
-					if snippet, ok := (*source.Document)["snippet"].(string); ok {
+					if s := providerUtils.GetJSONField(doc, "snippet"); s.Exists() && s.Type == gjson.String {
+						snippet := s.String()
 						annotation.Text = &snippet
 					}
-					if url, ok := (*source.Document)["url"].(string); ok {
+					if u := providerUtils.GetJSONField(doc, "url"); u.Exists() && u.Type == gjson.String {
+						url := u.String()
 						annotation.URL = &url
 					}
 				}
@@ -966,7 +972,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 
 				if chunk.Delta.Usage.CachedTokens != nil {
 					usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedTokens: *chunk.Delta.Usage.CachedTokens,
+						CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
 					}
 				}
 				response.Usage = usage
@@ -1068,7 +1074,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxOutputTokens := DefaultCompletionMaxTokens
+					maxOutputTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxOutputTokens != nil {
 						maxOutputTokens = *bifrostReq.Params.MaxOutputTokens
 					}
@@ -1189,7 +1195,7 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 		if response.Usage.CachedTokens != nil {
 			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: *response.Usage.CachedTokens,
+				CachedReadTokens: *response.Usage.CachedTokens,
 			}
 		}
 

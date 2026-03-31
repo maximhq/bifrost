@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -196,7 +197,7 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
 
-	_, err = engine.EvaluateRoutingRules(&schemas.BifrostContext{}, nil)
+	_, err = engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "context cannot be nil")
 }
@@ -216,7 +217,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	decision, err := engine.EvaluateRoutingRules(&schemas.BifrostContext{}, ctx)
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), ctx)
 	assert.NoError(t, err)
 	assert.Nil(t, decision)
 }
@@ -225,7 +226,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -235,11 +236,12 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 		ID:            "1",
 		Name:          "Global Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 
 	// Store the rule
@@ -264,11 +266,87 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	assert.Equal(t, "Global Rule", decision.MatchedRuleName)
 }
 
+// TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey tests weighted target selection
+// with a seeded/stubbed approach: one target carries all the weight (1.0) and the other carries
+// none (0.0). Because selectWeightedTarget accumulates weights and picks the first target whose
+// cumulative sum exceeds the random draw — and rand.Float64()*1.0 always lies in [0,1) — the
+// 1.0-weight target is always chosen regardless of the RNG state.  This gives us fully
+// deterministic selection without modifying production code or reaching for a global-rand seed.
+// The test also verifies that the pinned key_id from the winning target propagates into the
+// RoutingDecision and, when applied the same way governance/main.go does it, into the
+// BifrostContext under BifrostContextKeyAPIKeyID.
+func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	engine, err := NewRoutingEngine(store, NewMockLogger())
+	require.NoError(t, err)
+
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	const pinnedKeyID = "pinned-key-abc-123"
+
+	// Two-target fixture: azure gets weight 1.0 (always wins), openai gets weight 0.0
+	// (included in valid[] per the >= 0 filter but contributes 0 to cumulative, so it can
+	// never be selected).  No RNG seeding is required — the outcome is guaranteed by the
+	// weight distribution alone.
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "multi-1",
+		Name:          "Multi-Target Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{
+				Provider: bifrost.Ptr("azure"),
+				Model:    bifrost.Ptr("gpt-4-turbo"),
+				KeyID:    bifrost.Ptr(pinnedKeyID),
+				Weight:   1.0,
+			},
+			{
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-3.5"),
+				Weight:   0.0,
+			},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+
+	routingCtx := &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	}
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, routingCtx)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+
+	// The 1.0-weight azure target must always be selected.
+	assert.Equal(t, "azure", decision.Provider)
+	assert.Equal(t, "gpt-4-turbo", decision.Model)
+	assert.Equal(t, "multi-1", decision.MatchedRuleID)
+	assert.Equal(t, "Multi-Target Rule", decision.MatchedRuleName)
+
+	// KeyID must be propagated through the routing decision.
+	assert.Equal(t, pinnedKeyID, decision.KeyID)
+
+	// Simulate the propagation step performed by governance/main.go so that we can
+	// assert the pinned key_id is visible in the BifrostContext.
+	if decision.KeyID != "" {
+		bgCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+	}
+	ctxKeyID, _ := bgCtx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
+	assert.Equal(t, pinnedKeyID, ctxKeyID)
+}
+
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global
 func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -278,11 +356,12 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		ID:            "1",
 		Name:          "Global Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Model:         "gpt-4o",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(globalRule))
 
@@ -291,12 +370,13 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		ID:            "2",
 		Name:          "VK Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "virtual_key",
-		ScopeID:       bifrost.Ptr("vk-123"),
-		Priority:      10,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "virtual_key",
+		ScopeID:  bifrost.Ptr("vk-123"),
+		Priority: 10,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(vkRule))
 
@@ -330,7 +410,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -340,11 +420,12 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		ID:            "1",
 		Name:          "Low Priority",
 		CelExpression: "true",
-		Provider:      "openai",
-		Model:         "gpt-4o",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      10,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 10,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule1))
 
@@ -353,11 +434,12 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		ID:            "2",
 		Name:          "High Priority",
 		CelExpression: "true",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule2))
 
@@ -381,17 +463,18 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
 		Name:          "Test Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
 
@@ -428,7 +511,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
 
-	decision, err := resolveRoutingWithFallback(&schemas.BifrostContext{}, ctx, engine)
+	decision, err := resolveRoutingWithFallback(schemas.NewBifrostContext(context.Background(), time.Now()), ctx, engine)
 	require.NoError(t, err)
 	require.NotNil(t, decision)
 
@@ -442,7 +525,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -452,11 +535,12 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		ID:            "1",
 		Name:          "Disabled Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       false,
-		Scope:         "global",
-		Priority:      10,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  false,
+		Scope:    "global",
+		Priority: 10,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(disabledRule))
 
@@ -465,11 +549,12 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		ID:            "2",
 		Name:          "Enabled Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Model:         "gpt-4o",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(enabledRule))
 
@@ -492,7 +577,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -501,11 +586,12 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Complex Rule",
 		CelExpression: "model == 'gpt-4o' && headers['x-tier'] == 'premium'",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
 
@@ -535,7 +621,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -544,11 +630,12 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 		ID:            "1",
 		Name:          "Global Rule",
 		CelExpression: "true",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
 
@@ -570,7 +657,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -580,11 +667,12 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 		ID:            "1",
 		Name:          "Header Check Rule",
 		CelExpression: "headers[\"x-custom-header\"] == \"premium\"",
-		Provider:      "azure",
-		Model:         "gpt-4-turbo",
-		Enabled:       true,
-		Scope:         "global",
-		Priority:      0,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  true,
+		Scope:    "global",
+		Priority: 0,
 	}
 	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
 
@@ -620,8 +708,10 @@ func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 		ID:            "1",
 		Name:          "Test Rule",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -645,8 +735,10 @@ func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 		ID:            "1",
 		Name:          "Default Rule",
 		CelExpression: "",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -665,8 +757,10 @@ func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 		ID:            "1",
 		Name:          "Invalid Rule",
 		CelExpression: "model == gpt-4o'", // Missing opening quote
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	_, err = store.GetRoutingProgram(rule)
@@ -696,8 +790,10 @@ func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "List Rule",
 		CelExpression: "model in ['gpt-4o', 'gpt-4-turbo']",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -716,8 +812,10 @@ func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Regex Rule",
 		CelExpression: "model.matches('^gpt-4.*')",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -736,8 +834,10 @@ func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Header Rule",
 		CelExpression: "headers['x-tier'] == 'premium'",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -756,8 +856,10 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Rate Limit Rule",
 		CelExpression: "tokens_used >= 80.0",
-		Provider:      "azure",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -776,8 +878,10 @@ func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Budget Rule",
 		CelExpression: "budget_used < 100.0",
-		Provider:      "azure",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -796,8 +900,10 @@ func TestCompileAndCacheProgram_ComplexExpression(t *testing.T) {
 		ID:            "1",
 		Name:          "Complex Rule",
 		CelExpression: "model == 'gpt-4o' && team_name == 'premium' && tokens_used >= 80.0",
-		Provider:      "azure",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -849,8 +955,10 @@ func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -878,8 +986,10 @@ func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
 		CelExpression: "model == 'gpt-4o'",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -907,8 +1017,10 @@ func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
 		CelExpression: "model in ['gpt-4o', 'gpt-4-turbo']",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -943,8 +1055,10 @@ func TestEvaluateCELExpression_HeaderAccess(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
 		CelExpression: "headers['x-tier'] == 'premium'",
-		Provider:      "openai",
-		Enabled:       true,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Weight: 1.0},
+		},
+		Enabled: true,
 	}
 
 	program, err := store.GetRoutingProgram(rule)
@@ -1233,8 +1347,8 @@ func TestExtractRoutingVariables_ComplexHierarchy(t *testing.T) {
 		VirtualKey:  vk,
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
-		Headers:     map[string]string{"x-tier": "premium", "x-org": "acme"},
-		QueryParams: map[string]string{"region": "us-east-1"},
+		Headers:     map[string]string{"X-Tier": "premium", "X-Org": "acme"},
+		QueryParams: map[string]string{"Region": "us-east-1"},
 		BudgetAndRateLimitStatus: &BudgetAndRateLimitStatus{
 			BudgetPercentUsed:           60.0,
 			RateLimitTokenPercentUsed:   60.0,
@@ -1269,6 +1383,127 @@ func TestExtractRoutingVariables_ComplexHierarchy(t *testing.T) {
 	assert.Equal(t, 60.0, variables["budget_used"])
 	assert.Equal(t, 60.0, variables["tokens_used"])
 	assert.Equal(t, 60.0, variables["request"])
+}
+
+func TestNormalizeMapKeysInCEL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Header bracket access
+		{
+			name:     "header double quotes uppercase",
+			input:    `headers["X-Api-Key"] == "secret"`,
+			expected: `headers["x-api-key"] == "secret"`,
+		},
+		{
+			name:     "header single quotes uppercase",
+			input:    `headers['X-Api-Key'] == 'secret'`,
+			expected: `headers['x-api-key'] == 'secret'`,
+		},
+		{
+			name:     "header mixed case with other conditions",
+			input:    `model == "gpt-4o" && headers["X-Tier"] == "premium"`,
+			expected: `model == "gpt-4o" && headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "header already lowercase",
+			input:    `headers["x-tier"] == "premium"`,
+			expected: `headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "multiple header accesses",
+			input:    `headers["X-Org"] == "acme" && headers["X-Tier"] == "premium"`,
+			expected: `headers["x-org"] == "acme" && headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "no headers or params",
+			input:    `model == "gpt-4o"`,
+			expected: `model == "gpt-4o"`,
+		},
+		// Header "in" operator
+		{
+			name:     "header in operator with double quotes",
+			input:    `"X-Test" in headers`,
+			expected: `"x-test" in headers`,
+		},
+		{
+			name:     "header in operator with single quotes",
+			input:    `'X-Api-Key' in headers`,
+			expected: `'x-api-key' in headers`,
+		},
+		{
+			name:     "header negated in operator",
+			input:    `!("X-Test" in headers)`,
+			expected: `!("x-test" in headers)`,
+		},
+		{
+			name:     "header in operator combined with bracket access",
+			input:    `"X-Tier" in headers && headers["X-Tier"] == "premium"`,
+			expected: `"x-tier" in headers && headers["x-tier"] == "premium"`,
+		},
+		// Param bracket access
+		{
+			name:     "param double quotes uppercase",
+			input:    `params["Region"] == "us-east-1"`,
+			expected: `params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "param single quotes uppercase",
+			input:    `params['Region'] == 'us-east-1'`,
+			expected: `params['region'] == 'us-east-1'`,
+		},
+		{
+			name:     "param already lowercase",
+			input:    `params["region"] == "us-east-1"`,
+			expected: `params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "multiple param accesses",
+			input:    `params["Region"] == "us-east-1" && params["Env"] == "prod"`,
+			expected: `params["region"] == "us-east-1" && params["env"] == "prod"`,
+		},
+		// Param "in" operator
+		{
+			name:     "param in operator with double quotes",
+			input:    `"Region" in params`,
+			expected: `"region" in params`,
+		},
+		{
+			name:     "param in operator with single quotes",
+			input:    `'Region' in params`,
+			expected: `'region' in params`,
+		},
+		{
+			name:     "param negated in operator",
+			input:    `!("Region" in params)`,
+			expected: `!("region" in params)`,
+		},
+		{
+			name:     "param in operator combined with bracket access",
+			input:    `"Region" in params && params["Region"] == "us-east-1"`,
+			expected: `"region" in params && params["region"] == "us-east-1"`,
+		},
+		// Mixed headers and params
+		{
+			name:     "mixed headers and params",
+			input:    `"X-Tier" in headers && headers["X-Tier"] == "premium" && params["Region"] == "us-east-1"`,
+			expected: `"x-tier" in headers && headers["x-tier"] == "premium" && params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "mixed in operators for headers and params",
+			input:    `"X-Test" in headers && "Region" in params`,
+			expected: `"x-test" in headers && "region" in params`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeMapKeysInCEL(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 // resolveRoutingWithFallback evaluates routing rules and returns decision with fallback chain

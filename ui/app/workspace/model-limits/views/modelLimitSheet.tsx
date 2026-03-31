@@ -86,6 +86,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const form = useForm<FormData>({
+		mode: "onChange",
 		resolver: zodResolver(formSchema),
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
@@ -98,6 +99,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			requestResetDuration: modelConfig?.rate_limit?.request_reset_duration || "1h",
 		},
 	});
+
+	const parseLimit = (v: string | undefined) => { const n = parseFloat(v ?? ""); return !isNaN(n) && n > 0; };
+	const hasAnyLimit = parseLimit(form.watch("budgetMaxLimit")) || parseLimit(form.watch("tokenMaxLimit")) || parseLimit(form.watch("requestMaxLimit"));
 
 	useEffect(() => {
 		if (modelConfig) {
@@ -207,9 +211,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
-				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8"
-				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
+				className="flex w-full flex-col overflow-x-hidden p-8"
+				onInteractOutside={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
+				onEscapeKeyDown={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
+				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
@@ -234,13 +239,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											disabled={isEditing}
 										>
 											<FormControl>
-												<SelectTrigger className="w-full">
+												<SelectTrigger className="w-full" data-testid="model-limit-provider-select">
 													<SelectValue placeholder="All Providers" />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
 												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders.map((provider) => (
+												{availableProviders.filter((p) => p.name).map((provider) => (
 													<SelectItem key={provider.name} value={provider.name}>
 														<RenderProviderIcon
 															provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
@@ -267,15 +272,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<FormItem>
 										<FormLabel>Model Name</FormLabel>
 										<FormControl>
-											<ModelMultiselect
-												provider={form.watch("provider") || undefined}
-												value={field.value}
-												onChange={field.onChange}
-												placeholder="Select a model..."
-												isSingleSelect
-												loadModelsOnEmptyProvider="base_models"
-												disabled={isEditing}
-											/>
+											<div data-testid="model-limit-model-select">
+												<ModelMultiselect
+													provider={form.watch("provider") || undefined}
+													value={field.value}
+													onChange={field.onChange}
+													placeholder="Search for a model..."
+													isSingleSelect
+													loadModelsOnEmptyProvider="base_models"
+													disabled={isEditing}
+												/>
+											</div>
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -404,12 +411,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<span className="inline-block">
-												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName")}>
+												<Button type="submit" data-testid="model-limit-button-submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName") || !hasAnyLimit}>
 													{isLoading ? "Saving..." : isEditing ? "Save Changes" : "Create Limit"}
 												</Button>
 											</span>
 										</TooltipTrigger>
-										{(isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName")) && (
+										{(isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit || !form.watch("modelName") || !hasAnyLimit) && (
 											<TooltipContent>
 												<p>
 													{!canSubmit
@@ -420,7 +427,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 																? "No changes made"
 																: !form.watch("modelName")
 																	? "Model name is required"
-																	: "Please fix validation errors"}
+																	: !hasAnyLimit
+																		? "At least one budget or rate limit is required"
+																		: "Please fix validation errors"}
 												</p>
 											</TooltipContent>
 										)}

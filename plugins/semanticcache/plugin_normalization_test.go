@@ -101,7 +101,7 @@ func testChatCompletionNormalization(t *testing.T, setup *TestSetup) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test all other variations should hit cache due to normalization
 	for i := 1; i < len(testCases); i++ {
@@ -159,7 +159,7 @@ func testSpeechNormalization(t *testing.T, setup *TestSetup) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{SpeechResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test all other variations should hit cache due to normalization
 	for i := 1; i < len(testCases); i++ {
@@ -253,7 +253,7 @@ func TestChatCompletionContentBlocksNormalization(t *testing.T) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test all other variations should hit cache due to normalization
 	for i := 1; i < len(testCases); i++ {
@@ -291,7 +291,7 @@ func TestNormalizationWithSemanticCache(t *testing.T) {
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test semantic match with different case (should hit semantic cache after normalization)
 	normalizedRequest := CreateBasicChatRequest("what is machine learning?", 0.5, 50)

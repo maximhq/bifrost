@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getErrorMessage, setAuthToken, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
+import { getErrorMessage, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 const externalLinks = [
 	{
 		title: "Discord Server",
-		url: "https://getmax.im/bifrost-discord",
+		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
@@ -71,17 +71,9 @@ export default function LoginView() {
 		e.preventDefault();
 		setErrorMessage("");
 		try {
-			const result = await login({ username, password }).unwrap();
-			// Store token immediately before navigation
-			if (result.token) {
-				setAuthToken(result.token);
-				// Small delay to ensure token is persisted
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				// Redirect to workspace on successful login
-				router.push("/workspace");
-			} else {
-				setErrorMessage("Login successful but no token received");
-			}
+			await login({ username, password }).unwrap();
+			// Cookie is set automatically by the server response — just navigate
+			router.push("/workspace");
 		} catch (error) {
 			const message = getErrorMessage(error);
 			setErrorMessage(message);
@@ -98,7 +90,7 @@ export default function LoginView() {
 		return (
 			<div className="flex min-h-screen items-center justify-center p-4">
 				<div className="w-full max-w-md">
-					<div className="border-border bg-card w-full space-y-6 rounded-lg border p-8 shadow-sm">
+					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 						<div className="flex items-center justify-center">
 							<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
 						</div>
@@ -114,7 +106,7 @@ export default function LoginView() {
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
 			<div className="w-full max-w-md">
-				<div className="border-border bg-card w-full space-y-6 rounded-lg border p-8 shadow-sm">
+				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
 						<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
@@ -126,7 +118,7 @@ export default function LoginView() {
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
-						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-md p-3 text-sm">{errorMessage}</div>}
+						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">{errorMessage}</div>}
 
 						<div className="space-y-2">
 							<Label htmlFor="username" className="text-sm font-medium">

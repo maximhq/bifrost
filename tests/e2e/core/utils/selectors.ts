@@ -12,9 +12,11 @@ export const Selectors = {
   providers: {
     // Sidebar list
     providerList: '[data-testid="provider-list"]',
-    providerItem: (name: string) => `[data-testid="provider-${name}"]`,
+    providerItem: (name: string) => `[data-testid="provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}"]`,
     addProviderBtn: '[data-testid="add-provider-btn"]',
-    
+    /** Add New Provider dropdown > Custom provider... (opens custom provider sheet) */
+    addProviderOptionCustom: '[data-testid="add-provider-option-custom"]',
+
     // Provider config
     providerConfig: '[data-testid="provider-config"]',
     addKeyBtn: '[data-testid="add-key-btn"]',
@@ -78,7 +80,7 @@ export const Selectors = {
     teamsTable: '[data-testid="teams-table"]',
     customersTable: '[data-testid="customers-table"]',
     createTeamBtn: '[data-testid="create-team-btn"]',
-    createCustomerBtn: '[data-testid="create-customer-btn"]',
+    createCustomerBtn: '[data-testid="customer-button-create"]',
   },
 
   // Common form elements

@@ -8,23 +8,55 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
+// localSchemaCandidates lists paths (relative to CWD) where config.schema.json may be found
+// when running from a source checkout. Checked in order before falling back to the remote URL.
+var localSchemaCandidates = []string{
+	"config.schema.json",         // running from transports/
+	"../config.schema.json",      // running from transports/bifrost-http/
+	"transports/config.schema.json", // running from repo root
+}
+
+// tryLoadLocalSchema attempts to read config.schema.json from known local paths.
+// Returns nil if none are found.
+func tryLoadLocalSchema() []byte {
+	for _, p := range localSchemaCandidates {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return data
+		}
+	}
+	return nil
+}
+
 // ValidateConfigSchema validates config data against the JSON schema.
 // Returns nil if valid, or a formatted error describing all validation failures.
-func ValidateConfigSchema(data []byte) error {
-	// Pulling config.schema from https://www.getbifrost.ai/schema
-	configSchemaJSON, err := http.Get("https://www.getbifrost.ai/schema")
-	if err != nil {
-		return fmt.Errorf("failed to get config schema: %w", err)
-	}
-	defer configSchemaJSON.Body.Close()
-	configSchemaJSONBytes, err := io.ReadAll(configSchemaJSON.Body)
-	if err != nil {
-		logger.Warn("failed to download config schema: %v. running without config.json schema validation", err)
-		return nil
+// An optional schemaOverride can be provided to use a local schema instead of fetching from the remote URL.
+func ValidateConfigSchema(data []byte, schemaOverride ...[]byte) error {
+	var configSchemaJSONBytes []byte
+	if len(schemaOverride) > 0 && len(schemaOverride[0]) > 0 {
+		configSchemaJSONBytes = schemaOverride[0]
+	} else if localSchema := tryLoadLocalSchema(); localSchema != nil {
+		// Prefer the local schema file from the source checkout when available.
+		// This avoids validating against a potentially stale remote schema.
+		configSchemaJSONBytes = localSchema
+	} else {
+		// Pulling config.schema from https://www.getbifrost.ai/schema
+		configSchemaJSON, err := http.Get("https://www.getbifrost.ai/schema")
+		if err != nil {
+			return fmt.Errorf("failed to get config schema: %w", err)
+		}
+		defer configSchemaJSON.Body.Close()
+		var readErr error
+		configSchemaJSONBytes, readErr = io.ReadAll(configSchemaJSON.Body)
+		if readErr != nil {
+			logger.Warn("failed to download config schema: %v. running without config.json schema validation", readErr)
+			return nil
+		}
 	}
 	// Parse the schema JSON
 	schemaDoc, err := jsonschema.UnmarshalJSON(bytes.NewReader(configSchemaJSONBytes))

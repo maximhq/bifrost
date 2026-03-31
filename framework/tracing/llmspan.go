@@ -242,6 +242,51 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
 		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+
+		if resp.Usage.PromptTokensDetails != nil {
+			if resp.Usage.PromptTokensDetails.TextTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsText] = resp.Usage.PromptTokensDetails.TextTokens
+			}
+			if resp.Usage.PromptTokensDetails.AudioTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsAudio] = resp.Usage.PromptTokensDetails.AudioTokens
+			}
+			if resp.Usage.PromptTokensDetails.ImageTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsImage] = resp.Usage.PromptTokensDetails.ImageTokens
+			}
+			if resp.Usage.PromptTokensDetails.CachedReadTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens
+			}
+			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
+			}
+		}
+
+		if resp.Usage.CompletionTokensDetails != nil {
+			if resp.Usage.CompletionTokensDetails.TextTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsText] = resp.Usage.CompletionTokensDetails.TextTokens
+			}
+			if resp.Usage.CompletionTokensDetails.AudioTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsAudio] = resp.Usage.CompletionTokensDetails.AudioTokens
+			}
+			if resp.Usage.CompletionTokensDetails.ImageTokens != nil && *resp.Usage.CompletionTokensDetails.ImageTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsImage] = *resp.Usage.CompletionTokensDetails.ImageTokens
+			}
+			if resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			if resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsAccept] = resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens
+			}
+			if resp.Usage.CompletionTokensDetails.RejectedPredictionTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsReject] = resp.Usage.CompletionTokensDetails.RejectedPredictionTokens
+			}
+			if resp.Usage.CompletionTokensDetails.CitationTokens != nil && *resp.Usage.CompletionTokensDetails.CitationTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsCite] = *resp.Usage.CompletionTokensDetails.CitationTokens
+			}
+			if resp.Usage.CompletionTokensDetails.NumSearchQueries != nil && *resp.Usage.CompletionTokensDetails.NumSearchQueries > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsSearch] = *resp.Usage.CompletionTokensDetails.NumSearchQueries
+			}
+		}
 	}
 }
 
@@ -512,6 +557,14 @@ func PopulateSpeechResponseAttributes(resp *schemas.BifrostSpeechResponse, attrs
 func PopulateResponsesRequestAttributes(req *schemas.BifrostResponsesRequest, attrs map[string]any) {
 	if req == nil || req.Params == nil {
 		return
+	}
+
+	if req.Input != nil {
+		attrs[schemas.AttrMessageCount] = len(req.Input)
+		inputMessages := extractResponsesInputMessages(req.Input)
+		if len(inputMessages) > 0 {
+			attrs[schemas.AttrInputMessages] = inputMessages
+		}
 	}
 
 	if req.Params.ParallelToolCalls != nil {
@@ -1259,12 +1312,14 @@ func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
 
 // ResponsesMessageSummary extends MessageSummary with reasoning
 type ResponsesMessageSummary struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	Reasoning  string            `json:"reasoning,omitempty"`
+	ToolCalls  []ToolCallSummary `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
 }
 
-// extractResponsesOutputMessages extracts output messages from responses API
+// extractResponsesOutputMessages extracts output messages from a Responses API response.
 func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []ResponsesMessageSummary {
 	if resp == nil {
 		return nil
@@ -1272,37 +1327,322 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 
 	result := make([]ResponsesMessageSummary, 0, len(resp.Output))
 	for _, msg := range resp.Output {
-		if msg.Role == nil {
+		msgType := schemas.ResponsesMessageTypeMessage
+		if msg.Type != nil {
+			msgType = *msg.Type
+		}
+
+		switch msgType {
+		case schemas.ResponsesMessageTypeMessage:
+			if msg.Role == nil {
+				continue
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      string(*msg.Role),
+				Content:   extractResponsesMessageTextContent(&msg),
+				Reasoning: extractResponsesReasoning(msg.ResponsesReasoning),
+			})
+
+		case schemas.ResponsesMessageTypeReasoning:
+			reasoning := extractResponsesReasoning(msg.ResponsesReasoning)
+			if reasoning == "" {
+				continue
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				Reasoning: reasoning,
+			})
+
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Name == nil {
+				continue
+			}
+			tc := ToolCallSummary{
+				Type: "function",
+				Name: *msg.ResponsesToolMessage.Name,
+			}
+			if msg.ID != nil {
+				tc.ID = *msg.ID
+			}
+			if msg.ResponsesToolMessage.Arguments != nil {
+				tc.Args = *msg.ResponsesToolMessage.Arguments
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{tc},
+			})
+
+		case schemas.ResponsesMessageTypeMCPCall:
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Name == nil {
+				continue
+			}
+			tc := ToolCallSummary{
+				Type: "mcp",
+				Name: *msg.ResponsesToolMessage.Name,
+			}
+			if msg.ID != nil {
+				tc.ID = *msg.ID
+			}
+			if msg.ResponsesToolMessage.Arguments != nil {
+				tc.Args = *msg.ResponsesToolMessage.Arguments
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{tc},
+			})
+
+		case schemas.ResponsesMessageTypeWebSearchCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: "[web_search_call]",
+			})
+
+		case schemas.ResponsesMessageTypeComputerCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: "[computer_call]",
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall,
+			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeImageGenerationCall:
+			name := ""
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
+				name = *msg.ResponsesToolMessage.Name
+			}
+			content := "[" + string(msgType) + "]"
+			if name != "" {
+				content += " " + name
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: content,
+			})
+
+		default:
 			continue
 		}
-		content := ""
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-				content = *msg.Content.ContentStr
-			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range msg.Content.ContentBlocks {
-					if block.Text != nil {
-						content += *block.Text
-					}
-				}
-			}
-		}
-		// Extract reasoning text
-		reasoning := ""
-		if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.Summary != nil {
-			for _, block := range msg.ResponsesReasoning.Summary {
-				if block.Text != "" {
-					reasoning += block.Text
-				}
-			}
-		}
-		result = append(result, ResponsesMessageSummary{
-			Role:      string(*msg.Role),
-			Content:   content,
-			Reasoning: reasoning,
-		})
 	}
 	return result
+}
+
+// extractResponsesInputMessages extracts input messages from a Responses API request.
+func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []ResponsesMessageSummary {
+	if len(messages) == 0 {
+		return nil
+	}
+	result := make([]ResponsesMessageSummary, 0, len(messages))
+	for _, msg := range messages {
+		// Nil Type is treated as "message", consistent with the provider converters.
+		msgType := schemas.ResponsesMessageTypeMessage
+		if msg.Type != nil {
+			msgType = *msg.Type
+		}
+
+		switch msgType {
+		case schemas.ResponsesMessageTypeMessage:
+			role := ""
+			if msg.Role != nil {
+				role = string(*msg.Role)
+			}
+			summary := ResponsesMessageSummary{
+				Role:      role,
+				Content:   extractResponsesMessageTextContent(&msg),
+				Reasoning: extractResponsesReasoning(msg.ResponsesReasoning),
+			}
+			result = append(result, summary)
+
+		case schemas.ResponsesMessageTypeReasoning:
+			reasoning := extractResponsesReasoning(msg.ResponsesReasoning)
+			if reasoning == "" {
+				continue
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				Reasoning: reasoning,
+			})
+
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Name == nil {
+				continue
+			}
+			tc := ToolCallSummary{
+				Type: "function",
+				Name: *msg.ResponsesToolMessage.Name,
+			}
+			if msg.ID != nil {
+				tc.ID = *msg.ID
+			}
+			if msg.ResponsesToolMessage.Arguments != nil {
+				tc.Args = *msg.ResponsesToolMessage.Arguments
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:      "assistant",
+				ToolCalls: []ToolCallSummary{tc},
+			})
+
+		case schemas.ResponsesMessageTypeFunctionCallOutput:
+			if msg.ResponsesToolMessage == nil {
+				continue
+			}
+			summary := ResponsesMessageSummary{
+				Role:    "tool",
+				Content: extractResponsesToolOutputContent(msg.ResponsesToolMessage.Output),
+			}
+			if msg.ResponsesToolMessage.CallID != nil {
+				summary.ToolCallID = *msg.ResponsesToolMessage.CallID
+			}
+			result = append(result, summary)
+
+		case schemas.ResponsesMessageTypeMCPCall:
+			if msg.ResponsesToolMessage == nil {
+				continue
+			}
+			if msg.ResponsesToolMessage.Name != nil {
+				// Outbound MCP tool call (assistant side)
+				tc := ToolCallSummary{
+					Type: "mcp",
+					Name: *msg.ResponsesToolMessage.Name,
+				}
+				if msg.ID != nil {
+					tc.ID = *msg.ID
+				}
+				if msg.ResponsesToolMessage.Arguments != nil {
+					tc.Args = *msg.ResponsesToolMessage.Arguments
+				}
+				result = append(result, ResponsesMessageSummary{
+					Role:      "assistant",
+					ToolCalls: []ToolCallSummary{tc},
+				})
+			} else if msg.ResponsesToolMessage.CallID != nil {
+				// Inbound MCP tool result (user side)
+				result = append(result, ResponsesMessageSummary{
+					Role:       "tool",
+					ToolCallID: *msg.ResponsesToolMessage.CallID,
+					Content:    extractResponsesToolOutputContent(msg.ResponsesToolMessage.Output),
+				})
+			}
+
+		case schemas.ResponsesMessageTypeMCPApprovalRequest:
+			content := "[mcp_approval_request]"
+			if msg.ResponsesToolMessage != nil &&
+				msg.ResponsesToolMessage.Action != nil &&
+				msg.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
+				content = msg.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction.Name
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: content,
+			})
+
+		case schemas.ResponsesMessageTypeWebSearchCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: "[web_search_call]",
+			})
+
+		case schemas.ResponsesMessageTypeComputerCall:
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: "[computer_call]",
+			})
+
+		case schemas.ResponsesMessageTypeComputerCallOutput:
+			result = append(result, ResponsesMessageSummary{
+				Role:    "tool",
+				Content: "[computer_call_output]",
+			})
+
+		case schemas.ResponsesMessageTypeFileSearchCall,
+			schemas.ResponsesMessageTypeCodeInterpreterCall,
+			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeImageGenerationCall:
+			name := ""
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
+				name = *msg.ResponsesToolMessage.Name
+			}
+			content := "[" + string(msgType) + "]"
+			if name != "" {
+				content += " " + name
+			}
+			result = append(result, ResponsesMessageSummary{
+				Role:    "assistant",
+				Content: content,
+			})
+
+		case schemas.ResponsesMessageTypeLocalShellCallOutput,
+			schemas.ResponsesMessageTypeCustomToolCallOutput:
+			content := ""
+			if msg.ResponsesToolMessage != nil {
+				content = extractResponsesToolOutputContent(msg.ResponsesToolMessage.Output)
+			}
+			summary := ResponsesMessageSummary{
+				Role:    "tool",
+				Content: content,
+			}
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+				summary.ToolCallID = *msg.ResponsesToolMessage.CallID
+			}
+			result = append(result, summary)
+
+		default:
+			continue
+		}
+	}
+	return result
+}
+
+// extractResponsesMessageTextContent extracts plain text from a ResponsesMessage's Content field.
+func extractResponsesMessageTextContent(msg *schemas.ResponsesMessage) string {
+	if msg.Content == nil {
+		return ""
+	}
+	if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+		return *msg.Content.ContentStr
+	}
+	var sb strings.Builder
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Text != nil {
+			sb.WriteString(*block.Text)
+		} else if block.ResponsesOutputMessageContentRefusal != nil && block.ResponsesOutputMessageContentRefusal.Refusal != "" {
+			sb.WriteString(block.ResponsesOutputMessageContentRefusal.Refusal)
+		}
+	}
+	return sb.String()
+}
+
+// extractResponsesToolOutputContent extracts text from a ResponsesToolMessageOutputStruct,
+func extractResponsesToolOutputContent(output *schemas.ResponsesToolMessageOutputStruct) string {
+	if output == nil {
+		return ""
+	}
+	if output.ResponsesToolCallOutputStr != nil {
+		return *output.ResponsesToolCallOutputStr
+	}
+	var sb strings.Builder
+	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+		if block.Text != nil {
+			sb.WriteString(*block.Text)
+		}
+	}
+	return sb.String()
+}
+
+// extractResponsesReasoning concatenates all summary text blocks from a ResponsesReasoning.
+func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
+	if r == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, block := range r.Summary {
+		if block.Text != "" {
+			sb.WriteString(block.Text)
+		}
+	}
+	return sb.String()
 }
 
 // extractMessageContent extracts text content from ChatMessageContent

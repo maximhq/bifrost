@@ -20,6 +20,7 @@ func TestSGL(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.SGL,
@@ -34,7 +35,8 @@ func TestSGL(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -49,5 +51,4 @@ func TestSGL(t *testing.T) {
 	t.Run("SGLTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

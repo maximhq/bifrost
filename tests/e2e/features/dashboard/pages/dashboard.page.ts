@@ -36,7 +36,7 @@ export class DashboardPage extends BasePage {
     // Chart cards - using data-testid for robust selectors
     this.logVolumeChart = page.locator('[data-testid="chart-log-volume"]')
     this.tokenUsageChart = page.locator('[data-testid="chart-token-usage"]')
-    this.costChart = page.locator('[data-testid="chart-cost"]')
+    this.costChart = page.locator('[data-testid="chart-cost-total"]')
     this.modelUsageChart = page.locator('[data-testid="chart-model-usage"]')
 
     // Chart type toggles - using data-testid with actions suffix
@@ -44,11 +44,11 @@ export class DashboardPage extends BasePage {
     this.volumeChartToggle = page.locator('[data-testid="chart-log-volume-actions"]').locator('button').filter({ has: page.locator('svg') })
     this.tokenChartToggle = page.locator('[data-testid="chart-token-usage-actions"]').locator('button').filter({ has: page.locator('svg') })
     // Cost and model charts have model filter + ChartTypeToggle; scope to ChartTypeToggle buttons only so getChartToggleState reads the right element
-    this.costChartToggle = page.locator('[data-testid="chart-cost-actions"]').locator('> div > div').last().locator('button')
+    this.costChartToggle = page.locator('[data-testid="chart-cost-total-actions"]').locator('> div > div').last().locator('button')
     this.modelChartToggle = page.locator('[data-testid="chart-model-usage-actions"]').locator('> div > div').last().locator('button')
 
     // Model filters - select trigger inside each chart's actions area (opens dropdown; Radix uses role=combobox or data-slot=select-trigger)
-    this.costModelFilter = page.locator('[data-testid="chart-cost-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
+    this.costModelFilter = page.locator('[data-testid="chart-cost-total-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
     this.usageModelFilter = page.locator('[data-testid="chart-model-usage-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
   }
 
@@ -200,7 +200,7 @@ export class DashboardPage extends BasePage {
   async toggleCostChartType(): Promise<void> {
     await this.dismissToasts()
     await this.closePopups()
-    const actionsContainer = this.page.locator('[data-testid="chart-cost-actions"]')
+    const actionsContainer = this.page.locator('[data-testid="chart-cost-total-actions"]')
     // ChartTypeToggle is the last child in the actions bar; its two buttons are the bar/line toggles only
     const chartTypeButtons = actionsContainer.locator('> div > div').last().locator('button')
     const toggleBtn = await this.getInactiveToggleButtonFrom(chartTypeButtons)
@@ -267,7 +267,7 @@ export class DashboardPage extends BasePage {
     const testIdMap: Record<string, string> = {
       'Request Volume': 'chart-log-volume',
       'Token Usage': 'chart-token-usage',
-      'Cost': 'chart-cost',
+      'Cost': 'chart-cost-total',
       'Model Usage': 'chart-model-usage',
     }
     const testId = testIdMap[chartTitle]
@@ -287,7 +287,7 @@ export class DashboardPage extends BasePage {
     const testIdMap: Record<string, string> = {
       'Request Volume': 'chart-log-volume',
       'Token Usage': 'chart-token-usage',
-      'Cost': 'chart-cost',
+      'Cost': 'chart-cost-total',
       'Model Usage': 'chart-model-usage',
     }
     const testId = testIdMap[chartTitle]

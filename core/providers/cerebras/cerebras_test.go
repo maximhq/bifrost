@@ -21,10 +21,11 @@ func TestCerebras(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Cerebras,
-		ChatModel: "llama-3.3-70b",
+		ChatModel: "llama3.1-8b",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Cerebras, Model: "llama3.1-8b"},
 			{Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
@@ -40,7 +41,7 @@ func TestCerebras(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // llama3.1-8b doesn't reliably produce parallel tool calls
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
@@ -56,5 +57,4 @@ func TestCerebras(t *testing.T) {
 	t.Run("CerebrasTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

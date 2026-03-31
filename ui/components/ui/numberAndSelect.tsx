@@ -12,6 +12,7 @@ const NumberAndSelect = ({
 	onChangeSelect,
 	options,
 	labelClassName,
+	dataTestId,
 }: {
 	id: string;
 	label: string;
@@ -21,6 +22,7 @@ const NumberAndSelect = ({
 	onChangeSelect: (value: string) => void;
 	options: { label: string; value: string }[];
 	labelClassName?: string;
+	dataTestId?: string;
 }) => {
 	return (
 		<div className="flex w-full items-center justify-between gap-4">
@@ -30,6 +32,7 @@ const NumberAndSelect = ({
 				</Label>
 				<Input
 					id={id}
+					data-testid={dataTestId}
 					placeholder="100"
 					value={value}
 					onChange={(e) => {
@@ -63,8 +66,8 @@ const NumberAndSelect = ({
 					<SelectTrigger className="m-0 w-full">
 						<SelectValue />
 					</SelectTrigger>
-					<SelectContent className="w-full">
-						{options.map((option) => (
+					<SelectContent>
+						{options.filter((option) => option.value).map((option) => (
 							<SelectItem key={option.value} value={option.value}>
 								{option.label}
 							</SelectItem>

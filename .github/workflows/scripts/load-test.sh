@@ -228,7 +228,6 @@ create_config() {
     "enable_logging": false,
     "initial_pool_size": 20000,
     "drop_excess_requests": false,
-    "enable_governance": false,
     "allow_direct_keys": false
   },
   "config_store": {

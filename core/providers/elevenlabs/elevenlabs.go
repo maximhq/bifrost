@@ -35,17 +35,21 @@ type ElevenlabsProvider struct {
 func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger) *ElevenlabsProvider {
 	config.CheckAndSetDefaults()
 
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     5000,
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  10 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.elevenlabs.io"
@@ -91,10 +95,13 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	}
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
@@ -108,9 +115,10 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 
-	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models)
+	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -227,13 +235,18 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, bifrostErr
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonData)
+	}
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -254,10 +267,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	// Create response based on whether timestamps were requested
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.SpeechRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
+			RequestType:             schemas.SpeechRequest,
+			Provider:                providerName,
+			ModelRequested:          request.Model,
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 
@@ -294,6 +308,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 	bifrostResponse.Audio = body
 	return bifrostResponse, nil
+}
+
+// Rerank is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // SpeechStream performs a text to speech stream request
@@ -337,7 +356,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make request
 	startTime := time.Now()
@@ -360,6 +381,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Extract provider response headers before status check so error responses also forward them
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
@@ -373,6 +397,8 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
@@ -383,14 +409,23 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		// Setup cancellation handler to close body stream on ctx cancellation
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Wrap reader with idle timeout to detect stalled streams.
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		defer stopIdleTimeout()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		// read binary audio chunks from the stream
 		// 4KB buffer for reading chunks
 		buffer := make([]byte, 4096)
-		bodyStream := resp.BodyStream()
+		bodyStream := reader
 		chunkIndex := -1
 		lastChunkTime := time.Now()
 
@@ -519,10 +554,13 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	}
 	req.SetBody(body.Bytes())
 
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
@@ -559,10 +597,11 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	response := ToBifrostTranscriptionResponse(chunks)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType:    schemas.TranscriptionRequest,
-		Provider:       providerName,
-		ModelRequested: request.Model,
-		Latency:        latency.Milliseconds(),
+		RequestType:             schemas.TranscriptionRequest,
+		Provider:                providerName,
+		ModelRequested:          request.Model,
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -582,7 +621,11 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.File) > 0 {
-		fileWriter, err := writer.CreateFormFile("file", "audio.wav")
+		filename := reqBody.Filename
+		if filename == "" {
+			filename = providerUtils.AudioFilenameFromBytes(reqBody.File)
+		}
+		fileWriter, err := writer.CreateFormFile("file", filename)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to create file field", err, providerName)
 		}
@@ -634,7 +677,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.AdditionalFormats) > 0 {
-		payload, err := sonic.Marshal(reqBody.AdditionalFormats)
+		payload, err := providerUtils.MarshalSorted(reqBody.AdditionalFormats)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to marshal additional_formats", err, providerName)
 		}
@@ -688,7 +731,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 				}
 			}
 		default:
-			payload, err := sonic.Marshal(v)
+			payload, err := providerUtils.MarshalSorted(v)
 			if err != nil {
 				return providerUtils.NewBifrostOperationError("failed to marshal webhook_metadata", err, providerName)
 			}
@@ -729,6 +772,36 @@ func (provider *ElevenlabsProvider) ImageEditStream(ctx *schemas.BifrostContext,
 // ImageVariation is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
+}
+
+// VideoGeneration is not supported by the ElevenLabs provider.
+func (provider *ElevenlabsProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+}
+
+// VideoRetrieve is not supported by the ElevenLabs provider.
+func (provider *ElevenlabsProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+}
+
+// VideoDownload is not supported by the ElevenLabs provider.
+func (provider *ElevenlabsProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+}
+
+// VideoDelete is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
@@ -794,6 +867,11 @@ func (provider *ElevenlabsProvider) BatchRetrieve(_ *schemas.BifrostContext, _ [
 // BatchCancel is not supported by Elevenlabs provider.
 func (provider *ElevenlabsProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchDelete is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
 // BatchResults is not supported by Elevenlabs provider.
@@ -874,4 +952,13 @@ func (provider *ElevenlabsProvider) ContainerFileContent(_ *schemas.BifrostConte
 // ContainerFileDelete is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+}
+
+func (provider *ElevenlabsProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

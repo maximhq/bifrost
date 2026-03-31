@@ -157,6 +157,10 @@ type DistributedLock struct {
 // Lock acquires the lock, blocking until it's available or the context is cancelled.
 // It will make up to (maxRetries + 1) attempts, sleeping retryInterval between failed attempts.
 func (l *DistributedLock) Lock(ctx context.Context) error {
+	// if config_store is not present, return true
+	if l.store == nil {
+		return nil
+	}
 	for i := 0; i <= l.maxRetries; i++ {
 		select {
 		case <-ctx.Done():
@@ -189,6 +193,10 @@ func (l *DistributedLock) Lock(ctx context.Context) error {
 // LockWithRetry acquires the lock, blocking until it's available or the context is cancelled.
 // It will retry up to maxRetries times with retryInterval between attempts.
 func (l *DistributedLock) LockWithRetry(ctx context.Context, maxRetries int) error {
+	// if config_store is not present, return true
+	if l.store == nil {
+		return nil
+	}
 	for i := 0; i <= maxRetries; i++ {
 		select {
 		case <-ctx.Done():
@@ -223,6 +231,10 @@ func (l *DistributedLock) LockWithRetry(ctx context.Context, maxRetries int) err
 // TryLock attempts to acquire the lock without blocking.
 // Returns true if the lock was acquired, false if it's held by another process.
 func (l *DistributedLock) TryLock(ctx context.Context) (bool, error) {
+	// if config_store is not present, return true
+	if l.store == nil {
+		return true, nil
+	}
 	// First, try to clean up any expired locks for this key
 	if err := l.cleanupExpiredLock(ctx); err != nil {
 		l.logger.Debug("error cleaning up expired lock: %v", err)
@@ -250,6 +262,10 @@ func (l *DistributedLock) TryLock(ctx context.Context) (bool, error) {
 // Unlock releases the lock if it's held by this holder.
 // Returns an error if the lock is not held by this holder.
 func (l *DistributedLock) Unlock(ctx context.Context) error {
+	// if config_store is not present, return nil (no-op)
+	if l.store == nil {
+		return nil
+	}
 	if !l.acquired {
 		return ErrLockNotHeld
 	}
@@ -275,6 +291,11 @@ func (l *DistributedLock) Unlock(ctx context.Context) error {
 // Only clears l.acquired when ErrLockNotHeld is returned; transient errors
 // leave l.acquired untouched so Unlock() can still attempt a proper release.
 func (l *DistributedLock) Extend(ctx context.Context) error {
+	// if config_store is not present, return true
+	if l.store == nil {
+		return nil
+	}
+	// if lock is not acquired, return error
 	if !l.acquired {
 		return ErrLockNotHeld
 	}
@@ -298,6 +319,10 @@ func (l *DistributedLock) Extend(ctx context.Context) error {
 // Returns (false, error) on transient database errors without clearing l.acquired,
 // allowing Unlock() to still attempt a proper release.
 func (l *DistributedLock) IsHeld(ctx context.Context) (bool, error) {
+	// if config_store is not present, return true
+	if l.store == nil {
+		return false, nil
+	}
 	if !l.acquired {
 		return false, nil
 	}
@@ -336,6 +361,10 @@ func (l *DistributedLock) HolderID() string {
 // cleanupExpiredLock atomically removes the lock if it has expired.
 // This is called before attempting to acquire a lock.
 func (l *DistributedLock) cleanupExpiredLock(ctx context.Context) error {
+	// if config_store is not present, return nil
+	if l.store == nil {
+		return nil
+	}
 	cleaned, err := l.store.CleanupExpiredLockByKey(ctx, l.lockKey)
 	if err != nil {
 		return fmt.Errorf("error cleaning up expired lock: %w", err)

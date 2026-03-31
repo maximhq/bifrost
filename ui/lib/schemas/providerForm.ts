@@ -111,6 +111,9 @@ const BedrockKeyConfigSchema = z
 		secret_key: z.string(),
 		session_token: z.string().optional(),
 		region: z.string().min(1, "Region is required for Bedrock keys"),
+		role_arn: z.string().optional(),
+		external_id: z.string().optional(),
+		session_name: z.string().optional(),
 		arn: z.string().optional(),
 		deployments: z
 			.union([z.record(z.string(), z.string()), z.string()])

@@ -28,12 +28,15 @@ type OllamaProvider struct {
 func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*OllamaProvider, error) {
 	config.CheckAndSetDefaults()
 
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     5000,
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  10 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 
 	// // Pre-warm response pools
@@ -44,6 +47,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	// BaseURL is required for Ollama
@@ -96,6 +100,7 @@ func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -117,6 +122,7 @@ func (provider *OllamaProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -133,6 +139,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -155,6 +162,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Ollama,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -201,6 +209,7 @@ func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 }
@@ -208,6 +217,11 @@ func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schem
 // Speech is not supported by the Ollama provider.
 func (provider *OllamaProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+}
+
+// Rerank is not supported by the Ollama provider.
+func (provider *OllamaProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Ollama provider.
@@ -250,6 +264,36 @@ func (provider *OllamaProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// VideoGeneration is not supported by the Ollama provider.
+func (provider *OllamaProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+}
+
+// VideoRetrieve is not supported by the Ollama provider.
+func (provider *OllamaProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+}
+
+// VideoDownload is not supported by the Ollama provider.
+func (provider *OllamaProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+}
+
+// VideoDelete is not supported by Ollama provider.
+func (provider *OllamaProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by Ollama provider.
+func (provider *OllamaProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by Ollama provider.
+func (provider *OllamaProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by Ollama provider.
 func (provider *OllamaProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
@@ -268,6 +312,11 @@ func (provider *OllamaProvider) BatchRetrieve(_ *schemas.BifrostContext, _ []sch
 // BatchCancel is not supported by Ollama provider.
 func (provider *OllamaProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchDelete is not supported by Ollama provider.
+func (provider *OllamaProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
 // BatchResults is not supported by Ollama provider.
@@ -347,4 +396,13 @@ func (provider *OllamaProvider) ContainerFileContent(_ *schemas.BifrostContext, 
 // ContainerFileDelete is not supported by the Ollama provider.
 func (provider *OllamaProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Ollama provider.
+func (provider *OllamaProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+}
+
+func (provider *OllamaProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

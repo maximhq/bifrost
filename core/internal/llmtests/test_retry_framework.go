@@ -1141,8 +1141,8 @@ func ConversationRetryConfig() TestRetryConfig {
 func DefaultSpeechRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
 		MaxAttempts: 10,
-		BaseDelay:   2000 * time.Millisecond,
-		MaxDelay:    10 * time.Second,
+		BaseDelay:   10 * time.Second,
+		MaxDelay:    60 * time.Second,
 		Conditions: []TestRetryCondition{
 			&EmptySpeechCondition{},     // Check for missing audio data
 			&GenericResponseCondition{}, // Catch generic error responses
@@ -1157,8 +1157,8 @@ func DefaultSpeechRetryConfig() TestRetryConfig {
 func SpeechStreamRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
 		MaxAttempts: 10,
-		BaseDelay:   2000 * time.Millisecond,
-		MaxDelay:    10 * time.Second,
+		BaseDelay:   10 * time.Second,
+		MaxDelay:    60 * time.Second,
 		Conditions: []TestRetryCondition{
 			&StreamErrorCondition{}, // Stream-specific errors
 			&EmptySpeechCondition{}, // Check for missing audio data

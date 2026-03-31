@@ -21,6 +21,7 @@ func TestCohere(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Cohere,
@@ -28,6 +29,7 @@ func TestCohere(t *testing.T) {
 		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
 		TextModel:      "",                         // Cohere focuses on chat
 		EmbeddingModel: "embed-v4.0",
+		RerankModel:    "rerank-v3.5",
 		ReasoningModel: "command-a-reasoning-08-2025",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
@@ -36,7 +38,8 @@ func TestCohere(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,  // May not support automatic
 			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
@@ -46,6 +49,7 @@ func TestCohere(t *testing.T) {
 			FileURL:               false, // Not supported
 			CompleteEnd2End:       false,
 			Embedding:             true,
+			Rerank:                true,
 			Reasoning:             true,
 			ListModels:            true,
 			CountTokens:           true,
@@ -55,5 +59,4 @@ func TestCohere(t *testing.T) {
 	t.Run("CohereTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

@@ -48,6 +48,9 @@ spec:
       serviceAccountName: {{ include "bifrost.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- with .Values.initContainers }}
       initContainers:
         {{- toYaml . | nindent 8 }}
@@ -58,6 +61,10 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.bifrost.port }}
@@ -126,6 +133,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.vectorStore.qdrant.external.existingSecret }}
                   key: {{ .Values.vectorStore.qdrant.external.apiKeyKey | default "api-key" }}
+            {{- end }}
+            {{- /* Pinecone API key from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "pinecone") .Values.vectorStore.pinecone.external.enabled .Values.vectorStore.pinecone.external.existingSecret }}
+            - name: BIFROST_PINECONE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.pinecone.external.existingSecret }}
+                  key: {{ .Values.vectorStore.pinecone.external.apiKeyKey | default "api-key" }}
             {{- end }}
             {{- /* Maxim API key from existing secret */ -}}
             {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}

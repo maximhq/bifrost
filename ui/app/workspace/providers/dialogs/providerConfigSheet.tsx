@@ -1,11 +1,11 @@
 import Provider from "@/components/provider";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useGetCoreConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
+import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 
@@ -15,9 +15,9 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, isGovernanceEnabled: boolean) => {
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean) => {
 	const tabs = [];
-	if (provider?.custom_provider_config) {
+	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
 			label: "API Structure",
@@ -25,20 +25,30 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 	}
 	tabs.push({
 		id: "network",
-		label: "Network config",
+		label: "Network",
 	});
 	tabs.push({
 		id: "proxy",
-		label: "Proxy config",
+		label: "Proxy",
 	});
 	tabs.push({
 		id: "performance",
-		label: "Performance tuning",
+		label: "Performance",
 	});
-	if (hasGovernanceAccess && isGovernanceEnabled) {
+	if (hasGovernanceAccess) {
 		tabs.push({
 			id: "governance",
 			label: "Governance",
+		});
+	}
+	tabs.push({
+		id: "debugging",
+		label: "Debugging",
+	});
+	if (isOpenAI) {
+		tabs.push({
+			id: "openai-config",
+			label: "OpenAI Config",
 		});
 	}
 	return tabs;
@@ -47,15 +57,21 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config?.enable_governance || false;
+	const hasCustomProviderConfig = !!provider.custom_provider_config;
+	const isOpenAI = provider.name === "openai";
 
 	const tabs = useMemo(() => {
-		return availableTabs(provider, hasGovernanceAccess, isGovernanceEnabled);
-	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess, isGovernanceEnabled]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI]);
 
 	useEffect(() => {
-		setSelectedTab(tabs[0]?.id);
+		setSelectedTab((previousTab) => {
+			if (previousTab && tabs.some((tab) => tab.id === previousTab)) {
+				return previousTab;
+			}
+
+			return tabs[0]?.id;
+		});
 	}, [tabs]);
 
 	return (
@@ -65,7 +81,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8 sm:max-w-[50%]">
+			<SheetContent className="custom-scrollbar p-8 sm:max-w-[50%]">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
@@ -78,18 +94,25 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				</SheetHeader>
 				<div className="w-full rounded-sm border">
 					<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-						<TabsList
-							style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
-							className="mb-4 grid h-10 w-full rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none"
-						>
-							{tabs.map((tab) => (
-								<TabsTrigger key={tab.id} value={tab.id} className="flex items-center gap-2">
-									{tab.label}
-								</TabsTrigger>
-							))}
-						</TabsList>
+						<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
+							<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
+								{tabs.map((tab) => (
+									<TabsTrigger
+										key={tab.id}
+										value={tab.id}
+										data-testid={`provider-tab-${tab.id}`}
+										className="flex-none px-3 whitespace-nowrap"
+									>
+										{tab.label}
+									</TabsTrigger>
+								))}
+							</TabsList>
+						</div>
 						<TabsContent value="api-structure">
 							<ApiStructureFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="openai-config">
+							<OpenAIConfigFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="network">
 							<NetworkFormFragment provider={provider} />
@@ -102,6 +125,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="debugging">
+							<DebuggingFormFragment provider={provider} />
 						</TabsContent>
 					</Tabs>
 				</div>

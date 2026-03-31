@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -74,13 +73,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				if structuredOutputToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && contentBlock.ToolUse.Name == structuredOutputToolName {
 					// This is structured output - set contentStr and skip adding to toolCalls
 					if contentBlock.ToolUse.Input != nil {
-						if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-							jsonStr := string(argBytes)
-							contentStr = &jsonStr
-						} else {
-							jsonStr := fmt.Sprintf("%v", contentBlock.ToolUse.Input)
-							contentStr = &jsonStr
-						}
+						jsonStr := string(contentBlock.ToolUse.Input)
+						contentStr = &jsonStr
 					}
 					continue // Skip adding to toolCalls
 				}
@@ -88,11 +82,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				// Regular tool call processing
 				var arguments string
 				if contentBlock.ToolUse.Input != nil {
-					if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-						arguments = string(argBytes)
-					} else {
-						arguments = fmt.Sprintf("%v", contentBlock.ToolUse.Input)
-					}
+					arguments = string(contentBlock.ToolUse.Input)
 				} else {
 					arguments = "{}"
 				}
@@ -204,7 +194,9 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 			assistantMessage = &schemas.ChatAssistantMessage{}
 		}
 		assistantMessage.ReasoningDetails = reasoningDetails
-		assistantMessage.Reasoning = schemas.Ptr(reasoningText)
+		if reasoningText != "" {
+			assistantMessage.Reasoning = new(reasoningText)
+		}
 	}
 
 	// Create the response choice
@@ -231,14 +223,18 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 		// Handle cached tokens if present
 		if response.Usage.CacheReadInputTokens > 0 {
-			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+			if usage.PromptTokensDetails == nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
+			usage.PromptTokensDetails.CachedReadTokens = response.Usage.CacheReadInputTokens
+			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheReadInputTokens
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {
-			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-				CachedTokens: response.Usage.CacheWriteInputTokens,
+			if usage.PromptTokensDetails == nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
+			usage.PromptTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
@@ -263,7 +259,26 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	return bifrostResponse, nil
 }
 
-func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+// BedrockStreamState tracks per-stream tool call index state.
+type BedrockStreamState struct {
+	nextToolCallIndex         int
+	contentBlockToToolCallIdx map[int]int
+}
+
+// NewBedrockStreamState returns initialised stream state for one streaming response.
+func NewBedrockStreamState() *BedrockStreamState {
+	return &BedrockStreamState{
+		contentBlockToToolCallIdx: make(map[int]int),
+	}
+}
+
+func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+	if state == nil {
+		state = NewBedrockStreamState()
+	} else if state.contentBlockToToolCallIdx == nil {
+		state.contentBlockToToolCallIdx = make(map[int]int)
+	}
+
 	// event with metrics/usage is the last and with stop reason is the second last
 	switch {
 	case chunk.Role != nil:
@@ -287,16 +302,16 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 	case chunk.Start != nil && chunk.Start.ToolUse != nil:
 		toolUseStart := chunk.Start.ToolUse
 
-		// Determine the tool call index from ContentBlockIndex
-		// ContentBlockIndex identifies which content block this tool call belongs to
-		var toolCallIndex uint16
+		toolCallIdx := 0
 		if chunk.ContentBlockIndex != nil {
-			toolCallIndex = uint16(*chunk.ContentBlockIndex)
+			toolCallIdx = state.nextToolCallIndex
+			state.contentBlockToToolCallIdx[*chunk.ContentBlockIndex] = toolCallIdx
+			state.nextToolCallIndex++
 		}
 
 		// Create tool call structure for start event
 		var toolCall schemas.ChatAssistantMessageToolCall
-		toolCall.Index = toolCallIndex
+		toolCall.Index = uint16(toolCallIdx)
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
 		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
@@ -345,16 +360,14 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			// Handle tool use delta
 			toolUseDelta := chunk.Delta.ToolUse
 
-			// Determine the tool call index from ContentBlockIndex
-			// This must match the index used in the corresponding Start event
-			var toolCallIndex uint16
+			toolCallIdx := 0
 			if chunk.ContentBlockIndex != nil {
-				toolCallIndex = uint16(*chunk.ContentBlockIndex)
+				toolCallIdx = state.contentBlockToToolCallIdx[*chunk.ContentBlockIndex]
 			}
 
 			// Create tool call structure
 			var toolCall schemas.ChatAssistantMessageToolCall
-			toolCall.Index = toolCallIndex
+			toolCall.Index = uint16(toolCallIdx)
 			toolCall.Type = schemas.Ptr("function")
 
 			// For streaming, we need to accumulate tool use data

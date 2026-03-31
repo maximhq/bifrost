@@ -2,6 +2,7 @@ package llmtests
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -129,6 +130,12 @@ func CountTokensExpectations() ResponseExpectations {
 // StreamingExpectations returns validation expectations for streaming scenarios
 func StreamingExpectations() ResponseExpectations {
 	expectations := BasicChatExpectations()
+
+	// Streaming consolidated responses are assembled from chunks.
+	// The last chunk often does not carry created/model fields,
+	// so we cannot reliably validate them on the consolidated response.
+	expectations.ShouldHaveTimestamps = false
+	expectations.ShouldHaveModel = false
 
 	return expectations
 }
@@ -270,169 +277,314 @@ func ChatAudioExpectations() ResponseExpectations {
 
 // GetExpectationsForScenario returns appropriate validation expectations for a given scenario
 func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTestConfig, customParams map[string]interface{}) ResponseExpectations {
+	var expectations ResponseExpectations
+
 	switch scenarioName {
 	case "SimpleChat":
-		return BasicChatExpectations()
+		expectations = BasicChatExpectations()
 
 	case "TextCompletion":
-		return TextCompletionExpectations()
+		expectations = TextCompletionExpectations()
 
 	case "ToolCalls":
 		if toolName, ok := customParams["tool_name"].(string); ok {
 			if args, ok := customParams["required_args"].([]string); ok {
-				return ToolCallExpectations(toolName, args)
+				expectations = ToolCallExpectations(toolName, args)
+				break
 			}
 		}
-		return WeatherToolExpectations() // Default to weather tool
+		expectations = WeatherToolExpectations() // Default to weather tool
 
 	case "MultipleToolCalls":
 		if tools, ok := customParams["tool_names"].([]string); ok {
 			if argsPerTool, ok := customParams["required_args_per_tool"].([][]string); ok {
-				return MultipleToolExpectations(tools, argsPerTool)
+				expectations = MultipleToolExpectations(tools, argsPerTool)
+				break
 			}
 		}
 		// Default to weather and calculator
-		return MultipleToolExpectations(
+		expectations = MultipleToolExpectations(
 			[]string{string(SampleToolTypeWeather), string(SampleToolTypeCalculate)},
 			[][]string{{"location"}, {"expression"}},
 		)
 
 	case "End2EndToolCalling":
-		return ConversationExpectations([]string{"weather", "temperature", "result"})
+		expectations = ConversationExpectations([]string{"weather", "temperature", "result"})
 
 	case "AutomaticFunctionCalling":
-		expectations := WeatherToolExpectations()
+		expectations = WeatherToolExpectations()
 		expectations.ShouldHaveContent = true // Should have follow-up text after tool call
-		return expectations
 
 	case "ImageURL", "ImageBase64":
-		return VisionExpectations([]string{"image", "picture", "see"})
+		expectations = VisionExpectations([]string{"image", "picture", "see"})
 
 	case "MultipleImages":
-		return VisionExpectations([]string{"compare", "similar", "different", "images"})
+		expectations = VisionExpectations([]string{"compare", "similar", "different", "images"})
 
 	case "FileInput":
-		return FileInputExpectations()
+		expectations = FileInputExpectations()
 
-	case "ChatCompletionStream":
-		return StreamingExpectations()
+	case "ChatCompletionStream", "TextCompletionStream":
+		expectations = StreamingExpectations()
 
 	case "MultiTurnConversation":
 		if keywords, ok := customParams["context_keywords"].([]string); ok {
-			return ConversationExpectations(keywords)
+			expectations = ConversationExpectations(keywords)
+		} else {
+			expectations = ConversationExpectations([]string{"context", "previous", "mentioned"})
 		}
-		return ConversationExpectations([]string{"context", "previous", "mentioned"})
 
 	case "Embedding":
 		if texts, ok := customParams["input_texts"].([]string); ok {
-			return EmbeddingExpectations(texts)
+			expectations = EmbeddingExpectations(texts)
+		} else {
+			expectations = EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
 		}
-		return EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
 
 	case "CountTokens":
-		return CountTokensExpectations()
+		expectations = CountTokensExpectations()
 
 	case "CompleteEnd2End":
-		return ConversationExpectations([]string{"complete", "comprehensive", "full"})
+		expectations = ConversationExpectations([]string{"complete", "comprehensive", "full"})
 
 	case "SpeechSynthesis":
 		if minBytes, ok := customParams["min_audio_bytes"].(int); ok {
-			return SpeechExpectations(minBytes)
+			expectations = SpeechExpectations(minBytes)
+		} else {
+			expectations = SpeechExpectations(500) // Default minimum 500 bytes
 		}
-		return SpeechExpectations(500) // Default minimum 500 bytes
 
 	case "Transcription":
 		if minLength, ok := customParams["min_transcription_length"].(int); ok {
-			return TranscriptionExpectations(minLength)
+			expectations = TranscriptionExpectations(minLength)
+		} else {
+			expectations = TranscriptionExpectations(10) // Default minimum 10 characters
 		}
-		return TranscriptionExpectations(10) // Default minimum 10 characters
 
 	case "Reasoning":
-		expectations := ReasoningExpectations()
-		return expectations
+		expectations = ReasoningExpectations()
 
 	case "ChatAudio":
-		return ChatAudioExpectations()
+		expectations = ChatAudioExpectations()
 
 	case "ProviderSpecific":
-		expectations := BasicChatExpectations()
+		expectations = BasicChatExpectations()
 		expectations.ShouldContainKeywords = []string{"unique", "specific", "capability"}
-		return expectations
 
 	case "ImageGeneration":
 		if minImages, ok := customParams["min_images"].(int); ok {
 			if expectedSize, ok := customParams["expected_size"].(string); ok {
-				return ImageGenerationExpectations(minImages, expectedSize)
+				expectations = ImageGenerationExpectations(minImages, expectedSize)
+				break
 			}
 		}
-		return ImageGenerationExpectations(1, "1024x1024")
+		expectations = ImageGenerationExpectations(1, "1024x1024")
 
 	case "ImageEdit", "ImageVariation":
 		// Reuse image generation expectations since they use the same response structure
 		if minImages, ok := customParams["min_images"].(int); ok {
 			if expectedSize, ok := customParams["expected_size"].(string); ok {
-				return ImageGenerationExpectations(minImages, expectedSize)
+				expectations = ImageGenerationExpectations(minImages, expectedSize)
+				break
 			}
 		}
-		return ImageGenerationExpectations(1, "1024x1024")
+		expectations = ImageGenerationExpectations(1, "1024x1024")
 
 	default:
 		// Default to basic chat expectations
-		return BasicChatExpectations()
+		expectations = BasicChatExpectations()
 	}
+
+	// Apply raw request/response expectations from test config
+	isStreaming := strings.HasSuffix(scenarioName, "Stream") || strings.HasSuffix(scenarioName, "Streaming")
+	isMultipartRequest := scenarioName == "Transcription" || scenarioName == "TranscriptionStream" ||
+		scenarioName == "ImageEdit" || scenarioName == "ImageEditStream" ||
+		scenarioName == "ImageVariation"
+	// Skip raw request/response for CountTokens - not all providers support it uniformly
+	if scenarioName != "CountTokens" {
+		expectations = ApplyRawExpectations(expectations, testConfig, isStreaming, isMultipartRequest)
+	}
+
+	return expectations
 }
 
 // =============================================================================
 // PROVIDER-SPECIFIC EXPECTATION MODIFIERS
 // =============================================================================
 
-// ModifyExpectationsForProvider adjusts expectations based on provider capabilities
+// ModifyExpectationsForProvider adjusts expectations based on provider capabilities.
+// Each provider is explicitly configured for: usage stats, timestamps, model, and latency.
+// If a provider is not listed, defaults are kept (all true from BasicChatExpectations).
 func ModifyExpectationsForProvider(expectations ResponseExpectations, provider schemas.ModelProvider) ResponseExpectations {
 	switch provider {
 	case schemas.OpenAI:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveTimestamps = true
 		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Azure:
+		// Azure OpenAI returns the same fields as OpenAI
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Anthropic:
 		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
 		expectations.ShouldHaveModel = true
-		// Claude might have different response patterns
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Bedrock:
+		// Bedrock returns usage stats for most calls via Bifrost normalization, but not all
+		expectations.ShouldHaveTimestamps = false // Bedrock does not return created timestamps
 		expectations.ShouldHaveModel = true
-		// AWS Bedrock has different usage reporting
-		expectations.ShouldHaveUsageStats = false // Often not included
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Cohere:
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = false // Cohere does not return model field in all response types
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Vertex:
+		// Google Vertex AI returns usage and model but may not return timestamps
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = false // Vertex does not return created timestamps
 		expectations.ShouldHaveModel = true
-		// Google Vertex AI has different metadata
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Mistral:
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Ollama:
-		// Local models might have different metadata expectations
+		// Local models may not return usage or timestamps
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Groq:
 		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
 		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
 
 	case schemas.Gemini:
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = false // Gemini does not return created timestamps
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Perplexity:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = false // Perplexity does not return created timestamps
+		expectations.ShouldHaveModel = false      // Perplexity does not return model field
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Cerebras:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.OpenRouter:
+		// OpenRouter proxies to multiple providers; returns OpenAI-compatible fields
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.XAI:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Nebius:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.SGL:
+		// SGLang local inference — may not return all fields
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Parasail:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = false // Parasail does not return created timestamps
+		expectations.ShouldHaveModel = false      // Parasail does not return model field in streaming
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Elevenlabs:
+		// Elevenlabs is primarily audio — usage/timestamps may not apply to all calls
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.HuggingFace:
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Replicate:
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.VLLM:
+		// vLLM local inference — OpenAI-compatible
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveTimestamps = true
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
+
+	case schemas.Runway:
+		// Runway is primarily video/image generation
+		expectations.ShouldHaveUsageStats = false
+		expectations.ShouldHaveTimestamps = false
+		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveLatency = true
 
 	default:
-		// Keep default expectations
+		// Keep default expectations — all true from BasicChatExpectations
 	}
 
+	return expectations
+}
+
+// ApplyRawExpectations applies raw request/response expectations based on test config.
+// Call this after creating expectations directly (SpeechExpectations, TranscriptionExpectations, etc.)
+// when not using GetExpectationsForScenario.
+// Parameters:
+//   - isStreaming: if true, skips RawResponse expectation (streaming has no single response body)
+//   - options: variadic bool options:
+//   - options[0] = isMultipartRequest: if true, skips RawRequest expectation (multipart form data can't return raw JSON request)
+//   - options[1] = isBinaryResponse: if true, skips RawResponse expectation (binary responses like audio don't have JSON raw response)
+func ApplyRawExpectations(expectations ResponseExpectations, testConfig ComprehensiveTestConfig, isStreaming bool, options ...bool) ResponseExpectations {
+	if testConfig.ExpectRawRequestResponse {
+		// options[0] = isMultipartRequest (skip RawRequest for multipart form data requests like transcription)
+		// options[1] = isBinaryResponse (skip RawResponse for binary responses like speech synthesis audio)
+		skipRawRequest := len(options) > 0 && options[0]
+		skipRawResponse := len(options) > 1 && options[1]
+		if !skipRawRequest {
+			expectations.ShouldHaveRawRequest = true
+		}
+		if !isStreaming && !skipRawResponse {
+			expectations.ShouldHaveRawResponse = true
+		}
+	}
 	return expectations
 }
 

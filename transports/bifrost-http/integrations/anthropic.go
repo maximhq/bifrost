@@ -53,6 +53,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
+		PreCallback: checkAnthropicPassthrough,
 	}
 }
 
@@ -75,8 +76,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
+						ResponsesRequest: bifrostReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
@@ -88,6 +91,22 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					}
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil
+			},
+			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
+				if resp.Status == schemas.AsyncJobStatusCompleted {
+					responsesResp, ok := resp.Result.(*schemas.BifrostResponsesResponse)
+					if !ok {
+						return nil, nil, errors.New("invalid responses response type")
+					}
+					response, err := responsesResponseConverter(ctx, responsesResp)
+					if err != nil {
+						return nil, nil, err
+					}
+					return response, nil, nil
+				}
+				return &anthropic.AnthropicMessageResponse{
+					ID: resp.ID,
+				}, nil, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
@@ -164,6 +183,22 @@ func hasPromptCachingScopeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
+func hasFastModeBetaHeader(headers map[string][]string) bool {
+	for k, v := range headers {
+		if strings.ToLower(k) != "anthropic-beta" {
+			continue
+		}
+		for _, headerValue := range v {
+			for beta := range strings.SplitSeq(headerValue, ",") {
+				if strings.HasPrefix(strings.TrimSpace(beta), anthropic.AnthropicFastModeBetaHeaderPrefix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
 // Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
 func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
@@ -185,11 +220,18 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 			// Split comma-separated beta headers
 			for beta := range strings.SplitSeq(headerValue, ",") {
 				beta = strings.TrimSpace(beta)
-				// Skip unsupported headers for Vertex
-				if beta == anthropic.AnthropicAdvancedToolUseBetaHeader ||
-					beta == anthropic.AnthropicStructuredOutputsBetaHeader ||
-					beta == anthropic.AnthropicPromptCachingScopeBetaHeader ||
-					beta == anthropic.AnthropicMCPClientBetaHeader {
+				if beta == "" {
+					continue
+				}
+				// Skip unsupported headers for Vertex.
+				// Use prefix matching so that future date bumps
+				// (e.g. structured-outputs-2025-12-15) are still caught.
+				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) {
 					continue
 				}
 				filteredBetas = append(filteredBetas, beta)
@@ -253,10 +295,43 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 	}
 }
 
+func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+	if bifrostCtx == nil {
+		return
+	}
+	isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !isLargePayload {
+		return
+	}
+	metadata := resolveLargePayloadMetadata(bifrostCtx)
+	if metadata == nil {
+		return
+	}
+
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if metadata.StreamRequested != nil && r.Stream == nil {
+			r.Stream = schemas.Ptr(*metadata.StreamRequested)
+		}
+	case *anthropic.AnthropicMessageRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if metadata.StreamRequested != nil && r.Stream == nil {
+			r.Stream = schemas.Ptr(*metadata.StreamRequested)
+		}
+	}
+}
+
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
 func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
+
 	var provider schemas.ModelProvider
 	var model string
 
@@ -315,7 +390,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && hasPromptCachingScopeBetaHeader(headers) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
@@ -384,8 +459,10 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
-						CountTokensRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
+						CountTokensRequest: bifrostReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type for Anthropic count tokens")
@@ -1015,6 +1092,6 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }

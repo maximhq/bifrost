@@ -60,10 +60,10 @@ func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderMatcher())
 	defer cancel() // Ensure cleanup on function exit
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -93,10 +93,10 @@ func (h *MCPInferenceHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) 
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderMatcher())
 	defer cancel() // Ensure cleanup on function exit
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 

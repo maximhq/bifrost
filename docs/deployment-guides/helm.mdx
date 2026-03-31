@@ -18,6 +18,10 @@ Deploy Bifrost on Kubernetes using the official Helm chart. This is the recommen
 - (Optional) Persistent Volume provisioner
 - (Optional) Ingress controller
 
+<Note>
+If you use PostgreSQL for Bifrost storage, ensure the database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ## Quick Start
 
 ### Add Helm Repository
@@ -146,7 +150,6 @@ bifrost:
   client:
     dropExcessRequests: true
     enableLogging: true
-    enableGovernance: true
   
   providers:
     openai:
@@ -465,7 +468,7 @@ helm install bifrost bifrost/bifrost -f secrets-config.yaml
 | `storage.persistence.size` | PVC size for SQLite | `10Gi` |
 | `postgresql.enabled` | Deploy PostgreSQL | `false` |
 | `vectorStore.enabled` | Enable vector store | `false` |
-| `vectorStore.type` | Vector store type (weaviate/redis/qdrant) | `none` |
+| `vectorStore.type` | Vector store type (weaviate/redis/qdrant). Use `redis` for Redis or Valkey-compatible services | `none` |
 | `bifrost.encryptionKey` | Encryption key | `""` |
 | `ingress.enabled` | Enable ingress | `false` |
 | `autoscaling.enabled` | Enable HPA | `false` |
@@ -1009,7 +1012,6 @@ bifrost:
     enableLogging: true
     disableContentLogging: false  # Set to true for compliance
     logRetentionDays: 365
-    enableGovernance: true
     enforceGovernanceHeader: true
     allowDirectKeys: false
     maxRequestBodySizeMb: 100

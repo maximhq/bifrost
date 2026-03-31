@@ -56,7 +56,7 @@ func TestParameterVariations(t *testing.T) {
 				return // Test will be skipped by retry function
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Make second request
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, tt.request2)
@@ -184,7 +184,7 @@ func TestToolVariations(t *testing.T) {
 		t.Fatalf("Request without tools failed: %v", err1)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test 2: Request with tools (should NOT cache hit)
 	t.Log("Making request with tools...")
@@ -195,7 +195,7 @@ func TestToolVariations(t *testing.T) {
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response2})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test 3: Same request with tools (should cache hit)
 	t.Log("Making same request with tools again...")
@@ -359,7 +359,7 @@ func TestContentVariations(t *testing.T) {
 				return // Skip this test case
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Make second identical request
 			response2, err2 := setup.Client.ChatCompletionRequest(ctx, tt.request)
@@ -523,7 +523,7 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 			}
 
 			// Wait for cache to be written
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Make second request with similar content
 			request2 := CreateBasicChatRequest(test.prompt2, 0.1, 50) // Same parameters
@@ -602,7 +602,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 			t.Fatalf("First request with valid cache key failed: %v", err)
 		}
 
-		WaitForCache()
+		WaitForCache(setup.Plugin)
 
 		// Now test with invalid key type - should bypass cache
 		ctxInvalidKey := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, 12345)

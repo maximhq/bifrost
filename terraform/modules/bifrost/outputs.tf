@@ -1,21 +1,21 @@
 output "service_url" {
   description = "URL to access the Bifrost service."
-  value = coalesce(
+  value = try(coalesce(
     try(module.aws[0].service_url, null),
     try(module.gcp[0].service_url, null),
     try(module.azure[0].service_url, null),
     try(module.kubernetes[0].service_url, null),
-  )
+  ), null)
 }
 
 output "health_check_url" {
   description = "URL to the Bifrost health check endpoint."
-  value = coalesce(
+  value = try(coalesce(
     try(module.aws[0].health_check_url, null),
     try(module.gcp[0].health_check_url, null),
     try(module.azure[0].health_check_url, null),
     try(module.kubernetes[0].health_check_url, null),
-  )
+  ), null)
 }
 
 output "config_json" {

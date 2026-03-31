@@ -13,6 +13,7 @@ var NoDeadline time.Time
 var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
 	BifrostContextKeyAPIKeyName,
+	BifrostContextKeyAPIKeyID,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
 	BifrostContextKeyDirectKey,
@@ -21,7 +22,6 @@ var reservedKeys = []any{
 	BifrostContextKeyNumberOfRetries,
 	BifrostContextKeyFallbackIndex,
 	BifrostContextKeySkipKeySelection,
-	BifrostContextKeyExtraHeaders,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 }
@@ -231,6 +231,20 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// ClearValue clears a value from the internal userValues map.
+func (bc *BifrostContext) ClearValue(key any) {
+	// Check if the key is a reserved key
+	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+		// we silently drop writes for these reserved keys
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues != nil {
+		bc.userValues[key] = nil
+	}
+}
+
 // GetAndSetValue gets a value from the internal userValues map and sets it
 func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
@@ -311,7 +325,7 @@ func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 	return nil
 }
 
-// AppendToContext appends a value to the context list value.
+// AppendToContextList appends a value to the context list value.
 // Parameters:
 //   - ctx: The Bifrost context
 //   - key: The key to append the value to

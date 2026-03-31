@@ -4,21 +4,24 @@ import { Button } from "@/components/ui/button";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { PlusIcon, Puzzle } from "lucide-react";
-import Link from "next/link";
+import { ListOrdered, PlusIcon, Puzzle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AddNewPluginSheet from "./sheets/addNewPluginSheet";
+import PluginSequenceSheet from "./sheets/pluginSequenceSheet";
+import { PluginsEmptyState } from "./views/pluginsEmptyState";
 import PluginsView from "./views/pluginsView";
 
 export default function PluginsPage() {
 	const dispatch = useAppDispatch();
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
+	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
 	const { data: plugins, isLoading } = useGetPluginsQuery();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
 	const [isSheetOpen, setIsSheetOpen] = useState(false);
+	const [isSequenceSheetOpen, setIsSequenceSheetOpen] = useState(false);
 
 	const handleAddNew = () => {
 		setIsSheetOpen(true);
@@ -45,6 +48,21 @@ export default function PluginsPage() {
 		setSelectedPluginId(selectedPlugin?.name ?? "");
 	}, [customPlugins]);
 
+	if (customPlugins?.length === 0 && !isLoading) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<PluginsEmptyState onCreateClick={handleAddNew} canCreate={hasCreatePluginAccess} />
+				<AddNewPluginSheet
+					open={isSheetOpen}
+					onClose={handleCloseSheet}
+					onCreate={(pluginName) => {
+						setSelectedPluginId(pluginName);
+					}}
+				/>
+			</div>
+		);
+	}
+
 	return (
 		<div className="mx-auto w-full max-w-7xl">
 			<div className="flex flex-row gap-4">
@@ -56,6 +74,7 @@ export default function PluginsPage() {
 								<button
 									type="button"
 									key={plugin.name}
+									data-testid="plugin-list-item"
 									aria-current={selectedPlugin?.name === plugin.name ? "page" : undefined}
 									className={cn(
 										"mb-1 flex max-h-[32px] w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
@@ -67,11 +86,9 @@ export default function PluginsPage() {
 										setSelectedPluginId(plugin.name);
 									}}
 								>
-									<div className="flex flex-row items-center gap-2">
-										<div className="w-[16px]">
-											<Puzzle className="text-muted-foreground size-3.5" />
-										</div>{" "}
-										<span className="">{plugin.name}</span>
+									<div className="flex min-w-0 flex-row items-center gap-2">
+										<Puzzle className="text-muted-foreground size-3.5 shrink-0" />
+										<span className="truncate">{plugin.name}</span>
 									</div>
 									<div
 										className={cn(
@@ -81,9 +98,9 @@ export default function PluginsPage() {
 									/>
 								</button>
 							))}
-							{customPlugins?.length === 0 && <div className="text-muted-foreground text-sm">No plugins installed</div>}
-							<div className="my-4">
+							<div className="my-4 flex flex-col gap-2">
 								<Button
+									data-testid="plugins-create-button"
 									variant="outline"
 									size="sm"
 									className="w-full justify-start"
@@ -97,17 +114,19 @@ export default function PluginsPage() {
 									<PlusIcon className="h-4 w-4" />
 									<div className="text-xs">Install New Plugin</div>
 								</Button>
-							</div>
-							<div className="text-sm">
-								Read our{" "}
-								<Link
-									className="text-primary hover:underline dark:text-green-400"
-									href="https://docs.getbifrost.ai/plugins"
-									target="_blank"
-								>
-									documentation
-								</Link>{" "}
-								to learn more about plugins.
+								{customPlugins && customPlugins.length > 0 && (
+									<Button
+										variant="outline"
+										size="sm"
+										className="w-full justify-start"
+										disabled={!hasUpdatePluginAccess}
+										onClick={() => setIsSequenceSheetOpen(true)}
+										data-testid="plugins-sequence-button"
+									>
+										<ListOrdered className="h-4 w-4" />
+										<div className="text-xs">Edit Plugin Sequence</div>
+									</Button>
+								)}
 							</div>
 						</div>
 					</div>
@@ -122,12 +141,13 @@ export default function PluginsPage() {
 				/>
 			</div>
 			<AddNewPluginSheet
-			open={isSheetOpen}
-			onClose={handleCloseSheet}
-			onCreate={(pluginName) => {
-				setSelectedPluginId(pluginName);
-			}}
-		/>
+				open={isSheetOpen}
+				onClose={handleCloseSheet}
+				onCreate={(pluginName) => {
+					setSelectedPluginId(pluginName);
+				}}
+			/>
+			<PluginSequenceSheet open={isSequenceSheetOpen} onClose={() => setIsSequenceSheetOpen(false)} plugins={plugins ?? []} />
 		</div>
 	);
 }

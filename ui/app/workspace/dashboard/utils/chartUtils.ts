@@ -64,6 +64,25 @@ export function getModelColor(index: number): string {
 	return MODEL_COLORS[index % MODEL_COLORS.length];
 }
 
+// Format latency values
+export function formatLatency(ms: number): string {
+	if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+	return `${ms.toFixed(0)}ms`;
+}
+
+// Latency chart color palette
+export const LATENCY_COLORS = {
+	avg: "#06b6d4", // cyan-500
+	p90: "#3b82f6", // blue-500
+	p95: "#f59e0b", // amber-500
+	p99: "#ef4444", // red-500
+};
+
+// Shared CSS class constants for chart card headers
+export const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
+export const CHART_HEADER_LEGEND_CLASS = "flex min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
+export const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
+
 // Chart colors
 export const CHART_COLORS = {
 	success: "#10b981", // emerald-500
@@ -72,4 +91,5 @@ export const CHART_COLORS = {
 	completionTokens: "#10b981", // emerald-500
 	totalTokens: "#8b5cf6", // violet-500
 	cost: "#f59e0b", // amber-500
+	cachedReadTokens: "#06b6d4", // cyan-500
 };

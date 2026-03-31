@@ -93,7 +93,7 @@ func chatWithFallbacks(client *bifrost.Bifrost) {
     ctx := context.Background()
     
     // Chat request with multiple fallbacks
-    response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input: []schemas.ChatMessage{

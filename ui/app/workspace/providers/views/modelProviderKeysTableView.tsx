@@ -30,9 +30,14 @@ interface Props {
 	provider: ModelProvider;
 	headerActions?: ReactNode;
 	isKeyless?: boolean;
+	providerName?: string;
 }
 
-export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
+export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless, providerName }: Props) {
+	const isVLLM = (providerName ?? "").toLowerCase() === "vllm";
+	const entityLabel = isVLLM ? "model" : "key";
+	const entityLabelPlural = isVLLM ? "models" : "keys";
+	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -49,8 +54,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				<AlertDialog open={showDeleteKeyDialog.show}>
 					<AlertDialogContent onClick={(e) => e.stopPropagation()}>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Delete Key</AlertDialogTitle>
-							<AlertDialogDescription>Are you sure you want to delete this key. This action cannot be undone.</AlertDialogDescription>
+							<AlertDialogTitle>Delete {EntityLabel}</AlertDialogTitle>
+							<AlertDialogDescription>Are you sure you want to delete this {entityLabel}. This action cannot be undone.</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
 							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isUpdatingProvider}>
@@ -65,11 +70,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									})
 										.unwrap()
 										.then(() => {
-											toast.success("Key deleted successfully");
+											toast.success(`${EntityLabel} deleted successfully`);
 											setShowDeleteKeyDialog(undefined);
 										})
 										.catch((err) => {
-											toast.error("Failed to delete key", {
+											toast.error(`Failed to delete ${entityLabel}`, {
 												description: getErrorMessage(err),
 											});
 										});
@@ -87,11 +92,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					onCancel={() => setShowAddNewKeyDialog(undefined)}
 					provider={provider}
 					keyIndex={showAddNewKeyDialog.keyIndex}
+					providerName={providerName}
 				/>
 			)}
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Configured keys</div>
+					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
 						{!isKeyless && (
@@ -103,7 +109,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								}}
 							>
 								<PlusIcon className="h-4 w-4" />
-								Add new key
+								Add new {entityLabel}
 							</Button>
 						)}
 					</div>
@@ -111,15 +117,15 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			</CardHeader>
 			{isKeyless ? (
 				<div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-sm border py-10 text-center text-sm">
-					<p>This is a keyless provider — no API keys are required.</p>
+					<p>This is a keyless provider - no API keys are required.</p>
 					<p>You can edit the provider configuration using the button above.</p>
 				</div>
 			) : (
-				<div className="w-full rounded-sm border">
+				<div className="w-full rounded-sm border flex flex-col gap-2">
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>API Key</TableHead>
+								<TableHead>{isVLLM ? "Model" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -127,9 +133,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						</TableHeader>
 						<TableBody>
 							{provider.keys.length === 0 && (
-								<TableRow>
+								<TableRow data-testid="keys-table-empty-state">
 									<TableCell colSpan={4} className="py-6 text-center">
-										No keys found.
+										No {entityLabelPlural} found.
 									</TableCell>
 								</TableRow>
 							)}
@@ -140,12 +146,21 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										<TableCell>
 											<div className="flex items-center space-x-2">
 												{key.status === "success" && (
-													<CheckCircle2 className="text-green-600 h-4 w-4 flex-shrink-0" />
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<button type="button" aria-label="Key status: list models working" data-testid={`key-status-success-${key.name}`} className="inline-flex">
+																<CheckCircle2 aria-hidden className="text-green-600 h-4 w-4 flex-shrink-0" />
+															</button>
+														</TooltipTrigger>
+														<TooltipContent>List models working</TooltipContent>
+													</Tooltip>
 												)}
 												{key.status === "list_models_failed" && (
 													<Tooltip>
-														<TooltipTrigger>
-															<AlertCircle className="text-destructive h-4 w-4 flex-shrink-0" />
+														<TooltipTrigger asChild>
+															<button type="button" aria-label="Key status: list models failed" data-testid={`key-status-error-${key.name}`} className="inline-flex">
+																<AlertCircle aria-hidden className="text-destructive h-4 w-4 flex-shrink-0" />
+															</button>
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs break-words">
 															{key.description || "Model discovery failed for this key"}
@@ -155,13 +170,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												<span className="font-mono text-sm">{key.name}</span>
 											</div>
 										</TableCell>
-										<TableCell>
+										<TableCell data-testid="key-weight-value">
 											<div className="flex items-center space-x-2">
 												<span className="font-mono text-sm">{key.weight}</span>
 											</div>
 										</TableCell>
 										<TableCell>
 											<Switch
+												data-testid="key-enabled-switch"
 												checked={isKeyEnabled}
 												size="md"
 												disabled={!hasUpdateProviderAccess}
@@ -172,10 +188,10 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													})
 														.unwrap()
 														.then(() => {
-															toast.success(`Key ${checked ? "enabled" : "disabled"} successfully`);
+															toast.success(`${EntityLabel} ${checked ? "enabled" : "disabled"} successfully`);
 														})
 														.catch((err) => {
-															toast.error("Failed to update key", { description: getErrorMessage(err) });
+															toast.error(`Failed to update ${entityLabel}`, { description: getErrorMessage(err) });
 														});
 												}}
 											/>

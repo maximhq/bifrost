@@ -9,8 +9,16 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
+// rather than removed. Using a named type instead of a raw string follows Go best practices.
+type pluginDisabledKey struct{}
+
+// PluginDisabledKey is the context key used to indicate a plugin is being disabled.
+var PluginDisabledKey pluginDisabledKey
 
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
@@ -61,6 +69,20 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	}
 }
 
+// streamLargeResponseIfActive checks if large response mode was activated by the provider
+// and streams the response directly to the client. Returns true if the response was handled
+// (caller should return), false if normal response handling should continue.
+func streamLargeResponseIfActive(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	if !ok || !isLargeResponse {
+		return false
+	}
+	if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Large response reader not available")
+	}
+	return true
+}
+
 // SendSSEError sends an error in Server-Sent Events format
 func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
 	errorJSON, err := json.Marshal(map[string]interface{}{
@@ -93,7 +115,7 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 			return true
 		}
 
-		if allowedOrigin == "*" {
+		if allowedOrigin == "*" {			
 			return true
 		}
 
@@ -157,6 +179,20 @@ func ParseModel(model string) (string, string, error) {
 		return "", "", fmt.Errorf("model must be in the format 'provider/model' with non-empty provider and model")
 	}
 	return provider, name, nil
+}
+
+// ClampPaginationParams applies default/max bounds to limit and offset so that
+// the handler response matches the values the store actually uses.
+func ClampPaginationParams(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
 }
 
 // fuzzyMatch checks if all characters in query appear in text in order (case-insensitive)

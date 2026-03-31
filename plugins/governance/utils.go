@@ -6,7 +6,39 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
+
+// ParseVirtualKeyFromFastHTTPRequest parses the virtual key from FastHTTP request headers.
+// Parameters:
+//   - req: The FastHTTP request containing headers to parse
+//
+// Returns:
+//   - *string: The virtual key if found, nil otherwise
+func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
+	vkHeader := string(req.Request.Header.Peek("x-bf-vk"))
+	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
+		return bifrost.Ptr(vkHeader)
+	}
+	authHeader := string(req.Request.Header.Peek("Authorization"))
+	if authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+				return bifrost.Ptr(authHeaderValue)
+			}
+		}
+	}
+	xAPIKey := string(req.Request.Header.Peek("x-api-key"))
+	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xAPIKey)
+	}
+	xGoogleAPIKey := string(req.Request.Header.Peek("x-goog-api-key"))
+	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {		
+		return bifrost.Ptr(xGoogleAPIKey)
+	}
+	return nil
+}
 
 // parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
 // It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
@@ -18,7 +50,7 @@ import (
 func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
 	var virtualKeyValue string
 	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
-	if vkHeader != "" {
+	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
 		return bifrost.Ptr(vkHeader)
 	}
 	authHeader := req.CaseInsensitiveHeaderLookup("Authorization")

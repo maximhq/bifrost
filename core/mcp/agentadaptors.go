@@ -3,7 +3,6 @@ package mcp
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -262,7 +261,7 @@ func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 		}
 
 		// Convert to JSON string for display
-		jsonBytes, err := sonic.Marshal(toolResultsMap)
+		jsonBytes, err := schemas.MarshalSorted(toolResultsMap)
 		if err != nil {
 			// Fallback to simple string representation
 			contentText = fmt.Sprintf("The Output from allowed tools calls is - %v\n\nNow I shall call these tools next...", toolResultsMap)
@@ -498,7 +497,7 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 		}
 
 		// Convert to JSON string for display
-		jsonBytes, err := sonic.Marshal(toolResultsMap)
+		jsonBytes, err := schemas.MarshalSorted(toolResultsMap)
 		if err != nil {
 			// Fallback to simple string representation
 			contentText = fmt.Sprintf("The Output from allowed tools calls is - %v\n\nNow I shall call these tools next...", toolResultsMap)

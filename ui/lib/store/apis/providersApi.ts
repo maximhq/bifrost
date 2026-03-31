@@ -2,6 +2,13 @@ import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProvider
 import { DBKey } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
+function sortProviders(a: ModelProvider, b: ModelProvider) {
+	const aIsCustom = !!a.custom_provider_config;
+	const bIsCustom = !!b.custom_provider_config;
+	if (aIsCustom !== bIsCustom) return aIsCustom ? 1 : -1;
+	return a.name.localeCompare(b.name);
+}
+
 // Types for models API
 export interface ModelResponse {
 	name: string;
@@ -19,6 +26,7 @@ export interface GetModelsRequest {
 	provider?: string;
 	keys?: string[];
 	limit?: number;
+	unfiltered?: boolean;
 }
 
 export interface GetBaseModelsRequest {
@@ -26,17 +34,71 @@ export interface GetBaseModelsRequest {
 	limit?: number;
 }
 
+export interface ModelDatasheetParameter {
+	id: string;
+	label: string;
+	helpText?: string;
+	type: string;
+	accesorKey?: string;
+	default?: any;
+	multiple?: boolean;
+	range?: { min: number; max: number; step?: number };
+	array?: { type: string; maxElements?: number; minElements?: number };
+	options?: { label: string; value: string; subFields?: ModelDatasheetParameter[] }[];
+}
+
+export interface ModelDatasheetResponse {
+	model_parameters?: ModelDatasheetParameter[];
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	max_tokens?: number;
+	mode?: string;
+	provider?: string;
+	base_model?: string;
+	supports_vision?: boolean;
+	[key: string]: any;
+}
+
 export interface ListBaseModelsResponse {
 	models: string[];
 	total: number;
 }
+
+const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
+	mode: "chat",
+	base_model: "default",
+	model_parameters: [
+		{
+			id: "temperature",
+			label: "Temperature",
+			helpText:
+				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
+			type: "number",
+			range: { min: 0, max: 2, step: 0.01 },
+		},
+		{
+			id: "max_tokens",
+			label: "Max Tokens",
+			helpText: "The maximum number of tokens that can be generated in the Result.",
+			type: "number",
+			range: { min: 1, max: 8192, step: 1 },
+		},
+		{
+			id: "stream",
+			label: "Stream",
+			helpText:
+				"The stream parameter in the API controls whether the response is sent in incremental updates, like tokenized data as it's generated, or as a complete result in one go.",
+			type: "boolean",
+		},
+	],
+};
 
 export const providersApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get all providers
 		getProviders: builder.query<ModelProvider[], void>({
 			query: () => "/providers",
-			transformResponse: (response: ListProvidersResponse): ModelProvider[] => response.providers ?? [],
+			transformResponse: (response: ListProvidersResponse): ModelProvider[] => (response.providers ?? []).sort(sortProviders),
 			providesTags: ["Providers"],
 		}),
 
@@ -59,7 +121,8 @@ export const providersApi = baseApi.injectEndpoints({
 					dispatch(
 						providersApi.util.updateQueryData("getProviders", undefined, (draft) => {
 							draft.push(newProvider);
-						})
+							draft.sort(sortProviders);
+						}),
 					);
 				} catch {}
 			},
@@ -81,7 +144,7 @@ export const providersApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft[index] = updatedProvider;
 							}
-						})
+						}),
 					);
 					dispatch(providersApi.util.updateQueryData("getProvider", arg.name, () => updatedProvider));
 				} catch {}
@@ -103,7 +166,7 @@ export const providersApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft.splice(index, 1);
 							}
-						})
+						}),
 					);
 				} catch {}
 			},
@@ -117,12 +180,13 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, limit }) => {
+			query: ({ query, provider, keys, limit, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
+				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
 			},
 			providesTags: ["Models"],
@@ -137,6 +201,22 @@ export const providersApi = baseApi.injectEndpoints({
 				return `/models/base?${params.toString()}`;
 			},
 			providesTags: ["BaseModels"],
+		}),
+
+		// Get model parameters (parameters, capabilities) from local API
+		// Falls back to default parameters if the API returns an error (e.g. model not found)
+		getModelParameters: builder.query<ModelDatasheetResponse, string>({
+			queryFn: async (model, _queryApi, _extraOptions, baseQuery) => {
+				const result = await baseQuery(`/models/parameters?model=${encodeURIComponent(model)}`);
+				if (result.error) {
+					// If the model is not found, return the default parameters
+					if ((result.error as any)?.status === 404) {
+						return { data: DEFAULT_MODEL_PARAMETERS };
+					}
+					return { error: result.error };
+				}
+				return { data: result.data as ModelDatasheetResponse };
+			},
 		}),
 	}),
 });
@@ -155,4 +235,6 @@ export const {
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,
+	useGetModelParametersQuery,
+	useLazyGetModelParametersQuery,
 } = providersApi;

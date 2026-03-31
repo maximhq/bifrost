@@ -21,16 +21,22 @@ func TestVertex(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
+
+	rerankModel := strings.TrimSpace(os.Getenv("VERTEX_RERANK_MODEL"))
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Vertex,
 		ChatModel:            "google/gemini-2.0-flash-001",
+		PromptCachingModel:   "claude-sonnet-4-5",
 		VisionModel:          "claude-sonnet-4-5",
 		TextModel:            "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel:       "text-multilingual-embedding-002",
+		RerankModel:          rerankModel,
 		ReasoningModel:       "claude-4.5-haiku",
 		ImageGenerationModel: "gemini-2.5-flash-image",
 		ImageEditModel:       "imagen-3.0-capability-001",
+		VideoGenerationModel: "veo-3.1-generate-preview",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -38,7 +44,8 @@ func TestVertex(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
@@ -46,19 +53,27 @@ func TestVertex(t *testing.T) {
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
 			ImageEdit:             true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoDownload:         false,
+			VideoList:             false,
+			VideoDelete:           false,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			FileBase64:            true,
 			Embedding:             true,
+			Rerank:                rerankModel != "",
 			Reasoning:             true,
+			PromptCaching:         true,
 			ListModels:            false,
 			CountTokens:           true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			InterleavedThinking:  true,
 		},
 	}
 
 	t.Run("VertexTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

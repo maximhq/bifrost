@@ -48,8 +48,7 @@ const emptyForm: CreateMCPClientRequest = {
 	connection_type: "http",
 	connection_string: emptyEnvVar,
 	stdio_config: emptyStdioConfig,
-	auth_type: "headers",
-	headers: {},
+	auth_type: "none",
 };
 
 const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
@@ -85,7 +84,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		field: keyof CreateMCPClientRequest,
 		value: string | string[] | boolean | MCPConnectionType | MCPStdioConfig | undefined,
 	) => {
-		setForm((prev) => ({ ...prev, [field]: value }));
+		setForm((prev) => {
+			if (field === "connection_type" && value === "stdio") {
+				return { ...prev, connection_type: "stdio" as MCPConnectionType, auth_type: "none" as MCPAuthType, headers: undefined, oauth_config: undefined };
+			}
+			return { ...prev, [field]: value };
+		});
 	};
 
 	const handleStdioConfigChange = (field: keyof MCPStdioConfig, value: string | string[]) => {
@@ -124,7 +128,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	// Validate headers format
 	const validateHeaders = (): string | null => {
-		if ((form.connection_type === "http" || form.connection_type === "sse") && form.headers) {
+		if ((form.connection_type === "http" || form.connection_type === "sse") && form.auth_type === "headers" && form.headers) {
 			// Ensure all EnvVar values have either a value or env_var
 			for (const [key, envVar] of Object.entries(form.headers)) {
 				if (!envVar.value && !envVar.env_var) {
@@ -237,7 +241,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						server_url: form.connection_string?.value || undefined, // Set server_url from connection_string
 					}
 					: undefined,
-			headers: form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
+			headers: form.auth_type === "headers" && form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
 			tools_to_execute: ["*"],
 		};
 
@@ -270,11 +274,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	return (
 		<Sheet open={open} onOpenChange={(open) => !open && onClose()}>
-			<SheetContent
-				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
-				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
-			>
+			<SheetContent className="flex w-full flex-col overflow-x-hidden px-4 pb-8">
 				<SheetHeader className="flex flex-col items-start px-4 pt-8">
 					<SheetTitle>New MCP Server</SheetTitle>
 					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
@@ -308,7 +308,28 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					</div>
 
 					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-						<Label htmlFor="code-mode">Code Mode Server</Label>
+						<div className="flex items-center gap-2">
+							<Label htmlFor="code-mode">Code Mode Server</Label>
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<a
+											href="https://docs.getbifrost.ai/mcp/code-mode"
+											target="_blank"
+											rel="noopener noreferrer"
+											data-testid="code-mode-link-help"
+											className="text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+											aria-label="Learn more about Code Mode"
+										>
+											<Info className="h-4 w-4 cursor-help" />
+										</a>
+									</TooltipTrigger>
+									<TooltipContent>
+										<p>Learn more about Code Mode</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
 						<Switch
 							id="code-mode"
 							data-testid="code-mode-switch"
@@ -343,24 +364,6 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 					{(form.connection_type === "http" || form.connection_type === "sse") && (
 						<>
-							<div className="w-full space-y-2">
-								<Label>Authentication Type</Label>
-								<Select value={form.auth_type} onValueChange={(value: MCPAuthType) => handleChange("auth_type", value)}>
-									<SelectTrigger className="w-full" data-testid="auth-type-select">
-										<SelectValue placeholder="Select authentication type" />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value="none" data-testid="auth-type-none">None</SelectItem>
-										<SelectItem value="headers" data-testid="auth-type-headers">Headers</SelectItem>
-										<SelectItem value="oauth" data-testid="auth-type-oauth">OAuth 2.0</SelectItem>
-									</SelectContent>
-								</Select>
-							</div>
-						</>
-					)}
-
-					{(form.connection_type === "http" || form.connection_type === "sse") && (
-						<>
 							<div className="space-y-2">
 								<div className="flex w-fit items-center gap-1">
 									<Label>Connection URL</Label>
@@ -387,6 +390,19 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 								placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
 								data-testid="connection-url-input"
 							/>
+							</div>
+							<div className="w-full space-y-2">
+								<Label>Authentication Type</Label>
+								<Select value={form.auth_type} onValueChange={(value: MCPAuthType) => handleChange("auth_type", value)}>
+									<SelectTrigger className="w-full" data-testid="auth-type-select">
+										<SelectValue placeholder="Select authentication type" />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="none" data-testid="auth-type-none">None</SelectItem>
+										<SelectItem value="headers" data-testid="auth-type-headers">Headers</SelectItem>
+										<SelectItem value="oauth" data-testid="auth-type-oauth">OAuth 2.0</SelectItem>
+									</SelectContent>
+								</Select>
 							</div>
 							{form.auth_type === "headers" && (
 								<div className="space-y-2" data-testid="mcp-headers-table">

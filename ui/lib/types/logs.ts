@@ -198,6 +198,18 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface RerankDocument {
+	text: string;
+	id?: string;
+	meta?: Record<string, unknown>;
+}
+
+export interface RerankResult {
+	index: number;
+	relevance_score: number;
+	document?: RerankDocument;
+}
+
 export interface BifrostImageGenerationData {
 	url?: string;
 	b64_json?: string;
@@ -228,6 +240,70 @@ export interface BifrostImageGenerationOutput {
 		total_tokens?: number;
 		output_tokens?: number;
 	};
+}
+
+export interface VideoCreateError {
+	code?: string;
+	message?: string;
+}
+
+export interface VideoObject {
+	id: string;
+	object: string;
+	model: string;
+	status: string;
+	created_at: number;
+	completed_at?: number;
+	expires_at?: number;
+	progress?: number;
+	prompt: string;
+	remixed_from_video_id?: string;
+	seconds: number;
+	size: string;
+	error?: VideoCreateError;
+	url?: string;
+}
+
+export interface VideoOutput {
+	type: string;
+	url?: string;
+	base64?: string;
+	content_type?: string;
+}
+export interface BifrostVideoGenerationOutput {
+	videos: VideoOutput[];
+	id?: string;
+	completed_at?: number;
+	created_at?: number;
+	error?: VideoCreateError;
+	expires_at?: number;
+	model?: string;
+	object?: string;
+	progress?: number;
+	prompt?: string;
+	remixed_from_video_id?: string;
+	seconds?: number;
+	size?: string;
+	status?: string;
+}
+
+export interface BifrostVideoDownloadOutput {
+	video_id: string;
+	content_type?: string;
+}
+
+export interface BifrostVideoDeleteOutput {
+	id: string;
+	deleted: boolean;
+	object?: string;
+}
+
+export interface BifrostVideoListOutput {
+	object: string;
+	data: VideoObject[];
+	first_id?: string;
+	has_more?: boolean;
+	last_id?: string;
 }
 
 // Tool related types
@@ -282,7 +358,8 @@ export interface ModelParameters {
 
 // Token usage types
 export interface TokenDetails {
-	cached_tokens?: number;
+	cached_read_tokens?: number;
+	cached_write_tokens?: number;
 	audio_tokens?: number;
 }
 
@@ -367,11 +444,18 @@ export interface LogEntry {
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
+	rerank_output?: RerankResult[];
 	image_generation_output?: BifrostImageGenerationOutput;
+	video_generation_output?: BifrostVideoGenerationOutput;
+	video_retrieve_output?: BifrostVideoGenerationOutput;
+	video_download_output?: BifrostVideoDownloadOutput;
+	video_list_output?: BifrostVideoListOutput;
+	video_delete_output?: BifrostVideoDeleteOutput;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
 	image_generation_input?: { prompt: string };
+	video_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
 	list_models_output?: Model[];
@@ -387,6 +471,11 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	is_large_payload_request?: boolean; // true if request used large payload streaming
+	is_large_payload_response?: boolean; // true if response used large payload streaming
+	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
+	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
+	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 }
 
 export interface LogFilters {
@@ -406,6 +495,7 @@ export interface LogFilters {
 	max_tokens?: number;
 	missing_cost_only?: boolean;
 	content_search?: string;
+	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 export interface Pagination {
@@ -441,6 +531,7 @@ export interface TokenHistogramBucket {
 	prompt_tokens: number;
 	completion_tokens: number;
 	total_tokens: number;
+	cached_read_tokens: number;
 }
 
 export interface TokenHistogramResponse {
@@ -479,6 +570,71 @@ export interface ModelHistogramResponse {
 	models: string[];
 }
 
+// Latency histogram types
+export interface LatencyHistogramBucket {
+	timestamp: string;
+	avg_latency: number;
+	p90_latency: number;
+	p95_latency: number;
+	p99_latency: number;
+	total_requests: number;
+}
+
+export interface LatencyHistogramResponse {
+	buckets: LatencyHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+// Provider-level histogram types
+
+export interface ProviderCostHistogramBucket {
+	timestamp: string;
+	total_cost: number;
+	by_provider: Record<string, number>;
+}
+
+export interface ProviderCostHistogramResponse {
+	buckets: ProviderCostHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
+export interface ProviderTokenStats {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+}
+
+export interface ProviderTokenHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderTokenStats>;
+}
+
+export interface ProviderTokenHistogramResponse {
+	buckets: ProviderTokenHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
+export interface ProviderLatencyStats {
+	avg_latency: number;
+	p90_latency: number;
+	p95_latency: number;
+	p99_latency: number;
+	total_requests: number;
+}
+
+export interface ProviderLatencyHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderLatencyStats>;
+}
+
+export interface ProviderLatencyHistogramResponse {
+	buckets: ProviderLatencyHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
@@ -504,6 +660,7 @@ export type ResponsesMessageType =
 	| "computer_call"
 	| "computer_call_output"
 	| "web_search_call"
+	| "web_fetch_call"
 	| "function_call"
 	| "function_call_output"
 	| "code_interpreter_call"
@@ -713,7 +870,8 @@ export interface ResponsesPrompt {
 
 // Response usage information
 export interface ResponsesResponseInputTokens {
-	cached_tokens: number;
+	cached_read_tokens: number;
+	cached_write_tokens: number;
 }
 
 export interface ResponsesResponseOutputTokens {
@@ -768,6 +926,7 @@ export interface MCPToolLogEntry {
 	latency?: number; // Execution time in milliseconds
 	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
+	metadata?: Record<string, string>;
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 }
@@ -814,6 +973,65 @@ export interface WebSocketMCPToolLogMessage {
 	type: "mcp_log";
 	operation: "create" | "update";
 	payload: MCPToolLogEntry;
+}
+
+// MCP histogram types
+
+export interface MCPHistogramBucket {
+	timestamp: string;
+	count: number;
+	success: number;
+	error: number;
+}
+
+export interface MCPHistogramResponse {
+	buckets: MCPHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface MCPCostHistogramBucket {
+	timestamp: string;
+	total_cost: number;
+}
+
+export interface MCPCostHistogramResponse {
+	buckets: MCPCostHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface MCPTopTool {
+	tool_name: string;
+	count: number;
+	cost: number;
+}
+
+export interface MCPTopToolsResponse {
+	tools: MCPTopTool[];
+}
+
+// Model Rankings types
+export interface ModelRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+	latency_trend: number;
+}
+
+export interface ModelRankingEntry {
+	model: string;
+	provider: string;
+	total_requests: number;
+	success_count: number;
+	success_rate: number;
+	total_tokens: number;
+	total_cost: number;
+	avg_latency: number;
+	trend: ModelRankingTrend;
+}
+
+export interface ModelRankingsResponse {
+	rankings: ModelRankingEntry[];
 }
 
 // Date utility functions for URL state management

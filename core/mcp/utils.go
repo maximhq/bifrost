@@ -521,7 +521,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
 		default:
 			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
+			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
 				var contentMap map[string]interface{}
 				if json.Unmarshal(jsonBytes, &contentMap) == nil {
 					if text, ok := contentMap["text"].(string); ok {
@@ -559,7 +559,7 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if strings.TrimSpace(config.ID) == "" {
 		return fmt.Errorf("id is required for MCP client config")
 	}
-	if err := validateMCPClientName(config.Name); err != nil {
+	if err := ValidateMCPClientName(config.Name); err != nil {
 		return fmt.Errorf("invalid name for MCP client: %w", err)
 	}
 	if config.ConnectionType == "" {
@@ -586,7 +586,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	return nil
 }
 
-func validateMCPClientName(name string) error {
+// ValidateMCPClientName validates an MCP client name.
+// Names must be ASCII-only, cannot contain spaces or hyphens, and cannot start with a number.
+func ValidateMCPClientName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("name is required for MCP client")
 	}
@@ -747,25 +749,22 @@ func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
 		return false
 	}
 
-	choice := response.Choices[0]
-
-	// If finish_reason is "stop", this indicates non-auto-executable tools that require user approval.
-	// Don't return true even if tool calls are present, as the agent loop should not process them.
-	if choice.FinishReason != nil && *choice.FinishReason == "stop" {
-		return false
-	}
-
-	// Check finish reason
-	if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
-		return true
-	}
-
-	// Check if message has tool calls
-	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
-		len(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls) > 0 {
-		return true
+	for _, choice := range response.Choices {
+		// Check finish reason - "tool_calls" explicitly signals tool execution
+		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
+			return true
+		}
+		// Check if message has tool calls regardless of finish_reason.
+		// Some providers (e.g. Gemini) return finish_reason "stop" even when tool calls are present,
+		// so we cannot rely solely on finish_reason to detect tool calls.
+		// Also, when converting from Responses API format, text and tool calls may be split
+		// across separate choices, so we must check all choices.
+		if choice.ChatNonStreamResponseChoice != nil &&
+			choice.ChatNonStreamResponseChoice.Message != nil &&
+			choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil &&
+			len(choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls) > 0 {
+			return true
+		}
 	}
 
 	return false

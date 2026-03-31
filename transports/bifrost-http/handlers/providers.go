@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ type ModelsManager interface {
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -58,18 +60,21 @@ const (
 
 // ProviderResponse represents the response for provider operations
 type ProviderResponse struct {
-	Name                     schemas.ModelProvider            `json:"name"`
-	Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
-	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
-	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
-	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
-	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
-	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
-	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
-	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
-	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
-	Description              string                           `json:"description,omitempty"`            // Error/status description
-	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	Name                     schemas.ModelProvider             `json:"name"`
+	Keys                     []schemas.Key                     `json:"keys"`                             // API keys for the provider
+	NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                   // Network-related settings
+	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`      // Concurrency settings
+	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config"`                     // Proxy configuration
+	SendBackRawRequest       bool                              `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
+	SendBackRawResponse      bool                              `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
+	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
+	ProviderStatus           ProviderStatus                    `json:"provider_status"`                  // Health/initialization status of the provider
+	Status                   string                            `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
+	Description              string                            `json:"description,omitempty"`            // Error/status description
+	ConfigHash               string                            `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -94,16 +99,25 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
-	// Fetching providers from database
-	providers, err := h.dbStore.GetProvidersConfig(ctx)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
-		return
+	// Fetching providers from database or in-memory store
+	var providers map[schemas.ModelProvider]configstore.ProviderConfig
+	if h.dbStore != nil {
+		var err error
+		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
+			return
+		}
+	} else {
+		h.inMemoryStore.Mu.RLock()
+		providers = h.inMemoryStore.Providers
+		h.inMemoryStore.Mu.RUnlock()
 	}
 	providersInClient, err := h.client.GetConfiguredProviders()
 	if err != nil {
@@ -147,14 +161,27 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	config, err := h.dbStore.GetProviderConfig(ctx, provider)
-	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+	var config *configstore.ProviderConfig
+	if h.dbStore != nil {
+		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
 			return
 		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
-		return
+	} else {
+		config, err = h.inMemoryStore.GetProviderConfigRaw(provider)
+		if err != nil {
+			if errors.Is(err, lib.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+				return
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+			return
+		}
 	}
 	redactedConfig := config.Redacted()
 
@@ -180,7 +207,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`       // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
+		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`  // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	}{}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
@@ -221,6 +251,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	if err := validatePricingOverrides(payload.PricingOverrides); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing overrides: %v", err))
+		return
+	}
 	// Validate retry backoff values if NetworkConfig is provided
 	if payload.NetworkConfig != nil {
 		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
@@ -247,7 +281,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
+		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
+		OpenAIConfig:             payload.OpenAIConfig,
+		PricingOverrides:         payload.PricingOverrides,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
@@ -257,11 +294,20 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// Add provider to store (env vars will be processed by store)
 	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
+		if errors.Is(err, lib.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err))
 		return
 	}
+	if h.inMemoryStore.ModelCatalog != nil {
+		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(payload.Provider, config.PricingOverrides); err != nil {
+			logger.Warn("Failed to set pricing overrides for provider %s: %v", payload.Provider, err)
+		}
+	}
 	logger.Info("Provider %s added successfully", payload.Provider)
-	
+
 	// Attempt model discovery
 	err := h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig)
 
@@ -280,7 +326,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
+			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -307,17 +355,24 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	var payload = struct {
-		Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
-		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
-		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
-		ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
-		SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
-		SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
-		CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
+		Keys                     []schemas.Key                     `json:"keys"`                             // API keys for the provider
+		NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                   // Network-related settings
+		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`      // Concurrency settings
+		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`           // Proxy configuration
+		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
+		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"` // Capture raw request/response for internal logging only
+		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		return
+	}
+	if err := validatePricingOverrides(payload.PricingOverrides); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing overrides: %v", err))
 		return
 	}
 
@@ -355,6 +410,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
+		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
+		PricingOverrides:         oldConfigRaw.PricingOverrides,
+		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
 	}
@@ -423,14 +481,33 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
+	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
+	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
+		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	}
 	config.NetworkConfig = &nc
+	// Merge proxy config - preserve secrets if redacted values were sent back
+	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
+		}
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
+		}
+	}
+
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
+	config.OpenAIConfig = payload.OpenAIConfig
+	config.PricingOverrides = payload.PricingOverrides
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
 	if payload.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *payload.SendBackRawResponse
+	}
+	if payload.StoreRawRequestResponse != nil {
+		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
@@ -459,6 +536,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
 	}
+	if h.inMemoryStore.ModelCatalog != nil {
+		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(provider, config.PricingOverrides); err != nil {
+			logger.Warn("Failed to set pricing overrides for provider %s: %v", provider, err)
+		}
+	}
 
 	// Attempt model discovery
 	err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
@@ -478,7 +560,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			ProxyConfig:              config.ProxyConfig,
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
+			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -500,19 +584,10 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if provider exists
-	if _, err := h.inMemoryStore.GetProviderConfigRedacted(provider); err != nil {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+	if _, err := h.inMemoryStore.GetProviderConfigRedacted(provider); err != nil && !errors.Is(err, lib.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to get provider: %v", err))
 		return
 	}
-
-	// Remove provider from store
-	if err := h.inMemoryStore.RemoveProvider(ctx, provider); err != nil {
-		logger.Warn("Failed to remove provider %s: %v", provider, err)
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove provider: %v", err))
-		return
-	}
-
-	logger.Info(fmt.Sprintf("Provider %s removed successfully", provider))
 
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
@@ -561,6 +636,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	providerParam := string(ctx.QueryArgs().Peek("provider"))
 	keysParam := string(ctx.QueryArgs().Peek("keys"))
 	limitParam := string(ctx.QueryArgs().Peek("limit"))
+	unfilteredParam := string(ctx.QueryArgs().Peek("unfiltered"))
+
+	unfiltered := unfilteredParam == "true"
 
 	// Parse limit with default
 	limit := 5
@@ -575,14 +653,17 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// If provider is specified, get models for that provider only
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		models := h.modelsManager.GetModelsForProvider(provider)
-
-		// Filter by keys if specified
-		if keysParam != "" {
-			keyIDs := strings.Split(keysParam, ",")
-			models = h.filterModelsByKeys(provider, models, keyIDs)
+		var models []string
+		if unfiltered {
+			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		} else {
+			models = h.modelsManager.GetModelsForProvider(provider)
+			// Filter by keys if specified
+			if keysParam != "" {
+				keyIDs := strings.Split(keysParam, ",")
+				models = h.filterModelsByKeys(provider, models, keyIDs)
+			}
 		}
-
 		for _, model := range models {
 			allModels = append(allModels, ModelResponse{
 				Name:     model,
@@ -599,14 +680,18 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 		// Collect models from all providers
 		for _, provider := range providers {
-			models := h.modelsManager.GetModelsForProvider(provider)
+			var models []string
+			if unfiltered {
+				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+			} else {
+				models = h.modelsManager.GetModelsForProvider(provider)
+				// Filter by keys if specified
+				if keysParam != "" {
+					keyIDs := strings.Split(keysParam, ",")
+					models = h.filterModelsByKeys(provider, models, keyIDs)
+				}
 
-			// Filter by keys if specified
-			if keysParam != "" {
-				keyIDs := strings.Split(keysParam, ",")
-				models = h.filterModelsByKeys(provider, models, keyIDs)
 			}
-
 			for _, model := range models {
 				allModels = append(allModels, ModelResponse{
 					Name:     model,
@@ -655,6 +740,47 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response)
 }
 
+// getModelParameters handles GET /api/models/parameters - Get model parameters for a specific model
+// Query parameters:
+//   - model: The model name to get parameters for (required)
+func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
+	modelParam := string(ctx.QueryArgs().Peek("model"))
+	if modelParam == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model query parameter is required")
+		return
+	}
+
+	if h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "database store not available")
+		return
+	}
+
+	params, err := h.dbStore.GetModelParameters(ctx, modelParam)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get model parameters: %v", err))
+		return
+	}
+
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyString(params.Data)
+}
+
+// keyAllowsModelForList reports whether a provider key permits model for catalog listing.
+func keyAllowsModelForList(key schemas.Key, model string) bool {
+	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+		return false
+	}
+	if len(key.Models) > 0 {
+		return slices.Contains(key.Models, model)
+	}
+	return true
+}
+
 // filterModelsByKeys filters models based on key-level model restrictions
 func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
 	// Get provider config to access keys
@@ -663,42 +789,28 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
 		return models
 	}
-	// Build a set of allowed models from the specified keys
-	// Track whether we have any unrestricted keys (which grant access to all models)
-	// and whether we have any restricted keys (which limit to specific models)
-	allowedModels := make(map[string]bool)
-	hasRestrictedKey := false
-	hasUnrestrictedKey := false
+	keysByID := make(map[string]schemas.Key, len(config.Keys))
+	for i := range config.Keys {
+		k := config.Keys[i]
+		keysByID[k.ID] = k
+	}
+	matchedKeys := make([]schemas.Key, 0, len(keyIDs))
 	for _, keyID := range keyIDs {
-		for _, key := range config.Keys {
-			if key.ID == keyID {
-				if len(key.Models) > 0 {
-					// Key has model restrictions - add them to allowedModels
-					hasRestrictedKey = true
-					for _, model := range key.Models {
-						allowedModels[model] = true
-					}
-				} else {
-					// Key has no model restrictions - grants access to all models
-					hasUnrestrictedKey = true
-				}
-				break
-			}
+		if key, ok := keysByID[keyID]; ok {
+			matchedKeys = append(matchedKeys, key)
 		}
 	}
-	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
-	if hasUnrestrictedKey {
+	// Unknown key IDs (or empty keyIDs): do not filter
+	if len(matchedKeys) == 0 {
 		return models
 	}
-	// If no keys have model restrictions (e.g., unknown key IDs), return all models
-	if !hasRestrictedKey {
-		return models
-	}
-	// Filter models based on restrictions from restricted keys only
-	filtered := []string{}
+	filtered := make([]string, 0, len(models))
 	for _, model := range models {
-		if allowedModels[model] {
-			filtered = append(filtered, model)
+		for _, key := range matchedKeys {
+			if keyAllowsModelForList(key, model) {
+				filtered = append(filtered, model)
+				break
+			}
 		}
 	}
 	return filtered
@@ -902,6 +1014,38 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 						mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
 					}
 				}
+				if updateKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleARN.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockKeyConfig.RoleARN) {
+						mergedKey.BedrockKeyConfig.RoleARN = oldRawKey.BedrockKeyConfig.RoleARN
+					}
+				}
+				if updateKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRedactedKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.ExternalID.IsRedacted() &&
+						updateKey.BedrockKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockKeyConfig.ExternalID) {
+						mergedKey.BedrockKeyConfig.ExternalID = oldRawKey.BedrockKeyConfig.ExternalID
+					}
+				}
+				if updateKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockKeyConfig.RoleSessionName) {
+						mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+					}
+				}
+			}
+
+			// Handle VLLM config redacted values
+			if updateKey.VLLMKeyConfig != nil && oldRedactedKey.VLLMKeyConfig != nil && oldRawKey.VLLMKeyConfig != nil {
+				if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
+					updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
+					mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
+				}
 			}
 
 			// Preserve ConfigHash from old key (UI doesn't send it back)
@@ -963,12 +1107,110 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		ProxyConfig:              config.ProxyConfig,
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
+		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
+		OpenAIConfig:             config.OpenAIConfig,
+		PricingOverrides:         config.PricingOverrides,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,
 		ConfigHash:               config.ConfigHash,
 	}
+}
+
+func validatePricingOverrides(overrides []schemas.ProviderPricingOverride) error {
+	for i, override := range overrides {
+		if strings.TrimSpace(override.ModelPattern) == "" {
+			return fmt.Errorf("override[%d]: model_pattern is required", i)
+		}
+
+		switch override.MatchType {
+		case schemas.PricingOverrideMatchExact:
+			if strings.Contains(override.ModelPattern, "*") {
+				return fmt.Errorf("override[%d]: exact match_type cannot include '*'", i)
+			}
+		case schemas.PricingOverrideMatchWildcard:
+			if !strings.Contains(override.ModelPattern, "*") {
+				return fmt.Errorf("override[%d]: wildcard match_type requires '*' in model_pattern", i)
+			}
+		case schemas.PricingOverrideMatchRegex:
+			if _, err := regexp.Compile(override.ModelPattern); err != nil {
+				return fmt.Errorf("override[%d]: invalid regex pattern: %w", i, err)
+			}
+		default:
+			return fmt.Errorf("override[%d]: unsupported match_type %q", i, override.MatchType)
+		}
+
+		for _, requestType := range override.RequestTypes {
+			if !isSupportedOverrideRequestType(requestType) {
+				return fmt.Errorf("override[%d]: unsupported request_type %q", i, requestType)
+			}
+		}
+
+		if err := validatePricingOverrideNonNegativeFields(i, override); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func isSupportedOverrideRequestType(requestType schemas.RequestType) bool {
+	switch requestType {
+	case schemas.TextCompletionRequest,
+		schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest,
+		schemas.ResponsesStreamRequest,
+		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
+		schemas.SpeechRequest,
+		schemas.SpeechStreamRequest,
+		schemas.TranscriptionRequest,
+		schemas.TranscriptionStreamRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageGenerationStreamRequest:
+		return true
+	default:
+		return false
+	}
+}
+
+func validatePricingOverrideNonNegativeFields(index int, override schemas.ProviderPricingOverride) error {
+	optionalValues := map[string]*float64{
+		"input_cost_per_token":                              override.InputCostPerToken,
+		"output_cost_per_token":                             override.OutputCostPerToken,
+		"input_cost_per_video_per_second":                   override.InputCostPerVideoPerSecond,
+		"input_cost_per_audio_per_second":                   override.InputCostPerAudioPerSecond,
+		"input_cost_per_character":                          override.InputCostPerCharacter,
+		"input_cost_per_token_above_128k_tokens":            override.InputCostPerTokenAbove128kTokens,
+		"input_cost_per_image_above_128k_tokens":            override.InputCostPerImageAbove128kTokens,
+		"input_cost_per_video_per_second_above_128k_tokens": override.InputCostPerVideoPerSecondAbove128kTokens,
+		"input_cost_per_audio_per_second_above_128k_tokens": override.InputCostPerAudioPerSecondAbove128kTokens,
+		"output_cost_per_token_above_128k_tokens":           override.OutputCostPerTokenAbove128kTokens,
+		"input_cost_per_token_above_200k_tokens":            override.InputCostPerTokenAbove200kTokens,
+		"output_cost_per_token_above_200k_tokens":           override.OutputCostPerTokenAbove200kTokens,
+		"cache_creation_input_token_cost_above_200k_tokens": override.CacheCreationInputTokenCostAbove200kTokens,
+		"cache_read_input_token_cost_above_200k_tokens":     override.CacheReadInputTokenCostAbove200kTokens,
+		"cache_read_input_token_cost":                       override.CacheReadInputTokenCost,
+		"cache_creation_input_token_cost":                   override.CacheCreationInputTokenCost,
+		"input_cost_per_token_batches":                      override.InputCostPerTokenBatches,
+		"output_cost_per_token_batches":                     override.OutputCostPerTokenBatches,
+		"input_cost_per_image_token":                        override.InputCostPerImageToken,
+		"output_cost_per_image_token":                       override.OutputCostPerImageToken,
+		"input_cost_per_image":                              override.InputCostPerImage,
+		"output_cost_per_image":                             override.OutputCostPerImage,
+		"cache_read_input_image_token_cost":                 override.CacheReadInputImageTokenCost,
+	}
+
+	for fieldName, value := range optionalValues {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("override[%d]: %s must be non-negative", index, fieldName)
+		}
+	}
+
+	return nil
 }
 
 func getProviderFromCtx(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, error) {

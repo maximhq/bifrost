@@ -6,16 +6,18 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
-	allowDirectKeys    bool
-	headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig
+	allowDirectKeys bool
+	headerMatcher   *lib.HeaderMatcher
 	availableProviders []schemas.ModelProvider
 }
 
@@ -23,8 +25,8 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return m.allowDirectKeys
 }
 
-func (m *mockHandlerStore) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
-	return m.headerFilterConfig
+func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
+	return m.headerMatcher
 }
 
 func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
@@ -32,6 +34,18 @@ func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
 }
 
 func (m *mockHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
+	return nil
+}
+
+func (m *mockHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
+	return nil
+}
+
+func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
+	return 3600
+}
+
+func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
 	return nil
 }
 
@@ -95,7 +109,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
-	assert.Len(t, routes, 4, "should have 4 bedrock routes")
+	assert.Len(t, routes, 6, "should have 6 bedrock routes")
 
 	expectedRoutes := []struct {
 		path   string
@@ -105,6 +119,8 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 		{"/bedrock/model/{modelId}/converse-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke-with-response-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke", "POST"},
+		{"/bedrock/rerank", "POST"},
+		{"/bedrock/model/{modelId}/count-tokens", "POST"},
 	}
 
 	for i, expected := range expectedRoutes {
@@ -159,11 +175,12 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.TextResponseConverter)
+	assert.NotNil(t, route.ResponsesResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
@@ -175,11 +192,114 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
+	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
+}
+
+func Test_createBedrockRerankRouteConfig(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+
+	assert.Equal(t, "/bedrock/rerank", route.Path)
+	assert.Equal(t, "POST", route.Method)
+	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
+	assert.NotNil(t, route.GetHTTPRequestType)
+	assert.Equal(t, schemas.RerankRequest, route.GetHTTPRequestType(nil))
+	assert.NotNil(t, route.GetRequestTypeInstance)
+	assert.NotNil(t, route.RequestConverter)
+	assert.NotNil(t, route.RerankResponseConverter)
+	assert.NotNil(t, route.ErrorConverter)
+	assert.NotNil(t, route.PreCallback)
+
+	// Verify request instance type
+	reqInstance := route.GetRequestTypeInstance(context.Background())
+	_, ok := reqInstance.(*bedrock.BedrockRerankRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockRerankRequest")
+}
+
+func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+	require.NotNil(t, route.RerankResponseConverter)
+
+	raw := map[string]interface{}{"results": []interface{}{}}
+	resp := &schemas.BifrostRerankResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Bedrock,
+			RawResponse: raw,
+		},
+	}
+	converted, err := route.RerankResponseConverter(nil, resp)
+	require.NoError(t, err)
+	assert.Equal(t, raw, converted)
+}
+
+func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+	require.NotNil(t, route.RequestConverter)
+
+	topN := 1
+	req := &bedrock.BedrockRerankRequest{
+		Queries: []bedrock.BedrockRerankQuery{
+			{
+				Type:      "TEXT",
+				TextQuery: bedrock.BedrockRerankTextRef{Text: "capital of france"},
+			},
+		},
+		Sources: []bedrock.BedrockRerankSource{
+			{
+				Type: "INLINE",
+				InlineDocumentSource: bedrock.BedrockRerankInlineSource{
+					Type:         "TEXT",
+					TextDocument: bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
+				},
+			},
+		},
+		RerankingConfiguration: bedrock.BedrockRerankingConfiguration{
+			Type: "BEDROCK_RERANKING_MODEL",
+			BedrockRerankingConfiguration: bedrock.BedrockRerankingModelConfiguration{
+				NumberOfResults: &topN,
+				ModelConfiguration: bedrock.BedrockRerankModelConfiguration{
+					ModelARN: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+				},
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := route.RequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.RerankRequest)
+	assert.Equal(t, schemas.Bedrock, bifrostReq.RerankRequest.Provider)
+	assert.Equal(t, "capital of france", bifrostReq.RerankRequest.Query)
+	require.Len(t, bifrostReq.RerankRequest.Documents, 1)
+	assert.Equal(t, "Paris is capital of France", bifrostReq.RerankRequest.Documents[0].Text)
+	require.NotNil(t, bifrostReq.RerankRequest.Params)
+	require.NotNil(t, bifrostReq.RerankRequest.Params.TopN)
+	assert.Equal(t, 1, *bifrostReq.RerankRequest.Params.TopN)
+}
+
+func Test_createBedrockRouteConfigsIncludesRerankForCompositePrefixes(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	prefixes := []string{"/litellm", "/langchain", "/pydanticai"}
+
+	for _, prefix := range prefixes {
+		routes := CreateBedrockRouteConfigs(prefix, handlerStore)
+		found := false
+		for _, route := range routes {
+			if route.Path == prefix+"/rerank" && route.Method == "POST" {
+				found = true
+				break
+			}
+		}
+		assert.Truef(t, found, "expected rerank route for prefix %s", prefix)
+	}
 }
 
 func Test_createBedrockBatchRouteConfigs(t *testing.T) {

@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"unicode/utf8"
 )
 
 type BifrostSpeechRequest struct {
@@ -26,6 +27,16 @@ type BifrostSpeechResponse struct {
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
+	if r == nil || request == nil || request.Input == nil {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &SpeechUsage{}
+	}
+	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+}
+
 // SpeechAlignment represents character-level timing information for audio-text synchronization
 type SpeechAlignment struct {
 	CharStartTimesMs []float64 `json:"char_start_times_ms"` // Start time in milliseconds for each character
@@ -45,7 +56,7 @@ type SpeechParameters struct {
 	Speed          *float64          `json:"speed,omitempty"`
 
 	LanguageCode                    *string                                `json:"language_code,omitempty"`
-	PronunciationDictionaryLocators []SpeechPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators"`
+	PronunciationDictionaryLocators []SpeechPronunciationDictionaryLocator `json:"pronunciation_dictionary_locators,omitempty"`
 	EnableLogging                   *bool                                  `json:"enable_logging,omitempty"`
 	OptimizeStreamingLatency        *bool                                  `json:"optimize_streaming_latency,omitempty"`
 	WithTimestamps                  *bool                                  `json:"with_timestamps,omitempty"` // Returns character-level timing information
@@ -79,13 +90,13 @@ func (vi *SpeechVoiceInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if vi.Voice != nil {
-		return Marshal(*vi.Voice)
+		return MarshalSorted(*vi.Voice)
 	}
 	if len(vi.MultiVoiceConfig) > 0 {
-		return Marshal(vi.MultiVoiceConfig)
+		return MarshalSorted(vi.MultiVoiceConfig)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for SpeechVoiceInput.
@@ -135,12 +146,23 @@ type BifrostSpeechStreamResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {
+	if r == nil || request == nil || request.Input == nil {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &SpeechUsage{}
+	}
+	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+}
+
 type SpeechUsageInputTokenDetails struct {
 	TextTokens  int `json:"text_tokens,omitempty"`
 	AudioTokens int `json:"audio_tokens,omitempty"`
 }
 type SpeechUsage struct {
 	InputTokens       int                           `json:"input_tokens"`
+	InputChars        int                           `json:"input_chars,omitempty"`
 	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
 	OutputTokens      int                           `json:"output_tokens"`
 	TotalTokens       int                           `json:"total_tokens"`

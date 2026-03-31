@@ -1,46 +1,47 @@
 "use client";
 
-import FullPageLoader from "@/components/fullPageLoader";
-import { getErrorMessage, useGetModelConfigsQuery, useLazyGetCoreConfigQuery } from "@/lib/store";
+import { getErrorMessage, useGetModelConfigsQuery } from "@/lib/store";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitsTable from "./modelLimitsTable";
 
+const POLLING_INTERVAL = 5000;
+const PAGE_SIZE = 25;
+
 export default function ModelLimitsView() {
-	const [governanceEnabled, setGovernanceEnabled] = useState<boolean | null>(null);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
-	const [triggerGetConfig] = useLazyGetCoreConfigQuery();
+	const [search, setSearch] = useState("");
+	const [offset, setOffset] = useState(0);
 
-	// Use regular query with skip and polling
-	const {
-		data: modelConfigsData,
-		error: modelConfigsError,
-		isLoading: modelConfigsLoading,
-	} = useGetModelConfigsQuery(undefined, {
-		skip: !governanceEnabled || !hasGovernanceAccess,
-		pollingInterval: 5000,
-	});
+	const debouncedSearch = useDebouncedValue(search, 300);
 
-	const isLoading = modelConfigsLoading || governanceEnabled === null;
-
+	// Reset to first page when search changes
 	useEffect(() => {
-		triggerGetConfig({ fromDB: true })
-			.then((res) => {
-				if (res.data?.client_config?.enable_governance) {
-					setGovernanceEnabled(true);
-				} else {
-					setGovernanceEnabled(false);
-					toast.error("Governance is not enabled. Please enable it in the config.");
-				}
-			})
-			.catch((err) => {
-				console.error("Failed to fetch config:", err);
-				setGovernanceEnabled(false);
-				toast.error(getErrorMessage(err) || "Failed to load configuration");
-			});
-	}, [triggerGetConfig]);
+		setOffset(0);
+	}, [debouncedSearch]);
+
+	const { data: modelConfigsData, error: modelConfigsError } = useGetModelConfigsQuery(
+		{
+			limit: PAGE_SIZE,
+			offset,
+			search: debouncedSearch || undefined,
+		},
+		{
+			skip: !hasGovernanceAccess,
+			pollingInterval: POLLING_INTERVAL,
+		},
+	);
+
+	const totalCount = modelConfigsData?.total_count ?? 0;
+
+	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
+	useEffect(() => {
+		if (!modelConfigsData || offset < totalCount) return;
+		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
+	}, [totalCount, offset]);
 
 	// Handle query errors
 	useEffect(() => {
@@ -49,13 +50,18 @@ export default function ModelLimitsView() {
 		}
 	}, [modelConfigsError]);
 
-	if (isLoading) {
-		return <FullPageLoader />;
-	}
-
 	return (
 		<div className="mx-auto w-full max-w-7xl">
-			<ModelLimitsTable modelConfigs={modelConfigsData?.model_configs || []} />
+			<ModelLimitsTable
+				modelConfigs={modelConfigsData?.model_configs || []}
+				totalCount={modelConfigsData?.total_count || 0}
+				search={search}
+				debouncedSearch={debouncedSearch}
+				onSearchChange={setSearch}
+				offset={offset}
+				limit={PAGE_SIZE}
+				onOffsetChange={setOffset}
+			/>
 		</div>
 	);
 }

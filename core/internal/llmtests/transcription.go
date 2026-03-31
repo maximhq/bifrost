@@ -35,21 +35,21 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				name:           "RoundTrip_Basic_MP3",
 				text:           TTSTestTextBasic,
 				voiceType:      "primary",
-				format:         "mp3",
+				format:         GetProviderDefaultFormat(testConfig.Provider),
 				responseFormat: bifrost.Ptr("json"),
 			},
 			{
 				name:           "RoundTrip_Medium_MP3",
 				text:           TTSTestTextMedium,
 				voiceType:      "secondary",
-				format:         "mp3",
+				format:         GetProviderDefaultFormat(testConfig.Provider),
 				responseFormat: bifrost.Ptr("json"),
 			},
 			{
 				name:           "RoundTrip_Technical_MP3",
 				text:           TTSTestTextTechnical,
 				voiceType:      "tertiary",
-				format:         "mp3",
+				format:         GetProviderDefaultFormat(testConfig.Provider),
 				responseFormat: bifrost.Ptr("json"),
 			},
 		}
@@ -125,7 +125,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							"format":   tc.format,
 						},
 					}
-					ttsExpectations := SpeechExpectations(100) // Minimum expected bytes
+					// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+					ttsExpectations := ApplyRawExpectations(SpeechExpectations(100), testConfig, false, false, true) // Minimum expected bytes
 					ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, testConfig.Provider)
 					speechRetryConfig := SpeechRetryConfig{
 						MaxAttempts: ttsRetryConfig.MaxAttempts,
@@ -137,7 +138,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					}
 
 					ttsResponse, err := WithSpeechTestRetry(t, speechRetryConfig, ttsRetryContext, ttsExpectations, "Transcription_RoundTrip_TTS_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-						bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)	
+						bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 						return client.SpeechRequest(bfCtx, ttsRequest)
 					})
 					if err != nil {
@@ -192,7 +193,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				}
 
 				// Enhanced validation for transcription
-				expectations := TranscriptionExpectations(10) // Expect at least some content
+				// Note: isMultipartRequest=true because transcription uses multipart form data, not JSON body
+				expectations := ApplyRawExpectations(TranscriptionExpectations(10), testConfig, false, true) // Expect at least some content
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 				// Create Transcription retry config
@@ -256,6 +258,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
+					audioFormat := GetProviderDefaultFormat(testConfig.Provider)
+
 					var audioData []byte
 					var readErr error
 					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
@@ -269,10 +273,10 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						if readErr != nil {
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
+						audioFormat = "mp3"
 					} else {
-
 						// Use the utility function to generate audio
-						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, tc.text, "primary", "mp3")
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, tc.text, "primary", audioFormat)
 					}
 					// Test transcription
 					request := &schemas.BifrostTranscriptionRequest{
@@ -283,7 +287,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						},
 						Params: &schemas.TranscriptionParameters{
 							Language:       tc.language,
-							Format:         bifrost.Ptr("mp3"),
+							Format:         &audioFormat,
 							ResponseFormat: tc.responseFormat,
 						},
 						Fallbacks: testConfig.TranscriptionFallbacks,
@@ -301,7 +305,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							"model":    testConfig.TranscriptionModel,
 						},
 					}
-					customExpectations := TranscriptionExpectations(5)
+					customExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					customExpectations = ModifyExpectationsForProvider(customExpectations, testConfig.Provider)
 					customTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: customRetryConfig.MaxAttempts,
@@ -363,6 +367,8 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
+					audioFormat := GetProviderDefaultFormat(testConfig.Provider)
+
 					var audioData []byte
 					var readErr error
 					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
@@ -376,10 +382,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						if readErr != nil {
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
+						audioFormat = "mp3"
 					} else {
-
 						// Use the utility function to generate audio
-						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", audioFormat)
 					}
 
 					formatCopy := format
@@ -390,7 +396,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{
-							Format:         bifrost.Ptr("mp3"),
+							Format:         &audioFormat,
 							ResponseFormat: &formatCopy,
 						},
 						Fallbacks: testConfig.TranscriptionFallbacks,
@@ -409,7 +415,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							"format":   format,
 						},
 					}
-					formatExpectations := TranscriptionExpectations(5)
+					formatExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					formatExpectations = ModifyExpectationsForProvider(formatExpectations, testConfig.Provider)
 					formatTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: formatRetryConfig.MaxAttempts,
@@ -456,6 +462,8 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				speechSynthesisModel = testConfig.ExternalTTSModel
 			}
 
+			audioFormat := GetProviderDefaultFormat(testConfig.Provider)
+
 			var audioData []byte
 			var readErr error
 			if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
@@ -469,10 +477,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				if readErr != nil {
 					t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 				}
+				audioFormat = "mp3"
 			} else {
-
 				// Generate audio for custom parameters test
-				audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
+				audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextMedium, "secondary", audioFormat)
 			}
 
 			// Test with custom parameters and temperature
@@ -484,7 +492,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				},
 				Params: &schemas.TranscriptionParameters{
 					Language:       bifrost.Ptr("en"),
-					Format:         bifrost.Ptr("mp3"),
+					Format:         &audioFormat,
 					Prompt:         bifrost.Ptr("This audio contains technical terminology and proper nouns."),
 					ResponseFormat: bifrost.Ptr("json"), // Use json instead of verbose_json for whisper-1
 				},
@@ -503,7 +511,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					"model":    testConfig.TranscriptionModel,
 				},
 			}
-			advancedExpectations := TranscriptionExpectations(5)
+			advancedExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 			advancedExpectations = ModifyExpectationsForProvider(advancedExpectations, testConfig.Provider)
 			advancedTranscriptionRetryConfig := TranscriptionRetryConfig{
 				MaxAttempts: advancedRetryConfig.MaxAttempts,
@@ -553,6 +561,8 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
+					audioFormat := GetProviderDefaultFormat(testConfig.Provider)
+
 					var audioData []byte
 					var readErr error
 					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
@@ -566,10 +576,10 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						if readErr != nil {
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
+						audioFormat = "mp3"
 					} else {
-
 						// Use the utility function to generate audio
-						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", audioFormat)
 					}
 
 					langCopy := lang
@@ -580,7 +590,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							File: audioData,
 						},
 						Params: &schemas.TranscriptionParameters{
-							Format:   bifrost.Ptr("mp3"),
+							Format:   &audioFormat,
 							Language: &langCopy,
 						},
 						Fallbacks: testConfig.TranscriptionFallbacks,
@@ -599,7 +609,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							"language": lang,
 						},
 					}
-					langExpectations := TranscriptionExpectations(5)
+					langExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					langExpectations = ModifyExpectationsForProvider(langExpectations, testConfig.Provider)
 					langTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: langRetryConfig.MaxAttempts,

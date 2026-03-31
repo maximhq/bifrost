@@ -4,6 +4,7 @@ package openrouter
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,17 +29,21 @@ type OpenRouterProvider struct {
 func NewOpenRouterProvider(config *schemas.ProviderConfig, logger schemas.Logger) *OpenRouterProvider {
 	config.CheckAndSetDefaults()
 
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     5000,
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  10 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://openrouter.ai/api"
@@ -59,10 +64,62 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
+// validateKey verifies the API key is valid using OpenRouter's /v1/auth/key endpoint.
+// OpenRouter's /v1/models endpoint doesn't require authentication, so list models
+// will succeed even with an invalid key. This method catches invalid keys.
+func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+	keyValue := key.Value.GetValue()
+	if keyValue == "" {
+		return nil // Skip validation for empty keys
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/auth/key")
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Make request
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	// Check for auth errors (401, 403)
+	statusCode := resp.StatusCode()
+	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
+		return openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+	}
+
+	// Any 4xx/5xx error indicates the key might be invalid
+	if statusCode >= 400 {
+		return openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+	}
+
+	return nil
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
+
+	// Validate the key first using /v1/auth/key (only during provider add/update).
+	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
+	shouldValidate := false
+	if v, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); ok && v {
+		shouldValidate = true
+		if validateErr := provider.validateKey(ctx, key); validateErr != nil {
+			return nil, validateErr
+		}
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -82,42 +139,94 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	}
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
+		if shouldValidate {
+			// Key is valid (validated above) but transport error on models endpoint.
+			// Return empty response; allowed models will be backfilled below.
+			return &schemas.BifrostListModelsResponse{}, nil
+		}
 		return nil, bifrostErr
 	}
 
 	// Handle error response
+	modelsFetched := true
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
-		return nil, bifrostErr
+		if shouldValidate {
+			// Key is valid (validated above) but /v1/models returned error (e.g., privacy/guardrail settings).
+			// Continue with empty response; allowed models will be backfilled below.
+			modelsFetched = false
+		} else {
+			bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+			return nil, bifrostErr
+		}
 	}
-
-	// Copy response body before releasing
-	responseBody := append([]byte(nil), resp.Body()...)
 
 	var openrouterResponse schemas.BifrostListModelsResponse
-	// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	if modelsFetched {
+		// Copy response body before releasing
+		responseBody := append([]byte(nil), resp.Body()...)
+
+		// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			openrouterResponse.ExtraFields.RawRequest = rawRequest
+		}
+
+		// Set raw response if enabled
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			openrouterResponse.ExtraFields.RawResponse = rawResponse
+		}
 	}
 
-	for i := range openrouterResponse.Data {
-		openrouterResponse.Data[i].ID = string(schemas.OpenRouter) + "/" + openrouterResponse.Data[i].ID
+	// Filter by key.Models
+	allowedModels := key.Models
+	blacklistedModels := key.BlacklistedModels
+	providerPrefix := string(schemas.OpenRouter) + "/"
+
+	if !request.Unfiltered && len(allowedModels) > 0 {
+		filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
+		includedModels := make(map[string]bool)
+		for i := range openrouterResponse.Data {
+			rawID := openrouterResponse.Data[i].ID
+			if !(slices.Contains(allowedModels, rawID) || slices.Contains(allowedModels, providerPrefix+rawID)) {
+				continue
+			}
+			if slices.Contains(blacklistedModels, rawID) || slices.Contains(blacklistedModels, providerPrefix+rawID) {
+				continue
+			}
+			openrouterResponse.Data[i].ID = providerPrefix + rawID
+			filteredData = append(filteredData, openrouterResponse.Data[i])
+			includedModels[rawID] = true
+		}
+		// Backfill allowed models not in the API response
+		for _, allowedModel := range allowedModels {
+			rawID := strings.TrimPrefix(allowedModel, providerPrefix)
+			if slices.Contains(blacklistedModels, rawID) || slices.Contains(blacklistedModels, providerPrefix+rawID) {
+				continue
+			}
+			if !includedModels[rawID] {
+				filteredData = append(filteredData, schemas.Model{
+					ID:   providerPrefix + rawID,
+					Name: schemas.Ptr(rawID),
+				})
+				includedModels[rawID] = true // avoid duplicate backfill
+			}
+		}
+		openrouterResponse.Data = filteredData
+	} else {
+		for i := range openrouterResponse.Data {
+			openrouterResponse.Data[i].ID = providerPrefix + openrouterResponse.Data[i].ID
+		}
 	}
 
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
-
-	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		openrouterResponse.ExtraFields.RawRequest = rawRequest
-	}
-
-	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		openrouterResponse.ExtraFields.RawResponse = rawResponse
-	}
 
 	return &openrouterResponse, nil
 }
@@ -146,6 +255,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -172,6 +282,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -188,6 +299,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -219,6 +331,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -235,6 +348,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -261,6 +375,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -273,6 +388,11 @@ func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key s
 // Speech is not supported by the OpenRouter provider.
 func (provider *OpenRouterProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+}
+
+// Rerank is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the OpenRouter provider.
@@ -315,6 +435,36 @@ func (provider *OpenRouterProvider) ImageVariation(ctx *schemas.BifrostContext, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// VideoGeneration is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+}
+
+// VideoRetrieve is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+}
+
+// VideoDownload is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+}
+
+// VideoDelete is not supported by OpenRouter provider.
+func (provider *OpenRouterProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by OpenRouter provider.
+func (provider *OpenRouterProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by OpenRouter provider.
+func (provider *OpenRouterProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by OpenRouter provider.
 func (provider *OpenRouterProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
@@ -333,6 +483,11 @@ func (provider *OpenRouterProvider) BatchRetrieve(_ *schemas.BifrostContext, _ [
 // BatchCancel is not supported by OpenRouter provider.
 func (provider *OpenRouterProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchDelete is not supported by OpenRouter provider.
+func (provider *OpenRouterProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
 // BatchResults is not supported by OpenRouter provider.
@@ -413,4 +568,13 @@ func (provider *OpenRouterProvider) ContainerFileContent(_ *schemas.BifrostConte
 // ContainerFileDelete is not supported by the OpenRouter provider.
 func (provider *OpenRouterProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+}
+
+func (provider *OpenRouterProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

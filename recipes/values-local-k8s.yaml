@@ -94,8 +94,7 @@ bifrost:
     initialPoolSize: 100
     allowedOrigins:
       - "*"
-    enableLogging: true
-    enableGovernance: false
+    enableLogging: true    
     enforceGovernanceHeader: false
     allowDirectKeys: true
     maxRequestBodySizeMb: 100
@@ -138,7 +137,7 @@ resources:
 # Probes
 livenessProbe:
   httpGet:
-    path: /metrics
+    path: /health
     port: http
   initialDelaySeconds: 30
   periodSeconds: 30
@@ -147,7 +146,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /metrics
+    path: /health
     port: http
   initialDelaySeconds: 10
   periodSeconds: 10

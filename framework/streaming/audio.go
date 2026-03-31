@@ -3,6 +3,7 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -86,20 +87,26 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
-	// Accumulate raw response
+	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.AudioStreamChunks) > 0 {
 		// Sort chunks by chunk index
 		sort.Slice(accumulator.AudioStreamChunks, func(i, j int) bool {
 			return accumulator.AudioStreamChunks[i].ChunkIndex < accumulator.AudioStreamChunks[j].ChunkIndex
 		})
+		var rawBuilder strings.Builder
+		hasRawChunk := false
 		for _, chunk := range accumulator.AudioStreamChunks {
 			if chunk.RawResponse != nil {
-				if data.RawResponse == nil {
-					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
-				} else {
-					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				if hasRawChunk {
+					rawBuilder.WriteString("\n\n")
 				}
+				rawBuilder.WriteString(*chunk.RawResponse)
+				hasRawChunk = true
 			}
+		}
+		if hasRawChunk {
+			s := rawBuilder.String()
+			data.RawResponse = &s
 		}
 	}
 	return data, nil
@@ -138,7 +145,7 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 		chunk.ChunkIndex = result.SpeechStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				cost := a.pricingManager.CalculateCost(result)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -177,16 +184,13 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 			RawRequest: &rawRequest,
 		}, nil
 	}
-	data, processErr := a.processAccumulatedAudioStreamingChunks(requestID, bifrostErr, isFinalChunk)
-	if processErr != nil {
-		a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
-		return nil, processErr
-	}
+	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
+	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
 		RequestID:  requestID,
 		StreamType: StreamTypeAudio,
 		Model:      model,
 		Provider:   provider,
-		Data:       data,
+		Data:       nil,
 	}, nil
 }

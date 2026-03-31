@@ -7,23 +7,56 @@
 
 import { RbacOperation, RbacResource, useRbac } from "@/app/_fallbacks/enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RoutingRuleSheet } from "./routingRuleSheet";
+import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
+
+const POLLING_INTERVAL = 5000;
+const PAGE_SIZE = 25;
 
 export function RoutingRulesView() {
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
+
+	const [search, setSearch] = useState("");
+	const [offset, setOffset] = useState(0);
+
+	const debouncedSearch = useDebouncedValue(search, 300);
+
+	// Reset to first page when search changes
+	useEffect(() => {
+		setOffset(0);
+	}, [debouncedSearch]);
 
 	// Permissions
 	const canCreate = useRbac(RbacResource.RoutingRules, RbacOperation.Create);
 	const canDelete = useRbac(RbacResource.RoutingRules, RbacOperation.Delete);
 
 	// API
-	const { data: rules = [], isLoading } = useGetRoutingRulesQuery();
+	const { data: rulesData, isLoading } = useGetRoutingRulesQuery(
+		{
+			limit: PAGE_SIZE,
+			offset,
+			search: debouncedSearch || undefined,
+		},
+		{
+			pollingInterval: POLLING_INTERVAL,
+		},
+	);
+
+	const rules = rulesData?.rules || [];
+	const totalCount = rulesData?.total_count || 0;
+
+	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
+	useEffect(() => {
+		if (!rulesData || offset < totalCount) return;
+		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
+	}, [totalCount, offset]);
 
 	const handleCreateNew = () => {
 		setEditingRule(null);
@@ -42,6 +75,18 @@ export function RoutingRulesView() {
 		}
 	};
 
+	const hasActiveFilters = debouncedSearch;
+
+	// True empty state: no rules at all (not just filtered to zero)
+	if (!isLoading && totalCount === 0 && !hasActiveFilters) {
+		return (
+			<>
+				<RoutingRulesEmptyState onAddClick={handleCreateNew} canCreate={canCreate} />
+				<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
+			</>
+		);
+	}
+
 	return (
 		<div className="space-y-4">
 			{/* Header */}
@@ -51,31 +96,31 @@ export function RoutingRulesView() {
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>
 				</div>
 				{canCreate && (
-					<Button onClick={handleCreateNew} disabled={isLoading} className="gap-2">
+					<Button
+						data-testid="create-routing-rule-btn"
+						onClick={handleCreateNew}
+						disabled={isLoading}
+						className="gap-2"
+					>
 						<Plus className="h-4 w-4" />
 						<span className="hidden sm:inline">New Rule</span>
 					</Button>
 				)}
 			</div>
 
-			{/* Empty state or Table */}
-			{!isLoading && rules.length === 0 ? (
-				<div className="rounded-lg border border-dashed p-12 text-center">
-					<Plus className="text-muted-foreground mx-auto mb-4 h-12 w-12" />
-					<h3 className="mb-1 text-lg font-semibold">No routing rules yet</h3>
-					<p className="text-muted-foreground mb-6">Create your first routing rule to start intelligently routing requests</p>
-					{canCreate && (
-						<Button onClick={handleCreateNew} className="gap-2">
-							<Plus className="h-4 w-4" />
-							Create First Rule
-						</Button>
-					)}
-				</div>
-			) : (
-				<RoutingRulesTable rules={rules} isLoading={isLoading} onEdit={handleEdit} canDelete={canDelete} />
-			)}
+			<RoutingRulesTable
+				rules={rules}
+				totalCount={totalCount}
+				isLoading={isLoading}
+				onEdit={handleEdit}
+				canDelete={canDelete}
+				search={search}
+				onSearchChange={setSearch}
+				offset={offset}
+				limit={PAGE_SIZE}
+				onOffsetChange={setOffset}
+			/>
 
-			{/* RoutingRuleSheet */}
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
 		</div>
 	);

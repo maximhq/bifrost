@@ -14,10 +14,58 @@ import (
 	"gorm.io/gorm"
 )
 
+// VirtualKeyQueryParams holds pagination, filtering, and search parameters for virtual key queries.
+type VirtualKeyQueryParams struct {
+	Limit      int
+	Offset     int
+	Search     string
+	CustomerID string
+	TeamID     string
+}
+
+// ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
+type ModelConfigsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
+// RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
+type RoutingRulesQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
+// MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
+type MCPClientsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
+// TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
+type TeamsQueryParams struct {
+	Limit      int
+	Offset     int
+	Search     string
+	CustomerID string
+}
+
+// CustomersQueryParams holds pagination, filtering, and search parameters for customer queries.
+type CustomersQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
 	Ping(ctx context.Context) error
+
+	// Encryption
+	EncryptPlaintextRows(ctx context.Context) error
 
 	// Client config CRUD
 	UpdateClientConfig(ctx context.Context, config *ClientConfig) error
@@ -42,6 +90,7 @@ type ConfigStore interface {
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
+	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
@@ -68,6 +117,7 @@ type ConfigStore interface {
 
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
+	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
@@ -89,6 +139,7 @@ type ConfigStore interface {
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
+	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
@@ -96,6 +147,7 @@ type ConfigStore interface {
 
 	// Customer CRUD
 	GetCustomers(ctx context.Context) ([]tables.TableCustomer, error)
+	GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error)
 	GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
 	CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	UpdateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
@@ -124,12 +176,14 @@ type ConfigStore interface {
 	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)
 	GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
 	GetRedactedRoutingRules(ctx context.Context, ids []string) ([]tables.TableRoutingRule, error) // leave ids empty to get all
+	GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error)
 	CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
+	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
 	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)
 	GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
@@ -163,6 +217,10 @@ type ConfigStore interface {
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
+
+	// Model parameters
+	GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error)
+	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
 
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
@@ -211,6 +269,35 @@ type ConfigStore interface {
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
+
+	// Prompt Repository - Folders
+	GetFolders(ctx context.Context) ([]tables.TableFolder, error)
+	GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error)
+	CreateFolder(ctx context.Context, folder *tables.TableFolder) error
+	UpdateFolder(ctx context.Context, folder *tables.TableFolder) error
+	DeleteFolder(ctx context.Context, id string) error
+
+	// Prompt Repository - Prompts
+	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
+	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	DeletePrompt(ctx context.Context, id string) error
+
+	// Prompt Repository - Versions
+	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
+	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
+	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
+	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
+	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Prompt Repository - Sessions
+	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)
+	GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error)
+	CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	RenamePromptSession(ctx context.Context, id uint, name string) error
+	DeletePromptSession(ctx context.Context, id uint) error
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

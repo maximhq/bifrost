@@ -6,7 +6,12 @@ import { useMemo } from "react";
 import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
 
-export default function OtelView() {
+interface OtelViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+}
+
+export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(
 		() => ({ ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
@@ -41,8 +46,7 @@ export default function OtelView() {
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
-				<div className="text-muted-foreground mb-2 text-sm font-medium">Traces Configuration</div>
-				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} />
+				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />
 			</div>
 		</div>
 	);

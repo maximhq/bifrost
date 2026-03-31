@@ -66,6 +66,9 @@ func (dp *DynamicPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req 
 
 // HTTPTransportStreamChunkHook intercepts streaming chunks before they are written to the client
 func (dp *DynamicPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	if dp.httpTransportStreamChunkHook == nil {
+		return stream, nil // No-op if not implemented
+	}
 	return dp.httpTransportStreamChunkHook(ctx, req, stream)
 }
 

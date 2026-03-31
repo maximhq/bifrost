@@ -149,13 +149,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 # Empty clients filter blocks ALL tools - no tools available to LLM
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-clients: []" \
+  -H "x-bf-mcp-include-clients:" \
   -d '...'
 # Result: No MCP tools available (deny-all)
 
 # Empty tools filter also blocks ALL tools
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: []" \
+  -H "x-bf-mcp-include-tools:" \
   -d '...'
 # Result: No MCP tools available (deny-all)
 ```
@@ -183,7 +183,7 @@ ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
     []string{"bifrostInternal-*"})
 
-response, err := client.ChatCompletionRequest(ctx, request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 
 // Empty include-clients blocks ALL tools - no tools available
 ctx = context.WithValue(context.Background(),
@@ -435,7 +435,7 @@ ctx = context.WithValue(
 )
 
 // Request will only see filtered tools
-response, _ := client.ChatCompletionRequest(ctx, request)
+response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 ```
 
 ### Filter Precedence

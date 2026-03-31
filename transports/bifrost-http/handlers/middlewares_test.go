@@ -1,8 +1,17 @@
 package handlers
 
 import (
+	"bytes"
+	"compress/zlib"
+	"compress/gzip"
+	cryptoRand "crypto/rand"
+	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -62,7 +71,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -855,10 +864,125 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialed tests that wildcard allowed headers
+// sets Access-Control-Allow-Headers to * for non-credentialed requests (wildcard origins).
+func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Non-credentialed: wildcard is valid per spec
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "*" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedPreflight tests that wildcard allowed headers
+// reflects Access-Control-Request-Headers for credentialed preflight requests instead of sending
+// the literal *, which browsers don't treat as a wildcard when credentials are present.
+func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("OPTIONS")
+	ctx.Request.Header.Set("Origin", "https://example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "Authorization, X-Custom-Header")
+
+	next := func(ctx *fasthttp.RequestCtx) {
+		t.Error("Next handler should not be called for preflight")
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed preflight: should reflect requested headers, not *
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "Authorization, X-Custom-Header" {
+		t.Errorf("Expected Access-Control-Allow-Headers to reflect requested headers, got %s", actualHeaders)
+	}
+
+	// Should also have credentials
+	creds := string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials"))
+	if creds != "true" {
+		t.Errorf("Expected Access-Control-Allow-Credentials to be true, got %s", creds)
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight tests that wildcard allowed headers
+// uses defaults for credentialed non-preflight requests (no Access-Control-Request-Headers).
+func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := CorsMiddleware(config)
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed non-preflight: should use defaults (not *)
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	defaultHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+	for _, header := range defaultHeaders {
+		if !containsHeader(actualHeaders, header) {
+			t.Errorf("Expected Access-Control-Allow-Headers to contain %s, got %s", header, actualHeaders)
+		}
+	}
+	if actualHeaders == "*" {
+		t.Error("Expected Access-Control-Allow-Headers to NOT be * for credentialed requests")
 	}
 
 	if !nextCalled {
@@ -1140,4 +1264,619 @@ func TestFasthttpToHTTPRequest_PathParams(t *testing.T) {
 	if fileID := req.CaseInsensitivePathParamLookup("FILE_ID"); fileID != "file-abc123" {
 		t.Errorf("CaseInsensitivePathParamLookup should be case-insensitive: expected 'file-abc123', got '%s'", fileID)
 	}
+}
+
+func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	testCases := []struct {
+		name     string
+		encoding string
+		encode   func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encoding: "gzip", encode: gzipCompress},
+		{name: "deflate", encoding: "deflate", encode: deflateCompress},
+		{name: "brotli", encoding: "br", encode: brotliCompress},
+		{name: "zstd", encoding: "zstd", encode: zstdCompress},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			compressedBody, err := tc.encode(plainBody)
+			if err != nil {
+				t.Fatalf("failed to encode body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+			ctx.Request.SetBodyRaw(compressedBody)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+				if string(ctx.Request.Body()) != string(plainBody) {
+					t.Fatalf("expected decompressed body, got %q", string(ctx.Request.Body()))
+				}
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatal("next handler was not called")
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Encoding")); got != "" {
+				t.Fatalf("expected content-encoding to be cleared, got %q", got)
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Length")); got != "" {
+				t.Fatalf("expected content-length to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw([]byte("not-a-valid-gzip-payload"))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for invalid compressed payload")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "invalid compressed request body") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "snappy")
+	ctx.Request.SetBodyRaw([]byte("whatever"))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for unsupported content-encoding")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "unsupported Content-Encoding") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 1,
+		},
+	}
+
+	plainBody := bytes.Repeat([]byte("a"), (1024*1024)+10)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip test payload: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called when decompressed body exceeds limit")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", ctx.Response.StatusCode())
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "decompressed request body exceeds max allowed size") {
+		t.Fatalf("unexpected error message: %#v", bifrostErr.Error)
+	}
+}
+
+func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	encodings := []string{"gzip", "deflate", "br", "zstd"}
+	for _, enc := range encodings {
+		t.Run(enc, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", enc)
+			ctx.Request.SetBodyRaw([]byte{})
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			// Empty body with Content-Encoding should return 400 (decoders fail on empty input)
+			if nextCalled {
+				// Some decoders may produce empty output — that's acceptable too
+				return
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	originalBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyRaw(originalBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if string(ctx.Request.Body()) != string(originalBody) {
+			t.Fatalf("expected body to be unchanged, got %q", string(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 1,
+		},
+	}
+
+	plainBody := bytes.Repeat([]byte("a"), 1024*1024) // exactly 1 MB
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip test payload: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if len(ctx.Request.Body()) != 1024*1024 {
+			t.Fatalf("expected body length %d, got %d", 1024*1024, len(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called — body exactly at limit should pass")
+	}
+}
+
+// --- Streaming decompression path tests ---
+
+func TestShouldStreamDecompress(t *testing.T) {
+	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
+	tests := []struct {
+		name            string
+		contentLength   int
+		customThreshold int64 // 0 means no custom threshold (use default)
+		want            bool
+	}{
+		{"chunked (CL=-1)", -1, 0, true},
+		{"empty body (CL=0)", 0, 0, false},
+		{"small body", 100, 0, false},
+		{"at default threshold", defaultThreshold, 0, false},
+		{"above default threshold", defaultThreshold + 1, 0, true},
+		// Custom enterprise threshold (1MB) — body at 2MB should stream.
+		{"above custom threshold", 2 * 1024 * 1024, 1 * 1024 * 1024, true},
+		// Custom enterprise threshold (20MB) — body at default 10MB+1 should NOT stream.
+		{"below custom threshold", defaultThreshold + 1, 20 * 1024 * 1024, false},
+		// Chunked always streams regardless of custom threshold.
+		{"chunked with custom threshold", -1, 50 * 1024 * 1024, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &lib.Config{}
+			if tt.customThreshold > 0 {
+				cfg.StreamingDecompressThreshold = tt.customThreshold
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("Content-Encoding", "gzip")
+			if tt.contentLength >= 0 {
+				ctx.Request.Header.SetContentLength(tt.contentLength)
+			} else {
+				// Simulate chunked: set body stream with unknown size
+				ctx.Request.SetBodyStream(bytes.NewReader(nil), -1)
+			}
+			if got := shouldStreamDecompress(cfg, ctx); got != tt.want {
+				t.Errorf("shouldStreamDecompress() = %v, want %v (CL=%d, threshold=%d)", got, tt.want, tt.contentLength, tt.customThreshold)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked: SetBodyStream with size -1 triggers the streaming path
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		// Content-Encoding should be cleared
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		// Body should be correctly decompressed
+		body := ctx.Request.Body()
+		if string(body) != string(plainBody) {
+			t.Errorf("decompressed body mismatch: got %d bytes, want %d bytes", len(body), len(plainBody))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	testCases := []struct {
+		name     string
+		encoding string
+		encode   func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encoding: "gzip", encode: gzipCompress},
+		{name: "deflate", encoding: "deflate", encode: deflateCompress},
+		{name: "brotli", encoding: "br", encode: brotliCompress},
+		{name: "zstd", encoding: "zstd", encode: zstdCompress},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			compressedBody, err := tc.encode(plainBody)
+			if err != nil {
+				t.Fatalf("failed to encode body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+			// Use chunked (-1) to trigger streaming path regardless of compressed size
+			ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+				body := ctx.Request.Body()
+				if string(body) != string(plainBody) {
+					t.Fatalf("expected decompressed body, got %q", string(body))
+				}
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatal("next handler was not called")
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Encoding")); got != "" {
+				t.Fatalf("expected content-encoding to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked with invalid gzip data → streaming path → error
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("not-a-valid-gzip-payload")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for invalid compressed payload")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "snappy")
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("whatever")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for unsupported encoding")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	// Verify compressed body is below threshold (should use buffered path)
+	if int64(len(compressedBody)) > schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skip("compressed body unexpectedly exceeds threshold")
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// SetBodyRaw with known small Content-Length → buffered path
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if string(ctx.Request.Body()) != string(plainBody) {
+			t.Fatalf("expected decompressed body, got %q", string(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	// Random bytes are incompressible — compressed size ≈ input size + gzip overhead.
+	bodySize := int(schemas.DefaultLargePayloadRequestThresholdBytes) + 1024*1024
+	plainBody := make([]byte, bodySize)
+	if _, err := cryptoRand.Read(plainBody); err != nil {
+		t.Fatalf("failed to generate random data: %v", err)
+	}
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	if int64(len(compressedBody)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skipf("compressed body %d bytes is below threshold %d",
+			len(compressedBody), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.Header.SetContentLength(len(compressedBody))
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), len(compressedBody))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		body := ctx.Request.Body()
+		if len(body) != len(plainBody) {
+			t.Errorf("decompressed body length: got %d, want %d", len(body), len(plainBody))
+		}
+		if !bytes.Equal(body, plainBody) {
+			t.Error("decompressed body content does not match original")
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func gzipCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// deflateCompress produces zlib-wrapped DEFLATE (RFC 1950) — the correct
+// format for HTTP Content-Encoding "deflate" per RFC 9110 §8.4.1.2.
+func deflateCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := zlib.NewWriterLevel(&buf, zlib.DefaultCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func brotliCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := brotli.NewWriter(&buf)
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func zstdCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(enc, bytes.NewReader(data)); err != nil {
+		enc.Close()
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

@@ -8,18 +8,27 @@ package lib
 
 import (
 	"context"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/valyala/fasthttp"
+)
+
+const (
+	// FastHTTPUserValueBifrostContext stores the active *schemas.BifrostContext on fasthttp.RequestCtx.
+	// This allows transport middleware and request handlers to share the same context instance.
+	FastHTTPUserValueBifrostContext = "__bifrost_context"
+	// FastHTTPUserValueBifrostCancel stores the cancel func for the active shared Bifrost context.
+	FastHTTPUserValueBifrostCancel = "__bifrost_context_cancel"
+	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
+	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
+	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
 )
 
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
@@ -61,6 +70,10 @@ import (
 //   - Any header starting with 'x-bf-eh-' is collected and added to the map stored under schemas.BifrostContextKeyExtraHeaders
 //   - The prefix is stripped, the remainder is lower-cased, and duplicate names append values
 //   - This allows callers to send arbitrary context metadata without needing to extend the public schema
+//
+// 8. Session Stickiness Headers:
+//   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
+//   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -76,19 +89,50 @@ import (
 //	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true, nil)
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains propagated header values including Prometheus metrics,
-//	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings, and extra headers
+//	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
+//	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
-	// Create cancellable context for all requests
-	// This enables proper cleanup when clients disconnect or requests are cancelled
-	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
-
-	// First, check if x-request-id header exists
-	requestID := string(ctx.Request.Header.Peek("x-request-id"))
-	if requestID == "" {
-		requestID = uuid.New().String()
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher) (*schemas.BifrostContext, context.CancelFunc) {
+	// Reuse a shared request-scoped context when available.
+	var bifrostCtx *schemas.BifrostContext
+	var cancel context.CancelFunc
+	if existing, ok := ctx.UserValue(FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && existing != nil {
+		if existingCancel, ok := ctx.UserValue(FastHTTPUserValueBifrostCancel).(context.CancelFunc); ok && existingCancel != nil {
+			bifrostCtx = existing
+			cancel = existingCancel
+		} else {
+			// Create one cancellable child context and promote it as the shared context.
+			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
+			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
+		}
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	if bifrostCtx == nil {
+		// Create cancellable context for requests that don't have a shared context yet.
+		parent := context.Context(ctx)
+		func() {
+			// Zero-value fasthttp.RequestCtx can panic on Done(); fall back safely.
+			defer func() {
+				if recover() != nil {
+					parent = context.Background()
+				}
+			}()
+			_ = ctx.Done()
+		}()
+		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
+		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
+	}
+
+	// Preserve existing request-id if already present on the shared context.
+	if existingRequestID, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || existingRequestID == "" {
+		// First, check if x-request-id header exists
+		requestID := string(ctx.Request.Header.Peek("x-request-id"))
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
@@ -110,48 +154,18 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// prevent auth/key overrides via x-bf-eh-*
 		"x-api-key":      true,
 		"x-goog-api-key": true,
-		"x-bf-api-key":   true,
-		"x-bf-vk":        true,
+		"x-bf-api-key":    true,
+		"x-bf-api-key-id": true,
+		"x-bf-vk":         true,
 	}
 
-	// shouldAllowHeader determines if a header should be forwarded based on
-	// the configurable header filter config (separate from security denylist)
-	// Filter logic:
-	// 1. If allowlist is non-empty, header must be in allowlist
-	// 2. If denylist is non-empty, header must not be in denylist
-	// 3. If both are non-empty, allowlist takes precedence first, then denylist filters
-	// 4. If both are empty, header is allowed
-	shouldAllowHeader := func(headerName string) bool {
-		if headerFilterConfig == nil {
-			return true
+	// Debug: Log header matcher state
+	if logger != nil {
+		if matcher != nil {
+			logger.Debug("headerMatcher hasAllowlist=%v, hasDenylist=%v", matcher.HasAllowlist(), matcher.hasDenylist)
+		} else {
+			logger.Debug("headerMatcher is nil (allow all)")
 		}
-		hasAllowlist := len(headerFilterConfig.Allowlist) > 0
-		hasDenylist := len(headerFilterConfig.Denylist) > 0
-		// If allowlist is non-empty, header must be in allowlist
-		if hasAllowlist {
-			if !slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
-				return strings.EqualFold(s, headerName)
-			}) {
-				return false
-			}
-		}
-		// If denylist is non-empty, header must not be in denylist
-		if hasDenylist {
-			if slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
-				return strings.EqualFold(s, headerName)
-			}) {
-				return false
-
-			}
-		}
-		return true
-	}
-
-	// Debug: Log header filter config
-	if headerFilterConfig != nil {
-		logger.Debug("headerFilterConfig allowlist: %v, denylist: %v", headerFilterConfig.Allowlist, headerFilterConfig.Denylist)
-	} else {
-		logger.Debug("headerFilterConfig is nil")
 	}
 
 	// Then process other headers
@@ -199,6 +213,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 							parsedValues = append(parsedValues, trimmed)
 						}
 					}
+				} else {
+					parsedValues = []string{""}
 				}
 				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
@@ -231,6 +247,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		if keyStr == "x-bf-api-key" {
 			if keyName := strings.TrimSpace(string(value)); keyName != "" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, keyName)
+			}
+			return true
+		}
+		if keyStr == "x-bf-api-key-id" {
+			if keyID := strings.TrimSpace(string(value)); keyID != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
 			}
 			return true
 		}
@@ -287,6 +309,29 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			}
 			return true
 		}
+		// Session stickiness: session ID for key binding
+		if keyStr == "x-bf-session-id" {
+			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, valueStr)
+			}
+			return true
+		}
+		// Session stickiness: per-request TTL override (duration string or seconds integer)
+		if keyStr == "x-bf-session-ttl" {
+			valueStr := strings.TrimSpace(string(value))
+			var ttlDuration time.Duration
+			var err error
+			if ttlDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					ttlDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && ttlDuration > 0 {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
 			// Skip empty header names after prefix removal
 			if labelName == "" {
@@ -299,7 +344,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				return true
 			}
 			// Apply configurable header filter
-			if !shouldAllowHeader(labelName) {
+			if !matcher.ShouldAllow(labelName) {
 				return true
 			}
 			// Append header value (allow multiple values for the same header)
@@ -310,11 +355,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
 		// Only applies when allowlist is non-empty (backward compatible).
-		if headerFilterConfig != nil && len(headerFilterConfig.Allowlist) > 0 {
-			// Check if this header is explicitly in the allowlist (case-insensitive)
-			if slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
-				return strings.EqualFold(s, keyStr)
-			}) {
+		if matcher.HasAllowlist() {
+			if matcher.MatchesAllow(keyStr) {
 				// Skip reserved x-bf-* headers (handled separately)
 				if strings.HasPrefix(keyStr, "x-bf-") {
 					return true
@@ -323,14 +365,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				if securityDenylist[keyStr] {
 					return true
 				}
-				// Check denylist (allowlist check already passed by being in allowlist, case-insensitive)
-				if len(headerFilterConfig.Denylist) > 0 && slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
-					return strings.EqualFold(s, keyStr)
-				}) {
+				// Check denylist
+				if matcher.MatchesDeny(keyStr) {
 					return true
 				}
 				// Forward the header directly with its original name
-				logger.Debug("forwarding header via allowlist: %s = %s", keyStr, string(value))
+				if logger != nil {
+					logger.Debug("forwarding header via allowlist: %s", keyStr)
+				}
 				extraHeaders[keyStr] = append(extraHeaders[keyStr], string(value))
 				return true
 			}
@@ -368,6 +410,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 	if len(extraHeaders) > 0 {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
+
+	// Collect all request headers for downstream use (e.g., governance required headers check)
+	// Keys are lowercased for case-insensitive lookup
+	allHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		allHeaders[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header

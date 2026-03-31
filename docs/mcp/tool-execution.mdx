@@ -184,7 +184,7 @@ func main() {
         Input:    []schemas.ChatMessage{firstMessage},
     }
 
-    response, err := client.ChatCompletionRequest(context.Background(), request)
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
     if err != nil {
         panic(err)
     }
@@ -224,7 +224,7 @@ func main() {
         Input:    history,
     }
 
-    finalResponse, err := client.ChatCompletionRequest(context.Background(), finalRequest)
+    finalResponse, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), finalRequest)
     if err != nil {
         panic(err)
     }

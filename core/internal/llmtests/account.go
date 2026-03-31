@@ -27,8 +27,9 @@ type TestScenarios struct {
 	MultiTurnConversation  bool
 	ToolCalls              bool
 	ToolCallsStreaming     bool // Streaming tool calls functionality
-	MultipleToolCalls      bool
-	End2EndToolCalling     bool
+	MultipleToolCalls          bool
+	MultipleToolCallsStreaming bool // Streaming multiple tool calls (some providers only return 1 tool call in streaming)
+	End2EndToolCalling         bool
 	AutomaticFunctionCall  bool
 	ImageURL               bool
 	ImageBase64            bool
@@ -50,6 +51,12 @@ type TestScenarios struct {
 	ImageEditStream        bool // Streaming image edit functionality
 	ImageVariation         bool // Image variation functionality
 	ImageVariationStream   bool // Streaming image variation functionality (if supported)
+	VideoGeneration        bool // Video generation functionality
+	VideoRetrieve          bool // Video retrieve functionality
+	VideoRemix             bool // Video remix functionality (OpenAI only)
+	VideoDownload          bool // Video download functionality
+	VideoList              bool // Video list functionality
+	VideoDelete            bool // Video delete functionality
 	BatchCreate            bool // Batch API create functionality
 	BatchList              bool // Batch API list functionality
 	BatchRetrieve          bool // Batch API retrieve functionality
@@ -75,6 +82,13 @@ type TestScenarios struct {
 	ContainerFileContent   bool // Container File API content functionality
 	ContainerFileDelete    bool // Container File API delete functionality
 	PassThroughExtraParams bool // Pass through extra params functionality
+	Rerank                 bool // Rerank functionality
+	PassthroughAPI         bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
+	WebSocketResponses     bool // WebSocket Responses API mode
+	Realtime               bool // Realtime API (bidirectional audio/text)
+	Compaction          bool // Server-side compaction (context management)
+	InterleavedThinking bool // Interleaved thinking between tool calls (beta)
+	FastMode            bool // Fast mode for Opus 4.6 (beta: research preview)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -86,6 +100,7 @@ type ComprehensiveTestConfig struct {
 	VisionModel              string
 	ReasoningModel           string
 	EmbeddingModel           string
+	RerankModel              string
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
@@ -95,6 +110,7 @@ type ComprehensiveTestConfig struct {
 	TranscriptionFallbacks   []schemas.Fallback     // for transcription tests
 	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
+	RerankFallbacks          []schemas.Fallback     // for rerank tests
 	SkipReason               string                 // Reason to skip certain tests
 	ImageGenerationModel     string                 // Model for image generation
 	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
@@ -102,11 +118,18 @@ type ComprehensiveTestConfig struct {
 	ImageEditFallbacks       []schemas.Fallback     // Fallbacks for image editing
 	ImageVariationModel      string                 // Model for image variation
 	ImageVariationFallbacks  []schemas.Fallback     // Fallbacks for image variation
+	VideoGenerationModel     string                 // Model for video generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
 	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
+	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
+	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
+	CompactionModel          string                 // Model for compaction tests; defaults to claude-sonnet-4-6
+	InterleavedThinkingModel string                 // Model for interleaved thinking tests; defaults to claude-opus-4-5
+	FastModeModel            string                 // Model for fast mode tests; defaults to claude-opus-4-6
+	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -143,6 +166,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Nebius,
 		schemas.XAI,
 		schemas.Replicate,
+		schemas.VLLM,
+		schemas.Runway,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -216,7 +241,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0"},
+				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -251,6 +276,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 						"o1":                     "o1",
 						"gpt-image-1":            "gpt-image-1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
+						"sora-2":                 "sora-2",
 					},
 					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
 					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
@@ -274,14 +300,27 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.Vertex:
+		//https://aiplatform.googleapis.com/v1/projects/maxim-development-433105/locations/global/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation
+
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001"},
+				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
 					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
+				Models: []string{"veo-3.1-generate-preview"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewEnvVar("global"),
 					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -406,6 +445,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Runway:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -630,6 +678,20 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.VLLM:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("VLLM_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10, // vllm is stable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.Gemini:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -708,6 +770,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Runway:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -734,7 +809,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -789,7 +865,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -831,7 +908,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -876,7 +954,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: false, // May not support automatic
 			ImageURL:              false, // Check if supported
@@ -915,7 +994,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -963,7 +1043,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -997,7 +1078,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SimpleChat:            true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1031,7 +1113,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1065,7 +1148,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1099,7 +1183,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false,
@@ -1138,7 +1223,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1182,7 +1268,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1259,7 +1346,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1291,7 +1379,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompletionStream:      true,
 			MultiTurnConversation: true,
 			ToolCalls:             true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -1306,6 +1395,38 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ListModels:            true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+		},
+	}, {
+		Provider:           schemas.VLLM,
+		ChatModel:          "Qwen/Qwen3-0.6B",
+		TextModel:          "Qwen/Qwen3-0.6B",
+		EmbeddingModel:     "Qwen/Qwen3-Embedding-0.6B",
+		TranscriptionModel: "openai/whisper-small",
+		Scenarios: TestScenarios{
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         true,  // VLLM supports transcription
+			TranscriptionStream:   true,  // VLLM supports transcription streaming
+			Embedding:             true,  // VLLM supports embedding
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
+			ImageEdit:             false, // VLLM does not support image editing
+			ImageEditStream:       false, // VLLM does not support streaming image editing
+			ImageVariation:        false, // VLLM does not support image variation
+			ImageVariationStream:  false, // VLLM does not support streaming image variation
+			ListModels:            true,
+			TextCompletion:        true,
+			TextCompletionStream:  true,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
+			End2EndToolCalling:    true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	},
 }

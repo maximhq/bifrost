@@ -4,7 +4,12 @@ import { useMemo } from "react";
 import { toast } from "sonner";
 import { MaximFormFragment } from "../../fragments/maximFormFragment";
 
-export default function MaximView() {
+interface MaximViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+}
+
+export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [updatePlugin, { isLoading: isUpdatingPlugin }] = useUpdatePluginMutation();
 	const currentConfig = useMemo(
@@ -42,7 +47,7 @@ export default function MaximView() {
 				<div className="text-muted-foreground mb-2 text-xs font-normal">
 					You can send in header <code>x-bf-log-repo-id</code> with a repository ID to log to a specific repository.
 				</div>
-				<MaximFormFragment onSave={handleMaximConfigSave} initialConfig={currentConfig} />
+				<MaximFormFragment onSave={handleMaximConfigSave} initialConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />
 			</div>
 		</div>
 	);

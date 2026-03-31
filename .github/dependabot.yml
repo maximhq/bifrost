@@ -1,0 +1,266 @@
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/transports"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  # Go / npm / Rust (daily). Docker + GitHub Actions: weekly entries above.
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /core
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/auth-demo-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/edge-case-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/mcps/edge-case-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/error-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/mcps/error-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/go-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/http-no-ping-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/parallel-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/mcps/parallel-test-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/mcps/temperature
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/mcps/test-tools-server
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/hello-world-wasm-go
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: cargo
+    directory: /examples/plugins/hello-world-wasm-rust
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /examples/plugins/hello-world-wasm-typescript
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/hello-world
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/http-transport-only
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/llm-only
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/mcp-only
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/multi-interface
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /framework
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /npx/bifrost-cli
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /npx/bifrost
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/governance
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/jsonparser
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/litellmcompat
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/logging
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/maxim
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/mocker
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/otel
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/semanticcache
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /plugins/telemetry
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /tests/e2e/api/newman-reporter-dbverify
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /tests/e2e/api
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /tests/e2e
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /tests/governance
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /tests/integrations/typescript
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /tests/scripts/1millogs
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /tests/scripts/migration-checker
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /transports
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0

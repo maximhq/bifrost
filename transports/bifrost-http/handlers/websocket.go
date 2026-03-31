@@ -4,11 +4,11 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -180,6 +180,27 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		operationType = "create"
 	}
 
+	// Trim payload for table view: keep only the last input message and nil out
+	// large output fields that the table never renders.
+	if len(logEntry.InputHistoryParsed) > 1 {
+		logEntry.InputHistoryParsed = logEntry.InputHistoryParsed[len(logEntry.InputHistoryParsed)-1:]
+	}
+	if len(logEntry.ResponsesInputHistoryParsed) > 1 {
+		logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
+	}
+	logEntry.OutputMessageParsed = nil
+	logEntry.ResponsesOutputParsed = nil
+	logEntry.EmbeddingOutputParsed = nil
+	logEntry.RerankOutputParsed = nil
+	logEntry.ParamsParsed = nil
+	logEntry.ToolsParsed = nil
+	logEntry.ToolCallsParsed = nil
+	logEntry.SpeechOutputParsed = nil
+	logEntry.TranscriptionOutputParsed = nil
+	logEntry.ImageGenerationOutputParsed = nil
+	logEntry.ListModelsOutputParsed = nil
+	logEntry.CacheDebugParsed = nil
+
 	message := struct {
 		Type      string        `json:"type"`
 		Operation string        `json:"operation"` // "create" or "update"
@@ -190,7 +211,7 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		Payload:   logEntry,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal log entry: %v", err)
 		return
@@ -229,7 +250,7 @@ func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) 
 		Payload:   logEntry,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal MCP log entry: %v", err)
 		return
@@ -249,7 +270,7 @@ func (h *WebSocketHandler) BroadcastUpdatesToClients(tags []string) {
 		Tags: tags,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal store update: %v", err)
 		return
@@ -269,7 +290,7 @@ func (h *WebSocketHandler) BroadcastEvent(eventType string, data interface{}) {
 		Data: data,
 	}
 
-	bytes, err := json.Marshal(message)
+	bytes, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal event %s: %v", eventType, err)
 		return

@@ -21,6 +21,7 @@ func TestAnthropic(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Anthropic,
@@ -29,9 +30,10 @@ func TestAnthropic(t *testing.T) {
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 			{Provider: schemas.Anthropic, Model: "claude-sonnet-4-20250514"},
 		},
-		VisionModel:        "claude-3-7-sonnet-20250219", // Same model supports vision
+		VisionModel:        "claude-sonnet-4-5", // Same model supports vision
 		ReasoningModel:     "claude-opus-4-5",
 		PromptCachingModel: "claude-sonnet-4-20250514",
+		PassthroughModel:   "claude-sonnet-4-5",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -39,7 +41,8 @@ func TestAnthropic(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			WebSearchTool:         true,
@@ -66,11 +69,14 @@ func TestAnthropic(t *testing.T) {
 			FileBatchInput:        false, // Anthropic batch API only supports inline requests, not file-based input
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			PassthroughAPI:        true,
+			Compaction:          true,
+			InterleavedThinking: true,
+			FastMode:            false, // Enable when test API key has Opus 4.6 access
 		},
 	}
 
 	t.Run("AnthropicTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

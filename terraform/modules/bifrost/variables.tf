@@ -47,7 +47,7 @@ variable "auth_config" {
 }
 
 variable "client" {
-  description = "Client configuration (initial_pool_size, allowed_origins, enable_logging, enable_governance, max_request_body_size_mb, etc.)."
+  description = "Client configuration (initial_pool_size, allowed_origins, enable_logging, max_request_body_size_mb, etc.)."
   type        = any
   default     = null
 }
@@ -127,6 +127,12 @@ variable "plugins" {
 
 variable "audit_logs" {
   description = "Audit logs configuration (disabled, hmac_key)."
+  type        = any
+  default     = null
+}
+
+variable "websocket" {
+  description = "WebSocket gateway configuration (max_connections_per_user, transcript_buffer_size, pool)."
   type        = any
   default     = null
 }
@@ -214,9 +220,15 @@ variable "existing_security_group_ids" {
 
 # --- Optional features ---
 variable "create_load_balancer" {
-  description = "Create a load balancer (ALB for ECS/EKS, Cloud Load Balancer for GKE, etc.)."
+  description = "Create a load balancer. ECS: creates an ALB. EKS: creates a Kubernetes Ingress with ALB annotations (requires AWS Load Balancer Controller). GKE: creates a GCE Ingress. AKS: creates a Kubernetes Ingress."
   type        = bool
   default     = false
+}
+
+variable "assign_public_ip" {
+  description = "Assign a public IP to the container (ECS Fargate). Set to false for private subnet deployments."
+  type        = bool
+  default     = true
 }
 
 variable "enable_autoscaling" {
@@ -251,6 +263,12 @@ variable "autoscaling_memory_threshold" {
 
 variable "domain_name" {
   description = "Custom domain name for the service (optional)."
+  type        = string
+  default     = null
+}
+
+variable "certificate_arn" {
+  description = "ACM/SSL certificate ARN for HTTPS. Used by EKS (ALB Ingress) and can be extended for other services."
   type        = string
   default     = null
 }

@@ -1,13 +1,21 @@
 package vectorstore
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
+	"net"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -231,6 +239,692 @@ func TestRedisConfig_Validation(t *testing.T) {
 	}
 }
 
+type fakeRedisSearchServer struct {
+	listener      net.Listener
+	searchErrors  int
+	mu            sync.Mutex
+	ftSearchCalls int
+	sawScan       bool
+}
+
+func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	server := &fakeRedisSearchServer{
+		listener:     listener,
+		searchErrors: searchErrors,
+	}
+
+	go server.serve(t)
+	return server
+}
+
+func (s *fakeRedisSearchServer) serve(t *testing.T) {
+	t.Helper()
+
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				continue
+			}
+			return
+		}
+
+		go s.handleConn(t, conn)
+	}
+}
+
+func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+
+	for {
+		command, err := readRESPCommand(reader)
+		if err != nil {
+			if err == io.EOF || strings.Contains(strings.ToLower(err.Error()), "use of closed network connection") {
+				return
+			}
+			return
+		}
+		if len(command) == 0 {
+			continue
+		}
+
+		switch strings.ToUpper(command[0]) {
+		case "HELLO":
+			_, _ = writer.WriteString("%2\r\n+server\r\n+redis\r\n+version\r\n+7.0.0\r\n")
+		case "CLIENT":
+			_, _ = writer.WriteString("+OK\r\n")
+		case "SELECT":
+			_, _ = writer.WriteString("+OK\r\n")
+		case "PING":
+			_, _ = writer.WriteString("+PONG\r\n")
+		case "FT.SEARCH":
+			s.mu.Lock()
+			s.ftSearchCalls++
+			shouldError := s.ftSearchCalls <= s.searchErrors
+			s.mu.Unlock()
+
+			if shouldError {
+				_, _ = writer.WriteString("-Invalid query\r\n")
+			} else {
+				_, _ = writer.WriteString("*1\r\n:0\r\n")
+			}
+		case "SCAN":
+			s.mu.Lock()
+			s.sawScan = true
+			s.mu.Unlock()
+			_, _ = writer.WriteString("*2\r\n$1\r\n0\r\n*0\r\n")
+		case "HGETALL":
+			_, _ = writer.WriteString("*0\r\n")
+		default:
+			_, _ = writer.WriteString("+OK\r\n")
+		}
+
+		if err := writer.Flush(); err != nil {
+			return
+		}
+	}
+}
+
+func (s *fakeRedisSearchServer) close() error {
+	return s.listener.Close()
+}
+
+func (s *fakeRedisSearchServer) addr() string {
+	return s.listener.Addr().String()
+}
+
+func (s *fakeRedisSearchServer) stats() (ftSearchCalls int, sawScan bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ftSearchCalls, s.sawScan
+}
+
+func readRESPCommand(reader *bufio.Reader) ([]string, error) {
+	header, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return nil, nil
+	}
+	if header[0] != '*' {
+		return nil, fmt.Errorf("unexpected RESP header %q", header)
+	}
+
+	count, err := strconv.Atoi(header[1:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid RESP array length %q: %w", header, err)
+	}
+
+	command := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		bulkHeader, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		bulkHeader = strings.TrimSpace(bulkHeader)
+		if bulkHeader == "" || bulkHeader[0] != '$' {
+			return nil, fmt.Errorf("unexpected RESP bulk header %q", bulkHeader)
+		}
+
+		size, err := strconv.Atoi(bulkHeader[1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid RESP bulk length %q: %w", bulkHeader, err)
+		}
+
+		payload := make([]byte, size+2)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return nil, err
+		}
+		command = append(command, string(payload[:size]))
+	}
+
+	return command, nil
+}
+
+func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 2)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: time.Second,
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := store.executeSearch(WithDisableScanFallback(ctx), TestNamespace, "*", nil, nil, 0, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to search without scan fallback")
+
+	ftSearchCalls, sawScan := server.stats()
+	assert.Equal(t, 2, ftSearchCalls)
+	assert.False(t, sawScan, "expected executeSearch to return before scan fallback")
+}
+
+func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {
+	store := &RedisStore{}
+	resp := map[interface{}]interface{}{
+		"results": []interface{}{
+			map[interface{}]interface{}{
+				"id": "TestRedis:doc-1",
+				"extra_attributes": map[interface{}]interface{}{
+					"score":        "0.123",
+					"request_hash": "abc123",
+					"cache_key":    "session-1",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, TestNamespace, []string{"request_hash"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-1", results[0].ID)
+	assert.Equal(t, "abc123", results[0].Properties["request_hash"])
+	assert.Equal(t, "0.123", results[0].Properties["score"])
+	assert.NotContains(t, results[0].Properties, "cache_key")
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.123, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_RESP2Array(t *testing.T) {
+	store := &RedisStore{}
+	resp := []interface{}{
+		int64(1),
+		"TestRedis:doc-2",
+		[]interface{}{
+			"score", []byte("0.25"),
+			"request_hash", "def456",
+			"cache_key", "session-2",
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-2", results[0].ID)
+	assert.Equal(t, "def456", results[0].Properties["request_hash"])
+	assert.Equal(t, "session-2", results[0].Properties["cache_key"])
+	assert.Equal(t, []byte("0.25"), results[0].Properties["score"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.25, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_RESP3StringKeyMap(t *testing.T) {
+	store := &RedisStore{}
+	resp := map[string]interface{}{
+		"results": []interface{}{
+			map[string]interface{}{
+				"id": "TestRedis:doc-3",
+				"extra_attributes": map[string]interface{}{
+					"score":        "0.456",
+					"request_hash": "ghi789",
+					"cache_key":    "session-3",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, TestNamespace, []string{"request_hash"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-3", results[0].ID)
+	assert.Equal(t, "ghi789", results[0].Properties["request_hash"])
+	assert.Equal(t, "0.456", results[0].Properties["score"])
+	assert.NotContains(t, results[0].Properties, "cache_key")
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.456, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_EmptyRESP2(t *testing.T) {
+	store := &RedisStore{}
+	// RESP2 array with total count 0 and no documents
+	resp := []interface{}{
+		int64(0),
+	}
+
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
+	store := &RedisStore{}
+	// Simulates Valkey RESP2 returning score as []byte
+	resp := []interface{}{
+		int64(1),
+		"TestRedis:doc-4",
+		[]interface{}{
+			"score", []byte("0.75"),
+			"request_hash", "jkl012",
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-4", results[0].ID)
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.75, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_NamespaceWithColon(t *testing.T) {
+	store := &RedisStore{}
+	namespace := "ns:team"
+	resp := map[interface{}]interface{}{
+		"results": []interface{}{
+			map[interface{}]interface{}{
+				"id": namespace + ":doc-1",
+				"extra_attributes": map[interface{}]interface{}{
+					"request_hash": "abc123",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, namespace, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-1", results[0].ID)
+}
+
+func TestParseSearchResultIDs(t *testing.T) {
+	t.Run("RESP3 map parses namespace-trimmed ids", func(t *testing.T) {
+		namespace := "ns:team"
+		resp := map[interface{}]interface{}{
+			"results": []interface{}{
+				map[interface{}]interface{}{"id": namespace + ":doc-1"},
+				map[interface{}]interface{}{"id": "other:doc-2"},
+			},
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "other:doc-2"}, ids)
+	})
+
+	t.Run("RESP2 no-content parses ids", func(t *testing.T) {
+		namespace := "ns"
+		resp := []interface{}{
+			int64(2),
+			"ns:doc-1",
+			"ns:doc-2",
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "doc-2"}, ids)
+	})
+
+	t.Run("RESP2 pair payload parses ids", func(t *testing.T) {
+		namespace := "ns"
+		resp := []interface{}{
+			int64(2),
+			"ns:doc-1", []interface{}{"field", "value"},
+			"ns:doc-2", []interface{}{"field", "value"},
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "doc-2"}, ids)
+	})
+}
+
+func TestParseOffsetCursor(t *testing.T) {
+	tests := []struct {
+		name      string
+		cursor    *string
+		want      int
+		errSubstr string
+	}{
+		{
+			name:   "nil cursor",
+			cursor: nil,
+			want:   0,
+		},
+		{
+			name:   "empty cursor",
+			cursor: ptr(""),
+			want:   0,
+		},
+		{
+			name:   "valid positive cursor",
+			cursor: ptr("12"),
+			want:   12,
+		},
+		{
+			name:      "negative cursor errors",
+			cursor:    ptr("-1"),
+			errSubstr: "cannot be negative",
+		},
+		{
+			name:      "cursor overflow errors",
+			cursor:    ptr("2147483648"),
+			errSubstr: "exceeds maximum allowed value",
+		},
+		{
+			name:   "invalid cursor treated as zero",
+			cursor: ptr("not-a-number"),
+			want:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseOffsetCursor(tt.cursor)
+			if tt.errSubstr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
+	fieldTypes := map[string]VectorStorePropertyType{
+		"size": VectorStorePropertyTypeInteger,
+		"type": VectorStorePropertyTypeString,
+	}
+
+	tests := []struct {
+		name     string
+		query    Query
+		expected string
+	}{
+		{
+			name: "numeric equal uses range syntax for integer field",
+			query: Query{
+				Field:    "size",
+				Operator: QueryOperatorEqual,
+				Value:    1024,
+			},
+			expected: "@size:[1024 1024]",
+		},
+		{
+			name: "numeric not equal uses negative range syntax for integer field",
+			query: Query{
+				Field:    "size",
+				Operator: QueryOperatorNotEqual,
+				Value:    1024,
+			},
+			expected: "-@size:[1024 1024]",
+		},
+		{
+			name: "string field equal remains tag syntax",
+			query: Query{
+				Field:    "type",
+				Operator: QueryOperatorEqual,
+				Value:    "pdf",
+			},
+			expected: "@type:{pdf}",
+		},
+		{
+			name: "unknown field with numeric literal falls back to numeric range",
+			query: Query{
+				Field:    "unknown_field",
+				Operator: QueryOperatorEqual,
+				Value:    7,
+			},
+			expected: "@unknown_field:[7 7]",
+		},
+		{
+			name: "known non-numeric field with numeric literal remains tag",
+			query: Query{
+				Field:    "type",
+				Operator: QueryOperatorEqual,
+				Value:    7,
+			},
+			expected: "@type:{7}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRedisQueryCondition(tt.query, fieldTypes)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func ptr(v string) *string {
+	return bifrost.Ptr(v)
+}
+
+func TestMatchesQueriesForScan(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]interface{}
+		queries    []Query
+		expected   bool
+	}{
+		// GreaterThan
+		{
+			name:       "GreaterThan true",
+			properties: map[string]interface{}{"size": "1024"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThan false",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "GreaterThan equal value is false",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		// LessThan
+		{
+			name:       "LessThan true",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThan false",
+			properties: map[string]interface{}{"size": "1024"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "LessThan equal value is false",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		// GreaterThanOrEqual
+		{
+			name:       "GreaterThanOrEqual boundary true",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThanOrEqual above true",
+			properties: map[string]interface{}{"size": "1001"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThanOrEqual below false",
+			properties: map[string]interface{}{"size": "999"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// LessThanOrEqual
+		{
+			name:       "LessThanOrEqual boundary true",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThanOrEqual below true",
+			properties: map[string]interface{}{"size": "999"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThanOrEqual above false",
+			properties: map[string]interface{}{"size": "1001"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// Non-numeric value
+		{
+			name:       "Non-numeric string returns false for GreaterThan",
+			properties: map[string]interface{}{"size": "not-a-number"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "Non-numeric string returns false for LessThan",
+			properties: map[string]interface{}{"size": "abc"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		// Missing field
+		{
+			name:       "Missing field returns false for GreaterThan",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "Missing field returns false for LessThanOrEqual",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// Float values
+		{
+			name:       "Float GreaterThan",
+			properties: map[string]interface{}{"score": "0.95"},
+			queries:    []Query{{Field: "score", Operator: QueryOperatorGreaterThan, Value: 0.5}},
+			expected:   true,
+		},
+		{
+			name:       "Float LessThan",
+			properties: map[string]interface{}{"score": "0.3"},
+			queries:    []Query{{Field: "score", Operator: QueryOperatorLessThan, Value: 0.5}},
+			expected:   true,
+		},
+		// Multiple queries combined
+		{
+			name:       "Multiple numeric queries all match",
+			properties: map[string]interface{}{"size": "500", "count": "10"},
+			queries: []Query{
+				{Field: "size", Operator: QueryOperatorGreaterThan, Value: 100},
+				{Field: "count", Operator: QueryOperatorLessThanOrEqual, Value: 10},
+			},
+			expected: true,
+		},
+		{
+			name:       "Multiple numeric queries one fails",
+			properties: map[string]interface{}{"size": "500", "count": "20"},
+			queries: []Query{
+				{Field: "size", Operator: QueryOperatorGreaterThan, Value: 100},
+				{Field: "count", Operator: QueryOperatorLessThanOrEqual, Value: 10},
+			},
+			expected: false,
+		},
+		// Empty queries
+		{
+			name:       "No queries matches everything",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{},
+			expected:   true,
+		},
+		// ContainsAny / ContainsAll
+		{
+			name:       "ContainsAny true with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"green", "blue"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAny false with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"green", "yellow"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAll true with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\",\"green\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAll false with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAny true with scalar string property",
+			properties: map[string]interface{}{"tags": "red"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"red", "green"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAll false with scalar string property",
+			properties: map[string]interface{}{"tags": "red"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAny malformed query value returns false",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: "red"}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAll missing field returns false",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red"}}},
+			expected:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := matchesQueriesForScan(tt.properties, tt.queries)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // ============================================================================
 // INTEGRATION TESTS (require real Redis instance with RediSearch)
 // ============================================================================
@@ -391,6 +1085,27 @@ func TestRedisStore_FilteringScenarios(t *testing.T) {
 		assert.Len(t, results, 2) // doc1 (1024) and doc2 (2048)
 	})
 
+	t.Run("Filter by numeric equality", func(t *testing.T) {
+		queries := []Query{
+			{Field: "size", Operator: QueryOperatorEqual, Value: 1024},
+		}
+
+		results, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, queries, filterFields, nil, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "1024", results[0].Properties["size"])
+	})
+
+	t.Run("Filter by numeric inequality", func(t *testing.T) {
+		queries := []Query{
+			{Field: "size", Operator: QueryOperatorNotEqual, Value: 1024},
+		}
+
+		results, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, queries, filterFields, nil, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 3)
+	})
+
 	t.Run("Filter by boolean", func(t *testing.T) {
 		queries := []Query{
 			{Field: "public", Operator: QueryOperatorEqual, Value: true},
@@ -436,6 +1151,29 @@ func TestRedisStore_FilteringScenarios(t *testing.T) {
 			require.NoError(t, err)
 			assert.LessOrEqual(t, len(nextResults), 2)
 			t.Logf("First page: %d results, Next page: %d results", len(results), len(nextResults))
+		}
+	})
+
+	t.Run("Scan fallback pagination is deterministic", func(t *testing.T) {
+		firstPage, cursor, err := setup.Store.getAllByScan(setup.ctx, TestNamespace, nil, filterFields, nil, 2)
+		require.NoError(t, err)
+		require.Len(t, firstPage, 2)
+		require.NotNil(t, cursor)
+
+		secondPage, _, err := setup.Store.getAllByScan(setup.ctx, TestNamespace, nil, filterFields, cursor, 2)
+		require.NoError(t, err)
+		require.Len(t, secondPage, 2)
+
+		combined := append(firstPage, secondPage...)
+		for i := 1; i < len(combined); i++ {
+			assert.LessOrEqual(t, combined[i-1].ID, combined[i].ID)
+		}
+
+		seen := make(map[string]struct{}, len(combined))
+		for _, result := range combined {
+			_, exists := seen[result.ID]
+			assert.False(t, exists, "duplicate id across pages: %s", result.ID)
+			seen[result.ID] = struct{}{}
 		}
 	})
 }
@@ -738,6 +1476,84 @@ func TestRedisStore_DeleteOperations(t *testing.T) {
 		assert.Len(t, allResults, 1) // Only the "keep_me" item should remain
 		assert.Equal(t, "keep_me", allResults[0].Properties["type"])
 	})
+
+	t.Run("DeleteAll with more than BatchLimit matches", func(t *testing.T) {
+		const deleteCount = BatchLimit + 23
+		for i := 0; i < deleteCount; i++ {
+			err := setup.Store.Add(
+				setup.ctx,
+				TestNamespace,
+				generateUUID(),
+				generateTestEmbedding(RedisTestDimension),
+				map[string]interface{}{"type": "delete_me_large", "category": "test"},
+			)
+			require.NoError(t, err)
+		}
+
+		keepID := generateUUID()
+		err := setup.Store.Add(
+			setup.ctx,
+			TestNamespace,
+			keepID,
+			generateTestEmbedding(RedisTestDimension),
+			map[string]interface{}{"type": "keep_large", "category": "test"},
+		)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		deleteQuery := []Query{
+			{Field: "type", Operator: QueryOperatorEqual, Value: "delete_me_large"},
+		}
+		beforeDelete, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, deleteQuery, []string{"type"}, nil, 0)
+		require.NoError(t, err)
+		require.Len(t, beforeDelete, deleteCount)
+
+		deleteResults, err := setup.Store.DeleteAll(setup.ctx, TestNamespace, deleteQuery)
+		require.NoError(t, err)
+		assert.Len(t, deleteResults, deleteCount)
+
+		afterDelete, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, deleteQuery, []string{"type"}, nil, 0)
+		require.NoError(t, err)
+		assert.Len(t, afterDelete, 0)
+
+		keepDoc, err := setup.Store.GetChunk(setup.ctx, TestNamespace, keepID)
+		require.NoError(t, err)
+		assert.Equal(t, "keep_large", keepDoc.Properties["type"])
+	})
+
+	t.Run("getAllMatchingIDs returns matching ids", func(t *testing.T) {
+		targetType := "ids_only_target"
+		for i := 0; i < 3; i++ {
+			err := setup.Store.Add(
+				setup.ctx,
+				TestNamespace,
+				generateUUID(),
+				generateTestEmbedding(RedisTestDimension),
+				map[string]interface{}{"type": targetType, "category": "test"},
+			)
+			require.NoError(t, err)
+		}
+		err := setup.Store.Add(
+			setup.ctx,
+			TestNamespace,
+			generateUUID(),
+			generateTestEmbedding(RedisTestDimension),
+			map[string]interface{}{"type": "ids_only_other", "category": "test"},
+		)
+		require.NoError(t, err)
+
+		time.Sleep(300 * time.Millisecond)
+
+		ids, err := setup.Store.getAllMatchingIDs(setup.ctx, TestNamespace, []Query{
+			{Field: "type", Operator: QueryOperatorEqual, Value: targetType},
+		})
+		require.NoError(t, err)
+		assert.Len(t, ids, 3)
+		for _, id := range ids {
+			assert.NotEmpty(t, id)
+		}
+	})
 }
 
 // ============================================================================
@@ -852,6 +1668,7 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		// Step 2: Delete the namespace
 		err = setup.Store.DeleteNamespace(setup.ctx, testNamespace)
 		require.NoError(t, err)
+		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 
 		// Step 3: Create namespace with same name but different dimension - should not crash
 		err = setup.Store.CreateNamespace(setup.ctx, testNamespace, 1024, properties)
@@ -883,5 +1700,6 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		if err != nil {
 			t.Logf("Warning: Failed to cleanup namespace: %v", err)
 		}
+		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 	})
 }

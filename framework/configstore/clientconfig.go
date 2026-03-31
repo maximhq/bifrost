@@ -36,26 +36,31 @@ type EnvKeyInfo struct {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
-	DropExcessRequests      bool                             `json:"drop_excess_requests"`    // Drop excess requests if the provider queue is full
-	InitialPoolSize         int                              `json:"initial_pool_size"`       // The initial pool size for the bifrost client
-	PrometheusLabels        []string                         `json:"prometheus_labels"`       // The labels to be used for prometheus metrics
-	EnableLogging           bool                             `json:"enable_logging"`          // Enable logging of requests and responses
-	DisableContentLogging   bool                             `json:"disable_content_logging"` // Disable logging of content
-	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
-	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceGovernanceHeader bool                             `json:"enforce_governance_header"`           // Enforce governance on all requests
-	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
-	AllowedOrigins          []string                         `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	AllowedHeaders          []string                         `json:"allowed_headers,omitempty"`           // Additional allowed headers for CORS and WebSocket
-	MaxRequestBodySizeMB    int                              `json:"max_request_body_size_mb"`            // The maximum request body size in MB
-	EnableLiteLLMFallbacks  bool                             `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
-	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
-	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
-	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
-	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
-	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
-	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
+	DropExcessRequests              bool                             `json:"drop_excess_requests"`    // Drop excess requests if the provider queue is full
+	InitialPoolSize                 int                              `json:"initial_pool_size"`       // The initial pool size for the bifrost client
+	PrometheusLabels                []string                         `json:"prometheus_labels"`       // The labels to be used for prometheus metrics
+	EnableLogging                   *bool                            `json:"enable_logging"`          // Enable logging of requests and responses
+	DisableContentLogging           bool                             `json:"disable_content_logging"` // Disable logging of content
+	DisableDBPingsInHealth          bool                             `json:"disable_db_pings_in_health"`
+	LogRetentionDays                int                              `json:"log_retention_days" validate:"min=1"`  // Number of days to retain logs (minimum 1 day)
+	EnforceAuthOnInference          bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceGovernanceHeader         bool                             `json:"enforce_governance_header,omitempty"`  // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth                 bool                             `json:"enforce_scim_auth,omitempty"`          // Deprecated: use EnforceAuthOnInference
+	AllowDirectKeys                 bool                             `json:"allow_direct_keys"`                    // Allow direct keys to be used for requests
+	AllowedOrigins                  []string                         `json:"allowed_origins,omitempty"`            // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	AllowedHeaders                  []string                         `json:"allowed_headers,omitempty"`            // Additional allowed headers for CORS and WebSocket
+	MaxRequestBodySizeMB            int                              `json:"max_request_body_size_mb"`             // The maximum request body size in MB
+	EnableLiteLLMFallbacks          bool                             `json:"enable_litellm_fallbacks"`             // Enable litellm-specific fallbacks for text completion for Groq
+	MCPAgentDepth                   int                              `json:"mcp_agent_depth"`                      // The maximum depth for MCP agent mode tool execution
+	MCPToolExecutionTimeout         int                              `json:"mcp_tool_execution_timeout"`           // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel         string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval             int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	HeaderFilterConfig              *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
+	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
+	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -70,7 +75,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("dropExcessRequests:false"))
 	}
 
-	if c.EnableLogging {
+	enableLogging := c.EnableLogging == nil || *c.EnableLogging
+	if enableLogging {
 		hash.Write([]byte("enableLogging:true"))
 	} else {
 		hash.Write([]byte("enableLogging:false"))
@@ -88,16 +94,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("disableDBPingsInHealth:false"))
 	}
 
-	if c.EnableGovernance {
-		hash.Write([]byte("enableGovernance:true"))
+	if c.EnforceAuthOnInference {
+		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
-		hash.Write([]byte("enableGovernance:false"))
-	}
-
-	if c.EnforceGovernanceHeader {
-		hash.Write([]byte("enforceGovernanceHeader:true"))
-	} else {
-		hash.Write([]byte("enforceGovernanceHeader:false"))
+		hash.Write([]byte("enforceAuthOnInference:false"))
 	}
 
 	if c.AllowDirectKeys {
@@ -110,6 +110,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableLiteLLMFallbacks:true"))
 	} else {
 		hash.Write([]byte("enableLiteLLMFallbacks:false"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn.
+	if c.HideDeletedVirtualKeysInFilters {
+		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
 	}
 
 	if c.MCPAgentDepth > 0 {
@@ -134,6 +139,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
 	} else {
 		hash.Write([]byte("mcpToolSyncInterval:0"))
+	}
+
+	if c.AsyncJobResultTTL > 0 {
+		hash.Write([]byte("asyncJobResultTTL:" + strconv.Itoa(c.AsyncJobResultTTL)))
+	} else {
+		hash.Write([]byte("asyncJobResultTTL:0"))
 	}
 
 	// Hash integer fields
@@ -191,6 +202,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash RequiredHeaders (sorted for deterministic hashing)
+	if len(c.RequiredHeaders) > 0 {
+		sortedRequired := make([]string, len(c.RequiredHeaders))
+		copy(sortedRequired, c.RequiredHeaders)
+		sort.Strings(sortedRequired)
+		data, err := sonic.Marshal(sortedRequired)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("requiredHeaders:"))
+		hash.Write(data)
+	}
+
 	// Hash HeaderFilterConfig
 	if c.HeaderFilterConfig != nil {
 		// Hash Allowlist (sorted for deterministic hashing)
@@ -231,7 +255,10 @@ type ProviderConfig struct {
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -240,12 +267,19 @@ type ProviderConfig struct {
 // Redacted returns a redacted copy of the provider configuration.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
 	// Create redacted config with same structure but redacted values
+	var redactedNetworkConfig *schemas.NetworkConfig
+	if p.NetworkConfig != nil {
+		redactedNetworkConfig = p.NetworkConfig.Redacted()
+	}
 	redactedConfig := ProviderConfig{
-		NetworkConfig:            p.NetworkConfig,
+		NetworkConfig:            redactedNetworkConfig,
 		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
+		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
+		OpenAIConfig:             p.OpenAIConfig,
+		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -262,12 +296,17 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		if models == nil {
 			models = []string{} // Ensure models is never nil in JSON response
 		}
+		blacklistedModels := key.BlacklistedModels
+		if blacklistedModels == nil {
+			blacklistedModels = []string{} // Match models: empty JSON array, not null
+		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:         key.ID,
-			Name:       key.Name,
-			Models:     models,
-			Weight:     key.Weight,
-			ConfigHash: key.ConfigHash,
+			ID:                key.ID,
+			Name:              key.Name,
+			Models:            models,
+			BlacklistedModels: blacklistedModels,
+			Weight:            key.Weight,
+			ConfigHash:        key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -335,6 +374,15 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.ARN != nil {
 				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
 			}
+			if key.BedrockKeyConfig.RoleARN != nil {
+				bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
+			}
+			if key.BedrockKeyConfig.ExternalID != nil {
+				bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
+			}
+			if key.BedrockKeyConfig.RoleSessionName != nil {
+				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
+			}
 			// Add back s3 config
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
@@ -347,6 +395,14 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				Deployments: key.ReplicateKeyConfig.Deployments,
 			}
 			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
+		}
+
+		if key.VLLMKeyConfig != nil {
+			vllmConfig := &schemas.VLLMKeyConfig{
+				ModelName: key.VLLMKeyConfig.ModelName,
+			}
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
 	}
 	return &redactedConfig
@@ -397,6 +453,24 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash OpenAIConfig
+	if p.OpenAIConfig != nil {
+		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PricingOverrides
+	if p.PricingOverrides != nil {
+		data, err := sonic.Marshal(p.PricingOverrides)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -405,6 +479,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash SendBackRawResponse
 	if p.SendBackRawResponse {
 		hash.Write([]byte("sendBackRawResponse"))
+	}
+
+	// Hash StoreRawRequestResponse
+	if p.StoreRawRequestResponse {
+		hash.Write([]byte("storeRawRequestResponse"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -417,11 +496,11 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value
+	// Hash Value (prefix with source type to prevent collisions between env and literal)
 	if key.Value.IsFromEnv() {
-		hash.Write([]byte(key.Value.EnvVar))
+		hash.Write([]byte("env:" + key.Value.EnvVar))
 	} else {
-		hash.Write([]byte(key.Value.Val))
+		hash.Write([]byte("val:" + key.Value.Val))
 	}
 	// Hash Models (key-level model restrictions)
 	if len(key.Models) > 0 {
@@ -432,6 +511,18 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+	// Hash BlacklistedModels (key-level deny list)
+	if len(key.BlacklistedModels) > 0 {
+		sortedBlacklistedModels := make([]string, len(key.BlacklistedModels))
+		copy(sortedBlacklistedModels, key.BlacklistedModels)
+		sort.Strings(sortedBlacklistedModels)
+		data, err := sonic.Marshal(sortedBlacklistedModels)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("blacklistedModels:"))
 		hash.Write(data)
 	}
 	// Hash Weight
@@ -467,6 +558,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash ReplicateKeyConfig
 	if key.ReplicateKeyConfig != nil {
 		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash VLLMKeyConfig
+	if key.VLLMKeyConfig != nil {
+		data, err := sonic.Marshal(key.VLLMKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -788,6 +887,24 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 
 // GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
 // This is used to detect changes to routing rules between config.json and database.
+// routingTargetHashPayload is a canonical struct for hashing a routing target.
+// Used to ensure deterministic hashes regardless of slice order.
+// Fields use plain string (not *string) so nil and "" both marshal to "" and produce the same hash.
+type routingTargetHashPayload struct {
+	Provider string  `json:"provider"`
+	Model    string  `json:"model"`
+	KeyID    string  `json:"key_id"`
+	Weight   float64 `json:"weight"`
+}
+
+// derefStr returns the dereferenced value of s, or "" if s is nil.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // Skips: CreatedAt, UpdatedAt (dynamic fields)
 func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	hash := sha256.New()
@@ -811,11 +928,30 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash CelExpression
 	hash.Write([]byte(r.CelExpression))
 
-	// Hash Provider
-	hash.Write([]byte(r.Provider))
-
-	// Hash Model
-	hash.Write([]byte(r.Model))
+	// Hash Targets: sort by canonical marshaled payload for determinism, then hash each target as a single blob
+	targets := make([]tables.TableRoutingTarget, len(r.Targets))
+	copy(targets, r.Targets)
+	sort.Slice(targets, func(i, j int) bool {
+		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
+		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
+		di, err := sonic.Marshal(pi)
+		if err != nil {
+			return false
+		}
+		dj, err := sonic.Marshal(pj)
+		if err != nil {
+			return false
+		}
+		return string(di) < string(dj)
+	})
+	for _, t := range targets {
+		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
+		data, err := sonic.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 
 	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
 	if r.Fallbacks != nil {

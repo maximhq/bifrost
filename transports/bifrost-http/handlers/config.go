@@ -48,7 +48,7 @@ type ConfigManager interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
-	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
@@ -110,27 +110,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to fetch framework config from db: %v", err))
 			return
 		}
-		if fc != nil {
-			mapConfig["framework_config"] = *fc
-		} else {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
-			}
-		}
+		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(fc, nil)
+		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
 		mapConfig["client_config"] = h.store.ClientConfig
-		if h.store.FrameworkConfig == nil {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
-			}
-		} else if h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.PricingURL != nil {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          h.store.FrameworkConfig.Pricing.PricingURL,
-				PricingSyncInterval: bifrost.Ptr(int64((*h.store.FrameworkConfig.Pricing.PricingSyncInterval).Seconds())),
-			}
-		}
+		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
+		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
 	if h.store.ConfigStore != nil {
 		// Fetching governance config
@@ -323,28 +308,26 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.InitialPoolSize = payload.ClientConfig.InitialPoolSize
 	}
 
-	if payload.ClientConfig.EnableLogging != currentConfig.EnableLogging {
-		restartReasons = append(restartReasons, "Logging enabled")
+	if payload.ClientConfig.EnableLogging != nil {
+		payloadLogging := *payload.ClientConfig.EnableLogging
+		currentLogging := currentConfig.EnableLogging == nil || *currentConfig.EnableLogging
+		if payloadLogging != currentLogging {
+			restartReasons = append(restartReasons, "Logging changed")
+		}
+		updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 	}
-	updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
 
 	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
 		restartReasons = append(restartReasons, "Content logging")
 	}
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
-
-	if payload.ClientConfig.EnableGovernance != currentConfig.EnableGovernance {
-		restartReasons = append(restartReasons, "Governance enabled")
-	}
-	updatedConfig.EnableGovernance = payload.ClientConfig.EnableGovernance
-	if !payload.ClientConfig.EnableGovernance {
-		// If governance is disabled, we will disable the enforcement of the governance header
-		updatedConfig.EnforceGovernanceHeader = false
-	} else {
-		updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceGovernanceHeader
-	}
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
+	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	// Sync deprecated columns to match new field so they stay consistent in the DB
+	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
 
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value
 	if payload.ClientConfig.MaxRequestBodySizeMB > 0 {
@@ -358,12 +341,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.EnableLiteLLMFallbacks != currentConfig.EnableLiteLLMFallbacks {
 		if payload.ClientConfig.EnableLiteLLMFallbacks {
 			// Load and register the litellmcompat plugin
-			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}); err != nil {
+			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}, nil, nil); err != nil {
 				logger.Warn(fmt.Sprintf("failed to load litellmcompat plugin: %v", err))
 			}
 		} else {
 			// Remove the litellmcompat plugin
-			disabledCtx := context.WithValue(ctx, "isDisabled", true)
+			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
 			if err := h.configManager.RemovePlugin(disabledCtx, "litellmcompat"); err != nil {
 				logger.Warn("failed to remove litellmcompat plugin: %v", err)
 			}
@@ -381,6 +364,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
 		updatedConfig.MCPCodeModeBindingLevel = payload.ClientConfig.MCPCodeModeBindingLevel
 	}
+
+	// Only update AsyncJobResultTTL if explicitly provided (> 0) to avoid clearing stored value
+	if payload.ClientConfig.AsyncJobResultTTL > 0 {
+		updatedConfig.AsyncJobResultTTL = payload.ClientConfig.AsyncJobResultTTL
+	}
+
+	// Handle RequiredHeaders changes (no restart needed - governance plugin reads via pointer)
+	updatedConfig.RequiredHeaders = payload.ClientConfig.RequiredHeaders
+
+	// Handle LoggingHeaders changes (no restart needed - logging plugin reads via pointer)
+	updatedConfig.LoggingHeaders = payload.ClientConfig.LoggingHeaders
+
+	// Toggle whether deleted virtual keys should appear in logs filter data.
+	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
@@ -511,10 +508,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				authChanged = true
 			}
 		} else {
-			// Compare with existing config
+			// Compare with existing config using value comparison (not pointer comparison)
+			// Password is considered changed only if it's NOT redacted and has a value
+			// (IsRedacted() returns true for <redacted>, asterisk patterns, and env var references)
+			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
+				!payload.AuthConfig.AdminPassword.IsRedacted() &&
+				payload.AuthConfig.AdminPassword.GetValue() != ""
+			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
+				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
-				payload.AuthConfig.AdminUserName != authConfig.AdminUserName ||
-				(payload.AuthConfig.AdminPassword.IsRedacted() && payload.AuthConfig.AdminPassword.GetValue() != "") {
+				usernameChanged ||
+				passwordChanged {
 				authChanged = true
 			}
 		}
@@ -790,26 +794,63 @@ func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) b
 	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Denylist, b.Denylist)
 }
 
-// validateHeaderFilterConfig validates that no security headers are in the allowlist or denylist
-// Returns an error if any security headers are found
+// validateHeaderFilterConfig validates that no exact security header names are in the allowlist or denylist
+// and that wildcard patterns use valid syntax (only trailing * is supported).
+// Wildcard patterns that would match security headers are allowed because security headers
+// are unconditionally stripped at runtime regardless of configuration.
+// Returns an error if any exact security headers are found or patterns are invalid.
 func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConfig) error {
 	if config == nil {
 		return nil
 	}
 
+	// Validate pattern syntax and normalize entries (trim, lowercase, drop empties)
+	filteredAllow := config.Allowlist[:0]
+	for _, header := range config.Allowlist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		if h == "" {
+			continue
+		}
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+		filteredAllow = append(filteredAllow, h)
+	}
+	config.Allowlist = filteredAllow
+	filteredDeny := config.Denylist[:0]
+	for _, header := range config.Denylist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		if h == "" {
+			continue
+		}
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+		filteredDeny = append(filteredDeny, h)
+	}
+	config.Denylist = filteredDeny
+
 	var foundSecurityHeaders []string
 
-	// Check allowlist for security headers
+	// Check allowlist for exact security header names.
+	// Wildcard patterns are allowed — security headers are always stripped at runtime
+	// unconditionally in ctx.go, regardless of allowlist/denylist configuration.
 	for _, header := range config.Allowlist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}
 	}
 
-	// Check denylist for security headers
+	// Check denylist for exact security header names.
 	for _, header := range config.Denylist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}

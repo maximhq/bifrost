@@ -2,12 +2,24 @@ package gemini
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// contentBlockMeta stores type and length of a content block for multi-turn reconstruction.
+type contentBlockMeta struct {
+	T string `json:"t"` // "thinking" or "text"
+	L int    `json:"l"` // length in UTF-8 bytes
+}
+
+// orderedTextPart tracks original Gemini part ordering for correct flattening.
+type orderedTextPart struct {
+	kind string // "thinking" or "text"
+	text string
+}
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
 func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *GeminiGenerationRequest {
@@ -24,7 +36,6 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		geminiReq.GenerationConfig = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
-
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
 			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
@@ -60,14 +71,12 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 			}
 		}
 	}
-
 	// Convert chat completion messages to Gemini format
 	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}
 	geminiReq.Contents = contents
-
 	return geminiReq
 }
 
@@ -102,6 +111,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	var contentBlocks []schemas.ChatContentBlock
 	var reasoningDetails []schemas.ChatReasoningDetails
+	var orderedTextParts []orderedTextPart
 	var contentStr *string
 
 	// Process candidate content to extract text, tool calls, and reasoning
@@ -114,15 +124,16 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type:  schemas.BifrostReasoningDetailsTypeText,
 					Text:  &part.Text,
 				})
+				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "thinking", text: part.Text})
 				continue
 			}
-
 			// Handle regular text
 			if part.Text != "" {
 				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 					Type: schemas.ChatContentBlockTypeText,
 					Text: &part.Text,
 				})
+				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: part.Text})
 				// Add thought signature to reasoning details if present with text
 				if len(part.ThoughtSignature) > 0 {
 					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
@@ -133,18 +144,13 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					})
 				}
 			}
-
 			if part.FunctionCall != nil {
 				function := schemas.ChatAssistantMessageToolCallFunction{
 					Name: &part.FunctionCall.Name,
 				}
 
-				if part.FunctionCall.Args != nil {
-					jsonArgs, err := json.Marshal(part.FunctionCall.Args)
-					if err != nil {
-						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
-					}
-					function.Arguments = string(jsonArgs)
+				if len(part.FunctionCall.Args) > 0 {
+					function.Arguments = string(part.FunctionCall.Args)
 				}
 
 				callID := part.FunctionCall.Name
@@ -197,6 +203,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						Type: schemas.ChatContentBlockTypeText,
 						Text: &output,
 					})
+					orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: output})
 				}
 			}
 
@@ -211,6 +218,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						Type: schemas.ChatContentBlockTypeText,
 						Text: &output,
 					})
+					orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: output})
 				}
 			}
 
@@ -221,6 +229,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					Type: schemas.ChatContentBlockTypeText,
 					Text: &codeContent,
 				})
+				orderedTextParts = append(orderedTextParts, orderedTextPart{kind: "text", text: codeContent})
 			}
 
 			// Handle standalone thought signature (not associated with function call or text)
@@ -239,9 +248,56 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			Role: schemas.ChatMessageRoleAssistant,
 		}
 
-		if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-			contentStr = contentBlocks[0].Text
-			contentBlocks = nil
+		if len(contentBlocks) > 0 {
+			allText := true
+			for _, block := range contentBlocks {
+				if block.Type != schemas.ChatContentBlockTypeText {
+					allText = false
+					break
+				}
+			}
+			if allText {
+				needsCombine := len(contentBlocks) > 1 || len(reasoningDetails) > 0
+				if !needsCombine {
+					// Single text block, no thinking — simple collapse
+					contentStr = contentBlocks[0].Text
+				} else {
+					// Combine thinking + text blocks into a single string, preserving original Gemini part order
+					var parts []string
+					var blockMeta []contentBlockMeta
+
+					for _, op := range orderedTextParts {
+						parts = append(parts, op.text)
+						blockMeta = append(blockMeta, contentBlockMeta{T: op.kind, L: len(op.text)})
+					}
+
+					joined := strings.Join(parts, "\n\n")
+					contentStr = &joined
+
+					// Record boundaries for multi-turn reconstruction
+					if len(blockMeta) > 1 {
+						if metaJSON, err := providerUtils.MarshalSorted(blockMeta); err == nil {
+							metaStr := string(metaJSON)
+							reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+								Index: len(reasoningDetails),
+								Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
+								Text:  &metaStr,
+							})
+						}
+					}
+
+					// Remove thinking text entries from reasoning_details (text moved into contentStr)
+					filtered := reasoningDetails[:0]
+					for _, rd := range reasoningDetails {
+						if rd.Type != schemas.BifrostReasoningDetailsTypeText {
+							rd.Index = len(filtered)
+							filtered = append(filtered, rd)
+						}
+					}
+					reasoningDetails = filtered
+				}
+				contentBlocks = nil
+			}
 		}
 
 		message.Content = &schemas.ChatMessageContent{
@@ -256,12 +312,19 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			}
 		}
 
-		// Convert finish reason to Bifrost format
+		// Convert finish reason to Bifrost format.
+		// Gemini uses "STOP" for both normal text completions and tool call responses —
+		// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
+		// tool calls are present so downstream consumers see a uniform signal.
 		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+		if len(toolCalls) > 0 && finishReason == "stop" {
+			finishReason = "tool_calls"
+		}
 
 		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
 			Index:        0,
 			FinishReason: &finishReason,
+			LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
 			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 				Message: message,
 			},
@@ -274,11 +337,26 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	return bifrostResp
 }
 
+// GeminiStreamState tracks tool-call index across streaming chunks.
+type GeminiStreamState struct {
+	nextToolCallIndex int
+	hadToolCalls      bool // true if any tool calls were seen in this stream
+}
+
+// NewGeminiStreamState returns initialised stream state for one streaming response.
+func NewGeminiStreamState() *GeminiStreamState {
+	return &GeminiStreamState{}
+}
+
 // ToBifrostChatCompletionStream converts a Gemini streaming response to a Bifrost Chat Completion Stream response
 // Returns the response, error (if any), and a boolean indicating if this is the last chunk
-func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *GeminiStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	if response == nil {
 		return nil, nil, false
+	}
+
+	if state == nil {
+		state = NewGeminiStreamState()
 	}
 
 	// Handle empty candidates (filtered/malformed responses)
@@ -345,10 +423,8 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 			case part.FunctionCall != nil:
 				// Function call
 				jsonArgs := ""
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := json.Marshal(part.FunctionCall.Args); err == nil {
-						jsonArgs = string(argsBytes)
-					}
+				if len(part.FunctionCall.Args) > 0 {
+					jsonArgs = string(part.FunctionCall.Args)
 				}
 
 				// Use ID if available, otherwise use function name
@@ -363,8 +439,11 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 					callID = fmt.Sprintf("%s%s%s", callID, thoughtSignatureSeparator, encoded)
 				}
 
+				toolCallIdx := state.nextToolCallIndex
+				state.nextToolCallIndex++
+
 				toolCall := schemas.ChatAssistantMessageToolCall{
-					Index: uint16(len(toolCalls)),
+					Index: uint16(toolCallIdx),
 					Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
 					ID:    &callID,
 					Function: schemas.ChatAssistantMessageToolCallFunction{
@@ -437,6 +516,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 		// Set tool calls if present
 		if len(toolCalls) > 0 {
 			delta.ToolCalls = toolCalls
+			state.hadToolCalls = true
 		}
 	}
 
@@ -450,12 +530,18 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 	var finishReason *string
 	if isLastChunk && candidate.FinishReason != "" {
 		reason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+		// Gemini uses "STOP" for both text completions and tool call responses.
+		// Override to "tool_calls" when tool calls were seen in this stream for uniformity.
+		if (len(delta.ToolCalls) > 0 || state.hadToolCalls) && reason == "stop" {
+			reason = "tool_calls"
+		}
 		finishReason = &reason
 	}
 
 	choice := schemas.BifrostResponseChoice{
 		Index:        int(candidate.Index),
 		FinishReason: finishReason,
+		LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
 		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 			Delta: delta,
 		},

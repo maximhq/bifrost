@@ -37,6 +37,7 @@ const apiKeys = {
   Google: !!process.env.GEMINI_API_KEY,
   Bedrock: !!process.env.AWS_ACCESS_KEY_ID,
   Cohere: !!process.env.COHERE_API_KEY,
+  Azure: !!process.env.AZURE_API_KEY,
 }
 
 console.log('\n🔑 Available API Keys:')

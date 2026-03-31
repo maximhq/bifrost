@@ -48,8 +48,26 @@ Bifrost config can come from two sources simultaneously. Terraform variables ove
 1. **File-based**: Set `config_json_file` to a path or `config_json` to a raw JSON string.
 2. **Variable-based**: Set individual variables (`config_store`, `logs_store`, `providers_config`, `auth_config`, etc.) corresponding to top-level keys in [config.schema.json](../transports/config.schema.json).
 
-All 16 top-level config properties from the schema are supported as variables:
-`encryption_key`, `auth_config`, `client`, `framework`, `providers_config`, `governance`, `mcp`, `vector_store`, `config_store`, `logs_store`, `cluster_config`, `saml_config`, `load_balancer_config`, `guardrails_config`, `plugins`, `audit_logs`.
+All 18 top-level config properties from the schema are supported as variables:
+`encryption_key`, `auth_config`, `client`, `framework`, `providers_config`, `governance`, `mcp`, `vector_store`, `config_store`, `logs_store`, `cluster_config`, `saml_config`, `load_balancer_config`, `guardrails_config`, `plugins`, `audit_logs`, `websocket`.
+
+## Provider Configuration
+
+You only need to configure the Terraform providers for the cloud you are deploying to. For example, deploying to AWS ECS only requires the `aws` provider -- you do not need to configure `google`, `azurerm`, or `kubernetes`.
+
+See the [module README](modules/bifrost/README.md#provider-configuration) for provider configuration examples per cloud.
+
+## Testing
+
+The module includes native Terraform tests (requires Terraform >= 1.7) that run with mocked providers -- no cloud credentials needed:
+
+```bash
+cd modules/bifrost
+terraform init
+terraform test
+```
+
+Tests cover all 7 deployment targets across 10 test files. See the [module README](modules/bifrost/README.md#testing) for details.
 
 ## Directory Structure
 

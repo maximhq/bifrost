@@ -1,9 +1,9 @@
 "use client";
 
-import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import ConfirmDeletePluginDialog from "@/app/workspace/plugins/dialogs/confirmDeletePluginDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -315,7 +315,7 @@ export default function PluginsView(props: Props) {
 						)}
 					</div>
 
-					<div className="flex justify-between gap-2">
+					<div className="flex flex-wrap justify-end gap-2">
 						<Button
 							className="border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive"
 							type="button"
@@ -326,15 +326,13 @@ export default function PluginsView(props: Props) {
 							<Trash2Icon className="h-4 w-4" />
 							Delete Plugin
 						</Button>
-						<div className="flex gap-2">
-							<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!form.formState.isDirty || !hasUpdatePluginAccess}>
-								Reset
-							</Button>
-							<Button type="submit" disabled={isLoading || !form.formState.isDirty || !hasUpdatePluginAccess}>
-								<SaveIcon className="h-4 w-4" />
-								{isLoading ? "Saving..." : "Save Changes"}
-							</Button>
-						</div>
+						<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!form.formState.isDirty || !hasUpdatePluginAccess}>
+							Reset
+						</Button>
+						<Button type="submit" disabled={isLoading || !form.formState.isDirty || !hasUpdatePluginAccess}>
+							<SaveIcon className="h-4 w-4" />
+							{isLoading ? "Saving..." : "Save Changes"}
+						</Button>
 					</div>
 				</form>
 			</Form>

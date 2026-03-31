@@ -23,6 +23,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Image Variation | ✅ | - | `/v1/images/variations` |
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
+| Video Generation | ✅ | - | `/v1/videos` |
 | List Models | ✅ | - | `/v1/models` |
 
 ---
@@ -458,6 +459,37 @@ Operations:
 # 12. List Models
 
 GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost responses are prefixed with `openai/` (e.g., `openai/gpt-4o`). Results are aggregated from all configured API keys. No request body or parameters required.
+
+---
+
+# 13. Video Generation
+
+## Generate (`POST /v1/videos`)
+
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | e.g., `sora-2` |
+| `prompt` | string | ✅ | Text description of the video |
+| `input_reference` | string | ❌ | Input image for image-to-video. **Must be a base64 data URL** (e.g., `data:image/png;base64,...`). Plain URLs are not accepted. |
+| `seconds` | string | ❌ | Duration in seconds |
+| `size` | string | ❌ | Resolution: `720x1280` (default), `1280x720`, `1024x1792`, `1792x1024` |
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `model`, `prompt`, `created_at`
+
+**Job Statuses**: `queued` → `in_progress` → `completed` / `failed`
+
+## Retrieve / Download / Delete / List / Remix
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed` |
+| Download | `GET /v1/videos/{id}/content` | Returns raw video bytes |
+| Delete | `DELETE /v1/videos/{id}` | Removes video job |
+| List jobs | `GET /v1/videos` | Query params: `after`, `limit`, `order` |
+| Remix | `POST /v1/videos/{id}/remix` | Body: `{"prompt": "..."}` |
 
 ---
 

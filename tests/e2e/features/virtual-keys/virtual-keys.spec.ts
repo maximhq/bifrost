@@ -114,6 +114,13 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      // Verify budget was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const budgetInput = virtualKeysPage.page.locator('#budgetMaxLimit')
+      await expect(budgetInput).toHaveValue(String(SAMPLE_BUDGETS.small.maxLimit))
+      await virtualKeysPage.closeSheet()
     })
 
     test('should create virtual key with medium budget', async ({ virtualKeysPage }) => {
@@ -152,6 +159,13 @@ test.describe('Virtual Keys', () => {
 
       const vkExists = await virtualKeysPage.virtualKeyExists(vkData.name)
       expect(vkExists).toBe(true)
+
+      // Verify rate limit was saved correctly
+      await virtualKeysPage.viewVirtualKey(vkData.name)
+      await virtualKeysPage.waitForSheetAnimation()
+      const tokenLimitInput = virtualKeysPage.page.locator('#tokenMaxLimit')
+      await expect(tokenLimitInput).toHaveValue(String(SAMPLE_RATE_LIMITS.tokenOnly.tokenMaxLimit))
+      await virtualKeysPage.closeSheet()
     })
 
     test('should create virtual key with request rate limit', async ({ virtualKeysPage }) => {
@@ -320,8 +334,10 @@ test.describe('Virtual Key Management', () => {
     // Click to view details
     await virtualKeysPage.viewVirtualKey(vkName)
 
-    // Detail sheet should be visible
+    // Detail sheet should be visible with correct content
     await expect(virtualKeysPage.sheet).toBeVisible()
+    await expect(virtualKeysPage.nameInput).toHaveValue(vkName)
+    await expect(virtualKeysPage.descriptionInput).toHaveValue('Detailed description for viewing')
 
     // Close the sheet (will be handled by afterEach if not)
     await virtualKeysPage.closeSheet()
@@ -334,10 +350,12 @@ test.describe('Virtual Key Management', () => {
     managementVKs.push(vkName)
     await virtualKeysPage.createVirtualKey(vkData)
 
-    // Copy the key value
+    // Copy the key value - method waits for success toast
     await virtualKeysPage.copyVirtualKeyValue(vkName)
 
-    // Should show success toast (assertion in the method)
+    // Verify copy succeeded: row still exists and key is intact
+    const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
+    expect(vkExists).toBe(true)
   })
 
   test('should toggle key visibility', async ({ virtualKeysPage }) => {
@@ -347,39 +365,62 @@ test.describe('Virtual Key Management', () => {
     managementVKs.push(vkName)
     await virtualKeysPage.createVirtualKey(vkData)
 
+    // Initially key is masked
+    let isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(false)
+
     // Toggle visibility (show key)
     await virtualKeysPage.toggleKeyVisibility(vkName)
+    isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(true)
 
     // Toggle again (hide key)
     await virtualKeysPage.toggleKeyVisibility(vkName)
-
-    // Virtual key should still exist
-    const vkExists = await virtualKeysPage.virtualKeyExists(vkName)
-    expect(vkExists).toBe(true)
+    isRevealed = await virtualKeysPage.isKeyRevealed(vkName)
+    expect(isRevealed).toBe(false)
   })
 })
+
+// Track VKs created in Virtual Keys Table tests for cleanup
+const tableTestVKs: string[] = []
 
 test.describe('Virtual Keys Table', () => {
   test.beforeEach(async ({ virtualKeysPage }) => {
     await virtualKeysPage.goto()
   })
 
+  test.afterEach(async ({ virtualKeysPage }) => {
+    await virtualKeysPage.closeSheet()
+    if (tableTestVKs.length > 0) {
+      await virtualKeysPage.cleanupVirtualKeys([...tableTestVKs])
+      tableTestVKs.length = 0
+    }
+  })
+
   test('should display virtual keys table', async ({ virtualKeysPage }) => {
+    await virtualKeysPage.page.getByRole('heading', { name: /Virtual Keys/i }).or(virtualKeysPage.emptyState).first().waitFor({ state: 'visible', timeout: 10000 })
+    const hadTable = await virtualKeysPage.table.isVisible().catch(() => false)
+    if (!hadTable) {
+      await expect(virtualKeysPage.emptyState).toBeVisible({ timeout: 10000 })
+    } else {
+      await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
+    }
+    const vkData = createVirtualKeyData({ name: `Table test VK ${Date.now()}`, description: 'For table display test' })
+    tableTestVKs.push(vkData.name)
+    await virtualKeysPage.createVirtualKey(vkData)
     await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
-    // Verify table has the expected column headers
     await expect(virtualKeysPage.table.locator('th', { hasText: 'Name' })).toBeVisible()
     await expect(virtualKeysPage.table.locator('th', { hasText: 'Key' })).toBeVisible()
   })
 
   test('should show empty state when no virtual keys', async ({ virtualKeysPage }) => {
-    // Wait for the table to be visible first so we know the page has loaded
-    await expect(virtualKeysPage.table).toBeVisible({ timeout: 10000 })
-
-    // Delete all existing virtual keys to guarantee empty state
-    await virtualKeysPage.cleanupAllVirtualKeys()
-
-    const emptyMessage = virtualKeysPage.page.getByText('No virtual keys found')
-    await expect(emptyMessage).toBeVisible({ timeout: 10000 })
+    await virtualKeysPage.page.getByRole('heading', { name: /Virtual Keys/i }).or(virtualKeysPage.emptyState).first().waitFor({ state: 'visible', timeout: 10000 })
+    const tableVisible = await virtualKeysPage.table.isVisible().catch(() => false)
+    if (tableVisible) {
+      test.skip(true, 'Pre-existing virtual keys found; empty-state assertion requires isolated data.')
+      return
+    }
+    await expect(virtualKeysPage.emptyState).toBeVisible({ timeout: 10000 })
   })
 })
 

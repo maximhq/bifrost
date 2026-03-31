@@ -77,7 +77,7 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 					ToolChoice: &schemas.ChatToolChoice{
 						ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 							Type: schemas.ChatToolChoiceTypeFunction,
-							Function: schemas.ChatToolChoiceFunction{
+							Function: &schemas.ChatToolChoiceFunction{
 								Name: string(SampleToolTypeTime),
 							},
 						},

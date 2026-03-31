@@ -99,7 +99,7 @@ Use this for Alpine-based deployments or when you want minimal image size.
 
 ```dockerfile
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.22 AS ui-builder
+FROM node:25-alpine3.23 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -114,7 +114,7 @@ RUN npx next build
 RUN node scripts/fix-paths.js
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.25.5-alpine3.22 AS builder
+FROM golang:1.26.1-alpine3.23 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -144,7 +144,7 @@ RUN go build \
 RUN test -f /app/main || (echo "Build failed" && exit 1)
 
 # --- Runtime Stage: Minimal runtime image ---
-FROM alpine:3.22
+FROM alpine:3.23
 WORKDIR /app
 
 # Install runtime dependencies for CGO-enabled dynamic binary
@@ -216,7 +216,7 @@ Use this for Debian/Ubuntu-based deployments or when deploying to glibc-based sy
 
 ```dockerfile
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-bookworm AS ui-builder
+FROM node:25-bookworm AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -231,7 +231,7 @@ RUN npx next build
 RUN node scripts/fix-paths.js
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.25.5-bookworm AS builder
+FROM golang:1.26.1-bookworm AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -381,12 +381,12 @@ error while loading shared libraries: libc.musl-x86_64.so.1: cannot open shared 
 
 | Target Deployment | Build With | Dockerfile Base |
 |-------------------|------------|-----------------|
-| Alpine containers | musl | `golang:1.25.5-alpine3.22` |
-| Debian/Ubuntu containers | glibc | `golang:1.25.5-bookworm` |
-| Ubuntu/Debian servers | glibc | `golang:1.25.5-bookworm` |
+| Alpine containers | musl | `golang:1.26.1-alpine3.23` |
+| Debian/Ubuntu containers | glibc | `golang:1.26.1-bookworm` |
+| Ubuntu/Debian servers | glibc | `golang:1.26.1-bookworm` |
 | RHEL/CentOS servers | glibc | Native build or glibc container |
-| Kubernetes (Alpine) | musl | `golang:1.25.5-alpine3.22` |
-| Kubernetes (Debian) | glibc | `golang:1.25.5-bookworm` |
+| Kubernetes (Alpine) | musl | `golang:1.26.1-alpine3.23` |
+| Kubernetes (Debian) | glibc | `golang:1.26.1-bookworm` |
 
 **Simple rule:** Build with the same base OS family as your deployment target.
 
@@ -399,7 +399,7 @@ Plugins **must** be built with the **exact same environment** as your Bifrost bi
 docker run --rm \
   -v "$PWD:/work" \
   -w /work \
-  golang:1.25.5-alpine3.22 \
+  golang:1.26.1-alpine3.23 \
   sh -c "apk add --no-cache gcc musl-dev && \
          go build -buildmode=plugin -o myplugin.so main.go"
 
@@ -407,7 +407,7 @@ docker run --rm \
 docker run --rm \
   -v "$PWD:/work" \
   -w /work \
-  golang:1.25.5-bookworm \
+  golang:1.26.1-bookworm \
   sh -c "apt-get update && apt-get install -y gcc && \
          go build -buildmode=plugin -o myplugin.so main.go"
 ```
@@ -452,14 +452,14 @@ Test that your plugin loads successfully:
 
 ### Go Version Requirement
 
-Bifrost is built with **Go 1.25.5**. Your plugin **must** be compiled with the exact same Go version to ensure compatibility.
+Bifrost is built with **Go 1.26.1**. Your plugin **must** be compiled with the exact same Go version to ensure compatibility.
 
 ```bash
 # Check your Go version
 go version
-# Should output: go version go1.25.5 ...
+# Should output: go version go1.26.1 ...
 
-# If you need to install Go 1.25.5
+# If you need to install Go 1.26.1
 # Visit: https://go.dev/dl/
 ```
 
@@ -532,7 +532,7 @@ When creating a plugin, your `go.mod` should match Bifrost's Go version:
 ```go
 module github.com/example/my-plugin
 
-go 1.25.5
+go 1.26.1
 
 require (
     github.com/maximhq/bifrost/core v1.2.38
@@ -561,14 +561,14 @@ cannot load plugin: plugin was built with a different version of package runtime
 
 **Cause:** Plugin and Bifrost were built with different Go versions.
 
-**Solution:** Use the exact same Go version (Go 1.25.5) for both:
+**Solution:** Use the exact same Go version (Go 1.26.1) for both:
 
 ```bash
 # Check Go version used for Bifrost
 ./tmp/bifrost-http -version
 
 # Verify your Go version matches
-go version  # Should output: go version go1.25.5
+go version  # Should output: go version go1.26.1
 
 # See full compatibility requirements
 ```
@@ -640,10 +640,10 @@ Match Bifrost's exact Go version and key dependencies (see [Go Version and Packa
 
 ```bash
 # Pin Go version in Dockerfile
-FROM golang:1.25.5-alpine3.22 AS builder
+FROM golang:1.26.1-alpine3.23 AS builder
 
 # Pin Go version in Makefile/CI
-GO_VERSION=1.25.5
+GO_VERSION=1.26.1
 ```
 
 ### 3. Test Plugin Loading Locally
@@ -675,18 +675,18 @@ Build plugins in the same Dockerfile as Bifrost:
 
 ```dockerfile
 # Build plugin
-FROM golang:1.25.5-alpine3.22 AS plugin-builder
+FROM golang:1.26.1-alpine3.23 AS plugin-builder
 WORKDIR /plugin
 COPY plugins/myplugin/ .
 RUN apk add --no-cache gcc musl-dev && \
     go build -buildmode=plugin -o myplugin.so main.go
 
 # Build Bifrost
-FROM golang:1.25.5-alpine3.22 AS bifrost-builder
+FROM golang:1.26.1-alpine3.23 AS bifrost-builder
 # ... (bifrost build steps)
 
 # Runtime
-FROM alpine:3.22
+FROM alpine:3.23
 COPY --from=bifrost-builder /app/main .
 COPY --from=plugin-builder /plugin/myplugin.so /app/plugins/
 ```
@@ -702,6 +702,6 @@ Now that you have a dynamically linked Bifrost binary:
 3. **[Example plugins](https://github.com/maximhq/bifrost/tree/main/examples/plugins)** - Study working examples
 
 <Note>
-For questions or issues with dynamic builds and plugins, visit our [GitHub Discussions](https://github.com/maximhq/bifrost/discussions) or [Discord community](https://discord.gg/bifrost).
+For questions or issues with dynamic builds and plugins, visit our [GitHub Discussions](https://github.com/maximhq/bifrost/discussions) or [Discord community](https://discord.gg/exN5KAydbU).
 </Note>
 

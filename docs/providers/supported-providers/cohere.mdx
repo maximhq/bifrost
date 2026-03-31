@@ -81,7 +81,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Cohere,
     Model:    "cohere/command-r-plus",
     Input:    messages,
@@ -250,7 +250,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Cohere,
     Model:    "cohere/command-r-plus",
     Input:    messages,
@@ -332,7 +332,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Cohere,
     Model:    "cohere/embed-english-v3.0",
     Input: &schemas.EmbeddingInput{

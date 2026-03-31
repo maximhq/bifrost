@@ -250,7 +250,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			if len(lastResponse.BifrostChatResponse.Choices) > 0 && lastResponse.BifrostChatResponse.Choices[0].FinishReason != nil {
 				consolidatedResponse.Choices[0].FinishReason = lastResponse.BifrostChatResponse.Choices[0].FinishReason
 			}
-			consolidatedResponse.ExtraFields.Latency = lastResponse.BifrostChatResponse.ExtraFields.Latency
+			consolidatedResponse.ExtraFields = lastResponse.BifrostChatResponse.ExtraFields
 		}
 
 		// Enhanced validation expectations for streaming

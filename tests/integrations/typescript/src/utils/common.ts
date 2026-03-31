@@ -329,6 +329,7 @@ const API_KEY_MAP: Record<string, string> = {
   bedrock: 'AWS_ACCESS_KEY_ID',
   cohere: 'COHERE_API_KEY',
   xai: 'XAI_API_KEY',
+  azure: 'AZURE_API_KEY',
 }
 
 export function getApiKey(integration: string): string {

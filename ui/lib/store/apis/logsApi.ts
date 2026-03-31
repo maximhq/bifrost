@@ -1,12 +1,17 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
 	LogsHistogramResponse,
 	LogStats,
 	ModelHistogramResponse,
+	ModelRankingsResponse,
 	Pagination,
+	ProviderCostHistogramResponse,
+	ProviderLatencyHistogramResponse,
+	ProviderTokenHistogramResponse,
 	RecalculateCostResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
@@ -43,12 +48,17 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.start_time) params.start_time = filters.start_time;
 	if (filters.end_time) params.end_time = filters.end_time;
-	if (filters.min_latency) params.min_latency = filters.min_latency;
-	if (filters.max_latency) params.max_latency = filters.max_latency;
-	if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-	if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.metadata_filters) {
+		for (const [key, value] of Object.entries(filters.metadata_filters)) {
+			params[`metadata_${key}`] = value;
+		}
+	}
 
 	return params;
 }
@@ -103,12 +113,17 @@ export const logsApi = baseApi.injectEndpoints({
 				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
+				if (filters.metadata_filters) {
+					for (const [key, value] of Object.entries(filters.metadata_filters)) {
+						params[`metadata_${key}`] = value;
+					}
+				}
 
 				return {
 					url: "/logs",
@@ -155,12 +170,17 @@ export const logsApi = baseApi.injectEndpoints({
 				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
+				if (filters.metadata_filters) {
+					for (const [key, value] of Object.entries(filters.metadata_filters)) {
+						params[`metadata_${key}`] = value;
+					}
+				}
 
 				return {
 					url: "/logs/stats",
@@ -226,6 +246,76 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get latency histogram with percentiles
+		getLogsLatencyHistogram: builder.query<
+			LatencyHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/latency",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider cost histogram with provider breakdown
+		getLogsProviderCostHistogram: builder.query<
+			ProviderCostHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/cost/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider token histogram with provider breakdown
+		getLogsProviderTokenHistogram: builder.query<
+			ProviderTokenHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/tokens/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider latency histogram with provider breakdown
+		getLogsProviderLatencyHistogram: builder.query<
+			ProviderLatencyHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/latency/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get model rankings with trends
+		getModelRankings: builder.query<
+			ModelRankingsResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/rankings",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -240,6 +330,7 @@ export const logsApi = baseApi.injectEndpoints({
 				virtual_keys: VirtualKey[];
 				routing_rules: RoutingRule[];
 				routing_engines: string[];
+				metadata_keys: Record<string, string[]>;
 			},
 			void
 		>({
@@ -265,6 +356,12 @@ export const logsApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Logs"],
 		}),
+
+		// Get a single log entry by ID (includes raw_request and raw_response)
+		getLogById: builder.query<LogEntry, string>({
+			query: (id) => `/logs/${encodeURIComponent(id)}`,
+			providesTags: (result, error, id) => [{ type: "Logs", id }],
+		}),
 	}),
 });
 
@@ -275,6 +372,10 @@ export const {
 	useGetLogsTokenHistogramQuery,
 	useGetLogsCostHistogramQuery,
 	useGetLogsModelHistogramQuery,
+	useGetLogsLatencyHistogramQuery,
+	useGetLogsProviderCostHistogramQuery,
+	useGetLogsProviderTokenHistogramQuery,
+	useGetLogsProviderLatencyHistogramQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
 	useLazyGetLogsQuery,
@@ -283,8 +384,15 @@ export const {
 	useLazyGetLogsTokenHistogramQuery,
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsModelHistogramQuery,
+	useLazyGetLogsLatencyHistogramQuery,
+	useLazyGetLogsProviderCostHistogramQuery,
+	useLazyGetLogsProviderTokenHistogramQuery,
+	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetModelRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useLazyGetLogByIdQuery,
+	useGetLogByIdQuery,
 } = logsApi;

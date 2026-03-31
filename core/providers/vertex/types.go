@@ -3,7 +3,7 @@ package vertex
 import (
 	"time"
 
-	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 // Vertex AI Embedding API types
@@ -85,7 +85,24 @@ func (r *VertexRequestBody) GetExtraParams() map[string]interface{} {
 // MarshalJSON implements custom JSON marshalling for VertexRequestBody.
 // It marshals the RequestBody field directly without wrapping.
 func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(r.RequestBody)
+	return providerUtils.MarshalSorted(r.RequestBody)
+}
+
+// VertexRawRequestBody holds pre-serialized JSON bytes to preserve key ordering
+// for LLM prompt caching. This avoids the map[string]interface{} round-trip that
+// destroys key order.
+type VertexRawRequestBody struct {
+	RawBody     []byte                 `json:"-"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (r *VertexRawRequestBody) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// MarshalJSON returns the pre-serialized JSON bytes directly, preserving key order.
+func (r *VertexRawRequestBody) MarshalJSON() ([]byte, error) {
+	return r.RawBody, nil
 }
 
 // VertexAdvancedVoiceOptions represents advanced voice options for TTS synthesis.
@@ -169,6 +186,43 @@ type VertexModelLabels struct {
 	GoogleVertexLLMTuningBaseModelId string `json:"google-vertex-llm-tuning-base-model-id"`
 	GoogleVertexLLMTuningJobId       string `json:"google-vertex-llm-tuning-job-id"`
 	TuneType                         string `json:"tune-type"`
+}
+
+// ================================ Publisher Model Types ================================
+// These types are for the publishers.models.list endpoint (Model Garden)
+
+type VertexPublisherModel struct {
+	Name           string                          `json:"name"`
+	VersionID      string                          `json:"versionId"`
+	OpenSourceCategory string                      `json:"openSourceCategory"`
+	LaunchStage    string                          `json:"launchStage"`
+	VersionState   string                          `json:"versionState"`
+	PublisherModelTemplate string                  `json:"publisherModelTemplate"`
+	SupportedActions *VertexPublisherModelActions  `json:"supportedActions"`
+}
+
+type VertexPublisherModelActions struct {
+	OpenGenerationAIStudio      *VertexPublisherModelURI `json:"openGenerationAiStudio"`
+	OpenGenie                   *VertexPublisherModelURI `json:"openGenie"`
+	OpenPromptTuningPipeline    *VertexPublisherModelURI `json:"openPromptTuningPipeline"`
+	OpenNotebook                *VertexPublisherModelURI `json:"openNotebook"`
+	OpenFineTuningPipeline      *VertexPublisherModelURI `json:"openFineTuningPipeline"`
+	Deploy                      *VertexPublisherModelDeploy `json:"deploy"`
+	OpenEvaluationPipeline      *VertexPublisherModelURI `json:"openEvaluationPipeline"`
+}
+
+type VertexPublisherModelURI struct {
+	URI string `json:"uri"`
+}
+
+type VertexPublisherModelDeploy struct {
+	ModelDisplayName string `json:"modelDisplayName"`
+	Title            string `json:"title"`
+}
+
+type VertexListPublisherModelsResponse struct {
+	PublisherModels []VertexPublisherModel `json:"publisherModels"`
+	NextPageToken   string                 `json:"nextPageToken"`
 }
 
 // ==================== ERROR TYPES ====================

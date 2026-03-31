@@ -61,6 +61,7 @@ type ElevenlabsPronunciationDictionaryLocator struct {
 type ElevenlabsTranscriptionRequest struct {
 	ModelID               string                           `json:"model_id"`
 	File                  []byte                           `json:"-"`
+	Filename              string                           `json:"-"` // Original filename, used to preserve file format extension
 	LanguageCode          *string                          `json:"language_code,omitempty"`
 	TagAudioEvents        *bool                            `json:"tag_audio_events,omitempty"`
 	NumSpeakers           *int                             `json:"num_speakers,omitempty"`

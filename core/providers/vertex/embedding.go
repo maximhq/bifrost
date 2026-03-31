@@ -84,17 +84,11 @@ func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 			continue
 		}
 
-		// Convert float64 values to float32 for Bifrost format
-		embeddingFloat32 := make([]float32, 0, len(prediction.Embeddings.Values))
-		for _, v := range prediction.Embeddings.Values {
-			embeddingFloat32 = append(embeddingFloat32, float32(v))
-		}
-
 		// Create embedding object
 		embedding := schemas.EmbeddingData{
 			Object: "embedding",
 			Embedding: schemas.EmbeddingStruct{
-				EmbeddingArray: embeddingFloat32,
+				EmbeddingArray: append([]float64(nil), prediction.Embeddings.Values...),
 			},
 			Index: i,
 		}

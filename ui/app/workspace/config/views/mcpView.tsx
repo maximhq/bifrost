@@ -108,15 +108,10 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure MCP (Model Context Protocol) agent and tool settings.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="mcp-settings-view">
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">MCP Settings</h2>
+				<p className="text-muted-foreground text-sm">Configure MCP (Model Context Protocol) agent and tool settings.</p>
 			</div>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
@@ -129,6 +124,7 @@ export default function MCPView() {
 					</div>
 					<Input
 						id="mcp-agent-depth"
+						data-testid="mcp-agent-depth-input"
 						type="number"
 						className="w-24"
 						value={localValues.mcp_agent_depth}
@@ -147,6 +143,7 @@ export default function MCPView() {
 					</div>
 					<Input
 						id="mcp-tool-execution-timeout"
+						data-testid="mcp-tool-timeout-input"
 						type="number"
 						className="w-24"
 						value={localValues.mcp_tool_execution_timeout}
@@ -184,7 +181,7 @@ export default function MCPView() {
 						</p>
 					</div>
 					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
-						<SelectTrigger id="mcp-binding-level" className="w-56">
+						<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
 							<SelectValue placeholder="Select binding level" />
 						</SelectTrigger>
 						<SelectContent>
@@ -225,6 +222,11 @@ export default function MCPView() {
 						)}
 					</div>
 				</div>
+			</div>
+			<div className="flex justify-end pt-2">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);

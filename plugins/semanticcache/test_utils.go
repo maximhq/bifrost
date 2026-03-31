@@ -539,8 +539,12 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 }
 
 // WaitForCache waits for async cache operations to complete
-func WaitForCache() {
-	time.Sleep(2 * time.Second)
+func WaitForCache(plugin schemas.LLMPlugin) {
+	if p, ok := plugin.(*Plugin); ok {
+		p.WaitForPendingOperations()
+	}
+	// Small buffer for Weaviate index consistency
+	time.Sleep(500 * time.Millisecond)
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing

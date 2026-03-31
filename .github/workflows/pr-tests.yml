@@ -14,6 +14,9 @@ concurrency:
   group: pr-tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
@@ -23,8 +26,13 @@ jobs:
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Check if pipeline should be skipped
         id: check
@@ -55,24 +63,29 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -124,6 +137,7 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
+          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

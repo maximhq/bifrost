@@ -19,6 +19,11 @@ export const budgetDurationOptions = [
 	{ label: "Monthly", value: "1M" },
 ];
 
+// Durations that support calendar-aligned resets (snap to day/week/month/year boundaries).
+// Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
+export const supportsCalendarAlignment = (duration: string): boolean =>
+	duration.length > 0 && /[dwMY]$/.test(duration)
+
 // Map of duration values to short labels for display
 export const resetDurationLabels: Record<string, string> = {
 	"1m": "Every Minute",

@@ -124,11 +124,7 @@ func loadCustomPlugin(ctx context.Context, path *string, pluginConfig any, bifro
 	return plugin, nil
 }
 
-// Multi-plugin methods used on startup
-
-// InstantiatePlugins loads all plugins from configuration
-// This is called once during Bootstrap
-
+// LoadPlugins loads the plugins for the server.
 func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	// Load built-in plugins first (order matters)
 	if err := s.loadBuiltinPlugins(ctx); err != nil {
@@ -138,6 +134,8 @@ func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	if err := s.loadCustomPlugins(ctx); err != nil {
 		return err
 	}
+	// Sort all plugins by placement group and order
+	s.Config.SortAndRebuildPlugins()
 	return nil
 }
 
@@ -153,30 +151,37 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 
 // loadBuiltinPlugins loads required built-in plugins in specific order
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
+	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
+
 	// 1. Telemetry (always first - tracks everything)
 	if err := s.registerPluginWithStatus(ctx, telemetry.PluginName, nil, nil, true); err != nil {
 		return err
 	}
+	s.Config.SetPluginOrderInfo(telemetry.PluginName, builtinPlacement, schemas.Ptr(1))
 
 	// 2. Logging (if enabled)
-	if s.Config.ClientConfig.EnableLogging && s.Config.LogsStore != nil {
+	if (s.Config.ClientConfig.EnableLogging == nil || *s.Config.ClientConfig.EnableLogging) && s.Config.LogsStore != nil {
 		config := &logging.Config{
 			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
+			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
 		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(logging.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(logging.PluginName, builtinPlacement, schemas.Ptr(2))
 
 	// 3. Governance (if enabled and not enterprise)
-	if s.Config.ClientConfig.EnableGovernance && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
+	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
-			IsVkMandatory: &s.Config.ClientConfig.EnforceGovernanceHeader,
+			IsVkMandatory:   &s.Config.ClientConfig.EnforceAuthOnInference,
+			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(3))
 
 	// 4. OTEL (if configured in PluginConfigs)
 	otelConfig := s.getPluginConfig(otel.PluginName)
@@ -185,15 +190,44 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(otel.PluginName)
 	}
+	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(4))
+
+	// 5. Semantic Cache (if configured in PluginConfigs)
+	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
+	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
+		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
+	} else {
+		s.markPluginDisabled(semanticcache.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(5))
+
+	// 6. Litellmcompat (if configured in PluginConfigs)
+	litellmcompatConfig := s.getPluginConfig(litellmcompat.PluginName)
+	if litellmcompatConfig != nil && litellmcompatConfig.Enabled {
+		s.registerPluginWithStatus(ctx, litellmcompat.PluginName, nil, litellmcompatConfig.Config, false)
+	} else {
+		s.markPluginDisabled(litellmcompat.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(litellmcompat.PluginName, builtinPlacement, schemas.Ptr(6))
+
+	// 7. Maxim (if configured in PluginConfigs)
+	maximConfig := s.getPluginConfig(maxim.PluginName)
+	if maximConfig != nil && maximConfig.Enabled {
+		s.registerPluginWithStatus(ctx, maxim.PluginName, nil, maximConfig.Config, false)
+	} else {
+		s.markPluginDisabled(maxim.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(7))
 
 	return nil
 }
+
 
 // loadCustomPlugins loads plugins from PluginConfigs
 func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 	for _, cfg := range s.Config.PluginConfigs {
 		// Skip built-ins (already loaded)
-		if isBuiltinPlugin(cfg.Name) {
+		if lib.IsBuiltinPlugin(cfg.Name) {
 			continue
 		}
 		// Handle disabled plugins
@@ -241,6 +275,7 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 
 		// Register enabled plugin and mark as active
 		s.Config.ReloadPlugin(plugin)
+		s.Config.SetPluginOrderInfo(plugin.GetName(), cfg.Placement, cfg.Order)
 		s.Config.UpdatePluginOverallStatus(plugin.GetName(), cfg.Name, schemas.PluginStatusActive,
 			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, InferPluginTypes(plugin))
 	}

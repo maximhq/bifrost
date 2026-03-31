@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestScenarioFunc defines the function signature for test scenario functions
@@ -29,6 +30,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunResponsesStreamTest,
 		RunMultiTurnConversationTest,
 		RunToolCallsTest,
+		RunToolCallsWithEmptyPropertiesTest,
+		RunToolCallsWithNilPropertiesTest,
 		RunToolCallsStreamingTest,
 		RunMultipleToolCallsTest,
 		RunEnd2EndToolCallingTest,
@@ -54,18 +57,30 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunTranscriptionStreamTest,
 		RunTranscriptionStreamAdvancedTest,
 		RunEmbeddingTest,
+		RunRerankTest,
 		RunChatCompletionReasoningTest,
 		RunMultiTurnReasoningTest,
 		RunResponsesReasoningTest,
 		RunListModelsTest,
+		RunListModelsResponseMarshalTest,
+		RunListModelsErrorMarshalTest,
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
+		RunPromptCachingToolBlocksTest,
+		RunPromptCachingMultipleToolCallsTest,
+		RunPromptCachingMultiTurnTest,
 		RunImageGenerationTest,
 		RunImageGenerationStreamTest,
 		RunImageEditTest,
 		RunImageEditStreamTest,
 		RunImageVariationTest,
 		RunImageVariationStreamTest,
+		RunVideoGenerationTest,
+		RunVideoRetrieveTest,
+		RunVideoRemixTest,
+		RunVideoDownloadTest,
+		RunVideoListTest,
+		RunVideoDeleteTest,
 		RunBatchCreateTest,
 		RunBatchListTest,
 		RunBatchRetrieveTest,
@@ -98,12 +113,30 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileDeleteTest,
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
+		RunStreamErrorStatusCodeTest,
+		RunPassthroughAPITest,
+		RunWebSocketResponsesTest,
+		RunRealtimeTest,
+		RunCompactionTest,
+		RunInterleavedThinkingTest,
+		RunFastModeTest,
 	}
 
-	// Execute all test scenarios
+	// Execute all test scenarios without raw request/response (default behavior)
 	for _, scenarioFunc := range testScenarios {
 		scenarioFunc(t, client, ctx, testConfig)
 	}
+
+	// Execute all test scenarios WITH raw request/response enabled
+	t.Run("WithRawRequestResponse", func(t *testing.T) {
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
+		rawConfig := testConfig
+		rawConfig.ExpectRawRequestResponse = true
+		for _, scenarioFunc := range testScenarios {
+			scenarioFunc(t, client, rawCtx, rawConfig)
+		}
+	})
 
 	// Print comprehensive summary based on configuration
 	printTestSummary(t, testConfig)
@@ -120,6 +153,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"CompletionStream", testConfig.Scenarios.CompletionStream},
 		{"MultiTurnConversation", testConfig.Scenarios.MultiTurnConversation},
 		{"ToolCalls", testConfig.Scenarios.ToolCalls},
+		{"ToolCallsWithEmptyProperties", testConfig.Scenarios.ToolCalls},
+		{"ToolCallsWithNilProperties", testConfig.Scenarios.ToolCalls},
 		{"ToolCallsStreaming", testConfig.Scenarios.ToolCallsStreaming},
 		{"MultipleToolCalls", testConfig.Scenarios.MultipleToolCalls},
 		{"End2EndToolCalling", testConfig.Scenarios.End2EndToolCalling},
@@ -136,17 +171,35 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"Transcription", testConfig.Scenarios.Transcription},
 		{"TranscriptionStream", testConfig.Scenarios.TranscriptionStream},
 		{"Embedding", testConfig.Scenarios.Embedding && testConfig.EmbeddingModel != ""},
+		{"Rerank", testConfig.Scenarios.Rerank && testConfig.RerankModel != ""},
 		{"ChatCompletionReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"MultiTurnReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ResponsesReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ListModels", testConfig.Scenarios.ListModels},
+		{"ListModelsResponseMarshal", testConfig.Scenarios.ListModels},
+		{"ListModelsErrorMarshal", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
+		{"PromptCachingToolBlocks", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultipleToolCalls", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
+		{"PromptCachingMultiTurn", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
 		{"ImageGeneration", testConfig.Scenarios.ImageGeneration && testConfig.ImageGenerationModel != ""},
 		{"ImageGenerationStream", testConfig.Scenarios.ImageGenerationStream && testConfig.ImageGenerationModel != ""},
 		{"ImageEdit", testConfig.Scenarios.ImageEdit && testConfig.ImageEditModel != ""},
 		{"ImageEditStream", testConfig.Scenarios.ImageEditStream && testConfig.ImageEditModel != ""},
 		{"ImageVariation", testConfig.Scenarios.ImageVariation && testConfig.ImageVariationModel != ""},
 		{"ImageVariationStream", testConfig.Scenarios.ImageVariationStream && testConfig.ImageVariationModel != ""},
+		{"VideoGeneration", testConfig.Scenarios.VideoGeneration && testConfig.VideoGenerationModel != ""},
+		{"VideoRetrieve", testConfig.Scenarios.VideoRetrieve && testConfig.VideoGenerationModel != ""},
+		{"VideoRemix", testConfig.Scenarios.VideoRemix && testConfig.VideoGenerationModel != ""},
+		{"VideoDownload", testConfig.Scenarios.VideoDownload && testConfig.VideoGenerationModel != ""},
+		{"VideoList", testConfig.Scenarios.VideoList},
+		{"VideoDelete", testConfig.Scenarios.VideoDelete},
+		{"VideoUnsupported", !testConfig.Scenarios.VideoGeneration &&
+			!testConfig.Scenarios.VideoRetrieve &&
+			!testConfig.Scenarios.VideoRemix &&
+			!testConfig.Scenarios.VideoDownload &&
+			!testConfig.Scenarios.VideoList &&
+			!testConfig.Scenarios.VideoDelete},
 		{"BatchCreate", testConfig.Scenarios.BatchCreate},
 		{"BatchList", testConfig.Scenarios.BatchList},
 		{"BatchRetrieve", testConfig.Scenarios.BatchRetrieve},
@@ -179,6 +232,13 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ContainerFileDelete", testConfig.Scenarios.ContainerFileDelete},
 		{"ContainerFileUnsupported", !testConfig.Scenarios.ContainerFileCreate && !testConfig.Scenarios.ContainerFileList && !testConfig.Scenarios.ContainerFileRetrieve && !testConfig.Scenarios.ContainerFileContent && !testConfig.Scenarios.ContainerFileDelete},
 		{"PassThroughExtraParams", testConfig.Scenarios.PassThroughExtraParams},
+		{"StreamErrorStatusCode", testConfig.Scenarios.CompletionStream},
+		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
+		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
+		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
+		{"Compaction", testConfig.Scenarios.Compaction},
+		{"InterleavedThinking", testConfig.Scenarios.InterleavedThinking},
+		{"FastMode", testConfig.Scenarios.FastMode},
 	}
 
 	supported := 0

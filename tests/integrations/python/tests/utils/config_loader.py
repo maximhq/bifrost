@@ -22,6 +22,7 @@ INTEGRATION_TO_PROVIDER_MAP = {
     "langchain": "openai",  # LangChain defaults to OpenAI
     "pydanticai": "openai",  # Pydantic AI defaults to OpenAI
     "bedrock": "bedrock",  # Bedrock defaults to Amazon provider
+    "azure": "azure",
 }
 
 @dataclass

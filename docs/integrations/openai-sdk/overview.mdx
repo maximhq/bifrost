@@ -369,6 +369,184 @@ console.log(azureResponse.choices[0].message.content);
 
 ---
 
+## Async Inference
+
+Submit inference requests asynchronously and poll for results later using the `x-bf-async` header. This is useful for long-running requests where you don't want to hold a connection open. See [Async Inference](../../features/async-inference) for full details.
+
+<Note>
+Async inference requires a [Logs Store](../../features/observability/default) to be configured and is not compatible with streaming.
+</Note>
+
+### Chat Completions
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+import openai
+import time
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key"
+)
+
+# Submit async request
+initial = client.chat.completions.create(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Tell me a short story."}],
+    extra_headers={"x-bf-async": "true"}
+)
+
+# If choices are present, the request completed synchronously
+if initial.choices:
+    print(initial.choices[0].message.content)
+else:
+    # Poll until completed
+    while True:
+        time.sleep(2)
+        poll = client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=[{"role": "user", "content": "Tell me a short story."}],
+            extra_headers={"x-bf-async-id": initial.id}
+        )
+        if poll.choices:
+            print(poll.choices[0].message.content)
+            break
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key",
+});
+
+// Submit async request
+const initial = await openai.chat.completions.create(
+  {
+    model: "openai/gpt-4o-mini",
+    messages: [{ role: "user", content: "Tell me a short story." }],
+  },
+  { headers: { "x-bf-async": "true" } }
+);
+
+// If choices are present, the request completed synchronously
+if (initial.choices?.length > 0) {
+  console.log(initial.choices[0].message.content);
+} else {
+  // Poll until completed
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const poll = await openai.chat.completions.create(
+      {
+        model: "openai/gpt-4o-mini",
+        messages: [{ role: "user", content: "Tell me a short story." }],
+      },
+      { headers: { "x-bf-async-id": initial.id } }
+    );
+    if (poll.choices?.length > 0) {
+      console.log(poll.choices[0].message.content);
+      break;
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Responses API
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+import openai
+import time
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key"
+)
+
+# Submit async request
+initial = client.responses.create(
+    model="openai/gpt-4o-mini",
+    input="Tell me a short story.",
+    extra_headers={"x-bf-async": "true"}
+)
+
+# If status is "completed", the request completed synchronously
+if initial.status == "completed":
+    print(initial.output_text)
+else:
+    # Poll until completed
+    while True:
+        time.sleep(2)
+        poll = client.responses.create(
+            model="openai/gpt-4o-mini",
+            input="Tell me a short story.",
+            extra_headers={"x-bf-async-id": initial.id}
+        )
+        if poll.status == "completed":
+            print(poll.output_text)
+            break
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key",
+});
+
+// Submit async request
+const initial = await openai.responses.create(
+  { model: "openai/gpt-4o-mini", input: "Tell me a short story." },
+  { headers: { "x-bf-async": "true" } }
+);
+
+// If status is "completed", the request completed synchronously
+if (initial.status === "completed") {
+  console.log(initial.output_text);
+} else {
+  // Poll until completed
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const poll = await openai.responses.create(
+      { model: "openai/gpt-4o-mini", input: "Tell me a short story." },
+      { headers: { "x-bf-async-id": initial.id } }
+    );
+    if (poll.status === "completed") {
+      console.log(poll.output_text);
+      break;
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Async Headers
+
+| Header | Description |
+|---|---|
+| `x-bf-async: true` | Submit the request as an async job. Returns immediately with a job ID. |
+| `x-bf-async-id: <job-id>` | Poll for results of a previously submitted async job. |
+| `x-bf-async-job-result-ttl: <seconds>` | Override the default result TTL (default: 3600s). |
+
+---
+
 ## Supported Features
 
 The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.

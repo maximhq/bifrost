@@ -1,6 +1,6 @@
 "use client";
 
-import { getTokenFromStorage } from "@/lib/store/apis/baseApi";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { getWebSocketUrl } from "@/lib/utils/port";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -66,8 +66,24 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 			}
 
 			const wsUrl = getWebSocketUrl(path);
-			const token = await getTokenFromStorage();
-			const wsUrlWithAuth = token ? `${wsUrl}?token=${encodeURIComponent(token)}` : wsUrl;
+			// Obtain a short-lived, single-use ticket for WS auth instead of putting the session token in the URL.
+			let wsUrlWithAuth = wsUrl;
+			try {
+				const resp = await fetch(`${getApiBaseUrl()}/session/ws-ticket`, {
+					method: "POST",
+					credentials: "include",
+				});
+				if (resp.ok) {
+					const { ticket } = await resp.json();
+					if (ticket) {
+						const parsed = new URL(wsUrl);
+						parsed.searchParams.set("ticket", ticket);
+						wsUrlWithAuth = parsed.toString();
+					}
+				}
+			} catch {
+				// If ticket fetch fails, attempt connection without auth param (cookie fallback)
+			}
 			const ws = new WebSocket(wsUrlWithAuth);
 			wsRef.current = ws;
 			globalWsRef = ws;

@@ -23,7 +23,7 @@ extraHeaders := map[string][]string{
 }
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -34,7 +34,19 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 See [Custom Headers Per Request](./provider-configuration#custom-headers-per-request) for detailed information on header handling and security restrictions.
 </Note>
 
-### API Key Name Selection
+### API Key Selection
+
+Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
+
+#### By ID
+
+Explicitly select a key by its unique ID.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+```
+
+#### By Name
 
 Explicitly select a named API key from your configured keys.
 
@@ -61,6 +73,24 @@ Skip the key selection process entirely and pass an empty key to the provider. U
 
 ```go
 ctx := context.WithValue(ctx, schemas.BifrostContextKeySkipKeySelection, true)
+```
+
+### Session Stickiness (Session ID)
+
+Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
+
+On the first request for a session ID, Bifrost selects a key (via weighted random) and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid. If the cached key is no longer in the supported set (disabled, removed, or model support changed), Bifrost re-selects and overwrites the cache.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+```
+
+### Session TTL
+
+Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses `DefaultSessionStickyTTL` (1 hour). The TTL is refreshed on each request so active sessions do not expire.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
 ```
 
 ### Request ID
@@ -95,7 +125,7 @@ rawPayload := []byte(`{
 ctx := context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, true)
 
 // Set the raw body on the request
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider:       schemas.OpenAI,
     Model:          "gpt-4o",
     RawRequestBody: rawPayload,  // This will be sent directly to the provider
@@ -121,7 +151,7 @@ ctx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true
 Access in response:
 
 ```go
-response, _ := client.ChatCompletionRequest(ctx, request)
+response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 if response.ChatResponse != nil {
     rawReq := response.ChatResponse.ExtraFields.RawRequest
     rawResp := response.ChatResponse.ExtraFields.RawResponse
@@ -135,7 +165,7 @@ Enable passthrough mode for extra parameters. When enabled, any parameters in `E
 ```go
 ctx := context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -249,7 +279,7 @@ func makeRequest(client *bifrost.Bifrost) {
         {Role: "user", Content: &schemas.BifrostMessageContent{Text: bifrost.Ptr("Hello!")}},
     }
 
-    response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input:    messages,
@@ -279,6 +309,7 @@ func makeRequest(client *bifrost.Bifrost) {
 |-----|------|-----------|-------------|
 | `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier |
 | `BifrostContextKeyAPIKeyName` | `string` | Set | Explicit API key name selection |
+| `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID when using fallback |
 | `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Direct key credentials |
@@ -288,6 +319,8 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyFallbackIndex` | `int` | Read | Current fallback index |
 | `BifrostContextKeyStreamEndIndicator` | `bool` | Read | Stream completion flag |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection |
+| `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
+| `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |
 | `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom request headers |
 | `BifrostContextKeyURLPath` | `string` | Set | Custom URL path suffix |
 | `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Use raw request body |

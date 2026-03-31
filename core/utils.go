@@ -3,6 +3,8 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -46,10 +48,12 @@ var rateLimitPatterns = []string{
 	"api rate limit",
 	"usage limit",
 	"concurrent requests limit",
+	"burst_rate",
+	"rate increased",
 }
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
-// Excluding providers that require extra configuration. (like Ollama and SGL)
+// Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
@@ -72,7 +76,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 
 // isModelRequired returns true if the request type requires a model
 func isModelRequired(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest
+	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.VideoGenerationRequest
 }
 
 // Ptr returns a pointer to the given value.
@@ -81,33 +85,19 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Ollama and SGL are keyless and don't require API keys.
+// Some providers like Ollama, SGL, and vLLM are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return providerKey != schemas.Ollama && providerKey != schemas.SGL
+	return !IsKeylessProvider(providerKey)
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs..
-func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
-}
-
-// hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
-// This allows Azure keys to have an empty API key value when using Entra ID authentication.
-func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
-	if providerType != schemas.Azure || key.AzureKeyConfig == nil {
-		return false
-	}
-	return key.AzureKeyConfig.ClientID != nil &&
-		key.AzureKeyConfig.ClientSecret != nil &&
-		key.AzureKeyConfig.TenantID != nil &&
-		key.AzureKeyConfig.ClientID.GetValue() != "" &&
-		key.AzureKeyConfig.ClientSecret.GetValue() != "" &&
-		key.AzureKeyConfig.TenantID.GetValue() != ""
+func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -201,6 +191,12 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
+func clearCtxForFallback(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {
@@ -230,9 +226,14 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
+// IsKeylessProvider reports whether providerKey is a keyless provider.
+func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Ollama || providerKey == schemas.SGL
+}
+
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -249,7 +250,7 @@ func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, 
 
 // isBatchRequestType returns true if the given request type is a batch API operation.
 func isBatchRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchResultsRequest
+	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchDeleteRequest || reqType == schemas.BatchResultsRequest
 }
 
 // isFileRequestType returns true if the given request type is a file API operation.
@@ -264,6 +265,22 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileCreateRequest || reqType == schemas.ContainerFileListRequest ||
 		reqType == schemas.ContainerFileRetrieveRequest || reqType == schemas.ContainerFileContentRequest ||
 		reqType == schemas.ContainerFileDeleteRequest
+}
+
+// isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
+func isModellessVideoRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
+		schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	default:
+		return false
+	}
+}
+
+// isPassthroughRequestType returns true if the given request type is a passthrough request.
+func isPassthroughRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.
@@ -290,7 +307,10 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 		extraFields := result.GetExtraFields()
 		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
 	}
-	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+	if err != nil {
+		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+	}
+	return
 }
 
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.
@@ -472,4 +492,20 @@ func sanitizeSpanName(name string) string {
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
+}
+
+// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+func hashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
+}
+
+func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
+	// Hash session ID to prevent PII leakage and ensure bounded key size
+	hashedSessionID := hashSHA256(sessionID)
+	discriminator := model
+	if discriminator == "" {
+		discriminator = "__modelless__"
+	}
+	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
 }

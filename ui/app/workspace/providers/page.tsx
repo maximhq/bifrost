@@ -2,7 +2,7 @@
 
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
@@ -12,51 +12,64 @@ import {
 	setSelectedProvider,
 	useAppDispatch,
 	useAppSelector,
+	useCreateProviderMutation,
 	useGetProvidersQuery,
 	useLazyGetProviderQuery,
 } from "@/lib/store";
 import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, PlusIcon, Trash } from "lucide-react";
+import { AlertCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useQueryState } from "nuqs";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
+import { AddProviderDropdown } from "./views/addProviderDropdown";
+import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
 	const dispatch = useAppDispatch();
+	const router = useRouter();
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
+	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
+
+	// Redirect Settings-only users to Custom pricing tab
+	useEffect(() => {
+		if (!hasProvidersAccess && hasSettingsOnly) {
+			router.replace("/workspace/custom-pricing");
+		}
+	}, [hasProvidersAccess, hasSettingsOnly, router]);
+
 	const selectedProvider = useAppSelector((state) => state.provider.selectedProvider);
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
-	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
-	const hasProviderDeleteAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 
 	const [showRedirectionDialog, setShowRedirectionDialog] = useState(false);
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
 	const [pendingRedirection, setPendingRedirection] = useState<string | undefined>(undefined);
-	const [showCustomProviderDialog, setShowCustomProviderDialog] = useState(false);
+	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
+	const [createProvider] = useCreateProviderMutation();
 
-	const allProviders = ProviderNames.map(
-		(p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [], provider_status: "active" as ProviderStatus },
-	).sort((a, b) => a.name.localeCompare(b.name));
-	const customProviders =
-		savedProviders
-			?.filter((provider) => !ProviderNames.includes(provider.name as KnownProvider))
-			.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
+	const configuredProviders = (savedProviders ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
+	const configuredProviderNamesArr = configuredProviders.map((p) => p.name);
+	const configuredProviderNamesKey = JSON.stringify(configuredProviderNamesArr);
+	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
+
+	const knownProviders = ProviderNames.map((name) => ({ name }));
 
 	useEffect(() => {
 		if (!provider) return;
-		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
+		const newSelectedProvider = configuredProviders.find((p) => p.name === provider);
 		if (newSelectedProvider) {
 			dispatch(setSelectedProvider(newSelectedProvider));
 		}
-		// We also try to fetch the latest version
 		getProvider(provider)
 			.unwrap()
 			.then((providerInfo) => {
@@ -64,7 +77,6 @@ export default function Providers() {
 			})
 			.catch((err) => {
 				if (err.status === 404) {
-					// Initializing provider config with default values
 					dispatch(
 						setSelectedProvider({
 							name: provider as ModelProviderName,
@@ -84,27 +96,82 @@ export default function Providers() {
 					description: `We encountered an error while getting provider config: ${getErrorMessage(err)}`,
 				});
 			});
-		return;
 	}, [provider, isLoadingProviders]);
 
 	useEffect(() => {
-		if (selectedProvider || !allProviders || allProviders.length === 0 || provider) return;
-		setProvider(allProviders[0].name);
+		if (selectedProvider || configuredProviders.length === 0 || provider) return;
+		setProvider(configuredProviders[0].name);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [selectedProvider, allProviders]);
+	}, [selectedProvider, configuredProviderNamesKey]);
 
+	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
+	useEffect(() => {
+		if (!provider || configuredProviderNamesArr.length === 0) return;
+		const isCurrentConfigured = configuredProviderNamesArr.includes(provider as ModelProviderName);
+		if (!isCurrentConfigured) {
+			setProvider(configuredProviderNamesArr[0]);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [provider, configuredProviderNamesKey]);
+
+	if (!hasProvidersAccess && hasSettingsOnly) {
+		return <FullPageLoader />;
+	}
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
 	}
 
+	const handleSelectKnownProvider = async (name: string) => {
+		try {
+			await createProvider({ provider: name as ModelProviderName, keys: [] }).unwrap();
+			setProvider(name);
+		} catch (err: any) {
+			if (err?.status === 409) {
+				setProvider(name);
+				return;
+			}
+			toast.error("Failed to add provider", {
+				description: getErrorMessage(err),
+			});
+		}
+	};
+
+	if (configuredProviders.length === 0) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<ProvidersEmptyState
+					addProviderDropdown={
+						<AddProviderDropdown
+							disabled={!hasProviderCreateAccess}
+							existingInSidebar={existingInSidebarNames}
+							knownProviders={knownProviders}
+							onSelectKnownProvider={handleSelectKnownProvider}
+							onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+							variant="empty"
+						/>
+					}
+				/>
+				<AddCustomProviderSheet
+					show={showCustomProviderSheet}
+					onClose={() => setShowCustomProviderSheet(false)}
+					onSave={(providerName) => {
+						setTimeout(() => setProvider(providerName), 300);
+						setShowCustomProviderSheet(false);
+					}}
+				/>
+			</div>
+		);
+	}
+
 	return (
-		<div className="mx-auto flex h-full w-full max-w-7xl flex-row gap-4">
+		<div className="flex h-full w-full flex-row gap-4">
 			<ConfirmDeleteProviderDialog
 				provider={selectedProvider!}
 				show={showDeleteProviderDialog}
 				onCancel={() => setShowDeleteProviderDialog(false)}
 				onDelete={() => {
-					setProvider(allProviders[0].name);
+					const next = configuredProviders.filter((p) => p.name !== selectedProvider?.name)[0];
+					setProvider(next?.name ?? null);
 					setShowDeleteProviderDialog(false);
 				}}
 			/>
@@ -118,31 +185,30 @@ export default function Providers() {
 				}}
 			/>
 			<AddCustomProviderSheet
-				show={showCustomProviderDialog}
-				onSave={(id) => {
-					setTimeout(() => {
-						setProvider(id);
-					}, 300);
-					setShowCustomProviderDialog(false);
-				}}
-				onClose={() => {
-					setShowCustomProviderDialog(false);
+				show={showCustomProviderSheet}
+				onClose={() => setShowCustomProviderSheet(false)}
+				onSave={(providerName) => {
+					setTimeout(() => setProvider(providerName), 300);
+					setShowCustomProviderSheet(false);
 				}}
 			/>
 			<div className="flex flex-col" style={{ maxHeight: "calc(100vh - 70px)", width: "300px" }}>
 				<TooltipProvider>
 					<div className="custom-scrollbar flex-1 overflow-y-auto">
 						<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
-							{/* Standard Providers */}
-							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">Standard Providers</div>
-								{allProviders.map((p) => {
-									return (
-										<Tooltip key={p.name}>
-											<TooltipTrigger
-												data-testid={`provider-${p.name}`}
+							{/* Configured Providers (standard with keys + custom) */}
+							{configuredProviders.length > 0 && (
+								<div className="mb-4">
+									<div className="text-muted-foreground mb-2 text-xs font-medium">Configured Providers</div>
+									{configuredProviders.map((p) => {
+										const isCustom = !ProviderNames.includes(p.name as KnownProvider);
+										const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
+										return (
+											<div
+												key={p.name}
+												data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
 												className={cn(
-													"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
+													"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
 													selectedProvider?.name === p.name
 														? "bg-secondary opacity-100 hover:opacity-100"
 														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
@@ -157,87 +223,35 @@ export default function Providers() {
 													}
 													setProvider(p.name);
 												}}
-												asChild
 											>
-											<div className="flex items-center gap-2">
-												<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-												<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
+												<RenderProviderIcon
+													provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+													size="sm"
+													className="h-4 w-4 shrink-0"
+												/>
+												<TruncatedName name={label} />
 												<KeyDiscoveryFailedBadge provider={p} />
 												<ProviderStatusBadge status={p.provider_status} />
-											</div>
-											</TooltipTrigger>
-										</Tooltip>
-									);
-								})}
-								{customProviders.length > 0 && <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom Providers</div>}
-								{customProviders.map((p) => {
-									return (
-										<Tooltip key={p.name}>
-											<TooltipTrigger
-												data-testid={`provider-${p.name}`}
-												className={cn(
-													"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
-													selectedProvider?.name === p.name
-														? "bg-secondary opacity-100 hover:opacity-100"
-														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+												{isCustom && (
+													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
+														CUSTOM
+													</Badge>
 												)}
-												onClick={(e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													if (providerFormIsDirty) {
-														setPendingRedirection(p.name);
-														setShowRedirectionDialog(true);
-														return;
-													}
-													setProvider(p.name);
-												}}
-												asChild
-											>
-												<div className="group flex w-full items-center gap-2">
-													<div className="flex w-full items-center gap-2">
-														<RenderProviderIcon
-															provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
-															size="sm"
-															className="h-4 w-4"
-														/>
-														<div className="text-sm">{p.name}</div>
-														<KeyDiscoveryFailedBadge provider={p} />
-														<ProviderStatusBadge status={p.provider_status} />
-													</div>
-													{selectedProvider?.name === p.name && hasProviderDeleteAccess && (
-														<Trash
-															className="text-muted-foreground hover:text-destructive ml-auto hidden h-4 w-4 cursor-pointer group-hover:block"
-															onClick={(event) => {
-																event.preventDefault();
-																event.stopPropagation();
-																setShowDeleteProviderDialog(true);
-															}}
-														/>
-													)}
-												</div>
-											</TooltipTrigger>
-										</Tooltip>
-									);
-								})}
+											</div>
+										);
+									})}
+								</div>
+							)}
+							<div className="pb-4">
+								<AddProviderDropdown
+									disabled={!hasProviderCreateAccess}
+									existingInSidebar={existingInSidebarNames}
+									knownProviders={knownProviders}
+									onSelectKnownProvider={handleSelectKnownProvider}
+									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+								/>
 							</div>
 						</div>
-					</div>
-					<div className="sticky bottom-0 z-10 bg-zinc-50/80 p-2 backdrop-blur-sm dark:bg-zinc-900/80">
-						<Button
-							variant="outline"
-							size="sm"
-							data-testid="add-provider-btn"
-							className="w-full justify-start"
-							disabled={!hasProviderCreateAccess}
-							onClick={(e) => {
-								e.preventDefault();
-								e.stopPropagation();
-								setShowCustomProviderDialog(true);
-							}}
-						>
-							<PlusIcon className="h-4 w-4" />
-							<div className="text-xs">Add New Custom Provider</div>
-						</Button>
 					</div>
 				</TooltipProvider>
 			</div>
@@ -251,8 +265,43 @@ export default function Providers() {
 					<div className="text-muted-foreground text-sm">Select a provider</div>
 				</div>
 			)}
-			{!isLoadingProvider && selectedProvider && <ModelProviderConfig provider={selectedProvider} />}
+			{!isLoadingProvider && selectedProvider && (
+				<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
+			)}
 		</div>
+	);
+}
+
+function TruncatedName({ name }: { name: string }) {
+	const textRef = useRef<HTMLDivElement>(null);
+	const [isTruncated, setIsTruncated] = useState(false);
+
+	const checkTruncation = useCallback(() => {
+		const el = textRef.current;
+		if (el) {
+			setIsTruncated(el.scrollWidth > el.clientWidth);
+		}
+	}, []);
+
+	useEffect(() => {
+		checkTruncation();
+		window.addEventListener("resize", checkTruncation);
+		return () => window.removeEventListener("resize", checkTruncation);
+	}, [checkTruncation, name]);
+
+	const inner = (
+		<div ref={textRef} className="min-w-0 flex-1 truncate text-sm">
+			{name}
+		</div>
+	);
+
+	if (!isTruncated) return inner;
+
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{inner}</TooltipTrigger>
+			<TooltipContent side="right">{name}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -267,14 +316,14 @@ function ProviderStatusBadge({ status }: { status: ProviderStatus }) {
 	) : null;
 }
 
-function KeyDiscoveryFailedBadge({ 
-	provider 
-}: { 
-	provider: { 
+function KeyDiscoveryFailedBadge({
+	provider,
+}: {
+	provider: {
 		keys: Array<{ status?: string }>;
 		status?: string;
 		description?: string;
-	} 
+	};
 }) {
 	const hasFailedKeys = provider.keys?.some((key) => key.status === "list_models_failed");
 	const providerFailed = provider.status === "list_models_failed";

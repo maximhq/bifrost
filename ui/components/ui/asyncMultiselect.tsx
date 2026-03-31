@@ -199,6 +199,11 @@ interface AsyncMultiSelectProps<T> {
 	noOptionsMessage?: () => React.ReactNode;
 	valueContainerClassName?: string;
 	noOptionsMessageClassName?: string;
+
+	/** id for the search input (accessibility) */
+	inputId?: string;
+	/** id of element that labels this control (accessibility) */
+	ariaLabelledBy?: string;
 	views?: {
 		clearIndicator?: (props: ClearIndicatorProps<T>) => React.ReactNode;
 		control?: (props: ControlProps<T>) => React.ReactNode;
@@ -474,6 +479,8 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 					SingleValue: CustomSingleValue,
 					ValueContainer: CustomValueContainer,
 				}}
+				inputId={props.inputId}
+				aria-labelledby={props.ariaLabelledBy}
 				{...customOptionProps}
 				{...customDropdownIndicatorProps}
 				{...customComponentsProps}

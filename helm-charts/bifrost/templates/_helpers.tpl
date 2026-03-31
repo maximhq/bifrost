@@ -178,6 +178,16 @@ env.BIFROST_QDRANT_API_KEY
 {{- end -}}
 {{- end -}}
 
+{{- define "bifrost.pinecone.apiKey" -}}
+{{- if .Values.vectorStore.pinecone.external.enabled -}}
+{{- if .Values.vectorStore.pinecone.external.existingSecret -}}
+env.BIFROST_PINECONE_API_KEY
+{{- else -}}
+{{- .Values.vectorStore.pinecone.external.apiKey -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "bifrost.qdrant.useTls" -}}
 {{- if .Values.vectorStore.qdrant.external.enabled -}}
 {{- .Values.vectorStore.qdrant.external.useTls -}}
@@ -205,8 +215,8 @@ false
 {{- if hasKey .Values.bifrost.client "enableLogging" }}
 {{- $_ := set $client "enable_logging" .Values.bifrost.client.enableLogging }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "enableGovernance" }}
-{{- $_ := set $client "enable_governance" .Values.bifrost.client.enableGovernance }}
+{{- if hasKey .Values.bifrost.client "enforceAuthOnInference" }}
+{{- $_ := set $client "enforce_auth_on_inference" .Values.bifrost.client.enforceAuthOnInference }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
@@ -243,6 +253,33 @@ false
 {{- if or $headerFilter.allowlist $headerFilter.denylist }}
 {{- $_ := set $client "header_filter_config" $headerFilter }}
 {{- end }}
+{{- end }}
+{{- if .Values.bifrost.client.asyncJobResultTTL }}
+{{- $_ := set $client "async_job_result_ttl" .Values.bifrost.client.asyncJobResultTTL }}
+{{- end }}
+{{- if .Values.bifrost.client.requiredHeaders }}
+{{- $_ := set $client "required_headers" .Values.bifrost.client.requiredHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.loggingHeaders }}
+{{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.allowedHeaders }}
+{{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpAgentDepth }}
+{{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpToolExecutionTimeout }}
+{{- $_ := set $client "mcp_tool_execution_timeout" .Values.bifrost.client.mcpToolExecutionTimeout }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpCodeModeBindingLevel }}
+{{- $_ := set $client "mcp_code_mode_binding_level" .Values.bifrost.client.mcpCodeModeBindingLevel }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpToolSyncInterval" }}
+{{- $_ := set $client "mcp_tool_sync_interval" .Values.bifrost.client.mcpToolSyncInterval }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
+{{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
@@ -308,6 +345,15 @@ false
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
 {{- end }}
+{{- if .Values.bifrost.governance.routingRules }}
+{{- $_ := set $governance "routing_rules" .Values.bifrost.governance.routingRules }}
+{{- end }}
+{{- if .Values.bifrost.governance.modelConfigs }}
+{{- $_ := set $governance "model_configs" .Values.bifrost.governance.modelConfigs }}
+{{- end }}
+{{- if .Values.bifrost.governance.providers }}
+{{- $_ := set $governance "providers" .Values.bifrost.governance.providers }}
+{{- end }}
 {{- if .Values.bifrost.governance.authConfig }}
 {{- $authConfig := dict }}
 {{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.usernameKey }}
@@ -330,7 +376,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -363,6 +409,9 @@ false
 {{- $cluster := dict "enabled" true }}
 {{- if .Values.bifrost.cluster.peers }}
 {{- $_ := set $cluster "peers" .Values.bifrost.cluster.peers }}
+{{- end }}
+{{- if .Values.bifrost.cluster.region }}
+{{- $_ := set $cluster "region" .Values.bifrost.cluster.region }}
 {{- end }}
 {{- if .Values.bifrost.cluster.gossip }}
 {{- $gossip := dict }}
@@ -455,6 +504,7 @@ false
 {{- $providers := list }}
 {{- range .Values.bifrost.guardrails.providers }}
 {{- $provider := dict "id" .id "provider_name" .provider_name "policy_name" .policy_name "enabled" .enabled }}
+{{- if .timeout }}{{- $_ := set $provider "timeout" .timeout }}{{- end }}
 {{- if .config }}{{- $_ := set $provider "config" .config }}{{- end }}
 {{- $providers = append $providers $provider }}
 {{- end }}
@@ -520,6 +570,12 @@ false
 {{- end }}
 {{- $_ := set $weaviateConfig "grpc_config" $grpcConfig }}
 {{- end }}
+{{- if .Values.vectorStore.weaviate.external.timeout }}
+{{- $_ := set $weaviateConfig "timeout" .Values.vectorStore.weaviate.external.timeout }}
+{{- end }}
+{{- if .Values.vectorStore.weaviate.external.className }}
+{{- $_ := set $weaviateConfig "class_name" .Values.vectorStore.weaviate.external.className }}
+{{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $weaviateConfig }}
 {{- else if eq .Values.vectorStore.type "redis" }}
@@ -529,8 +585,41 @@ false
 {{- $_ := set $redisConfig "password" $password }}
 {{- end }}
 {{- if .Values.vectorStore.redis.external.enabled }}
+{{- if .Values.vectorStore.redis.external.username }}
+{{- $_ := set $redisConfig "username" .Values.vectorStore.redis.external.username }}
+{{- end }}
 {{- if .Values.vectorStore.redis.external.database }}
 {{- $_ := set $redisConfig "db" .Values.vectorStore.redis.external.database }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.poolSize }}
+{{- $_ := set $redisConfig "pool_size" .Values.vectorStore.redis.external.poolSize }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.maxActiveConns }}
+{{- $_ := set $redisConfig "max_active_conns" .Values.vectorStore.redis.external.maxActiveConns }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.minIdleConns }}
+{{- $_ := set $redisConfig "min_idle_conns" .Values.vectorStore.redis.external.minIdleConns }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.maxIdleConns }}
+{{- $_ := set $redisConfig "max_idle_conns" .Values.vectorStore.redis.external.maxIdleConns }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.connMaxLifetime }}
+{{- $_ := set $redisConfig "conn_max_lifetime" .Values.vectorStore.redis.external.connMaxLifetime }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.connMaxIdleTime }}
+{{- $_ := set $redisConfig "conn_max_idle_time" .Values.vectorStore.redis.external.connMaxIdleTime }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.dialTimeout }}
+{{- $_ := set $redisConfig "dial_timeout" .Values.vectorStore.redis.external.dialTimeout }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.readTimeout }}
+{{- $_ := set $redisConfig "read_timeout" .Values.vectorStore.redis.external.readTimeout }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.writeTimeout }}
+{{- $_ := set $redisConfig "write_timeout" .Values.vectorStore.redis.external.writeTimeout }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.contextTimeout }}
+{{- $_ := set $redisConfig "context_timeout" .Values.vectorStore.redis.external.contextTimeout }}
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $redisConfig }}
@@ -547,6 +636,16 @@ false
 {{- $_ := set $qdrantConfig "use_tls" false }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $qdrantConfig }}
+{{- else if eq .Values.vectorStore.type "pinecone" }}
+{{- $pineconeConfig := dict }}
+{{- $apiKey := include "bifrost.pinecone.apiKey" . }}
+{{- if $apiKey }}
+{{- $_ := set $pineconeConfig "api_key" $apiKey }}
+{{- end }}
+{{- if .Values.vectorStore.pinecone.external.indexHost }}
+{{- $_ := set $pineconeConfig "index_host" .Values.vectorStore.pinecone.external.indexHost }}
+{{- end }}
+{{- $_ := set $vectorStore "config" $pineconeConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
@@ -595,8 +694,20 @@ false
 {{- if $client.oauth_config_id }}
 {{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
 {{- end }}
-{{- if hasKey $client "is_ping_available" }}
-{{- $_ := set $cc "is_ping_available" $client.is_ping_available }}
+{{- if hasKey $client "isPingAvailable" }}
+{{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
+{{- end }}
+{{- if $client.clientId }}
+{{- $_ := set $cc "client_id" $client.clientId }}
+{{- end }}
+{{- if hasKey $client "isCodeModeClient" }}
+{{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
+{{- end }}
+{{- if $client.toolSyncInterval }}
+{{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.toolPricing }}
+{{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
 {{- $clientConfigs = append $clientConfigs $cc }}
 {{- end }}
@@ -609,9 +720,15 @@ false
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- $_ := set $tmConfig "max_agent_depth" .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- $_ := set $tmConfig "code_mode_binding_level" .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolSyncInterval }}
+{{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
@@ -627,6 +744,12 @@ false
 {{- $governanceConfig := dict }}
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_vk_mandatory" }}
 {{- $_ := set $governanceConfig "is_vk_mandatory" .Values.bifrost.plugins.governance.config.is_vk_mandatory }}
+{{- end }}
+{{- if .Values.bifrost.plugins.governance.config.required_headers }}
+{{- $_ := set $governanceConfig "required_headers" .Values.bifrost.plugins.governance.config.required_headers }}
+{{- end }}
+{{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
+{{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
 {{- end }}
@@ -645,6 +768,11 @@ false
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{- $scConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
+{{- if $inputConfig.dimension }}
+{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
+{{- end }}
+{{/* Only include embedding provider config when not in direct cache mode (dimension: 1) */}}
+{{- if ne (int ($inputConfig.dimension | default 1536)) 1 }}
 {{- if $inputConfig.provider }}
 {{- $_ := set $scConfig "provider" $inputConfig.provider }}
 {{- end }}
@@ -654,8 +782,6 @@ false
 {{- if $inputConfig.embedding_model }}
 {{- $_ := set $scConfig "embedding_model" $inputConfig.embedding_model }}
 {{- end }}
-{{- if $inputConfig.dimension }}
-{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
 {{- end }}
 {{- if $inputConfig.threshold }}
 {{- $_ := set $scConfig "threshold" $inputConfig.threshold }}
@@ -665,6 +791,9 @@ false
 {{- end }}
 {{- if $inputConfig.vector_store_namespace }}
 {{- $_ := set $scConfig "vector_store_namespace" $inputConfig.vector_store_namespace }}
+{{- end }}
+{{- if $inputConfig.default_cache_key }}
+{{- $_ := set $scConfig "default_cache_key" $inputConfig.default_cache_key }}
 {{- end }}
 {{- if hasKey $inputConfig "conversation_history_threshold" }}
 {{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
@@ -681,7 +810,7 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "semanticcache" "config" $scConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
@@ -697,6 +826,24 @@ false
 {{- end }}
 {{- if $inputConfig.protocol }}
 {{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
+{{- end }}
+{{- if hasKey $inputConfig "metrics_enabled" }}
+{{- $_ := set $otelConfig "metrics_enabled" $inputConfig.metrics_enabled }}
+{{- end }}
+{{- if $inputConfig.metrics_endpoint }}
+{{- $_ := set $otelConfig "metrics_endpoint" $inputConfig.metrics_endpoint }}
+{{- end }}
+{{- if $inputConfig.metrics_push_interval }}
+{{- $_ := set $otelConfig "metrics_push_interval" $inputConfig.metrics_push_interval }}
+{{- end }}
+{{- if $inputConfig.headers }}
+{{- $_ := set $otelConfig "headers" $inputConfig.headers }}
+{{- end }}
+{{- if $inputConfig.tls_ca_cert }}
+{{- $_ := set $otelConfig "tls_ca_cert" $inputConfig.tls_ca_cert }}
+{{- end }}
+{{- if hasKey $inputConfig "insecure" }}
+{{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
 {{- end }}
@@ -731,6 +878,8 @@ false
 {{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
 {{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
+{{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
+{{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
 {{- $plugins = append $plugins $customPlugin }}
 {{- end }}
 {{- end }}
@@ -762,14 +911,14 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
+{{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
+{{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required when semantic cache is enabled. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface" }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.keys }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required when semantic cache is enabled. Provide at least one API key for the embedding provider." }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required for semantic caching. Provide at least one API key for the embedding provider. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.semanticCache.config.dimension }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.dimension is required when semantic cache is enabled. This is the embedding dimension (e.g., 1536 for OpenAI text-embedding-3-small)." }}
 {{- end }}
 {{- end }}
 

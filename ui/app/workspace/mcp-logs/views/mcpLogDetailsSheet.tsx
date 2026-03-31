@@ -1,6 +1,5 @@
 "use client";
 
-import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -14,14 +13,16 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { MoreVertical, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { useState, type ReactNode } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 
 interface MCPLogDetailSheetProps {
@@ -29,6 +30,9 @@ interface MCPLogDetailSheetProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 const LogEntryDetailsView = ({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) => (
@@ -57,14 +61,18 @@ const getValidatedStatus = (status: string): Status => {
 	return "processing";
 };
 
-export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCPLogDetailSheetProps) {
+export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: MCPLogDetailSheetProps) {
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+	// Keyboard navigation: arrow up/down to navigate between logs
+	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
+	useHotkeys("down", () => onNavigate?.("next"), { enabled: open && hasNext, preventDefault: true });
 
 	if (!log) return null;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -74,10 +82,18 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							</Badge>
 						</SheetTitle>
 					</div>
+					<div className="flex items-center">
+						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="mcp-log-nav-prev" type="button">
+							<ChevronUp className="size-4" />
+						</Button>
+						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="mcp-log-nav-next" type="button">
+							<ChevronDown className="size-4" />
+						</Button>
+					</div>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" size="icon">
+								<Button variant="ghost" className="size-8" type="button">
 									<MoreVertical className="h-3 w-3" />
 								</Button>
 							</DropdownMenuTrigger>
@@ -201,6 +217,18 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
+					</div>
+				)}
+
+				{/* Metadata */}
+				{log.metadata && Object.keys(log.metadata).length > 0 && (
+					<div className="space-y-4 rounded-sm border px-6 py-4">
+						<BlockHeader title="Metadata" />
+						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+							{Object.entries(log.metadata).map(([key, value]) => (
+								<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+							))}
+						</div>
 					</div>
 				)}
 

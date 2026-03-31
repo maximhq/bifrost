@@ -6,37 +6,41 @@ import {
 	Boxes,
 	BoxIcon,
 	BugIcon,
+	Building,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircleDollarSign,
-	Cog,
 	Construction,
+	DatabaseZap,
 	FlaskConical,
 	FolderGit,
-	Gauge,
 	Globe,
 	KeyRound,
 	Landmark,
-	Layers,
 	LayoutGrid,
 	LogOut,
 	Logs,
 	Network,
 	PanelLeftClose,
 	Puzzle,
+	Router,
 	ScrollText,
 	Search,
+	SearchCheck,
 	Settings,
 	Settings2Icon,
-	Shield,
+	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
+	TrendingUp,
 	User,
 	UserRoundCheck,
 	Users,
-	Zap,
+	Wallet,
+	WalletCards,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -103,7 +107,7 @@ const MCPIcon = ({ className }: { className?: string }) => (
 const externalLinks = [
 	{
 		title: "Discord Server",
-		url: "https://getmax.im/bifrost-discord",
+		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
@@ -163,10 +167,13 @@ interface SidebarItem {
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
 
+const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
+	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
+};
+
 const SidebarItemView = ({
 	item,
 	isActive,
-	isAllowed,
 	isExternal,
 	isWebSocketConnected,
 	isExpanded,
@@ -175,12 +182,11 @@ const SidebarItemView = ({
 	router,
 	isSidebarCollapsed,
 	expandSidebar,
-	isGovernanceEnabled,
 	highlightedUrl,
+	prefetchRoute,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
-	isAllowed: boolean;
 	isExternal?: boolean;
 	isWebSocketConnected: boolean;
 	isExpanded?: boolean;
@@ -189,8 +195,8 @@ const SidebarItemView = ({
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
-	isGovernanceEnabled: boolean;
 	highlightedUrl?: string;
+	prefetchRoute: (url: string) => void;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -220,7 +226,6 @@ const SidebarItemView = ({
 	};
 
 	const handleNavigation = (url: string, e?: React.MouseEvent) => {
-		if (!isAllowed) return;
 		if (isExternal || e?.metaKey || e?.ctrlKey) {
 			openInNewTab(url);
 			return;
@@ -229,7 +234,7 @@ const SidebarItemView = ({
 	};
 
 	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
-		const url = subItem.queryParam ? `${subItem.url}?tab=${subItem.queryParam}` : subItem.url;
+		const url = getSidebarItemHref(subItem);
 		if (e?.metaKey || e?.ctrlKey) {
 			openInNewTab(url);
 			return;
@@ -249,11 +254,13 @@ const SidebarItemView = ({
 						? "bg-sidebar-accent text-accent-foreground border-primary/20"
 						: isActive || isAnySubItemActive
 							? "bg-sidebar-accent text-primary border-primary/20"
-							: isAllowed && item.hasAccess
+							: item.hasAccess
 								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
 								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 				} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
+				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
+				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
@@ -283,17 +290,15 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
-						// Hide governance-dependent subitems when governance is disabled
-						if ((subItem.url === "/workspace/model-limits" || subItem.url === "/workspace/routing-rules") && !isGovernanceEnabled)
-							return null;
+						const subItemHref = getSidebarItemHref(subItem);
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
-						const isSubItemHighlighted = highlightedUrl === subItem.url;
+						const isSubItemHighlighted = highlightedUrl === subItemHref;
 						const SubItemIcon = subItem.icon;
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									data-nav-url={subItem.url}
+									data-nav-url={subItemHref}
 									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 										isSubItemHighlighted
 											? "bg-sidebar-accent text-accent-foreground"
@@ -304,10 +309,17 @@ const SidebarItemView = ({
 													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 									}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
+									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
+									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
 								>
-									<div className="flex items-center gap-2">
+									<div className="flex w-full items-center gap-2">
 										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
 										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+										{subItem.tag && (
+											<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+												{subItem.tag}
+											</Badge>
+										)}
 									</div>
 								</SidebarMenuSubButton>
 							</SidebarMenuSubItem>
@@ -379,6 +391,7 @@ export default function AppSidebar() {
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
+	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
@@ -392,6 +405,10 @@ export default function AppSidebar() {
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
+	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
 	const items = useMemo(
 		() => [
@@ -430,33 +447,40 @@ export default function AppSidebar() {
 						description: "Log connectors",
 						hasAccess: hasObservabilityAccess,
 					},
+					{
+						title: "Logs Settings",
+						url: "/workspace/config/logging",
+						icon: Settings,
+						description: "Logs configuration",
+						hasAccess: hasSettingsAccess,
+					},
 				],
 			},
 			{
-				title: "Prompt Repository",
-				url: "/workspace/prompt-repo",
-				icon: FolderGit,
-				description: "Prompt repository",
-				hasAccess: true,
-			},
-			{
-				title: "Model Providers",
+				title: "Models",
 				url: "/workspace/providers",
 				icon: BoxIcon,
 				description: "Configure models",
-				hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess || hasGovernanceAccess,
+				hasAccess: true,
 				subItems: [
 					{
-						title: "Configurations",
+						title: "Model Catalog",
+						url: "/workspace/model-catalog",
+						icon: LayoutGrid,
+						description: "Overview of providers, keys, and usage",
+						hasAccess: hasModelProvidersAccess,
+					},
+					{
+						title: "Model Providers",
 						url: "/workspace/providers",
-						icon: Cog,
+						icon: Boxes,
 						description: "Configure models",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
 						title: "Budgets & Limits",
 						url: "/workspace/model-limits",
-						icon: Gauge,
+						icon: Wallet,
 						description: "Model limits",
 						hasAccess: hasGovernanceAccess,
 					},
@@ -466,6 +490,13 @@ export default function AppSidebar() {
 						icon: Network,
 						description: "Intelligent routing rules",
 						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						title: "Pricing config",
+						url: "/workspace/custom-pricing",
+						icon: CircleDollarSign,
+						description: "Pricing configuration",
+						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
@@ -497,13 +528,19 @@ export default function AppSidebar() {
 						description: "MCP auth config",
 						hasAccess: hasMCPGatewayAccess,
 					},
+					{
+						title: "MCP Settings",
+						url: "/workspace/mcp-settings",
+						icon: Settings,
+						description: "MCP configuration",
+						hasAccess: hasMCPGatewayAccess,
+					},
 				],
 			},
 			{
 				title: "Plugins",
 				url: "/workspace/plugins",
 				icon: Puzzle,
-				tag: "BETA",
 				description: "Manage custom plugins",
 				hasAccess: hasPluginsAccess,
 			},
@@ -511,29 +548,36 @@ export default function AppSidebar() {
 				title: "Governance",
 				url: "/workspace/governance",
 				icon: Landmark,
-				description: "Govern access",
-				hasAccess:
-					hasGovernanceAccess ||
-					hasVirtualKeysAccess ||
-					hasCustomersAccess ||
-					hasTeamsAccess ||
-					hasUserProvisioningAccess ||
-					hasRbacAccess ||
-					hasAuditLogsAccess,
+				description: "Virtual keys, users, teams, customers & roles",
+				hasAccess: hasGovernanceAccess,
 				subItems: [
 					{
 						title: "Virtual Keys",
-						url: "/workspace/virtual-keys",
+						url: "/workspace/governance/virtual-keys",
 						icon: KeyRound,
 						description: "Manage virtual keys & access",
 						hasAccess: hasVirtualKeysAccess,
 					},
 					{
-						title: "Users & Groups",
-						url: "/workspace/user-groups",
+						title: "Users",
+						url: "/workspace/governance/users",
 						icon: Users,
-						description: "Manage users & groups",
-						hasAccess: hasCustomersAccess || hasTeamsAccess,
+						description: "Manage users",
+						hasAccess: hasUsersAccess,
+					},
+					{
+						title: "Teams",
+						url: "/workspace/governance/teams",
+						icon: Building,
+						description: "Manage teams",
+						hasAccess: hasTeamsAccess,
+					},
+					{
+						title: "Customers",
+						url: "/workspace/governance/customers",
+						icon: WalletCards,
+						description: "Manage customers",
+						hasAccess: hasCustomersAccess,
 					},
 					{
 						title: "User Provisioning",
@@ -544,7 +588,7 @@ export default function AppSidebar() {
 					},
 					{
 						title: "Roles & Permissions",
-						url: "/workspace/rbac",
+						url: "/workspace/governance/rbac",
 						icon: UserRoundCheck,
 						description: "User roles and permissions",
 						hasAccess: hasRbacAccess,
@@ -566,10 +610,10 @@ export default function AppSidebar() {
 				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 				subItems: [
 					{
-						title: "Configuration",
+						title: "Rules",
 						url: "/workspace/guardrails/configuration",
-						icon: Cog,
-						description: "Guardrail configuration",
+						icon: SearchCheck,
+						description: "Guardrail rules",
 						hasAccess: hasGuardrailsConfigAccess,
 					},
 					{
@@ -582,17 +626,9 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "Evals",
-				url: "https://www.getmaxim.ai",
-				icon: FlaskConical,
-				isExternal: true,
-				description: "Evaluations",
-				hasAccess: true,
-			},
-			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
-				icon: Layers,
+				icon: Network,
 				description: "Manage Bifrost cluster",
 				hasAccess: hasClusterConfigAccess,
 			},
@@ -603,12 +639,48 @@ export default function AppSidebar() {
 				description: "Manage adaptive load balancer",
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
+			...(isDbConnected
+				? [
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+							subItems: [
+								{
+									title: "Prompts",
+									url: "/workspace/prompt-repo/prompts",
+									icon: SquareTerminal,
+									description: "Manage prompts",
+									hasAccess: hasPromptRepositoryAccess,
+									tag: "Beta",
+								},
+								{
+									title: "Deployments",
+									url: "/workspace/prompt-repo/deployments",
+									icon: Router,
+									description: "Manage deployment",
+									hasAccess: hasPromptDeploymentStrategyAccess,
+								},
+							],
+						},
+					]
+				: []),
 			{
-				title: "Config",
+				title: "Evals",
+				url: "https://www.getmaxim.ai",
+				icon: FlaskConical,
+				isExternal: true,
+				description: "Evaluations",
+				hasAccess: true,
+			},
+			{
+				title: "Settings",
 				url: "/workspace/config",
 				icon: Settings2Icon,
 				description: "Bifrost settings",
-				hasAccess: hasSettingsAccess,
+				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
 				subItems: [
 					{
 						title: "Client Settings",
@@ -618,51 +690,16 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "MCP Gateway",
-						url: "/workspace/config/mcp-gateway",
-						icon: MCPIcon,
-						description: "MCP gateway configuration",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Pricing Config",
-						url: "/workspace/config/pricing-config",
-						icon: CircleDollarSign,
-						description: "Pricing configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Logging",
-						url: "/workspace/config/logging",
-						icon: Logs,
-						description: "Logging configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Governance",
-						url: "/workspace/config/governance",
-						icon: Landmark,
-						description: "Governance settings",
-						hasAccess: hasSettingsAccess,
-					},
-					{
 						title: "Caching",
 						url: "/workspace/config/caching",
-						icon: Zap,
+						icon: DatabaseZap,
 						description: "Caching configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Observability",
-						url: "/workspace/config/observability",
-						icon: Gauge,
-						description: "Observability settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
 						title: "Security",
 						url: "/workspace/config/security",
-						icon: Shield,
+						icon: ShieldCheck,
 						description: "Security settings",
 						hasAccess: hasSettingsAccess,
 					},
@@ -687,7 +724,7 @@ export default function AppSidebar() {
 					{
 						title: "Performance Tuning",
 						url: "/workspace/config/performance-tuning",
-						icon: Zap,
+						icon: TrendingUp,
 						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
 					},
@@ -700,6 +737,7 @@ export default function AppSidebar() {
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,
 			hasPluginsAccess,
+			hasUsersAccess,
 			hasUserProvisioningAccess,
 			hasAuditLogsAccess,
 			hasCustomersAccess,
@@ -713,6 +751,9 @@ export default function AppSidebar() {
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
+			hasPromptRepositoryAccess,
+			hasPromptDeploymentStrategyAccess,
+			isDbConnected,
 		],
 	);
 
@@ -740,6 +781,16 @@ export default function AppSidebar() {
 	const { resolvedTheme } = useTheme();
 	const [logout] = useLogoutMutation();
 
+	const prefetchRoute = useCallback(
+		(url: string) => {
+			if (!url.startsWith("/")) {
+				return;
+			}
+			router.prefetch(url);
+		},
+		[router],
+	);
+
 	// Get user info from localStorage (for enterprise SCIM OAuth)
 	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
 
@@ -757,9 +808,6 @@ export default function AppSidebar() {
 		}
 		return false;
 	}, [latestRelease, version]);
-	// Get governance config from RTK Query
-	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config.enable_governance || false;
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
@@ -777,7 +825,7 @@ export default function AppSidebar() {
 		if (newExpandedItems.size > 0) {
 			setExpandedItems((prev) => new Set([...prev, ...newExpandedItems]));
 		}
-	}, [pathname]);
+	}, [pathname, items]);
 
 	// Auto-expand parents when search matches their subItems
 	useEffect(() => {
@@ -828,11 +876,10 @@ export default function AppSidebar() {
 				if (searchQuery.trim() || expandedItems.has(item.title)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
-						if ((sub.url === "/workspace/model-limits" || sub.url === "/workspace/routing-rules") && !isGovernanceEnabled) continue;
-						result.push({ title: sub.title, url: sub.url, queryParam: sub.queryParam });
+						result.push({ title: sub.title, url: getSidebarItemHref(sub), queryParam: sub.queryParam });
 					}
 				} else {
-					// Parent is collapsed — include parent as a toggle target
+					// Parent is collapsed - include parent as a toggle target
 					if (item.hasAccess) result.push({ title: item.title, url: item.url });
 				}
 			} else {
@@ -840,7 +887,7 @@ export default function AppSidebar() {
 			}
 		}
 		return result;
-	}, [filteredItems, expandedItems, searchQuery, isGovernanceEnabled]);
+	}, [filteredItems, expandedItems, searchQuery]);
 
 	const handleSearchKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -854,7 +901,7 @@ export default function AppSidebar() {
 				e.preventDefault();
 				const target = navigableItems[focusedIndex];
 				if (target) {
-					const url = target.queryParam ? `${target.url}?tab=${target.queryParam}` : target.url;
+					const url = target.url;
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
 						window.open(url, "_blank", "noopener,noreferrer");
 					} else {
@@ -894,9 +941,16 @@ export default function AppSidebar() {
 		});
 	};
 
+	const configExceptions = ["/workspace/config/logging"];
+
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
-		if (url !== "/" && pathname.startsWith(url)) return true;
+		if (url !== "/" && pathname.startsWith(url)) {
+			if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
+				return false;
+			}
+			return true;
+		}
 		return false;
 	};
 
@@ -1041,7 +1095,7 @@ export default function AppSidebar() {
 							setFocusedIndex(-1);
 						}}
 						onKeyDown={handleSearchKeyDown}
-						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-white"
+						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-transparent"
 					/>
 					<kbd className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 flex -translate-y-1/2 gap-0.5 text-[10px]">
 						<span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">⌘</span>
@@ -1055,25 +1109,24 @@ export default function AppSidebar() {
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {
 								const isActive = isActiveRoute(item.url);
-								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
+
 								const highlightedUrl = focusedIndex >= 0 ? navigableItems[focusedIndex]?.url : undefined;
 								return (
 									<SidebarItemView
 										key={item.title}
 										item={item}
 										isActive={isActive}
-										isAllowed={isAllowed}
 										isExternal={item.isExternal ?? false}
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
-										pathname={pathname}
-										router={router}
-										isSidebarCollapsed={sidebarState === "collapsed"}
-										expandSidebar={() => toggleSidebar()}
-										isGovernanceEnabled={isGovernanceEnabled}
-										highlightedUrl={highlightedUrl}
-									/>
+									pathname={pathname}
+									router={router}
+									isSidebarCollapsed={sidebarState === "collapsed"}
+									expandSidebar={() => toggleSidebar()}
+									highlightedUrl={highlightedUrl}
+									prefetchRoute={prefetchRoute}
+								/>
 								);
 							})}
 						</SidebarMenu>

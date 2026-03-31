@@ -14,12 +14,13 @@ import { Control, useFormContext } from "react-hook-form";
 interface AllowedRequestsFieldsProps {
 	control: Control<any>;
 	namePrefix?: string;
+	pathOverridesPrefix?: string;
 	providerType?: BaseProvider;
 	disabled?: boolean;
 }
 
 // Provider-specific endpoint paths
-const PROVIDER_ENDPOINTS: Partial<Record<BaseProvider, Partial<Record<RequestType, string>>>> = {
+const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType, string>>>> = {
 	openai: {
 		list_models: "/v1/models",
 		text_completion: "/v1/completions",
@@ -57,13 +58,13 @@ const PROVIDER_ENDPOINTS: Partial<Record<BaseProvider, Partial<Record<RequestTyp
 
 // Helper function to get the appropriate placeholder
 const getPlaceholder = (providerType: BaseProvider | undefined, requestKey: RequestType): string => {
-	if (providerType && PROVIDER_ENDPOINTS[providerType]?.[requestKey]) {
-		return PROVIDER_ENDPOINTS[providerType][requestKey]!;
+	if (providerType && ProviderEndpoints[providerType]?.[requestKey]) {
+		return ProviderEndpoints[providerType][requestKey]!;
 	}
-	return PROVIDER_ENDPOINTS["openai"]?.[requestKey] ?? "";
+	return ProviderEndpoints["openai"]?.[requestKey] ?? "";
 };
 
-const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
+const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "list_models", label: "List Models" },
 	{ key: "text_completion", label: "Text Completion" },
 	{ key: "text_completion_stream", label: "Text Completion Stream" },
@@ -84,14 +85,20 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
 
-export function AllowedRequestsFields({ control, namePrefix = "allowed_requests", providerType, disabled = false }: AllowedRequestsFieldsProps) {
-	const leftColumn = REQUEST_TYPES.slice(0, 6);
-	const rightColumn = REQUEST_TYPES.slice(6);
+export function AllowedRequestsFields({
+	control,
+	namePrefix = "allowed_requests",
+	pathOverridesPrefix = "request_path_overrides",
+	providerType,
+	disabled = false,
+}: AllowedRequestsFieldsProps) {
+	const leftColumn = RequestTypes.slice(0, RequestTypes.length / 2);
+	const rightColumn = RequestTypes.slice(RequestTypes.length / 2);
 	const { getValues, setValue } = useFormContext();
 
 	// Reset disabled fields when providerType changes
 	useEffect(() => {
-		REQUEST_TYPES.forEach(({ key }) => {
+		RequestTypes.forEach(({ key }) => {
 			const fieldName = `${namePrefix}.${key}`;
 			setValue(fieldName, !isRequestTypeDisabled(providerType, key), { shouldDirty: true });
 		});
@@ -120,7 +127,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && (
 								<FormField
 									control={control}
-									name={`request_path_overrides.${requestType.key}`}
+									name={`${pathOverridesPrefix}.${requestType.key}`}
 									render={({ field: pathField }) => (
 										<Popover>
 											<PopoverTrigger asChild>
@@ -136,8 +143,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 												<div className="space-y-2">
 													<h4 className="text-sm font-medium">Custom Path or URL</h4>
 													<p className="text-muted-foreground text-xs">
-														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass
-														base_url
+														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass base_url
 													</p>
 													<Input placeholder={placeholder} {...pathField} value={pathField.value || ""} className="h-9" />
 												</div>

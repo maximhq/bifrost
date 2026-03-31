@@ -355,7 +355,7 @@ chatReq := &schemas.BifrostChatRequest{
 
 ```go
 // After calling Bifrost Chat Completions with reasoning
-resp, err := client.ChatCompletionRequest(ctx, chatReq)
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), chatReq)
 if err != nil {
   log.Fatal(err)
 }
@@ -807,7 +807,7 @@ chatReq := &schemas.BifrostChatRequest{
 
 ```go
 // After calling Bifrost Chat Completions with Gemini
-resp, err := client.ChatCompletionRequest(ctx, chatReq)
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), chatReq)
 if err != nil {
   log.Fatal(err)
 }

@@ -1,13 +1,14 @@
 // Package encrypt provides reversible AES-256-GCM encryption and decryption utilities
 // for securing sensitive data like API keys and credentials.
-// We are not using it anywhere yet - we will introduce encryption for all the sensitive data in one go to avoid breaking changes
 package encrypt
 
 import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,9 +29,8 @@ var ErrEncryptionKeyNotInitialized = errors.New("encryption key is not initializ
 func Init(key string, _logger schemas.Logger) {
 	logger = _logger
 	if key == "" {
-		// TODO uncomment this warning when we have full coverage for encryption
-		// In this case encryption will be disabled
-		// logger.Warn("encryption key is not set, encryption will be disabled. To set encryption key: use the encryption_key field in the configuration file or set the BIFROST_ENCRYPTION_KEY environment variable. Note that - once encryption key is set, it cannot be changed later unless you clean up the database.")
+		encryptionKey = nil
+		logger.Warn("encryption key is not set, encryption will be disabled. To set encryption key: use the encryption_key field in the configuration file or set the BIFROST_ENCRYPTION_KEY environment variable. Note that - once encryption key is set, it cannot be changed later unless you clean up the database.")
 		return
 	}
 
@@ -98,6 +98,18 @@ func Encrypt(plaintext string) (string, error) {
 
 	// Encode to base64 for storage
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// IsEnabled returns true if the encryption key has been initialized
+func IsEnabled() bool {
+	return encryptionKey != nil
+}
+
+// HashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+// Used for hash-based lookups on encrypted columns (e.g., virtual key value, session token).
+func HashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
 }
 
 // Decrypt decrypts a base64-encoded ciphertext using AES-256-GCM and returns the plaintext

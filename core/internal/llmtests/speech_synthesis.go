@@ -97,7 +97,8 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				}
 
 				// Enhanced validation for speech synthesis
-				expectations := SpeechExpectations(tc.expectMinBytes)
+				// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+				expectations := ApplyRawExpectations(SpeechExpectations(tc.expectMinBytes), testConfig, false, false, true)
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 				// Create Speech retry config
@@ -110,9 +111,8 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					OnFinalFail: retryConfig.OnFinalFail,
 				}
 
-				
 				speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-					requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.SpeechRequest(requestCtx, request)
 				})
 
@@ -188,6 +188,11 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
+			// Groq doesn't support instructions
+			if testConfig.Provider == schemas.Groq {
+				request.Params.Instructions = ""
+			}
+
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisHD", testConfig)
 			retryContext := TestRetryContext{
 				ScenarioName: "SpeechSynthesis_HD_LongText",
@@ -203,7 +208,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				},
 			}
 
-			expectations := SpeechExpectations(5000) // HD should produce substantial audio
+			// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+			expectations := ApplyRawExpectations(SpeechExpectations(5000), testConfig, false, false, true) // HD should produce substantial audio
 			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 			// Create Speech retry config
@@ -216,10 +222,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				OnFinalFail: retryConfig.OnFinalFail,
 			}
 
-			
-
 			speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-				requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.SpeechRequest(requestCtx, request)
 			})
 			if bifrostErr != nil {
@@ -273,7 +277,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
 
-					expectations := SpeechExpectations(500)
+					// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+					expectations := ApplyRawExpectations(SpeechExpectations(500), testConfig, false, false, true)
 					expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 					// Use retry framework for voice test
@@ -299,9 +304,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						OnFinalFail: voiceRetryConfig.OnFinalFail,
 					}
 
-					
 					speechResponse, bifrostErr := WithSpeechTestRetry(t, voiceSpeechRetryConfig, voiceRetryContext, expectations, "SpeechSynthesis_VoiceType_"+voiceType, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-						requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+						requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 						return client.SpeechRequest(requestCtx, request)
 					})
 

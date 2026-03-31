@@ -322,6 +322,63 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
+### TLS for Self-Signed or Internal Certificates
+
+When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `insecure_skip_verify` | boolean | Disable TLS certificate verification. Use only for trusted internal environments. **Not recommended for production.** |
+| `ca_cert_pem` | string | PEM-encoded CA certificate to trust for provider connections. Use when the endpoint uses a custom CA. |
+
+These options are mutually exclusive. Do not set `insecure_skip_verify: true` together with `ca_cert_pem`; provider config validation rejects that combination.
+
+**Option 1: Skip verification (air-gapped / self-signed)**
+
+```json
+{
+    "my-air-gapped-provider": {
+        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": [], "weight": 1.0 }],
+        "network_config": {
+            "base_url": "https://internal-llm.example.com",
+            "insecure_skip_verify": true
+        },
+        "custom_provider_config": {
+            "base_provider_type": "openai",
+            "allowed_requests": {
+                "chat_completion": true,
+                "chat_completion_stream": true
+            }
+        }
+    }
+}
+```
+
+**Option 2: Custom CA certificate (preferred when you have the CA)**
+
+```json
+{
+    "my-internal-provider": {
+        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": [], "weight": 1.0 }],
+        "network_config": {
+            "base_url": "https://internal-llm.example.com",
+            "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+        },
+        "custom_provider_config": {
+            "base_provider_type": "openai",
+            "allowed_requests": {
+                "chat_completion": true,
+                "chat_completion_stream": true
+            }
+        }
+    }
+}
+```
+
+<Warning>
+Using `insecure_skip_verify` disables all certificate verification and is insecure. Prefer `ca_cert_pem` when you have the CA certificate. Only use `insecure_skip_verify` in trusted, isolated environments (e.g., air-gapped networks).
+</Warning>
+
 ## Use Cases
 
 ### 1. Environment-Specific Configurations

@@ -1,0 +1,276 @@
+# Video Generation Endpoints
+
+video-generation:
+  post:
+    operationId: videoGeneration
+    summary: Generate a video
+    description: |
+      Creates a video generation job from a text prompt. This is an asynchronous operation
+      that returns immediately with a job ID. Use the retrieve endpoint to check the status
+      and get the video URL when generation is complete.
+    tags:
+      - Videos
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/videos.yaml#/VideoGenerationRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns a video generation job object with status information.
+          Poll the retrieve endpoint to check completion status.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoGenerationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  get:
+    operationId: videoList
+    summary: List video generation jobs
+    description: |
+      Lists video generation jobs for a specific provider. Results are paginated
+      and can be filtered using query parameters.
+    tags:
+      - Videos
+    parameters:
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+        description: Provider name (e.g., "openai", "gemini")
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Cursor for pagination - ID of the last item from the previous page
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        description: Maximum number of results to return
+      - name: order
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+            - "asc"
+            - "desc"
+          default: "desc"
+        description: Sort order by creation time
+    responses:
+      '200':
+        description: Successful response. Returns a paginated list of video generation jobs.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+video-by-id:
+  get:
+    operationId: videoRetrieve
+    summary: Retrieve a video generation job
+    description: |
+      Retrieves the status and metadata for a video generation job.
+      Use this endpoint to poll for completion status after creating a video generation job.
+      When the status is "completed", the response will include a URL to download the video.
+    tags:
+      - Videos
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    responses:
+      '200':
+        description: Successful response. Returns the video generation job details.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoGenerationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: videoDelete
+    summary: Delete a video generation job
+    description: |
+      Deletes a video generation job and its associated assets.
+      This operation cannot be undone.
+    tags:
+      - Videos
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    responses:
+      '200':
+        description: Successful response. Returns deletion confirmation.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoDeleteResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+video-download:
+  get:
+    operationId: videoDownload
+    summary: Download video content
+    description: |
+      Downloads the binary content of a generated video.
+      The video must have a status of "completed" to be downloadable.
+      Returns the raw video file (typically MP4 format).
+    tags:
+      - Videos
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+      - name: variant
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+            - "video"
+            - "thumbnail"
+            - "spritesheet"
+        description: Variant of the video content to download (provider-specific)
+    responses:
+      '200':
+        description: Successful response. Returns the video file as binary content.
+        content:
+          video/mp4:
+            schema:
+              type: string
+              format: binary
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found or not yet available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+video-delete:
+  delete:
+    operationId: videoDelete
+    summary: Delete a video generation job
+    description: |
+      Deletes a video generation job and its associated assets.
+      This operation cannot be undone.
+    tags:
+      - Videos
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    responses:
+      '200':
+        description: Successful response. Returns deletion confirmation.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoDeleteResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Video not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+video-remix:
+  post:
+    operationId: videoRemix
+    summary: Remix a video
+    description: |
+      Creates a new video generation job by remixing an existing video with a new prompt.
+      The source video must have a status of "completed" to be remixed.
+      Returns a new video generation job that can be polled for completion.
+    tags:
+      - Videos
+    parameters:
+      - name: video_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/videos.yaml#/VideoRemixRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns a new video generation job object.
+          Poll the retrieve endpoint to check completion status.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoGenerationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Source video not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +29,9 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
@@ -49,7 +53,7 @@ var enterprisePlugins = []string{
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
 	// Plugins callbacks
-	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 	// Auth related callbacks
@@ -74,6 +78,7 @@ type ServerCallbacks interface {
 	RemoveVirtualKey(ctx context.Context, id string) error
 	// Provider related callbacks
 	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
@@ -102,9 +107,10 @@ type BifrostHTTPServer struct {
 	Host   string
 	AppDir string
 
-	LogLevel       string
-	LogOutputStyle string
-	LogsCleaner    *logstore.LogsCleaner
+	LogLevel        string
+	LogOutputStyle  string
+	LogsCleaner     *logstore.LogsCleaner
+	AsyncJobCleaner *logstore.AsyncJobCleaner
 
 	Client *bifrost.Bifrost
 	Config *lib.Config
@@ -112,12 +118,16 @@ type BifrostHTTPServer struct {
 	Server *fasthttp.Server
 	Router *router.Router
 
-	WebSocketHandler *handlers.WebSocketHandler
-	MCPServerHandler *handlers.MCPServerHandler
-	devPprofHandler  *handlers.DevPprofHandler
+	WebSocketHandler   *handlers.WebSocketHandler
+	MCPServerHandler   *handlers.MCPServerHandler
+	devPprofHandler    *handlers.DevPprofHandler
+	IntegrationHandler *handlers.IntegrationHandler
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
+	WSTicketStore     *handlers.WSTicketStore
+
+	wsPool *bfws.Pool
 }
 
 var logger schemas.Logger
@@ -436,6 +446,16 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 }
 
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
+	if s.Config.ModelCatalog == nil {
+		return nil, fmt.Errorf("pricing manager not found")
+	}
+	if s.Client == nil {
+		return nil, fmt.Errorf("bifrost client not found")
+	}
+
 	// Load provider from DB
 	providerInfo, err := s.Config.ConfigStore.GetProvider(ctx, provider)
 	if err != nil {
@@ -479,15 +499,13 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	}
 
 	// Syncing models (this part always runs regardless of governance)
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return nil, fmt.Errorf("pricing manager not found")
-	}
-	if s.Client == nil {
-		return nil, fmt.Errorf("bifrost client not found")
+	if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerInfo.PricingOverrides); err != nil {
+		logger.Warn("failed to refresh pricing overrides for provider %s: %v", provider, err)
 	}
 
-	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
 	defer bfCtx.Cancel()
 
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -512,30 +530,46 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	if err != nil {
 		return nil, fmt.Errorf("failed to update provider model catalog: failed to get keys by provider: %s", err)
 	}
-	modelsInKeys := make([]schemas.Model, 0)
+	allowedInKeys := make([]schemas.Model, 0)
+	deniedInKeys := make([]schemas.Model, 0)
 	for _, key := range providerKeys {
 		for _, model := range key.Models {
-			modelsInKeys = append(modelsInKeys, schemas.Model{
+			if !slices.Contains(key.BlacklistedModels, model) {
+				allowedInKeys = append(allowedInKeys, schemas.Model{
+					ID: string(provider) + "/" + model,
+				})
+			}
+		}
+		for _, model := range key.BlacklistedModels {
+			deniedInKeys = append(deniedInKeys, schemas.Model{
 				ID: string(provider) + "/" + model,
 			})
 		}
 	}
-	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
+	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, allowedInKeys, deniedInKeys)
+	unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+		Provider:   provider,
+		Unfiltered: true,
+	})
+	if listModelsErr != nil {
+		logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+	} else {
+		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+	}
 	return updatedProvider, nil
 }
 
 // RemoveProvider removes a provider from the in-memory store
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	err := s.Config.RemoveProvider(ctx, provider)
-	// For not found, we continue to remove the provider from the client
-	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		logger.Error("failed to remove provider from config: %v", err)
+	err := s.Client.RemoveProvider(provider)
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
-	err = s.Client.RemoveProvider(provider)
-	if err != nil {
-		logger.Error("failed to remove provider: %v", err)
-		return err
+	err = s.Config.RemoveProvider(ctx, provider)
+	if err != nil && !errors.Is(err, lib.ErrNotFound) {
+		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
+		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
 	}
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
@@ -546,6 +580,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		return fmt.Errorf("pricing manager not found")
 	}
 	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
+	s.Config.ModelCatalog.DeleteProviderPricingOverrides(provider)
 
 	return nil
 }
@@ -713,6 +748,11 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize new model catalog: %w", err)
 		}
 		s.Config.ModelCatalog = modelCatalog
+		for provider, providerConfig := range s.Config.Providers {
+			if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
+				logger.Warn("failed to seed pricing overrides for provider %s: %v", provider, err)
+			}
+		}
 	} else {
 		if err := s.Config.ModelCatalog.ForceReloadPricing(ctx); err != nil {
 			return fmt.Errorf("failed to force reload pricing: %w", err)
@@ -720,7 +760,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
@@ -729,14 +769,31 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 			}
 			allowedModels := make([]schemas.Model, 0)
+			deniedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
 				for _, model := range key.Models {
-					allowedModels = append(allowedModels, schemas.Model{
+					if !slices.Contains(key.BlacklistedModels, model) {
+						allowedModels = append(allowedModels, schemas.Model{
+							ID: string(provider) + "/" + model,
+						})
+					}
+				}
+				for _, model := range key.BlacklistedModels {
+					deniedModels = append(deniedModels, schemas.Model{
 						ID: string(provider) + "/" + model,
 					})
 				}
 			}
-			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels, deniedModels)
+			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider:   provider,
+				Unfiltered: true,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			} else {
+				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+			}
 			bfCtx.Cancel()
 		}
 	}
@@ -759,8 +816,10 @@ func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	// Store the header filter config in ClientConfig
+	// Store the raw header filter config in ClientConfig
 	s.Config.ClientConfig.HeaderFilterConfig = config
+	// Compile into optimized matcher for O(1) per-request lookups
+	s.Config.SetHeaderMatcher(lib.NewHeaderMatcher(config))
 	allowlistLen := 0
 	denylistLen := 0
 	if config != nil {
@@ -777,6 +836,14 @@ func (s *BifrostHTTPServer) GetModelsForProvider(provider schemas.ModelProvider)
 		return []string{}
 	}
 	return s.Config.ModelCatalog.GetModelsForProvider(provider)
+}
+
+// GetUnfilteredModelsForProvider returns all unfiltered models for a specific provider from the model catalog
+func (s *BifrostHTTPServer) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return []string{}
+	}
+	return s.Config.ModelCatalog.GetUnfilteredModelsForProvider(provider)
 }
 
 // GetPluginStatus returns the status of all plugins
@@ -796,15 +863,20 @@ func (s *BifrostHTTPServer) updatePluginErrorStatus(name, step string, originalE
 }
 
 // SyncLoadedPlugin syncs a loaded plugin to the Bifrost client and updates the plugin status
-func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin) error {
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin, placement *schemas.PluginPlacement, order *int) error {
 	// 2. Register (replaces old version atomically)
 	if err := s.Config.ReloadPlugin(plugin); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "registering", err)
 	}
+	// 2b. Set order info and re-sort
+	s.Config.SetPluginOrderInfo(plugin.GetName(), placement, order)
+	s.Config.SortAndRebuildPlugins()
 	// 3. Update Bifrost client
 	if err := s.Client.ReloadPlugin(plugin, InferPluginTypes(plugin)); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "reloading bifrost config for", err)
 	}
+	// 3b. Sync plugin execution order from config to core
+	s.Client.ReorderPlugins(s.Config.GetPluginOrder())
 	// 4. Special handling for observability plugins
 	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
 		s.reloadObservabilityPlugins()
@@ -818,14 +890,14 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // The plugin is checked for LLM and MCP interfaces independently and registered
 // to the appropriate arrays based on which interfaces it implements.
-func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
+func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error {
 	logger.Debug("reloading plugin %s", name)
 	// 1. Instantiate new version
 	plugin, err := InstantiatePlugin(ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
 		return s.updatePluginErrorStatus(name, "loading", err)
 	}
-	return s.SyncLoadedPlugin(ctx, name, plugin)
+	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -861,7 +933,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	}
 
 	// 4. Update status
-	if isDisabled, _ := ctx.Value("isDisabled").(bool); isDisabled {
+	if isDisabled, _ := ctx.Value(handlers.PluginDisabledKey).(bool); isDisabled {
 		s.markPluginDisabled(name)
 	} else {
 		s.Config.DeletePluginOverallStatus(name)
@@ -872,17 +944,22 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
+	// Initialize WebSocket pool and handler before integrations so it can be wired through
+	s.wsPool = bfws.NewPool(s.Config.WebSocketConfig.Pool)
+	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
+
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
 	s.MCPServerHandler = mcpServerHandler
-
-	integrationHandler.RegisterRoutes(s.Router, middlewares...)
+	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
+	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
+	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
 	return nil
@@ -895,7 +972,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	var loggingHandler *handlers.LoggingHandler
 	loggerPlugin, _ := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
 	if loggerPlugin != nil {
-		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
+		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
 	}
 	var governanceHandler *handlers.GovernanceHandler
 	governancePluginName := governance.PluginName
@@ -939,7 +1016,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
-	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore)
+	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
+	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore)
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
@@ -951,6 +1029,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if sessionHandler != nil {
 		sessionHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if promptsHandler != nil {
+		promptsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if cacheHandler != nil {
 		cacheHandler.RegisterRoutes(s.Router, middlewares...)
@@ -975,7 +1056,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if err == nil && prometheusPlugin.GetRegistry() != nil {
 		// Use the plugin's dedicated registry if available
 		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetRegistry(), promhttp.HandlerOpts{}))
-		s.Router.GET("/metrics", metricsHandler)
+		s.Router.GET("/metrics", lib.ChainMiddlewares(metricsHandler, middlewares...))
 	} else {
 		logger.Warn("prometheus plugin not found or registry is nil, skipping metrics endpoint")
 	}
@@ -1071,6 +1152,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
+	if s.Config.KVStore != nil {
+		integrations.RegisterKVDecoders(s.Config.KVStore)
+	}
 	// Initialize WebSocket handler early so plugins can wire event broadcasters during Init.
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
@@ -1109,9 +1193,23 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			}
 		}
 	}
+	// Initialize async job cleaner if log store is configured
+	if s.Config.LogsStore != nil {
+		s.AsyncJobCleaner = logstore.NewAsyncJobCleaner(s.Config.LogsStore, logger)
+		s.AsyncJobCleaner.StartCleanupRoutine()
+	}
 	// Load all plugins
 	if err := s.LoadPlugins(ctx); err != nil {
 		return fmt.Errorf("failed to instantiate plugins: %v", err)
+	}
+
+	// Initialize async job executor (requires LogsStore + governance plugin)
+	if s.Config.LogsStore != nil {
+		governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+		if govErr == nil {
+			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), logger)
+			logger.Info("async job executor initialized")
+		}
 	}
 
 	tableMCPConfig := s.Config.MCPConfig
@@ -1137,18 +1235,22 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPConfig:          mcpConfig,
 		OAuth2Provider:     s.Config.OAuthProvider,
 		Logger:             logger,
+		KVStore:            s.Config.KVStore,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
 	logger.Info("bifrost client initialized")
+	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
+	// but this ensures order consistency if the loading path changes in the future)
+	s.Client.ReorderPlugins(s.Config.GetPluginOrder())
 	// List all models and add to model catalog with per-provider status tracking
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -1164,14 +1266,31 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 			}
 			allowedModels := make([]schemas.Model, 0)
+			deniedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
 				for _, model := range key.Models {
-					allowedModels = append(allowedModels, schemas.Model{
+					if !slices.Contains(key.BlacklistedModels, model) {
+						allowedModels = append(allowedModels, schemas.Model{
+							ID: string(provider) + "/" + model,
+						})
+					}
+				}
+				for _, model := range key.BlacklistedModels {
+					deniedModels = append(deniedModels, schemas.Model{
 						ID: string(provider) + "/" + model,
 					})
 				}
 			}
-			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels, deniedModels)
+			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider:   provider,
+				Unfiltered: true,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			} else {
+				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+			}
 			bfCtx.Cancel()
 		}
 	}
@@ -1186,8 +1305,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.Config.ConfigStore == nil {
 		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
 	} else {
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore)
+		s.WSTicketStore = handlers.NewWSTicketStore()
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore)
 		if err != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -1197,6 +1319,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
+		if s.WSTicketStore != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
@@ -1218,13 +1344,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
+		if s.WSTicketStore != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Register UI handler
 	s.RegisterUIRoutes()
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.CorsMiddleware(s.Config)(s.Router.Handler),
+		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     1024 * 64, // 64kb
 	}
@@ -1280,30 +1410,30 @@ func (s *BifrostHTTPServer) Start() error {
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
 			logger.Info("cleaning up storage engines...")
-			// Cleaning up storage engines
-			if s.Config != nil && s.Config.ModelCatalog != nil {
-				s.Config.ModelCatalog.Cleanup()
-			}
-			if s.Config != nil && s.Config.ConfigStore != nil {
-				s.Config.ConfigStore.Close(shutdownCtx)
-			}
+			// Cleanup server-specific components
 			if s.LogsCleaner != nil {
 				logger.Info("stopping log retention cleaner...")
 				s.LogsCleaner.StopCleanupRoutine()
 			}
-			if s.Config != nil && s.Config.TokenRefreshWorker != nil {
-				logger.Info("stopping token refresh worker...")
-				s.Config.TokenRefreshWorker.Stop()
+			if s.AsyncJobCleaner != nil {
+				logger.Info("stopping async job cleaner...")
+				s.AsyncJobCleaner.StopCleanupRoutine()
+			}
+			if s.WSTicketStore != nil {
+				logger.Info("stopping ws ticket store...")
+				s.WSTicketStore.Stop()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")
 				s.devPprofHandler.Cleanup()
 			}
-			if s.Config != nil && s.Config.LogsStore != nil {
-				s.Config.LogsStore.Close(shutdownCtx)
+			if s.wsPool != nil {
+				logger.Info("closing websocket connection pool...")
+				s.wsPool.Close()
 			}
-			if s.Config != nil && s.Config.VectorStore != nil {
-				s.Config.VectorStore.Close(shutdownCtx, "")
+			// Cleanup Config and all its background components
+			if s.Config != nil {
+				s.Config.Close(shutdownCtx)
 			}
 			logger.Info("storage engines cleanup completed")
 		}()
@@ -1315,6 +1445,9 @@ func (s *BifrostHTTPServer) Start() error {
 		}
 
 	case err := <-errChan:
+		if s.wsPool != nil {
+			s.wsPool.Close()
+		}
 		return err
 	}
 	return nil

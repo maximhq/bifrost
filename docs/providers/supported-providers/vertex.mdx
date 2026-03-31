@@ -24,6 +24,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Embeddings | ✅ | - | `/embeddings` |
 | Image Generation | ✅ | - | `/generateContent` or `/predict` (Imagen) |
 | Image Edit | ✅ | - | `/generateContent` or `/predict` (Imagen) |
+| Video Generation | ✅ | - | `/predictLongRunning` (Veo models only) |
 | Image Variation | ❌ | - | Not supported |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
@@ -187,7 +188,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Vertex,
     Model:    "claude-3-5-sonnet",
     Input:    messages,
@@ -250,7 +251,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
     Input: &schemas.EmbeddingInput{
@@ -357,7 +358,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Vertex,
     Model:    "imagen-4.0-generate-001",
     Input: &schemas.ImageGenerationInput{
@@ -639,11 +640,11 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 **Code**: `utils.go:33, 71`
 </Accordion>
 
-<Accordion title="Embeddings Float64 Conversion">
+<Accordion title="Embeddings Precision Preservation">
 **Severity**: Low
-**Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
-**Impact**: Minor precision loss (expected for embeddings)
-**Code**: `embedding.go:84-87`
+**Behavior**: Vertex returns float64 embeddings, and Bifrost preserves that precision in normalized embedding responses
+**Impact**: No precision loss in the `/v1/embeddings` response path
+**Code**: `embedding.go:84-91`
 </Accordion>
 
 <Accordion title="List Models API Returns Only Custom Models">
@@ -682,3 +683,24 @@ See **[Provider-Specific Authentication - Google Vertex](../../quickstart/go-sdk
 
 </Tab>
 </Tabs>
+
+---
+
+## Video Generation
+
+Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
+
+<Note>
+Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a non-Veo model name returns a configuration error.
+</Note>
+
+**Supported Operations**
+
+| Operation | Supported | Notes |
+|-----------|-----------|-------|
+| Generate | ✅ | `POST /v1/videos` |
+| Retrieve | ✅ | `GET /v1/videos/{id}` |
+| Download | ✅ | `GET /v1/videos/{id}/content` |
+| Delete | ❌ | Not supported |
+| List | ❌ | Not supported |
+| Remix | ❌ | Not supported |

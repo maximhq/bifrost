@@ -21,6 +21,7 @@ func TestOpenRouter(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.OpenRouter,
@@ -36,7 +37,8 @@ func TestOpenRouter(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    false, // OpenRouter's responses API is in Beta
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false, // OpenRouter's responses API is in Beta
@@ -54,5 +56,4 @@ func TestOpenRouter(t *testing.T) {
 	t.Run("OpenRouterTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

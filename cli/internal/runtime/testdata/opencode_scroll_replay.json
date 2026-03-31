@@ -1,0 +1,40 @@
+{
+  "cols": 18,
+  "rows": 6,
+  "chunks": [
+    "\u001b[?1049h\u001b[2J\u001b[H",
+    "HEADER            ",
+    "\u001b[6;1HFOOTER            ",
+    "\u001b[2;",
+    "5r\u001b[?6h\u001b[2;1H",
+    "item 1\r\nitem 2\r\n",
+    "item 3\r\nitem 4",
+    "\r\nitem 5",
+    "\r\nitem 6",
+    "\u001b[?6l\u001b[r"
+  ],
+  "snapshots": [
+    {
+      "after_chunk": 3,
+      "screen": [
+        "HEADER            ",
+        "                  ",
+        "                  ",
+        "                  ",
+        "                  ",
+        "FOOTER            "
+      ]
+    },
+    {
+      "after_chunk": 9,
+      "screen": [
+        "HEADER            ",
+        "item 3            ",
+        "item 4            ",
+        "item 5            ",
+        "item 6            ",
+        "FOOTER            "
+      ]
+    }
+  ]
+}

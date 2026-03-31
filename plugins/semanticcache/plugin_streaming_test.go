@@ -48,7 +48,7 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 	t.Logf("First streaming request completed in %v with %d chunks", duration1, len(responses1))
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical streaming request (should be served from cache)...")
 
@@ -130,7 +130,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Make streaming request with same prompt and parameters
 	t.Log("Making streaming request with same prompt...")
@@ -218,7 +218,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 
 	t.Logf("Original stream had %d chunks", len(originalChunks))
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second streaming request to test cached chunk ordering...")
 	stream2, err2 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
@@ -299,7 +299,7 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 
 	t.Logf("First speech request completed in %v", duration1)
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical speech synthesis request...")
 	start2 := time.Now()

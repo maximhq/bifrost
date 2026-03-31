@@ -1,0 +1,950 @@
+{
+  "info": {
+    "name": "Bifrost Bedrock Integration API",
+    "description": "E2E tests for Bedrock integration endpoints. Requires authentication: set bedrock_api_key (or bedrock_access_key, bedrock_secret_key, bedrock_region) in environment. S3 operations need a valid bucket. Batch operations need IAM role and S3 URIs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var requestName = pm.info.requestName;",
+          "var retryKey = 'retry_' + requestName;",
+          "var ciVal = pm.environment.get('CI');",
+          "var maxRetries = (String(ciVal).toLowerCase() === 'true' || ciVal === '1' || ciVal === 1) ? 10 : 0;",
+          "if (!pm.collectionVariables.has(retryKey)) {",
+          "  pm.collectionVariables.set(retryKey, 0);",
+          "}",
+          "pm.collectionVariables.set('current_request_name', requestName);",
+          "pm.collectionVariables.set('max_retries', maxRetries);"
+        ]
+      }
+    },
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var getVar = function(k) { return (pm.environment && pm.environment.get(k)) || pm.collectionVariables.get(k) || ''; };",
+          "var apiKey = getVar('bedrock_api_key');",
+          "var accessKey = getVar('bedrock_access_key');",
+          "var secretKey = getVar('bedrock_secret_key');",
+          "var region = getVar('bedrock_region');",
+          "var sessionToken = getVar('bedrock_session_token');",
+          "if (apiKey) {",
+          "  pm.request.headers.upsert({ key: 'x-bf-bedrock-api-key', value: apiKey });",
+          "  if (region) { pm.request.headers.upsert({ key: 'x-bf-bedrock-region', value: region }); }",
+          "} else if (accessKey && secretKey) {",
+          "  pm.request.headers.upsert({ key: 'x-bf-bedrock-access-key', value: accessKey });",
+          "  pm.request.headers.upsert({ key: 'x-bf-bedrock-secret-key', value: secretKey });",
+          "  pm.request.headers.upsert({ key: 'x-bf-bedrock-region', value: region || 'us-east-1' });",
+          "  if (sessionToken) { pm.request.headers.upsert({ key: 'x-bf-bedrock-session-token', value: sessionToken }); }",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var provider = (pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || '';",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : '';",
+          "var capsStr = pm.collectionVariables.get('provider_capabilities') || '{}';",
+          "var execOrderStr = pm.collectionVariables.get('execution_order') || '[]';",
+          "var requestToOpStr = pm.collectionVariables.get('request_to_operation') || '{}';",
+          "try {",
+          "  var caps = JSON.parse(capsStr);",
+          "  var execOrder = JSON.parse(execOrderStr);",
+          "  var requestToOp = JSON.parse(requestToOpStr);",
+          "  var providerCaps = caps.providers && caps.providers[provider];",
+          "  var op = requestToOp[requestName];",
+          "  if (provider && op && providerCaps && providerCaps[op] === false) {",
+          "    if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+          "      pm.execution.skipRequest();",
+          "    }",
+          "    var idx = execOrder.indexOf(requestName);",
+          "    var nextName = (idx >= 0 && idx < execOrder.length - 1) ? execOrder[idx + 1] : null;",
+          "    if (nextName) {",
+          "      if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+          "        pm.execution.setNextRequest(nextName);",
+          "      } else if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+          "        postman.setNextRequest(nextName);",
+          "      }",
+          "    }",
+          "  }",
+          "} catch (e) {}"
+        ]
+      }
+    },
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var provider = (pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || '';",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : '';",
+          "var capsStr = pm.collectionVariables.get('provider_capabilities') || '{}';",
+          "var execOrderStr = pm.collectionVariables.get('execution_order') || '[]';",
+          "var requestToOpStr = pm.collectionVariables.get('request_to_operation') || '{}';",
+          "try {",
+          "  var caps = JSON.parse(capsStr);",
+          "  var execOrder = JSON.parse(execOrderStr);",
+          "  var requestToOp = JSON.parse(requestToOpStr);",
+          "  var providerCaps = caps.providers && caps.providers[provider];",
+          "  var op = requestToOp[requestName];",
+          "  if (provider && op && providerCaps && providerCaps[op] === false) {",
+          "    if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+          "      pm.execution.skipRequest();",
+          "    }",
+          "    var idx = execOrder.indexOf(requestName);",
+          "    var nextName = (idx >= 0 && idx < execOrder.length - 1) ? execOrder[idx + 1] : null;",
+          "    if (nextName) {",
+          "      if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+          "        pm.execution.setNextRequest(nextName);",
+          "      } else if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+          "        postman.setNextRequest(nextName);",
+          "      }",
+          "    }",
+          "  }",
+          "} catch (e) {}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var code = pm.response.code;",
+          "var requestNameRetry = pm.collectionVariables.get('current_request_name');",
+          "var retryKey = 'retry_' + requestNameRetry;",
+          "var currentRetry = parseInt(pm.collectionVariables.get(retryKey) || '0', 10);",
+          "var maxRetries = parseInt(pm.collectionVariables.get('max_retries') || '0', 10);",
+          "var hasFailures = code < 200 || code > 299;",
+          "if (hasFailures && maxRetries > 0 && currentRetry < maxRetries) {",
+          "  pm.collectionVariables.set(retryKey, String(currentRetry + 1));",
+          "  var delayMs = Math.min(1000 * Math.pow(2, currentRetry), 30000);",
+          "  var end = Date.now() + delayMs; while (Date.now() < end) {}",
+          "  console.log('[RETRY] Request \"' + requestNameRetry + '\" failed (attempt ' + (currentRetry + 1) + '/' + maxRetries + '). Retrying after ' + delayMs + 'ms...');",
+          "  if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(requestNameRetry); }",
+          "} else {",
+          "  pm.collectionVariables.set(retryKey, '0');",
+          "  if (hasFailures && currentRetry >= maxRetries && maxRetries > 0) {",
+          "    console.log('[RETRY] Request \"' + requestNameRetry + '\" failed after ' + maxRetries + ' retries. Moving on.');",
+          "  }",
+          "  ",
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "function redact(obj) {",
+          "  if (!obj || typeof obj !== 'object') return obj;",
+          "  if (Array.isArray(obj)) return obj.map(redact);",
+          "  var out = {};",
+          "  Object.keys(obj).forEach(function (k) {",
+          "    if (/password|secret|token|api[_-]?key|authorization/i.test(k)) out[k] = '***REDACTED***';",
+          "    else out[k] = redact(obj[k]);",
+          "  });",
+          "  return out;",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  try {",
+          "    var parsedReq = typeof pm.request.body.raw === 'string' ? JSON.parse(pm.request.body.raw) : pm.request.body.raw;",
+          "    requestBody = JSON.stringify(redact(parsedReq), null, 2);",
+          "  } catch (e) {",
+          "    requestBody = pm.request.body.raw;",
+          "  }",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "var responseText = '';",
+          "try {",
+          "  responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    try {",
+          "      var parsedRes = JSON.parse(responseText);",
+          "      responseBody = JSON.stringify(redact(parsedRes), null, 2);",
+          "    } catch (e) {",
+          "      responseBody = responseText;",
+          "    }",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs (body content only when verbose_logs=1)",
+          "var verbose = (pm.collectionVariables.get('verbose_logs') || '0') === '1';",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (verbose && requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (verbose && responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "var unsupportedError = false;",
+          "var body = null;",
+          "if (!pass && code >= 400) {",
+          "  try {",
+          "    body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : (body && body.code) ? body.code : '';",
+          "    var errType = (body && body.error && body.error.type) ? body.error.type : '';",
+          "    var ALLOWED_CODES = ['unsupported_operation'];",
+          "    var ALLOWED_ERR_TYPES = [];",
+          "    var ALLOWED_MESSAGES = [];",
+          "    var UNSUPPORTED_MSG_REGEX = /^.+ is not supported by .+ provider$/;",
+          "    var NO_CREDENTIALS_REGEX = /no keys found|missing credentials|authentication required|unauthorized|invalid credentials/i;",
+          "    var allowAuthSkip = (pm.collectionVariables.get('allow_auth_skip') || '0') === '1';",
+          "    var responseText = pm.response.text() || '';",
+          "    var textToCheck = typeof msg === 'string' ? msg : (typeof body === 'string' ? body : responseText);",
+          "    try { if (typeof body === 'object' && body !== null) { textToCheck = (body.error && body.error.message) ? body.error.message : (body.message || JSON.stringify(body)); } } catch (e) {}",
+          "    var isWhitelisted = (ALLOWED_CODES.indexOf(errCode) !== -1) ||",
+          "        (ALLOWED_ERR_TYPES.indexOf(errType) !== -1) ||",
+          "        (ALLOWED_MESSAGES.indexOf(msg) !== -1) ||",
+          "        (typeof msg === 'string' && UNSUPPORTED_MSG_REGEX.test(msg)) ||",
+          "        (allowAuthSkip && code === 401 && NO_CREDENTIALS_REGEX.test(String(textToCheck)));",
+          "    if (isWhitelisted) {",
+          "      unsupportedError = true;",
+          "    } else {",
+          "      pass = false;",
+          "    }",
+          "  } catch (e) {",
+          "    pass = false;",
+          "  }",
+          "}",
+          "if (unsupportedError) {",
+          "  console.warn('Skipped (unsupported operation): ' + (body && body.error ? JSON.stringify(body.error) : pm.response.text()));",
+          "  pm.test('Request skipped (unsupported operation)', function() { pm.expect(unsupportedError).to.be.true; });",
+          "} else {",
+          "  pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });",
+          "}",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "bedrock",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "type": "string"
+    },
+    {
+      "key": "model_invoke",
+      "value": "amazon.titan-text-express-v1",
+      "type": "string"
+    },
+    {
+      "key": "s3_bucket",
+      "value": "bifrost-test-bucket",
+      "type": "string"
+    },
+    {
+      "key": "s3_output_bucket",
+      "value": "bifrost-test-bucket",
+      "type": "string"
+    },
+    {
+      "key": "role_arn",
+      "value": "arn:aws:iam::123456789012:role/BedrockBatchRole",
+      "type": "string"
+    },
+    {
+      "key": "file_id",
+      "value": "file_123",
+      "type": "string"
+    },
+    {
+      "key": "batch_input_key",
+      "value": "batch_input_placeholder.jsonl",
+      "type": "string"
+    },
+    {
+      "key": "s3_key",
+      "value": "test-file.txt",
+      "type": "string"
+    },
+    {
+      "key": "job_arn",
+      "value": "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc123",
+      "type": "string"
+    },
+    {
+      "key": "bedrock_api_key",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bedrock_access_key",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bedrock_secret_key",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "bedrock_region",
+      "value": "us-east-1",
+      "type": "string"
+    },
+    {
+      "key": "bedrock_session_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "allow_auth_skip",
+      "value": "0",
+      "type": "string"
+    },
+    {
+      "key": "execution_order",
+      "value": "[\"Converse\",\"Converse Stream\",\"Invoke\",\"Invoke with Response Stream\",\"Upload Batch Input File\",\"Create Batch Job\",\"List Batch Jobs\",\"Retrieve Batch Job\",\"Stop Batch Job\",\"List Objects\",\"PUT Object\",\"GET Object\",\"HEAD Object\",\"DELETE Object\"]",
+      "type": "string"
+    },
+    {
+      "key": "provider_capabilities",
+      "value": "{\"description\":\"Provider capability matrix for integration tests. Each provider has explicit booleans per operation (derived from core/providers/* provider.go NewUnsupportedOperationError). Used to skip requests when running with all provider envs.\",\"providers\":{\"openai\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":true},\"anthropic\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":true,\"file\":true,\"container\":false},\"azure\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"bedrock\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"cerebras\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"cohere\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"elevenlabs\":{\"chat_completions\":true,\"embedding\":false,\"speech\":true,\"transcription\":true,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"gemini\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"groq\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"huggingface\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"mistral\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"nebius\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"openrouter\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"parasail\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"perplexity\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"replicate\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":true,\"container\":false},\"vertex\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"xai\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false}}}",
+      "type": "string"
+    },
+    {
+      "key": "request_to_operation",
+      "value": "{\"Create Batch Job\":\"batch\",\"Upload Batch Input File\":\"batch\",\"List Batch Jobs\":\"batch\",\"Retrieve Batch Job\":\"batch\",\"Stop Batch Job\":\"batch\",\"List Objects\":\"file\",\"PUT Object\":\"file\",\"GET Object\":\"file\",\"HEAD Object\":\"file\",\"DELETE Object\":\"file\"}",
+      "type": "string"
+    },
+    {
+      "key": "_retry_429_max",
+      "value": "3",
+      "type": "string"
+    },
+    {
+      "key": "_retry_429_count",
+      "value": "0",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Converse",
+      "item": [
+        {
+          "name": "Converse",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('output');",
+                  "  pm.expect(j.output).to.have.property('message');",
+                  "  pm.expect(j.output.message).to.have.property('content');",
+                  "  pm.expect(j.output.message.content).to.be.an('array').that.is.not.empty;",
+                  "  var hasText = j.output.message.content.some(function(c) { return c && c.text !== undefined; });",
+                  "  pm.expect(hasText, 'response should contain at least one text content block').to.be.true;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"temperature\": 0.7,\n    \"maxTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{provider}}%2F{{model}}/converse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{provider}}%2F{{model}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Converse Stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'streaming response should have body').to.not.be.empty;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"temperature\": 0.7,\n    \"maxTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{provider}}%2F{{model}}/converse-stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{provider}}%2F{{model}}",
+                "converse-stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Invoke",
+      "item": [
+        {
+          "name": "Invoke",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  var hasOutput = (j.outputs && Array.isArray(j.outputs) && j.outputs.length > 0) || (j.completion && String(j.completion).length > 0) || (j.text && String(j.text).length > 0);",
+                  "  pm.expect(hasOutput, 'response should have outputs, completion, or text').to.be.true;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"prompt\": \"Hello, how are you?\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{provider}}%2F{{model_invoke}}/invoke",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{provider}}%2F{{model_invoke}}",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Invoke with Response Stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'stream response should have content').to.not.be.empty;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"prompt\": \"Hello, how are you?\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{provider}}%2F{{model_invoke}}/invoke-with-response-stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{provider}}%2F{{model_invoke}}",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batch Jobs",
+      "item": [
+        {
+          "name": "Upload Batch Input File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = (pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || 'provider';",
+                  "var unique = Date.now() + '_' + Math.floor(Math.random() * 1000000);",
+                  "pm.collectionVariables.set('batch_input_key', 'batch_input_' + provider + '_' + unique + '.jsonl');",
+                  "if (pm.environment) { pm.environment.set('batch_input_key', pm.collectionVariables.get('batch_input_key')); }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var etag = pm.response.headers.get('ETag') || pm.response.headers.get('etag');",
+                  "  if (etag) { var fid = etag.replace(/^\"/, '').replace(/\"$/, ''); pm.collectionVariables.set('file_id', fid); if (pm.environment) { pm.environment.set('file_id', fid); } }",
+                  "  pm.test('Response has ETag header', function() { pm.expect(pm.response.headers.has('ETag') || pm.response.headers.has('etag')).to.be.true; });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/jsonl"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_id\":\"request-1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello, this is test message 1. Say hi back briefly.\"}],\"max_tokens\":100}}\n{\"custom_id\":\"request-2\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello, this is test message 2. Say hi back briefly.\"}],\"max_tokens\":100}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{batch_input_key}}",
+              "host": ["{{base_url}}"],
+              "path": ["bedrock", "files", "{{s3_bucket}}", "{{batch_input_key}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Batch Job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('jobArn');",
+                  "  if (j && j.jobArn) { pm.collectionVariables.set('job_arn', j.jobArn); if (pm.environment) { pm.environment.set('job_arn', j.jobArn); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobName\": \"bifrost-test-job\",\n  \"roleArn\": \"{{role_arn}}\",\n  \"inputDataConfig\": {\n    \"s3InputDataConfig\": {\n      \"s3Uri\": \"s3://{{s3_bucket}}/{{batch_input_key}}\",\n      \"s3InputFormat\": \"JSONL\"\n    }\n  },\n  \"outputDataConfig\": {\n    \"s3OutputDataConfig\": {\n      \"s3Uri\": \"s3://{{s3_output_bucket}}/output/\"\n    }\n  },\n  \"tags\": [\n    {\"key\": \"endpoint\", \"value\": \"/v1/chat/completions\"},\n    {\"key\": \"file_key\", \"value\": \"{{batch_input_key}}\"}\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Batch Jobs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('invocationJobSummaries');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-jobs?maxResults=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-jobs"
+              ],
+              "query": [
+                {
+                  "key": "maxResults",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch Job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j).to.have.property('jobArn');",
+                  "  pm.expect(j).to.have.property('status');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job/{{job_arn}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "{{job_arn}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Stop Batch Job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job/{{job_arn}}/stop",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "{{job_arn}}",
+                "stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "S3 Operations",
+      "item": [
+        {
+          "name": "List Objects",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body !== undefined && body !== null, 'response body should be present').to.be.true;",
+                  "  pm.expect(body, 'ListObjectsV2 response should have body').to.not.be.empty;",
+                  "  if (body && body.indexOf('ListBucketResult') !== -1) {",
+                  "    pm.test('Response is S3 ListBucketResult XML', function() { pm.expect(body).to.include('ListBucketResult'); });",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}",
+              "host": ["{{base_url}}"],
+              "path": ["bedrock", "files", "{{s3_bucket}}"]
+            }
+          }
+        },
+        {
+          "name": "PUT Object",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var etag = pm.response.headers.get('ETag') || pm.response.headers.get('etag');",
+                  "  if (etag) { var fid = etag.replace(/^\"/, '').replace(/\"$/, ''); pm.collectionVariables.set('file_id', fid); if (pm.environment) { pm.environment.set('file_id', fid); } }",
+                  "  pm.test('Response has ETag header', function() { pm.expect(pm.response.headers.has('ETag') || pm.response.headers.has('etag')).to.be.true; });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/jsonl"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_id\":\"request-1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello, this is test message 1. Say hi back briefly.\"}],\"max_tokens\":100}}\n{\"custom_id\":\"request-2\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello, this is test message 2. Say hi back briefly.\"}],\"max_tokens\":100}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Object",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body !== undefined && body !== null, 'response body should be present').to.be.true;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "HEAD Object",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code >= 200 && pm.response.code <= 299) {",
+                  "  pm.test('Response has Content-Length header', function() { pm.response.to.have.header('Content-Length'); });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "HEAD",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE Object",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "{{provider}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

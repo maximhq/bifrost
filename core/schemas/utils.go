@@ -835,7 +835,8 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 		if original.Function.Parameters != nil {
 			copyParams := &ToolFunctionParameters{
-				Type: original.Function.Parameters.Type,
+				Type:     original.Function.Parameters.Type,
+				keyOrder: original.Function.Parameters.keyOrder,
 			}
 
 			if original.Function.Parameters.Description != nil {
@@ -1029,6 +1030,11 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			if original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
 				copy.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction = &copyAction
+			}
+
+			if original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction
+				copy.ResponsesToolMessage.Action.ResponsesWebFetchToolCallAction = &copyAction
 			}
 
 			if original.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction != nil {
@@ -1244,6 +1250,10 @@ func IsMistralModel(model string) bool {
 
 func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
+}
+
+func IsVeoModel(model string) bool {
+	return strings.Contains(model, "veo")
 }
 
 // IsImagenModel checks if the model is an Imagen model.

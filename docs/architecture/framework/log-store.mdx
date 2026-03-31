@@ -76,6 +76,10 @@ if err != nil {
 }
 ```
 
+<Note>
+PostgreSQL databases used by Bifrost stores must be UTF8 encoded. See [PostgreSQL UTF8 Requirement](../../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ### Connection Pool Configuration
 
 For PostgreSQL backends, you can configure the database connection pool to optimize performance based on your workload:

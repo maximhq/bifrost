@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -24,21 +25,32 @@ import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Edit, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
+import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
 	return resetDurationLabels[duration] || duration;
 };
 
+const toTestIdPart = (value: string) =>
+	value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
+	totalCount: number;
+	search: string;
+	debouncedSearch: string;
+	onSearchChange: (value: string) => void;
+	offset: number;
+	limit: number;
+	onOffsetChange: (offset: number) => void;
 }
 
-export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps) {
+export default function ModelLimitsTable({ modelConfigs, totalCount, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
 	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
 
@@ -79,6 +91,20 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 		setEditingModelConfigId(null);
 	};
 
+	const hasActiveFilters = debouncedSearch;
+
+	// True empty state: no model limits at all (not just filtered to zero)
+	if (totalCount === 0 && !hasActiveFilters) {
+		return (
+			<>
+				{showModelLimitSheet && (
+					<ModelLimitSheet modelConfig={editingModelConfig} onSave={handleModelLimitSaved} onCancel={() => setShowModelLimitSheet(false)} />
+				)}
+				<ModelLimitsEmptyState onAddClick={handleAddModelLimit} canCreate={hasCreateAccess} />
+			</>
+		);
+	}
+
 	return (
 		<>
 			{showModelLimitSheet && (
@@ -93,16 +119,29 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
 						</p>
 					</div>
-					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess}>
+					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
 						Add Model Limit
 					</Button>
 				</div>
 
-				{/* Table */}
-				<div className="rounded-sm border">
-					{modelConfigs?.length === 0 ? (
-						<Table>
+				{/* Toolbar: Search */}
+				<div className="flex items-center gap-3">
+					<div className="relative max-w-sm flex-1">
+						<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+						<Input
+							aria-label="Search model limits by model name"
+							placeholder="Search by model name..."
+							value={search}
+							onChange={(e) => onSearchChange(e.target.value)}
+							className="pl-9"
+							data-testid="model-limits-search-input"
+						/>
+					</div>
+				</div>
+
+				<div className="rounded-sm border" data-testid="model-limits-table">
+					<Table>
 							<TableHeader>
 								<TableRow className="hover:bg-transparent">
 									<TableHead className="font-medium">Model</TableHead>
@@ -113,26 +152,14 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								<TableRow>
-									<TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
-										No model limits found. Create your first model limit to get started.
-									</TableCell>
-								</TableRow>
-							</TableBody>
-						</Table>
-					) : (
-						<Table>
-							<TableHeader>
-								<TableRow className="hover:bg-transparent">
-									<TableHead className="font-medium">Model</TableHead>
-									<TableHead className="font-medium">Provider</TableHead>
-									<TableHead className="font-medium">Budget</TableHead>
-									<TableHead className="font-medium">Rate Limit</TableHead>
-									<TableHead className="w-[100px]"></TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{modelConfigs?.map((config) => {
+								{modelConfigs.length === 0 ? (
+									<TableRow>
+										<TableCell colSpan={5} className="h-24 text-center">
+											<span className="text-muted-foreground text-sm">No matching model limits found.</span>
+										</TableCell>
+									</TableRow>
+								) : (
+								modelConfigs.map((config) => {
 									const isBudgetExhausted =
 										config.budget?.max_limit && config.budget.max_limit > 0 && config.budget.current_usage >= config.budget.max_limit;
 									const isRateLimitExhausted =
@@ -159,7 +186,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 											: 0;
 
 									return (
-										<TableRow key={config.id} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
+										<TableRow key={config.id} data-testid={`model-limit-row-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
@@ -216,7 +243,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 														</Tooltip>
 													</TooltipProvider>
 												) : (
-													<span className="text-muted-foreground text-sm">—</span>
+													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell className="min-w-[180px]">
@@ -296,46 +323,36 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 														)}
 													</div>
 												) : (
-													<span className="text-muted-foreground text-sm">—</span>
+													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="h-8 w-8"
-																	onClick={(e) => handleEditModelLimit(config, e)}
-																	disabled={!hasUpdateAccess}
-																>
-																	<Edit className="h-4 w-4" />
-																</Button>
-															</TooltipTrigger>
-															<TooltipContent>Edit</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
+													<Button
+														variant="ghost"
+														size="icon"
+														className="h-8 w-8"
+														onClick={(e) => handleEditModelLimit(config, e)}
+														disabled={!hasUpdateAccess}
+														aria-label={`Edit model limit for ${config.model_name}`}
+														data-testid={`model-limit-button-edit-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+													>
+														<Edit className="h-4 w-4" />
+													</Button>
 													<AlertDialog>
-														<TooltipProvider>
-															<Tooltip>
-																<AlertDialogTrigger asChild>
-																	<TooltipTrigger asChild>
-																		<Button
-																			variant="ghost"
-																			size="icon"
-																			className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																			onClick={(e) => e.stopPropagation()}
-																			disabled={!hasDeleteAccess}
-																		>
-																			<Trash2 className="h-4 w-4" />
-																		</Button>
-																	</TooltipTrigger>
-																</AlertDialogTrigger>
-																<TooltipContent>Delete</TooltipContent>
-															</Tooltip>
-														</TooltipProvider>
+														<AlertDialogTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+																onClick={(e) => e.stopPropagation()}
+																disabled={!hasDeleteAccess}
+																aria-label={`Delete model limit for ${config.model_name}`}
+																data-testid={`model-limit-button-delete-${toTestIdPart(config.model_name)}-${toTestIdPart(config.provider || "all")}`}
+															>
+																<Trash2 className="h-4 w-4" />
+															</Button>
+														</AlertDialogTrigger>
 														<AlertDialogContent>
 															<AlertDialogHeader>
 																<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
@@ -361,11 +378,42 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 											</TableCell>
 										</TableRow>
 									);
-								})}
+								})
+								)}
 							</TableBody>
 						</Table>
-					)}
 				</div>
+
+				{/* Pagination */}
+				{totalCount > 0 && (
+					<div className="flex items-center justify-between px-2">
+						<p className="text-muted-foreground text-sm">
+							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+						</p>
+						<div className="flex gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={offset === 0}
+								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+								data-testid="model-limits-pagination-prev-btn"
+							>
+								<ChevronLeft className="mr-1 h-4 w-4" />
+								Previous
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={offset + limit >= totalCount}
+								onClick={() => onOffsetChange(offset + limit)}
+								data-testid="model-limits-pagination-next-btn"
+							>
+								Next
+								<ChevronRight className="ml-1 h-4 w-4" />
+							</Button>
+						</div>
+					</div>
+				)}
 			</div>
 		</>
 	);

@@ -63,13 +63,16 @@ Bifrost Enterprise includes **P2P clustering** with gossip protocol that automat
 
 Create a `config.json` **without** `config_store` or `logs_store`:
 
+<Note>
+If you use PostgreSQL for `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ```json
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "client": {
     "drop_excess_requests": false,
-    "enable_logging": false,
-    "enable_governance": false
+    "enable_logging": false    
   },
   "config_store": {
     "enabled": false
@@ -124,8 +127,7 @@ data:
       "$schema": "https://www.getbifrost.ai/schema",
       "client": {
         "drop_excess_requests": false,
-        "enable_logging": false,
-        "enable_governance": false
+        "enable_logging": false        
       },
       "config_store": {
         "enabled": false
@@ -427,4 +429,3 @@ resources:
 | Multinode Enterprise | Use P2P clustering with `config_store` |
 
 For OSS multinode deployments, the shared `config.json` approach provides a simple, reliable way to keep all nodes in sync without the complexity of database synchronization.
-

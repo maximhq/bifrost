@@ -2,10 +2,12 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 const MinMaxCompletionTokens = 16
@@ -29,13 +31,20 @@ type OpenAITextCompletionRequest struct {
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 
-func (r *OpenAITextCompletionRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+// GetExtraParams implements the ExtraParamsGetter interface
+func (req *OpenAITextCompletionRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
+// SetExtraParams implements the ExtraParamsSetter interface
+func (req *OpenAITextCompletionRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+	req.TextCompletionParameters.ExtraParams = params
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAITextCompletionRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (req *OpenAITextCompletionRequest) IsStreamingRequested() bool {
+	return req.Stream != nil && *req.Stream
 }
 
 // OpenAIEmbeddingRequest represents an OpenAI embedding request
@@ -52,6 +61,11 @@ type OpenAIEmbeddingRequest struct {
 
 func (r *OpenAIEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.EmbeddingParameters.ExtraParams = params
 }
 
 // OpenAIChatRequest represents an OpenAI chat completion request
@@ -71,10 +85,18 @@ type OpenAIChatRequest struct {
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
 }
 
-func (r *OpenAIChatRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+// GetExtraParams implements the ExtraParamsGetter interface
+func (req *OpenAIChatRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
+// SetExtraParams implements the ExtraParamsSetter interface
+func (req *OpenAIChatRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+	req.ChatParameters.ExtraParams = params
+}
+
+// OpenAIMessage represents an OpenAI message
 type OpenAIMessage struct {
 	Name    *string                     `json:"name,omitempty"` // for chat completions
 	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
@@ -86,9 +108,10 @@ type OpenAIMessage struct {
 	*OpenAIChatAssistantMessage
 }
 
+// OpenAIChatAssistantMessage represents an OpenAI chat assistant message
 type OpenAIChatAssistantMessage struct {
 	Refusal     *string                                  `json:"refusal,omitempty"`
-	Reasoning   *string                                  `json:"reasoning,omitempty"`
+	Reasoning   *string                                  `json:"reasoning_content,omitempty"`
 	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 }
@@ -97,15 +120,15 @@ type OpenAIChatAssistantMessage struct {
 // It excludes the reasoning field and instead marshals reasoning_effort
 // with the value of Reasoning.Effort if not nil.
 // It also removes cache_control from messages, their content blocks, and tools.
-func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
-	if r == nil {
+func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
+	if req == nil {
 		return []byte("null"), nil
 	}
 	type Alias OpenAIChatRequest
 
 	// First pass: check if we need to modify any messages
 	needsCopy := false
-	for _, msg := range r.Messages {
+	for _, msg := range req.Messages {
 		if hasFieldsToStripInChatMessage(msg) {
 			needsCopy = true
 			break
@@ -115,8 +138,8 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	// Process messages if needed
 	var processedMessages []OpenAIMessage
 	if needsCopy {
-		processedMessages = make([]OpenAIMessage, len(r.Messages))
-		for i, msg := range r.Messages {
+		processedMessages = make([]OpenAIMessage, len(req.Messages))
+		for i, msg := range req.Messages {
 			if !hasFieldsToStripInChatMessage(msg) {
 				// No modification needed, use original
 				processedMessages[i] = msg
@@ -152,14 +175,14 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			}
 		}
 	} else {
-		processedMessages = r.Messages
+		processedMessages = req.Messages
 	}
 
 	// Process tools if needed
 	var processedTools []schemas.ChatTool
-	if len(r.Tools) > 0 {
+	if len(req.Tools) > 0 {
 		needsToolCopy := false
-		for _, tool := range r.Tools {
+		for _, tool := range req.Tools {
 			if tool.CacheControl != nil {
 				needsToolCopy = true
 				break
@@ -167,8 +190,8 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		}
 
 		if needsToolCopy {
-			processedTools = make([]schemas.ChatTool, len(r.Tools))
-			for i, tool := range r.Tools {
+			processedTools = make([]schemas.ChatTool, len(req.Tools))
+			for i, tool := range req.Tools {
 				if tool.CacheControl != nil {
 					toolCopy := tool
 					toolCopy.CacheControl = nil
@@ -178,10 +201,10 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				}
 			}
 		} else {
-			processedTools = r.Tools
+			processedTools = req.Tools
 		}
 	} else {
-		processedTools = r.Tools
+		processedTools = req.Tools
 	}
 
 	// Aux struct:
@@ -201,25 +224,25 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
 		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
 	}{
-		Alias:    (*Alias)(r),
+		Alias:    (*Alias)(req),
 		Messages: processedMessages,
 		Tools:    processedTools,
 	}
 
 	// DO NOT set aux.Reasoning → it stays nil and is omitted via omitempty, and also due to double reference to the same json field.
 
-	if r.Reasoning != nil && r.Reasoning.Effort != nil {
-		aux.ReasoningEffort = r.Reasoning.Effort
+	if req.Reasoning != nil && req.Reasoning.Effort != nil {
+		aux.ReasoningEffort = req.Reasoning.Effort
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for OpenAIChatRequest.
 // This is needed because ChatParameters has a custom UnmarshalJSON method,
 // which would otherwise "hijack" the unmarshalling and ignore the other fields
 // (Model, Messages, Stream, MaxTokens, Fallbacks).
-func (r *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
+func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	// Unmarshal the request-specific fields directly
 	type baseFields struct {
 		Model     string          `json:"model"`
@@ -232,28 +255,28 @@ func (r *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	if err := sonic.Unmarshal(data, &base); err != nil {
 		return err
 	}
-	r.Model = base.Model
-	r.Messages = base.Messages
-	r.Stream = base.Stream
-	r.MaxTokens = base.MaxTokens
-	r.Fallbacks = base.Fallbacks
+	req.Model = base.Model
+	req.Messages = base.Messages
+	req.Stream = base.Stream
+	req.MaxTokens = base.MaxTokens
+	req.Fallbacks = base.Fallbacks
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)
 	var params schemas.ChatParameters
 	if err := sonic.Unmarshal(data, &params); err != nil {
 		return err
 	}
-	r.ChatParameters = params
+	req.ChatParameters = params
 
 	return nil
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAIChatRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (req *OpenAIChatRequest) IsStreamingRequested() bool {
+	return req.Stream != nil && *req.Stream
 }
 
-// ResponsesRequestInput is a union of string and array of responses messages
+// OpenAIResponsesRequestInput is a union of string and array of responses messages
 type OpenAIResponsesRequestInput struct {
 	OpenAIResponsesRequestInputStr   *string
 	OpenAIResponsesRequestInputArray []schemas.ResponsesMessage
@@ -276,9 +299,10 @@ func (r *OpenAIResponsesRequestInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("openai responses request input is neither a string nor an array of responses messages")
 }
 
+// MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequestInput
 func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 	if r.OpenAIResponsesRequestInputStr != nil {
-		return sonic.Marshal(*r.OpenAIResponsesRequestInputStr)
+		return providerUtils.MarshalSorted(*r.OpenAIResponsesRequestInputStr)
 	}
 	if r.OpenAIResponsesRequestInputArray != nil {
 		// First pass: check if we need to modify anything
@@ -292,7 +316,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
+			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
 		}
 
 		// Only copy messages that have CacheControl
@@ -306,6 +330,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 			// Copy only this message
 			messagesCopy[i] = msg
+			// Strip message-level CacheControl (used by Anthropic for function_call/function_call_output)
+			messagesCopy[i].CacheControl = nil
 
 			// Strip CacheControl, FileType, and filter unsupported citation types from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
@@ -433,9 +459,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		return sonic.Marshal(messagesCopy)
+		return providerUtils.MarshalSorted(messagesCopy)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
@@ -458,6 +484,10 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks
 func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
+	// Check message-level CacheControl (used by Anthropic for function_call/function_call_output messages)
+	if msg.CacheControl != nil {
+		return true
+	}
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.CacheControl != nil {
@@ -531,10 +561,18 @@ func filterSupportedAnnotations(annotations []schemas.ResponsesOutputMessageCont
 	return supportedAnnotations
 }
 
-func (r *OpenAIResponsesRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
+// GetExtraParams implements the ExtraParamsGetter interface
+func (resp *OpenAIResponsesRequest) GetExtraParams() map[string]interface{} {
+	return resp.ExtraParams
 }
 
+// SetExtraParams implements the ExtraParamsSetter interface
+func (resp *OpenAIResponsesRequest) SetExtraParams(params map[string]interface{}) {
+	resp.ExtraParams = params
+	resp.ResponsesParameters.ExtraParams = params
+}
+
+// OpenAIResponsesRequest represents an OpenAI responses request
 type OpenAIResponsesRequest struct {
 	Model string                      `json:"model"`
 	Input OpenAIResponsesRequestInput `json:"input"`
@@ -549,20 +587,20 @@ type OpenAIResponsesRequest struct {
 
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequest.
 // It sets parameters.reasoning.max_tokens to nil before marshaling.
-func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
+func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 	type Alias OpenAIResponsesRequest
 
 	// Manually marshal Input using its custom MarshalJSON method
-	inputBytes, err := r.Input.MarshalJSON()
+	inputBytes, err := resp.Input.MarshalJSON()
 	if err != nil {
 		return nil, err
 	}
 
 	// Process tools if needed
 	var processedTools []schemas.ResponsesTool
-	if len(r.Tools) > 0 {
+	if len(resp.Tools) > 0 {
 		needsToolCopy := false
-		for _, tool := range r.Tools {
+		for _, tool := range resp.Tools {
 			if tool.CacheControl != nil {
 				needsToolCopy = true
 				break
@@ -570,8 +608,8 @@ func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		}
 
 		if needsToolCopy {
-			processedTools = make([]schemas.ResponsesTool, len(r.Tools))
-			for i, tool := range r.Tools {
+			processedTools = make([]schemas.ResponsesTool, len(resp.Tools))
+			for i, tool := range resp.Tools {
 				if tool.CacheControl != nil {
 					toolCopy := tool
 					toolCopy.CacheControl = nil
@@ -581,10 +619,10 @@ func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				}
 			}
 		} else {
-			processedTools = r.Tools
+			processedTools = resp.Tools
 		}
 	} else {
-		processedTools = r.Tools
+		processedTools = resp.Tools
 	}
 
 	// Aux struct:
@@ -601,27 +639,27 @@ func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		// Shadow the embedded "tools" field to use processed tools
 		Tools []schemas.ResponsesTool `json:"tools,omitempty"`
 	}{
-		Alias: (*Alias)(r),
+		Alias: (*Alias)(resp),
 		Input: json.RawMessage(inputBytes),
 		Tools: processedTools,
 	}
 
 	// Copy reasoning but set MaxTokens to nil
-	if r.Reasoning != nil {
+	if resp.Reasoning != nil {
 		aux.Reasoning = &schemas.ResponsesParametersReasoning{
-			Effort:          r.Reasoning.Effort,
-			GenerateSummary: r.Reasoning.GenerateSummary,
-			Summary:         r.Reasoning.Summary,
+			Effort:          resp.Reasoning.Effort,
+			GenerateSummary: resp.Reasoning.GenerateSummary,
+			Summary:         resp.Reasoning.Summary,
 			MaxTokens:       nil, // Always set to nil
 		}
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *OpenAIResponsesRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (resp *OpenAIResponsesRequest) IsStreamingRequested() bool {
+	return resp.Stream != nil && *resp.Stream
 }
 
 // OpenAISpeechRequest represents an OpenAI speech synthesis request
@@ -641,11 +679,17 @@ func (r *OpenAISpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAISpeechRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.SpeechParameters.ExtraParams = params
+}
+
 // OpenAITranscriptionRequest represents an OpenAI transcription request
 // Note: This is used for JSON body parsing, actual form parsing is handled in the router
 type OpenAITranscriptionRequest struct {
-	Model string `json:"model"`
-	File  []byte `json:"file"` // Binary audio data
+	Model    string `json:"model"`
+	File     []byte `json:"file"`     // Binary audio data
+	Filename string `json:"filename"` // Original filename, used to preserve file format extension
 
 	schemas.TranscriptionParameters
 	Stream *bool `json:"stream,omitempty"`
@@ -700,6 +744,11 @@ func (r *OpenAIImageGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageGenerationRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageGenerationParameters.ExtraParams = params
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
@@ -743,6 +792,11 @@ func (r *OpenAIImageEditRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageEditParameters.ExtraParams = params
+}
+
 // OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.
 type OpenAIImageVariationRequest struct {
 	Model string                       `json:"model"`
@@ -758,7 +812,70 @@ func (r *OpenAIImageVariationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageVariationRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageVariationParameters.ExtraParams = params
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIImageEditRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
+
+// OpenAIVideoSize is the output resolution (width x height). Defaults to 720x1280.
+type OpenAIVideoSize string
+
+const (
+	OpenAIVideoSize720x1280  OpenAIVideoSize = "720x1280"
+	OpenAIVideoSize1280x720  OpenAIVideoSize = "1280x720"
+	OpenAIVideoSize1024x1792 OpenAIVideoSize = "1024x1792"
+	OpenAIVideoSize1792x1024 OpenAIVideoSize = "1792x1024"
+)
+
+// Default video size
+const DefaultOpenAIVideoSize = OpenAIVideoSize720x1280
+
+// ValidOpenAIVideoSizes is a map of all valid video sizes
+var ValidOpenAIVideoSizes = map[string]bool{
+	string(OpenAIVideoSize720x1280):  true,
+	string(OpenAIVideoSize1280x720):  true,
+	string(OpenAIVideoSize1024x1792): true,
+	string(OpenAIVideoSize1792x1024): true,
+}
+
+// OpenAIVideoGenerationRequest is the request body for OpenAI video generation.
+type OpenAIVideoGenerationRequest struct {
+	Prompt         string `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
+	InputReference []byte `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+
+	Model string `json:"model"` // Video generation model (defaults to sora-2)
+
+	schemas.VideoGenerationParameters
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the ExtraParamsGetter interface
+func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
+}
+
+// OpenAIVideoRemixRequest represents an OpenAI video remix request
+type OpenAIVideoRemixRequest struct {
+	Prompt string `json:"prompt"`
+	// ID/Provider are populated from URL path params by integration pre-callbacks.
+	ID       string                `json:"-"`
+	Provider schemas.ModelProvider `json:"-"`
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the ExtraParamsGetter interface
+func (r *OpenAIVideoRemixRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// ErrVideoNotReady is an error that is returned when a video is not ready yet
+var ErrVideoNotReady = errors.New("video is not ready yet, use GET /v1/videos/{video_id} to check status")

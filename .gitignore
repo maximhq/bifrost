@@ -28,6 +28,7 @@ node_modules
 !examples/mcps/temperature/
 tmp/
 tmp-*
+.tmp
 private
 **/bin
 build/
@@ -47,11 +48,14 @@ transports/schema/config.schema.json
 
 # Test reports
 test-reports
+tests/e2e/api/newman-reports
 
 # AI Agent specific
-.claude/
+settings.local.json
 .codex/
 .cursor/
+.claude/*
+!.claude/skills/
 
 # Python specific
 **/__pycache__/**
@@ -107,6 +111,7 @@ playwright/.cache/
 
 # Terraform
 .terraform/
+.terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.backup
 *.tfvars

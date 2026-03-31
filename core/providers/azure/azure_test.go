@@ -22,11 +22,13 @@ func TestAzure(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.Azure,
-		ChatModel:      "gpt-4o-backup",
-		VisionModel:    "gpt-4o",
+		Provider:           schemas.Azure,
+		ChatModel:          "gpt-4o-backup",
+		PromptCachingModel: "gpt-4o-backup",
+		VisionModel:        "gpt-4o",
 		ChatAudioModel: "gpt-4o-mini-audio-preview",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
@@ -38,7 +40,7 @@ func TestAzure(t *testing.T) {
 		TranscriptionModel:   "whisper",
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
-
+		VideoGenerationModel: "sora-2",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -46,7 +48,8 @@ func TestAzure(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -57,16 +60,24 @@ func TestAzure(t *testing.T) {
 			ListModels:            true,
 			Reasoning:             true,
 			ChatAudio:             true,
-			Transcription:         true,
+			Transcription:         false, // Disabled for azure because of 3 calls/minute quota	
 			TranscriptionStream:   false, // Not properly supported yet by Azure
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true,
+			SpeechSynthesis:       false, // Disabled for azure because of 3 calls/minute quota
+			SpeechSynthesisStream: false, // Disabled for azure because of 3 calls/minute quota
 			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			PromptCaching:         true,
 			ImageGeneration:       false, // Skipped for Azure
 			ImageGenerationStream: false, // Skipped for Azure
 			ImageEdit:             false, // Model not deployed on Azure endpoint
 			ImageEditStream:       false, // Model not deployed on Azure endpoint
 			ImageVariation:        false, // Not supported by Azure
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoDownload:         false,
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoList:             false,
+			VideoDelete:           false,
+			InterleavedThinking:  true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}
@@ -74,5 +85,4 @@ func TestAzure(t *testing.T) {
 	t.Run("AzureTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

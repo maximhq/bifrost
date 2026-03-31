@@ -118,7 +118,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else if bifrostReq.Params.Reasoning.Effort != nil {
 				if *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxCompletionTokens := DefaultCompletionMaxTokens
+					maxCompletionTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxCompletionTokens != nil {
 						maxCompletionTokens = *bifrostReq.Params.MaxCompletionTokens
 					}
@@ -397,7 +397,7 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 			}
 			if response.Usage.CachedTokens != nil {
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-					CachedTokens: *response.Usage.CachedTokens,
+					CachedReadTokens: *response.Usage.CachedTokens,
 				}
 			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -508,6 +508,10 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 			// Handle single tool call object (tool-call-start/delta events)
 			cohereToolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			toolCall := schemas.ChatAssistantMessageToolCall{}
+
+			if chunk.Index != nil {
+				toolCall.Index = uint16(*chunk.Index)
+			}
 
 			if cohereToolCall.ID != nil {
 				toolCall.ID = cohereToolCall.ID

@@ -1,0 +1,574 @@
+# Async Inference Endpoints
+
+# --- Submission endpoints ---
+
+async-chat-completions:
+  post:
+    operationId: createAsyncChatCompletion
+    summary: Create async chat completion
+    description: |
+      Submits a chat completion request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/chat.yaml#/ChatCompletionRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-text-completions:
+  post:
+    operationId: createAsyncTextCompletion
+    summary: Create async text completion
+    description: |
+      Submits a text completion request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/text.yaml#/TextCompletionRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-responses:
+  post:
+    operationId: createAsyncResponse
+    summary: Create async response
+    description: |
+      Submits a response request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/responses.yaml#/ResponsesRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-embeddings:
+  post:
+    operationId: createAsyncEmbedding
+    summary: Create async embedding
+    description: |
+      Submits an embedding request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/embeddings.yaml#/EmbeddingRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-speech:
+  post:
+    operationId: createAsyncSpeech
+    summary: Create async speech
+    description: |
+      Submits a speech synthesis request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      SSE streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/speech.yaml#/SpeechRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-transcriptions:
+  post:
+    operationId: createAsyncTranscription
+    summary: Create async transcription
+    description: |
+      Submits a transcription request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/transcription.yaml#/TranscriptionRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-image-generation:
+  post:
+    operationId: createAsyncImageGeneration
+    summary: Create async image generation
+    description: |
+      Submits an image generation request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageGenerationRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-image-edit:
+  post:
+    operationId: createAsyncImageEdit
+    summary: Create async image edit
+    description: |
+      Submits an image edit request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+      Streaming is not supported for async requests.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+async-image-variation:
+  post:
+    operationId: createAsyncImageVariation
+    summary: Create async image variation
+    description: |
+      Submits an image variation request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageVariationRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# --- Retrieval endpoints ---
+
+async-chat-completions-job:
+  get:
+    operationId: getAsyncChatCompletionJob
+    summary: Get async chat completion job
+    description: |
+      Retrieves the status and result of an async chat completion job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-text-completions-job:
+  get:
+    operationId: getAsyncTextCompletionJob
+    summary: Get async text completion job
+    description: |
+      Retrieves the status and result of an async text completion job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-responses-job:
+  get:
+    operationId: getAsyncResponseJob
+    summary: Get async response job
+    description: |
+      Retrieves the status and result of an async response job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-embeddings-job:
+  get:
+    operationId: getAsyncEmbeddingJob
+    summary: Get async embedding job
+    description: |
+      Retrieves the status and result of an async embedding job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-speech-job:
+  get:
+    operationId: getAsyncSpeechJob
+    summary: Get async speech job
+    description: |
+      Retrieves the status and result of an async speech job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-transcriptions-job:
+  get:
+    operationId: getAsyncTranscriptionJob
+    summary: Get async transcription job
+    description: |
+      Retrieves the status and result of an async transcription job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-image-generation-job:
+  get:
+    operationId: getAsyncImageGenerationJob
+    summary: Get async image generation job
+    description: |
+      Retrieves the status and result of an async image generation job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-image-edit-job:
+  get:
+    operationId: getAsyncImageEditJob
+    summary: Get async image edit job
+    description: |
+      Retrieves the status and result of an async image edit job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+async-image-variation-job:
+  get:
+    operationId: getAsyncImageVariationJob
+    summary: Get async image variation job
+    description: |
+      Retrieves the status and result of an async image variation job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+      - Async Jobs
+    parameters:
+      - $ref: '#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
+# --- Shared parameters ---
+
+components:
+  parameters:
+    AsyncJobId:
+      name: job_id
+      in: path
+      required: true
+      description: The unique identifier of the async job
+      schema:
+        type: string
+    AsyncResultTTL:
+      name: x-bf-async-job-result-ttl
+      in: header
+      required: false
+      description: |
+        Time-to-live in seconds for the job result after completion. Defaults to 3600 (1 hour).
+        After expiry, the job result is automatically cleaned up.
+      schema:
+        type: integer
+        default: 3600

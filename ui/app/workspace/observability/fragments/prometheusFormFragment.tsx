@@ -5,12 +5,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { prometheusFormSchema, type PrometheusFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Copy, Eye, EyeOff, Info, Plus, Trash } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { AlertTriangle, Copy, Eye, EyeOff, Info, Plus, Trash, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 
@@ -27,6 +28,8 @@ interface PrometheusFormFragmentProps {
 		};
 	};
 	onSave: (config: PrometheusFormSchema) => Promise<void>;
+	onDelete?: () => void;
+	isDeleting?: boolean;
 	isLoading?: boolean;
 	metricsEndpoint?: string;
 }
@@ -34,13 +37,15 @@ interface PrometheusFormFragmentProps {
 export function PrometheusFormFragment({
 	currentConfig: initialConfig,
 	onSave,
+	onDelete,
+	isDeleting = false,
 	isLoading = false,
 	metricsEndpoint,
 }: PrometheusFormFragmentProps) {
 	const hasPrometheusAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showPassword, setShowPassword] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copy, copied } = useCopyToClipboard();
 	const [showBasicAuth, setShowBasicAuth] = useState(!!(initialConfig?.basic_auth?.username || initialConfig?.basic_auth?.password));
 
 	const form = useForm<PrometheusFormSchema, any, PrometheusFormSchema>({
@@ -48,7 +53,7 @@ export function PrometheusFormFragment({
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			prometheus_config: {
 				push_gateway_url: initialConfig?.push_gateway_url ?? "",
 				job_name: initialConfig?.job_name ?? "bifrost",
@@ -67,7 +72,7 @@ export function PrometheusFormFragment({
 
 	useEffect(() => {
 		form.reset({
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			prometheus_config: {
 				push_gateway_url: initialConfig?.push_gateway_url ?? "",
 				job_name: initialConfig?.job_name ?? "bifrost",
@@ -82,9 +87,7 @@ export function PrometheusFormFragment({
 
 	const handleCopyEndpoint = () => {
 		if (metricsEndpoint) {
-			navigator.clipboard.writeText(metricsEndpoint);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
+			copy(metricsEndpoint);
 		}
 	};
 
@@ -312,23 +315,39 @@ export function PrometheusFormFragment({
 						control={form.control}
 						name="enabled"
 						render={({ field }) => (
-							<FormItem className="flex flex-row items-center gap-2">
-								<FormLabel>Enable Push Gateway</FormLabel>
-								<Switch
-									checked={form.watch("enabled")}
-									onCheckedChange={field.onChange}
-									disabled={!hasPrometheusAccess || isLoading || !form.formState.isValid}
-								/>
+							<FormItem className="flex items-center gap-2 py-2">
+								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormControl>
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasPrometheusAccess}
+										data-testid="prometheus-connector-enable-toggle"
+									/>
+								</FormControl>
 							</FormItem>
 						)}
 					/>
 					<div className="ml-auto flex justify-end space-x-2 py-2">
+						{onDelete && (
+							<Button
+								type="button"
+								variant="outline"
+								onClick={onDelete}
+								disabled={isDeleting || !hasPrometheusAccess}
+								data-testid="prometheus-connector-delete-btn"
+								title="Delete connector"
+								aria-label="Delete connector"
+							>
+								<Trash2 className="size-4" />
+							</Button>
+						)}
 						<Button
 							type="button"
 							variant="outline"
 							onClick={() => {
 								form.reset({
-									enabled: initialConfig?.enabled ?? false,
+									enabled: initialConfig?.enabled ?? true,
 									prometheus_config: {
 										push_gateway_url: initialConfig?.push_gateway_url ?? "",
 										job_name: initialConfig?.job_name ?? "bifrost",

@@ -1,0 +1,289 @@
+---
+title: "Security at Bifrost"
+description: "Overview of security practices across Bifrost's CI/CD pipelines, container images, supply chain, and deployment infrastructure."
+icon: "shield"
+sidebarTitle: "Security"
+---
+
+Bifrost applies defense-in-depth across its open-source and enterprise repositories. Every pull request,
+dependency update, and container image goes through multiple layers of automated security checks before
+reaching production.
+
+| Domain | Tool / Practice | Coverage |
+| --- | --- | --- |
+| Dependency Scanning | Snyk Open Source | Go, Node, Python — all projects |
+| SAST | Snyk Code, CodeQL | Full codebase static analysis |
+| Container Scanning | Docker Scout | Docker Hub auto-scan on push |
+| Artifact Scanning | GCP Artifact Registry | Enterprise container images |
+| Dependency Updates | Dependabot | gomod, npm, Docker, GitHub Actions |
+| Supply Chain | SHA pinning, npm provenance | 100 % of GitHub Actions (OSS) |
+| Container Hardening | FIPS base image, non-root user | Production Dockerfile |
+| Security Hardening | StepSecurity, CODEOWNERS | Workflow hardening, code review gates |
+| Network Security | Tailscale VPN | Enterprise deployments |
+
+---
+
+## Vulnerability Scanning — Snyk
+
+Bifrost runs two Snyk scanning jobs on every push and pull request. Results are uploaded as
+[SARIF](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning)
+to the GitHub Security tab.
+
+<Tabs>
+  <Tab title="Dependency Scanning (Open Source)">
+    The **Snyk Open Source** job scans all Go, Node, and Python dependencies for known vulnerabilities.
+
+    ```yaml
+    snyk test --all-projects --detection-depth=4 --sarif-file-output=snyk.sarif
+    ```
+
+    - Scans every module across `core/`, `framework/`, `transports/`, `plugins/`, `ui/`, and `tests/`
+    - Detection depth of 4 catches transitive dependencies
+    - Snyk CLI pinned to `v1.1303.2`
+
+  </Tab>
+
+  <Tab title="SAST (Snyk Code)">
+    The **Snyk Code** job performs Static Application Security Testing on the full codebase.
+    A complete build is performed first (Go + Node + Python) so Snyk can analyze compiled artifacts.
+
+    ```yaml
+    snyk code test --sarif-file-output=snyk-code.sarif
+    ```
+
+    - Detects injection flaws, hardcoded secrets, insecure crypto, and other code-level vulnerabilities
+    - Builds the full project before scanning for accurate analysis
+  </Tab>
+</Tabs>
+
+<Note>
+  Snyk checks can be skipped by including `--skip-pipeline` in the first line of a commit message. This is
+  intended for documentation-only or CI configuration changes.
+</Note>
+
+---
+
+## Container Image Security
+
+### Dockerfile Hardening
+
+Production containers follow a strict hardening checklist:
+
+<CardGroup cols={2}>
+  <Card title="Multi-stage builds" icon="layer-group">
+    Three stages — UI builder (Node), Go builder, and minimal Alpine runtime — ensure no build tools or
+    source code leak into the final image.
+  </Card>
+  <Card title="FIPS-compliant base image" icon="lock">
+    Production images use a FIPS 140-2 validated Alpine base image with compliant OpenSSL.
+  </Card>
+  <Card title="Non-root execution" icon="user-shield">
+    The FIPS base image includes a dedicated `appuser`. The container runs as this unprivileged user —
+    never as root.
+  </Card>
+  <Card title="Binary stripping" icon="minimize">
+    Go binaries are compiled with `-ldflags="-w -s"` to strip debug symbols and DWARF information,
+    reducing attack surface and image size.
+  </Card>
+</CardGroup>
+
+Additional hardening measures:
+
+- **Static builds** — Compiled with `-tags "sqlite_static"` and `-extldflags '-static'` for fully static linking
+- **Build verification** — `RUN test -f /app/main || exit 1` ensures the binary exists before proceeding
+- **CVE patching** — Enterprise Dockerfiles include targeted patches (e.g., `apk upgrade --no-cache openssl` for CVE-2026-22796)
+- **Minimal runtime dependencies** — The FIPS base image provides only essential libraries (`musl`, `libgcc`, `ca-certificates`)
+
+```dockerfile
+# Runtime stage excerpt (production)
+FROM <fips-validated-alpine-base>
+WORKDIR /app
+
+COPY --from=builder /app/main .
+COPY --from=builder /app/docker-entrypoint.sh .
+
+RUN mkdir -p $APP_DIR/logs
+USER appuser
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
+```
+
+<Frame>
+  <img src="/media/security/hardned-base-image.png" alt="FIPS-compliant hardened base image in Dockerfile" />
+</Frame>
+
+### Docker Scout
+
+[Docker Scout](https://docs.docker.com/scout/) is enabled at the Docker Hub repository level for the
+`maximhq/bifrost` image. Every image pushed to Docker Hub is automatically scanned for CVEs against
+continuously updated vulnerability databases.
+
+<Frame>
+  <img src="/media/security/scout-image-score.png" alt="Docker Scout image score showing vulnerability assessment" />
+</Frame>
+
+### GCP Artifact Registry Scanning
+
+Enterprise images are pushed to **GCP Artifact Registry** (and AWS ECR for select environments).
+GCP Artifact Registry provides [built-in vulnerability scanning](https://cloud.google.com/artifact-registry/docs/analysis)
+that automatically analyzes container images for OS and language package vulnerabilities.
+
+---
+
+## Supply Chain Security
+
+### GitHub Actions SHA Pinning
+
+All GitHub Actions in the open-source repository are pinned to exact commit SHAs — not mutable version
+tags. This prevents supply chain attacks where a compromised action maintainer could push malicious code
+to an existing tag.
+
+```yaml
+# Every action is pinned to a full SHA with a version comment
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+- uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+- uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+```
+
+**Coverage:**
+
+| Repository | Pinning Strategy | Actions Pinned |
+| --- | --- | --- |
+| `bifrost` (OSS) | Full SHA with version comment | 103 / 103 (100 %) |
+| `bifrost-enterprise` | Full SHA with version comment | 103 / 103 (100 %) |
+
+### NPM Provenance
+
+Published npm packages include [SLSA provenance attestations](https://docs.npmjs.com/generating-provenance-statements),
+providing a verifiable link between the published package and its source commit.
+
+```yaml
+permissions:
+  id-token: write  # Required for npm provenance
+
+# ...
+npm publish --provenance --access public
+```
+
+### Dependency Pinning in CI
+
+All language runtimes are pinned to specific versions across CI workflows to ensure reproducible builds
+and prevent unexpected behavior from runtime updates.
+
+| Runtime | Pinned Version | Used For |
+| --- | --- | --- |
+| Go | `1.26.1` | Core build, tests |
+| Node | `25` | UI build, npm packages |
+| Python | `3.11` | Integration and governance tests |
+| uv | SHA-pinned via `astral-sh/setup-uv` | Python package management |
+
+Python test dependencies are locked via `uv.lock` files for deterministic, reproducible installs:
+
+```
+tests/integrations/uv.lock
+tests/governance/uv.lock
+```
+
+<Frame>
+  <img src="/media/security/dep-pinning.png" alt="Pinned dependency versions across CI workflows" />
+</Frame>
+
+---
+
+## Dependency Management — Dependabot
+
+Dependabot monitors four ecosystems on a weekly schedule, automatically opening pull requests for
+outdated or vulnerable dependencies.
+
+<CardGroup cols={2}>
+  <Card title="Go Modules" icon="golang">
+    Covers `/core`, `/framework`, `/transports`, `/plugins/*`, and `/examples/**`
+  </Card>
+  <Card title="npm Packages" icon="npm">
+    Covers `/ui`, `/npx`, and `/examples/**`
+  </Card>
+  <Card title="Docker Images" icon="docker">
+    Monitors base images in `/transports`
+  </Card>
+  <Card title="GitHub Actions" icon="github">
+    Tracks action version updates across all workflows
+  </Card>
+</CardGroup>
+
+A separate **Dependabot Alerts** workflow runs daily and automatically
+creates GitHub issues for any open Dependabot security alerts, categorized by severity and ecosystem.
+
+---
+
+## Code Analysis — CodeQL
+
+GitHub's [CodeQL](https://codeql.github.com/) performs semantic code analysis on every push and pull request,
+complementing Snyk's SAST coverage with GitHub-native findings.
+
+- Analyzes Go and JavaScript/TypeScript codebases
+- Detects security vulnerabilities, bugs, and code quality issues using GitHub's query suites
+- Results appear directly in the GitHub Security tab alongside Snyk findings
+
+<Frame>
+  <img src="/media/security/codeql.png" alt="CodeQL analysis results in GitHub Security tab" />
+</Frame>
+
+---
+
+## Workflow & Network Security
+
+### Principle of Least Privilege
+
+All GitHub Actions workflows follow the principle of least privilege. Permissions are set at the
+job level, not the workflow level, and are scoped to the minimum required.
+
+| Permission | Granted To | Reason |
+| --- | --- | --- |
+| `contents: read` | All jobs (default) | Read repository code |
+| `contents: write` | Tag creation, releases | Create git tags and releases |
+| `security-events: write` | Snyk jobs | Upload SARIF to Security tab |
+| `id-token: write` | Cloud auth, npm publish | OIDC federation, npm provenance |
+| `pull-requests: write` | PR test reporters | Post test results as PR comments |
+
+### Tailscale VPN
+
+Enterprise deployment workflows authenticate through [Tailscale](https://tailscale.com/) before
+accessing any infrastructure. This ensures that CI/CD runners can only reach deployment targets
+through an encrypted, identity-aware network — never over the public internet.
+
+```yaml
+- name: Authenticate Tailscale
+  uses: tailscale/github-action@v4
+  with:
+    oauth-client-id: '${{ secrets.TS_OAUTH_CLIENT_ID }}'
+    oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+    tags: 'tag:gha-ci'
+    version: 1.84.0
+```
+
+- **OAuth-based authentication** — No long-lived API keys; runners authenticate via OAuth client credentials
+- **Version pinned** — Tailscale `1.84.0` to prevent unexpected behavior from updates
+- **Tagged runners** — `gha-ci` tag enables Tailscale ACL policies scoped to CI/CD access
+
+### StepSecurity
+
+[StepSecurity](https://www.stepsecurity.io/) automatically hardens GitHub Actions workflows by applying
+security best practices across all CI/CD pipelines.
+
+- Adds `permissions` blocks to workflows that are missing them
+- Pins action versions to full SHAs where mutable tags were used
+- Detects insecure patterns like unquoted interpolations and artifact poisoning risks
+
+<Frame>
+  <img src="/media/security/step-security.png" alt="StepSecurity automated security hardening applied to GitHub Actions workflows" />
+</Frame>
+
+### CODEOWNERS
+
+Critical paths in the repository are protected by a `CODEOWNERS` file, ensuring that changes to
+security-sensitive areas require review from designated maintainers before merging.
+
+<Frame>
+  <img src="/media/security/codeowners.png" alt="CODEOWNERS file enforcing review gates on security-critical paths" />
+</Frame>

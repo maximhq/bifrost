@@ -30,7 +30,7 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 
 	// Set cached tokens from top-level field if present
 	if resp.CachedContentTokenCount != 0 {
-		inputDetails.CachedTokens = int(resp.CachedContentTokenCount)
+		inputDetails.CachedReadTokens = int(resp.CachedContentTokenCount)
 	} else if resp.CacheTokensDetails != nil {
 		// If cache tokens details present, sum them
 		cachedSum := 0
@@ -44,7 +44,7 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 				inputDetails.AudioTokens += int(m.TokenCount)
 			}
 		}
-		inputDetails.CachedTokens = cachedSum
+		inputDetails.CachedReadTokens = cachedSum
 	}
 
 	total := int(resp.TotalTokens)
@@ -70,8 +70,8 @@ func ToGeminiCountTokensResponse(bifrostResp *schemas.BifrostCountTokensResponse
 	}
 
 	// Map cached content token count if available
-	if bifrostResp.InputTokensDetails != nil && bifrostResp.InputTokensDetails.CachedTokens > 0 {
-		response.CachedContentTokenCount = int32(bifrostResp.InputTokensDetails.CachedTokens)
+	if bifrostResp.InputTokensDetails != nil && bifrostResp.InputTokensDetails.CachedReadTokens > 0 {
+		response.CachedContentTokenCount = int32(bifrostResp.InputTokensDetails.CachedReadTokens)
 	} else {
 		response.CachedContentTokenCount = 0
 	}

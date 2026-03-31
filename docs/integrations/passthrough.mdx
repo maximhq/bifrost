@@ -1,0 +1,213 @@
+---
+title: "Passthrough"
+description: "Forward provider-native requests through Bifrost with full core pipeline processing, including logs and observability."
+icon: "route"
+---
+
+## Overview
+
+Passthrough integrations let you call provider-native API paths and payloads through Bifrost without route-level request/response conversion.
+
+When you use passthrough endpoints, the request still flows through Bifrost core logic. You keep Bifrost features such as logging and observability while sending provider-native paths and bodies.
+
+---
+
+## Endpoints
+
+- `/openai_passthrough`
+  Default provider: `openai`
+- `/anthropic_passthrough`
+  Default provider: `anthropic`
+- `/genai_passthrough`
+  Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
+
+---
+
+## How It Works
+
+1. Send your request to a passthrough endpoint (OpenAI, Anthropic, or GenAI passthrough).
+2. The integration strips the passthrough prefix and forwards the remaining provider-native path/body.
+3. Bifrost handles provider execution through core inference and plugin pipelines.
+4. Response status, headers, and body are returned as passthrough output (for both stream and non-stream requests).
+
+---
+
+## Provider Selection Rules
+
+### OpenAI Passthrough
+
+- Uses `openai` as the default provider.
+
+### Anthropic Passthrough
+
+- Uses `anthropic` as the default provider.
+
+### GenAI Passthrough
+
+- Uses `gemini` by default.
+- Automatically switches to `vertex` when Vertex patterns are detected, such as:
+  - URL path containing `/projects/{PROJECT_ID}/locations/{LOCATION}/`
+  - Request body `model` containing a Vertex resource path
+  - OAuth token pattern typically used for Vertex (`Bearer ya29...`)
+
+---
+
+## Usage Examples
+
+### OpenAI Passthrough
+
+<Tabs group="openai-passthrough">
+<Tab title="Python SDK">
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai_passthrough/v1",
+    api_key="dummy-key"
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "hello from passthrough"}]
+)
+
+print(response.choices[0].message.content)
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "http://localhost:8080/openai_passthrough/v1/chat/completions" \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer sk-your-openai-key" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role":"user","content":"hello from passthrough"}]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+### Anthropic Passthrough
+
+<Tabs group="anthropic-passthrough">
+<Tab title="Python SDK">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic_passthrough",
+    api_key="dummy-key"
+)
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "hello from passthrough"}]
+)
+
+print(response.content[0].text)
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "http://localhost:8080/anthropic_passthrough/v1/messages" \
+  -H "content-type: application/json" \
+  -H "x-api-key: your-anthropic-key" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role":"user","content":"hello from passthrough"}]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+### GenAI Passthrough (Gemini)
+
+<Tabs group="genai-passthrough">
+<Tab title="Python SDK">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="dummy-key",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai_passthrough")
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="hello from passthrough"
+)
+
+print(response.text)
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "http://localhost:8080/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "content-type: application/json" \
+  -H "x-goog-api-key: your-gemini-key" \
+  -d '{
+    "contents":[{"parts":[{"text":"hello from passthrough"}]}]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+### GenAI Passthrough (Vertex-style request)
+
+<Tabs group="vertex-passthrough">
+<Tab title="Python SDK">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    vertexai=True,
+    api_key="dummy-key",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai_passthrough")
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="hello from vertex passthrough"
+)
+
+print(response.text)
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "http://localhost:8080/genai_passthrough/v1/projects/my-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent" \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer ya29.your-vertex-token" \
+  -d '{
+    "contents":[{"parts":[{"text":"hello from vertex passthrough"}]}]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Notes
+
+- Use passthrough when you need a provider endpoint that is not directly supported by Bifrost integration routes yet.

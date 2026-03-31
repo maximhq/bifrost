@@ -1,5 +1,15 @@
 terraform {
-  required_version = ">= 1.3"
+  required_version = ">= 1.7"
+}
+
+# Default provider configuration for azurerm.
+# The azurerm provider requires a `features {}` block even when no Azure
+# resources are being created (count=0). This default satisfies that
+# requirement so AWS/GCP/K8s users don't need to configure azurerm.
+# Azure users: configure azurerm in your root module — it will override this.
+provider "azurerm" {
+  features {}
+  skip_provider_registration = true
 }
 
 locals {
@@ -30,15 +40,34 @@ locals {
       guardrails_config    = var.guardrails_config
       plugins              = var.plugins
       audit_logs           = var.audit_logs
+      websocket            = var.websocket
     } : k => v if v != null
   }
 
   # Merge: base config + overrides (overrides win at top-level key)
   config_json = jsonencode(merge(local.base_config, local.overrides))
 
+  # Valid cloud_provider → service combinations
+  valid_services = {
+    aws        = ["ecs", "eks"]
+    gcp        = ["gke", "cloud-run"]
+    azure      = ["aks", "aci"]
+    kubernetes = ["deployment"]
+  }
+
   image             = "${var.image_repository}:${var.image_tag}"
   container_port    = 8080
   health_check_path = "/health"
+}
+
+# --- Validate cloud_provider + service combination ---
+resource "terraform_data" "validate_service_combination" {
+  lifecycle {
+    precondition {
+      condition     = contains(local.valid_services[var.cloud_provider], var.service)
+      error_message = "Invalid service '${var.service}' for cloud_provider '${var.cloud_provider}'. Valid services: ${join(", ", local.valid_services[var.cloud_provider])}."
+    }
+  }
 }
 
 # --- AWS ---
@@ -62,12 +91,14 @@ module "aws" {
   allowed_cidr                 = var.allowed_cidr
   existing_security_group_ids  = var.existing_security_group_ids
   create_load_balancer         = var.create_load_balancer
+  assign_public_ip             = var.assign_public_ip
   enable_autoscaling           = var.enable_autoscaling
   min_capacity                 = var.min_capacity
   max_capacity                 = var.max_capacity
   autoscaling_cpu_threshold    = var.autoscaling_cpu_threshold
   autoscaling_memory_threshold = var.autoscaling_memory_threshold
   domain_name                  = var.domain_name
+  certificate_arn              = var.certificate_arn
   create_cluster               = var.create_cluster
   kubernetes_namespace         = var.kubernetes_namespace
   node_count                   = var.node_count

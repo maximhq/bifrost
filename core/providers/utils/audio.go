@@ -117,3 +117,20 @@ func DetectAudioMimeType(audioData []byte) string {
 	// Fallback within supported set
 	return "audio/mp3"
 }
+
+// AudioFilenameFromBytes returns a filename with the correct extension for the given audio data.
+// Falls back to "audio.mp3" if the format cannot be detected.
+func AudioFilenameFromBytes(audioData []byte) string {
+	mimeToExt := map[string]string{
+		"audio/wav":  "audio.wav",
+		"audio/aac":  "audio.aac",
+		"audio/aiff": "audio.aiff",
+		"audio/flac": "audio.flac",
+		"audio/ogg":  "audio.ogg",
+	}
+	mime := DetectAudioMimeType(audioData)
+	if ext, ok := mimeToExt[mime]; ok {
+		return ext
+	}
+	return "audio.mp3"
+}

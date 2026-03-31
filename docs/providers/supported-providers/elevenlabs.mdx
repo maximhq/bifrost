@@ -92,7 +92,7 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.SpeechRequest(ctx, &schemas.BifrostSpeechRequest{
+resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
     Provider: schemas.Elevenlabs,
     Model:    "eleven_multilingual_v2",
     Input: &schemas.SpeechInput{
@@ -262,7 +262,7 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.TranscriptionRequest(ctx, &schemas.BifrostTranscriptionRequest{
+resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
     Provider: schemas.Elevenlabs,
     Model:    "eleven_latest",
     Input: &schemas.TranscriptionInput{

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -36,7 +38,9 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory *bool `json:"is_vk_mandatory"`
+	IsVkMandatory   *bool     `json:"is_vk_mandatory"`
+	RequiredHeaders *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	IsEnterprise    bool      `json:"is_enterprise"`
 }
 
 type InMemoryStore interface {
@@ -77,7 +81,11 @@ type GovernancePlugin struct {
 	// Transport dependencies
 	inMemoryStore InMemoryStore
 
-	isVkMandatory *bool
+	cfgMutex sync.RWMutex
+
+	isVkMandatory   *bool
+	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
+	isEnterprise    bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -139,10 +147,12 @@ func Init(
 		logger.Warn("governance plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
-	// Handle nil config - use safe default for IsVkMandatory
+	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
+	var requiredHeaders *[]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
+		requiredHeaders = config.RequiredHeaders
 	}
 
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
@@ -193,18 +203,21 @@ func Init(
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:           ctx,
-		cancelFunc:    cancelFunc,
-		store:         governanceStore,
-		resolver:      resolver,
-		tracker:       tracker,
-		engine:        engine,
-		configStore:   configStore,
-		modelCatalog:  modelCatalog,
-		mcpCatalog:    mcpCatalog,
-		logger:        logger,
-		isVkMandatory: isVkMandatory,
-		inMemoryStore: inMemoryStore,
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
+		store:           governanceStore,
+		resolver:        resolver,
+		tracker:         tracker,
+		engine:          engine,
+		configStore:     configStore,
+		modelCatalog:    modelCatalog,
+		mcpCatalog:      mcpCatalog,
+		logger:          logger,
+		isVkMandatory:   isVkMandatory,
+		cfgMutex:        sync.RWMutex{},
+		requiredHeaders: requiredHeaders,
+		isEnterprise:    config != nil && config.IsEnterprise,
+		inMemoryStore:   inMemoryStore,
 	}
 	return plugin, nil
 }
@@ -243,10 +256,12 @@ func InitFromStore(
 	if governanceStore == nil {
 		return nil, fmt.Errorf("governance store is nil")
 	}
-	// Handle nil config - use safe default for IsVkMandatory
+	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
+	var requiredHeaders *[]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
+		requiredHeaders = config.RequiredHeaders
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -273,18 +288,21 @@ func InitFromStore(
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:           ctx,
-		cancelFunc:    cancelFunc,
-		store:         governanceStore,
-		resolver:      resolver,
-		tracker:       tracker,
-		engine:        engine,
-		configStore:   configStore,
-		modelCatalog:  modelCatalog,
-		mcpCatalog:    mcpCatalog,
-		logger:        logger,
-		inMemoryStore: inMemoryStore,
-		isVkMandatory: isVkMandatory,
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
+		store:           governanceStore,
+		resolver:        resolver,
+		tracker:         tracker,
+		engine:          engine,
+		configStore:     configStore,
+		modelCatalog:    modelCatalog,
+		mcpCatalog:      mcpCatalog,
+		logger:          logger,
+		inMemoryStore:   inMemoryStore,
+		isVkMandatory:   isVkMandatory,
+		cfgMutex:        sync.RWMutex{},
+		requiredHeaders: requiredHeaders,
+		isEnterprise:    config != nil && config.IsEnterprise,
 	}
 	return plugin, nil
 }
@@ -292,6 +310,13 @@ func InitFromStore(
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// UpdateEnforceAuthOnInference updates the enforce auth on inference config
+func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference bool) {
+	p.cfgMutex.Lock()
+	defer p.cfgMutex.Unlock()
+	p.isVkMandatory = bifrost.Ptr(enforceAuthOnInference)
 }
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
@@ -306,9 +331,13 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		return nil, nil
 	}
 
-	// If no body, nothing to process
+	// If no body, check if large payload mode is active for read-only governance
 	if len(req.Body) == 0 {
-		return nil, nil
+		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+		if !isLargePayload {
+			return nil, nil
+		}
+		return p.governLargePayload(ctx, req, virtualKeyValue, hasRoutingRules)
 	}
 
 	// Only unmarshal if we have VK or routing rules
@@ -317,10 +346,22 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	var ok bool
 	var needsMarshal bool
 
-	err := sonic.Unmarshal(req.Body, &payload)
-	if err != nil {
-		p.logger.Error("failed to unmarshal request body: %v", err)
-		return nil, nil
+	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
+	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
+
+	var err error
+	if isMultipart {
+		payload, err = network.ParseMultipartFormFields(contentType, req.Body)
+		if err != nil {
+			p.logger.Warn("failed to parse multipart form in governance plugin: %v", err)
+			return nil, nil
+		}
+	} else {
+		err = sonic.Unmarshal(req.Body, &payload)
+		if err != nil {
+			p.logger.Error("failed to unmarshal request body: %v", err)
+			return nil, nil
+		}
 	}
 
 	// Process virtual key if provided
@@ -366,14 +407,75 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 
 	// Only marshal if something changed (VK processing or routing decision matched)
 	if needsMarshal {
-		body, err := sonic.Marshal(payload)
-		if err != nil {
-			p.logger.Error("failed to marshal request body: %v", err)
+		if err := network.SerializePayloadToRequest(req, payload, isMultipart, contentType); err != nil {
+			p.logger.Error("failed to serialize request body in governance plugin: %v", err)
 			return nil, nil
 		}
-		req.Body = body
 	}
 
+	return nil, nil
+}
+
+// governLargePayload handles read-only governance for large payload requests.
+// The request body is streaming and cannot be modified, so we build a synthetic payload
+// from pre-extracted metadata and run VK validation, routing rules, and load balancing.
+// Any model changes are propagated via the metadata in context (not body rewriting).
+func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
+	metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
+	if metadata == nil || metadata.Model == "" {
+		return nil, nil
+	}
+
+	// Build synthetic payload from metadata — only the model field is needed
+	payload := map[string]any{
+		"model": metadata.Model,
+	}
+	originalModel := metadata.Model
+
+	// Process virtual key if provided
+	var virtualKey *configstoreTables.TableVirtualKey
+	if virtualKeyValue != nil {
+		vk, ok := p.store.GetVirtualKey(*virtualKeyValue)
+		if !ok || vk == nil || !vk.IsActive {
+			return nil, nil
+		}
+		virtualKey = vk
+	}
+
+	// Apply routing rules (read-only: decisions still affect downstream evaluation)
+	if hasRoutingRules {
+		var err error
+		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Process virtual key: load balance + MCP tool headers
+	if virtualKey != nil {
+		var err error
+		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+		// MCP tool headers — header-only, no body needed
+		headers, err := p.addMCPIncludeTools(nil, virtualKey)
+		if err != nil {
+			p.logger.Error("failed to add MCP include tools: %v", err)
+			return nil, nil
+		}
+		for header, value := range headers {
+			req.Headers[header] = value
+		}
+	}
+
+	// Propagate model changes to metadata so downstream hydration picks up
+	// the load-balanced/routed model (e.g., provider prefix added by LB).
+	if newModel, ok := payload["model"].(string); ok && newModel != originalModel {
+		metadata.Model = newModel
+	}
+
+	// No body serialization — large payload body streams through unchanged
 	return nil, nil
 }
 
@@ -400,10 +502,24 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, error) {
 	// Check if the request has a model field
 	modelValue, hasModel := body["model"]
+	isGeminiPath := strings.Contains(req.Path, "/genai")
+	isBedrockPath := strings.Contains(req.Path, "/bedrock")
 	if !hasModel {
 		// For genai integration, model is present in URL path instead of the request body
-		if strings.Contains(req.Path, "/genai") {
+		if isGeminiPath {
 			modelValue = req.CaseInsensitivePathParamLookup("model")
+		} else if isBedrockPath {
+			// For bedrock integration, model is present in URL path as modelId
+			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+			if rawModelID == "" {
+				return body, nil
+			}
+			// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
+			decoded, err := url.PathUnescape(rawModelID)
+			if err != nil {
+				decoded = rawModelID
+			}
+			modelValue = decoded
 		} else {
 			return body, nil
 		}
@@ -414,7 +530,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 	var genaiRequestSuffix string
 	// Remove Google GenAI API endpoint suffixes if present
-	if strings.Contains(req.Path, "/genai") {
+	if isGeminiPath {
 		for _, sfx := range gemini.GeminiRequestSuffixPaths {
 			if before, ok := strings.CutSuffix(modelStr, sfx); ok {
 				modelStr = before
@@ -527,9 +643,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
 
 	// For genai integration, model is present in URL path instead of the request body
-	if strings.Contains(req.Path, "/genai") {
+	if isGeminiPath {
 		newModelWithRequestSuffix := string(selectedProvider) + "/" + modelStr + genaiRequestSuffix
 		ctx.SetValue("model", newModelWithRequestSuffix)
+	} else if isBedrockPath {
+		// For bedrock integration, model is present in URL path as modelId
+		ctx.SetValue("modelId", string(selectedProvider)+"/"+modelStr)
 	} else {
 		var err error
 		refinedModel := modelStr
@@ -595,10 +714,24 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, *RoutingDecision, error) {
 	// Check if the request has a model field
 	modelValue, hasModel := body["model"]
+	isGeminiPath := strings.Contains(req.Path, "/genai")
+	isBedrockPath := strings.Contains(req.Path, "/bedrock")
 	if !hasModel {
 		// For genai integration, model is present in URL path
-		if strings.Contains(req.Path, "/genai") {
+		if isGeminiPath {
 			modelValue = req.CaseInsensitivePathParamLookup("model")
+		} else if isBedrockPath {
+			// For bedrock integration, model is present in URL path as modelId
+			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+			if rawModelID == "" {
+				return body, nil, nil
+			}
+			// URL-decode the modelId (Bedrock model IDs may be URL-encoded)
+			decoded, err := url.PathUnescape(rawModelID)
+			if err != nil {
+				decoded = rawModelID
+			}
+			modelValue = decoded
 		} else {
 			return body, nil, nil
 		}
@@ -669,6 +802,14 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				newModel = decision.Provider + "/" + newModel
 			}
 			ctx.SetValue("model", newModel)
+		} else if isBedrockPath {
+			// For bedrock, model is in URL path as modelId
+			// Set new modelId in context so bedrockPreCallback picks it up via ctx.UserValue("modelId")
+			newModel := decision.Model
+			if decision.Provider != "" {
+				newModel = decision.Provider + "/" + newModel
+			}
+			ctx.SetValue("modelId", newModel)
 		} else {
 			// For regular requests, update in body
 			newModel := decision.Model
@@ -686,7 +827,12 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			body["fallbacks"] = decision.Fallbacks
 		}
 
-		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, fallbacks=%v", decision.Provider, decision.Model, decision.Fallbacks)
+		// Pin specific API key by ID if the routing rule specifies one
+		if decision.KeyID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+		}
+
+		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
 	}
 
 	return body, decision, nil
@@ -733,6 +879,35 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 	return headers, nil
 }
 
+// validateRequiredHeaders checks that all configured required headers are present in the request.
+// Headers are compared case-insensitively (both sides lowercased).
+// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
+func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
+		return nil
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	var missing []string
+	for _, h := range *p.requiredHeaders {
+		if _, ok := headers[strings.ToLower(h)]; !ok {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 {
+		return &schemas.BifrostError{
+			Type:       bifrost.Ptr("missing_required_headers"),
+			StatusCode: bifrost.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")),
+			},
+		}
+	}
+	return nil
+}
+
 // evaluateGovernanceRequest is a common function that handles virtual key validation
 // and governance evaluation logic. It returns the evaluation result and a BifrostError
 // if the request should be rejected, or nil if allowed.
@@ -745,26 +920,50 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
-	// Check if virtual key is mandatory
-	if evaluationRequest.VirtualKey == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	// Check if authentication is mandatory (either VK or user auth)
+	// Checking if the virtual key is valid or not
+	isVirtualKeyValid := false
+	if evaluationRequest.VirtualKey != "" {
+		_, exists := p.store.GetVirtualKey(evaluationRequest.VirtualKey)
+		if exists {
+			isVirtualKeyValid = true
+		}
+	}
+	p.cfgMutex.RLock()
+	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
+		if p.isEnterprise {
+			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
+		}
+		p.cfgMutex.RUnlock()
 		return nil, &schemas.BifrostError{
 			Type:       bifrost.Ptr("virtual_key_required"),
 			StatusCode: bifrost.Ptr(401),
 			Error: &schemas.ErrorField{
-				Message: "virtual key is missing in headers and is mandatory.",
+				Message: message,
 			},
 		}
 	}
+	p.cfgMutex.RUnlock()
 
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
 	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 
-	// If model/provider checks passed and virtual key exists, evaluate virtual key checks
-	// This will overwrite the result with virtual key-specific decision
-	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+	// Check user-level governance (enterprise-only, runs before VK checks)
+	if result.Decision == DecisionAllow {
+		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
 	}
-	// If model/provider checks failed, skip virtual key evaluation and proceed to final decision handling
+
+	// If model/provider checks passed, evaluate virtual key
+	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
+		if evaluationRequest.UserID != "" {
+			// User auth present: only use VK for routing/filtering (skip rate limits and budgets)
+			result = p.resolver.EvaluateVirtualKeyFiltering(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+		} else {
+			// No user auth: full VK governance (routing + limits)
+			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+		}
+	}
 
 	// Mark request as rejected in context if not allowed
 	if result.Decision != DecisionAllow {
@@ -832,8 +1031,14 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
 		return req, nil, nil
 	}
+	// Validate required headers are present
+	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
+	}
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
@@ -841,6 +1046,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
+		UserID:     userID,
 	}
 	// Evaluate governance using common function
 	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
@@ -875,6 +1081,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 
 	// Extract cache and batch flags from context
 	isCacheRead := false
@@ -898,14 +1106,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	// Always process usage tracking (with or without virtual key)
-	// If virtualKey is empty, it will be passed as empty string to postHookWorker
+	// When user auth is present, skip VK usage tracking to avoid double-counting
+	effectiveVK := virtualKey
+	if userID != "" {
+		effectiveVK = ""
+	}
+	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
 	if model != "" {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			// Pass virtualKey (empty string if not present) - tracker handles this case
-			p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, isFinalChunk)
+			p.postHookWorker(result, provider, model, requestType, effectiveVK, requestID, userID, isCacheRead, isBatch, isFinalChunk)
 		}()
 	}
 
@@ -929,12 +1141,20 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, nil, nil
 	}
 
+	// Validate required headers are present
+	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
+		return req, &schemas.MCPPluginShortCircuit{Error: headerErr}, nil
+	}
+
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 
 	// Create request context for evaluation (MCP requests don't have provider/model)
 	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKeyValue,
+		UserID:     userID,
 	}
 
 	// Evaluate governance using common function
@@ -968,6 +1188,12 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+
+	// When user auth is present, skip VK usage tracking to avoid double-counting
+	if userID != "" {
+		virtualKey = ""
+	}
 
 	// Skip if no virtual key
 	if virtualKey == "" {
@@ -1039,10 +1265,11 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - requestType: The type of the request
 //   - virtualKey: The virtual key of the request (empty string if not present)
 //   - requestID: The request ID
+//   - userID: The user ID for enterprise user-level governance (empty string if not present)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, _, _, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
 
@@ -1052,7 +1279,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCostWithCacheDebug(result)
+			cost = p.modelCatalog.CalculateCost(result)
 		}
 		tokensUsed := 0
 		if result != nil {
@@ -1086,6 +1313,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			TokensUsed:   int64(tokensUsed),
 			Cost:         cost,
 			RequestID:    requestID,
+			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
 			HasUsageData: tokensUsed > 0,

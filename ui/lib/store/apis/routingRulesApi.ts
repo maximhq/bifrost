@@ -3,24 +3,21 @@
  * Handles all API communication for routing rules CRUD operations
  */
 
-import { RoutingRule, GetRoutingRulesResponse, CreateRoutingRuleRequest, UpdateRoutingRuleRequest } from "@/lib/types/routingRules";
+import { RoutingRule, GetRoutingRulesResponse, GetRoutingRulesParams, CreateRoutingRuleRequest, UpdateRoutingRuleRequest } from "@/lib/types/routingRules";
 import { baseApi } from "./baseApi";
 
 export const routingRulesApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
-		// Get all routing rules
-		getRoutingRules: builder.query<RoutingRule[], { fromMemory?: boolean } | void>({
-			query: (params) => {
-				const searchParams = new URLSearchParams();
-				if (params?.fromMemory) {
-					searchParams.append("from_memory", "true");
-				}
-				return {
-					url: `/governance/routing-rules${searchParams.toString() ? `?${searchParams.toString()}` : ""}`,
-					method: "GET",
-				};
-			},
-			transformResponse: (response: GetRoutingRulesResponse) => response.rules || [],
+		// Get routing rules with pagination
+		getRoutingRules: builder.query<GetRoutingRulesResponse, GetRoutingRulesParams | void>({
+			query: (params) => ({
+				url: "/governance/routing-rules",
+				params: {
+					...(params?.limit && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+				},
+			}),
 			providesTags: ["RoutingRules"],
 		}),
 
@@ -42,22 +39,23 @@ export const routingRulesApi = baseApi.injectEndpoints({
 				body,
 			}),
 			transformResponse: (response: { rule: RoutingRule }) => response.rule,
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data: newRule } = await queryFulfilled;
-					// Update the default cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", undefined, (draft) => {
-							draft.push(newRule);
-						})
-					);
-					// Update the fromMemory cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", { fromMemory: true }, (draft) => {
-							draft.push(newRule);
-						})
-					);
-					// Also update the individual routing rule cache
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
+						const search = entry.originalArgs?.search as string | undefined;
+						if (search && !newRule.name.toLowerCase().includes(search.toLowerCase())) continue;
+						dispatch(
+							routingRulesApi.util.updateQueryData("getRoutingRules", entry.originalArgs, (draft) => {
+								if (!draft.rules) draft.rules = [];
+								draft.rules.unshift(newRule);
+								draft.count = (draft.count || 0) + 1;
+								draft.total_count = (draft.total_count || 0) + 1;
+							}),
+						);
+					}
 					dispatch(
 						routingRulesApi.util.updateQueryData("getRoutingRule", newRule.id, () => newRule)
 					);
@@ -73,28 +71,22 @@ export const routingRulesApi = baseApi.injectEndpoints({
 				body: data,
 			}),
 			transformResponse: (response: { rule: RoutingRule }) => response.rule,
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data: updatedRule } = await queryFulfilled;
-					// Update the default cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", undefined, (draft) => {
-							const index = draft.findIndex((r) => r.id === updatedRule.id);
-							if (index !== -1) {
-								draft[index] = updatedRule;
-							}
-						})
-					);
-					// Update the fromMemory cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", { fromMemory: true }, (draft) => {
-							const index = draft.findIndex((r) => r.id === updatedRule.id);
-							if (index !== -1) {
-								draft[index] = updatedRule;
-							}
-						})
-					);
-					// Also update the individual routing rule cache
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							routingRulesApi.util.updateQueryData("getRoutingRules", entry.originalArgs, (draft) => {
+								if (!draft.rules) return;
+								const index = draft.rules.findIndex((r) => r.id === id);
+								if (index !== -1) {
+									draft.rules[index] = updatedRule;
+								}
+							}),
+						);
+					}
 					dispatch(
 						routingRulesApi.util.updateQueryData("getRoutingRule", updatedRule.id, () => updatedRule)
 					);
@@ -108,27 +100,24 @@ export const routingRulesApi = baseApi.injectEndpoints({
 				url: `/governance/routing-rules/${id}`,
 				method: "DELETE",
 			}),
-			async onQueryStarted(ruleId, { dispatch, queryFulfilled }) {
+			async onQueryStarted(ruleId, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
-					// Update the default cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", undefined, (draft) => {
-							const index = draft.findIndex((r) => r.id === ruleId);
-							if (index !== -1) {
-								draft.splice(index, 1);
-							}
-						})
-					);
-					// Update the fromMemory cache variant
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRules", { fromMemory: true }, (draft) => {
-							const index = draft.findIndex((r) => r.id === ruleId);
-							if (index !== -1) {
-								draft.splice(index, 1);
-							}
-						})
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							routingRulesApi.util.updateQueryData("getRoutingRules", entry.originalArgs, (draft) => {
+								if (!draft.rules) return;
+								const before = draft.rules.length;
+								draft.rules = draft.rules.filter((r) => r.id !== ruleId);
+								if (draft.rules.length < before) {
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+								}
+							}),
+						);
+					}
 				} catch {}
 			},
 		}),

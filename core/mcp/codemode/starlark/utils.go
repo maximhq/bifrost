@@ -104,9 +104,9 @@ func goToStarlark(v interface{}) starlark.Value {
 		return dict
 	default:
 		// Try to marshal to JSON and parse as a generic structure
-		if jsonBytes, err := sonic.Marshal(val); err == nil {
+		if jsonBytes, err := schemas.MarshalSorted(val); err == nil {
 			var generic interface{}
-			if sonic.Unmarshal(jsonBytes, &generic) == nil {
+			if schemas.Unmarshal(jsonBytes, &generic) == nil {
 				return goToStarlark(generic)
 			}
 		}
@@ -179,7 +179,7 @@ func formatResultForLog(result interface{}) string {
 	var resultStr string
 	if result == nil {
 		resultStr = "null"
-	} else if resultBytes, err := sonic.Marshal(result); err == nil {
+	} else if resultBytes, err := schemas.MarshalSorted(result); err == nil {
 		resultStr = string(resultBytes)
 	} else {
 		resultStr = fmt.Sprintf("%v", result)
@@ -265,7 +265,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
 		default:
 			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
+			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
 				var contentMap map[string]interface{}
 				if json.Unmarshal(jsonBytes, &contentMap) == nil {
 					if text, ok := contentMap["text"].(string); ok {

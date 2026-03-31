@@ -19,13 +19,16 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
-	/** Allow users to enter custom values not in the predefined list */
-	allowCustomValuesForSingleSelect?: boolean;
+	/** id for the search input (accessibility) */
+	inputId?: string;
+	/** id of element that labels this control (accessibility) */
+	ariaLabelledBy?: string;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 	/** Single select mode - value and onChange will be string instead of string[] */
 	isSingleSelect: true;
+	unfiltered?: boolean;
 	value: string;
 	onChange: (model: string) => void;
 }
@@ -33,6 +36,7 @@ interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
 	/** Multi select mode (default) - value and onChange will be string[] */
 	isSingleSelect?: false;
+	unfiltered?: boolean;
 	value: string[];
 	onChange: (models: string[]) => void;
 }
@@ -50,15 +54,14 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		provider,
 		keys,
 		value,
+		unfiltered = false,
 		onChange,
 		placeholder = "Search models...",
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
-		allowCustomValuesForSingleSelect = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
-	const allowCreate = allowCustomValuesForSingleSelect || !isSingleSelect;
 
 	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
 	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
@@ -88,6 +91,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				provider,
 				keys: keys && keys.length > 0 ? keys : undefined,
 				limit: 5,
+				unfiltered,
 			});
 		} else if (shouldUseBaseModels) {
 			getBaseModels({ limit: 20 });
@@ -95,6 +99,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			getModels({
 				keys: keys && keys.length > 0 ? keys : undefined,
 				limit: 20,
+				unfiltered,
 			});
 		}
 	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
@@ -129,6 +134,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					provider: provider || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: query ? 50 : shouldLoadOnEmpty && !provider ? 20 : 5,
+					unfiltered,
 				})
 					.unwrap()
 					.then((response) => {
@@ -166,6 +172,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					provider,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: currentQuery ? 20 : 5,
+					unfiltered,
 				});
 			} else if (shouldUseBaseModels) {
 				getBaseModels({
@@ -177,6 +184,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: currentQuery || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: currentQuery ? 20 : 5,
+					unfiltered,
 				});
 			}
 		},
@@ -186,10 +194,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	// Handle input change - track in both state and ref
 	// Per react-select docs: ignore input clear on blur, menu close, and set-value (selection)
 	const handleInputChange = useCallback((newValue: string, actionMeta: { action: string }) => {
-		// Don't clear input when selecting an option, blurring, or closing menu
-		if (actionMeta.action === "set-value") {
-			return;
-		}
+		// Don't clear input on blur or menu close (preserves search while browsing)
 		if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
 			return;
 		}
@@ -218,13 +223,15 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			inputId={props.inputId}
+			ariaLabelledBy={props.ariaLabelledBy}
 			value={selectedOptions}
 			onChange={handleChange}
 			reload={loadOptions}
 			debounce={300}
-			isCreatable={allowCreate}
-			dynamicOptionCreation={allowCreate}
-			createOptionText={allowCreate ? "Press enter to add new model" : undefined}
+			isCreatable={true}
+			dynamicOptionCreation={true}
+			createOptionText={"Press enter to add new model"}
 			defaultOptions={defaultOptions.length > 0 ? defaultOptions : [] as Option<ModelOption>[]}
 			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
 			placeholder={placeholder}

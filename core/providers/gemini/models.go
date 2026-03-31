@@ -7,7 +7,17 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
+func toGeminiModelResourceName(modelID string) string {
+	if strings.HasPrefix(modelID, "models/") {
+		return modelID
+	}
+	if idx := strings.Index(modelID, "/"); idx >= 0 && idx+1 < len(modelID) {
+		return "models/" + modelID[idx+1:]
+	}
+	return "models/" + modelID
+}
+
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, blacklistedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -16,12 +26,16 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.Models {
 
 		contextLength := model.InputTokenLimit + model.OutputTokenLimit
 		// Remove prefix models/ from model.Name
 		modelName := strings.TrimPrefix(model.Name, "models/")
-		if len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
+		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
+			continue
+		}
+		if !unfiltered && slices.Contains(blacklistedModels, modelName) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -33,6 +47,22 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 			MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
 			SupportedMethods: model.SupportedGenerationMethods,
 		})
+		includedModels[modelName] = true
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if slices.Contains(blacklistedModels, allowedModel) {
+				continue
+			}
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
 	}
 
 	return bifrostResponse
@@ -50,7 +80,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 
 	for _, model := range resp.Data {
 		geminiModel := GeminiModel{
-			Name:                       model.ID,
+			Name:                       toGeminiModelResourceName(model.ID),
 			SupportedGenerationMethods: model.SupportedMethods,
 		}
 		if model.Name != nil {

@@ -2,12 +2,26 @@ package governance
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"regexp"
 	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// headerKeyPattern matches header map access patterns like headers["X-Api-Key"] or headers['X-Api-Key']
+var headerKeyPattern = regexp.MustCompile(`headers\[["']([^"']+)["']\]`)
+
+// headerInPattern matches "in headers" membership test patterns like "X-Api-Key" in headers or 'X-Api-Key' in headers
+var headerInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+headers`)
+
+// paramKeyPattern matches param map access patterns like params["Region"] or params['Region']
+var paramKeyPattern = regexp.MustCompile(`params\[["']([^"']+)["']\]`)
+
+// paramInPattern matches "in params" membership test patterns like "Region" in params or 'Region' in params
+var paramInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+params`)
 
 // ScopeLevel represents a level in the scope precedence hierarchy
 type ScopeLevel struct {
@@ -20,6 +34,7 @@ type ScopeLevel struct {
 type RoutingDecision struct {
 	Provider        string   // Primary provider (e.g., "openai", "azure")
 	Model           string   // Model to use (or empty to use original)
+	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
 	Fallbacks       []string // Fallback chain: ["provider/model", ...]
 	MatchedRuleID   string   // ID of the rule that matched
 	MatchedRuleName string   // Name of the rule that matched
@@ -78,7 +93,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// Determine scope chain based on organizational hierarchy
 	scopeChain := buildScopeChain(routingCtx.VirtualKey)
 	re.logger.Debug("[RoutingEngine] Scope chain: %v", scopeChainToStrings(scopeChain))
-	ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	// Evaluate rules in scope precedence order (first-match-wins)
 	for _, scope := range scopeChain {
@@ -96,7 +111,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		for _, r := range rules {
 			ruleNames = append(ruleNames, r.Name)
 		}
-		ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
 
 		// Evaluate each rule
 		for _, rule := range rules {
@@ -106,7 +121,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			program, err := re.store.GetRoutingProgram(rule)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 				continue
 			}
 
@@ -114,32 +129,44 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			matched, err := evaluateCELExpression(program, variables)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
 				continue
 			}
 
 			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
 
 			if !matched {
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
 			}
 
-			// If rule matched, return routing decision
+			// If rule matched, select a target probabilistically and return routing decision
 			if matched {
-				// Use incoming provider/model if rule's are empty
-				provider := rule.Provider
-				if provider == "" {
-					provider = string(routingCtx.Provider)
+				target, ok := selectWeightedTarget(rule.Targets)
+				if !ok {
+					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
+					continue
 				}
 
-				model := rule.Model
-				if model == "" {
-					model = routingCtx.Model
+				provider := string(routingCtx.Provider)
+				if target.Provider != nil && *target.Provider != "" {
+					provider = *target.Provider
+				}
+
+				model := routingCtx.Model
+				if target.Model != nil && *target.Model != "" {
+					model = *target.Model
+				}
+
+				keyID := ""
+				if target.KeyID != nil {
+					keyID = *target.KeyID
 				}
 
 				decision := &RoutingDecision{
 					Provider:        provider,
 					Model:           model,
+					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
@@ -148,8 +175,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, rule.ID)
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
 
-				re.logger.Debug("[RoutingEngine] Rule matched! Decision: provider=%s, model=%s, fallbacks=%v", provider, model, rule.ParsedFallbacks)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
+				re.logger.Debug("[RoutingEngine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", target.Weight, provider, model, rule.ParsedFallbacks)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, target.Weight, provider, model, rule.ParsedFallbacks))
 				return decision, nil
 			}
 
@@ -159,6 +186,55 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// selectWeightedTarget picks one target from the slice using weighted random selection.
+// Each target's Weight contributes proportionally to its probability of being chosen.
+// Weights do not need to be normalised to 100; the function normalises internally.
+// Returns ok=false only when len(targets)==0 or all targets have negative weights (filtered out).
+// When all valid targets have weight==0 the function falls back to uniform random selection
+// and still returns ok=true, so zero-weight targets are valid and handled.
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+	if len(targets) == 0 {
+		return configstoreTables.TableRoutingTarget{}, false
+	}
+
+	// Filter out negative weights as a precaution against malformed DB data.
+	// Negative weights are blocked at write time by validateRoutingTargets, but
+	// we guard here defensively so a bad row cannot corrupt the cumulative range.
+	valid := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
+	for _, t := range targets {
+		if t.Weight >= 0 {
+			valid = append(valid, t)
+		}
+	}
+	if len(valid) == 0 {
+		return configstoreTables.TableRoutingTarget{}, false
+	}
+
+	total := 0.0
+	for _, t := range valid {
+		total += t.Weight
+	}
+
+	// All weights are 0 — select uniformly at random among valid targets.
+	if total == 0 {
+		return valid[rand.IntN(len(valid))], true
+	}
+
+	if len(valid) == 1 {
+		return valid[0], true
+	}
+
+	r := rand.Float64() * total
+	cumulative := 0.0
+	for _, t := range valid {
+		cumulative += t.Weight
+		if r < cumulative {
+			return t, true
+		}
+	}
+	return valid[len(valid)-1], true
 }
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
@@ -256,10 +332,14 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	}
 	variables["headers"] = normalizedHeaders
 
-	if ctx.QueryParams == nil {
-		ctx.QueryParams = make(map[string]string)
+	// Normalize query params to lowercase keys for case-insensitive CEL matching
+	normalizedParams := make(map[string]string)
+	if ctx.QueryParams != nil {
+		for k, v := range ctx.QueryParams {
+			normalizedParams[strings.ToLower(k)] = v
+		}
 	}
-	variables["params"] = ctx.QueryParams
+	variables["params"] = normalizedParams
 
 	// Extract VirtualKey context if available
 	if ctx.VirtualKey != nil {
@@ -351,6 +431,23 @@ func validateCELExpression(expr string) error {
 	}
 
 	return nil
+}
+
+// normalizeMapKeysInCEL lowercases header and param keys in CEL expressions
+// so that headers["X-Api-Key"] becomes headers["x-api-key"], "X-Api-Key" in headers becomes "x-api-key" in headers,
+// params["Region"] becomes params["region"], and "Region" in params becomes "region" in params.
+// This ensures CEL expressions match against the normalized (lowercase) map keys at runtime.
+func normalizeMapKeysInCEL(expr string) string {
+	toLower := func(match string) string {
+		return strings.ToLower(match)
+	}
+	// Normalize bracket access
+	expr = headerKeyPattern.ReplaceAllStringFunc(expr, toLower)
+	expr = paramKeyPattern.ReplaceAllStringFunc(expr, toLower)
+	// Normalize "in" membership test
+	expr = headerInPattern.ReplaceAllStringFunc(expr, toLower)
+	expr = paramInPattern.ReplaceAllStringFunc(expr, toLower)
+	return expr
 }
 
 // createCELEnvironment creates a new CEL environment for routing rules

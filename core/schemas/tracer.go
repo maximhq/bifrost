@@ -91,10 +91,11 @@ type Tracer interface {
 	// This is called for each streaming chunk to build up the complete response.
 	AddStreamingChunk(traceID string, response *BifrostResponse)
 
-	// GetAccumulatedChunks returns the accumulated BifrostResponse, TTFT, and chunk count for a deferred span.
-	// Returns the built response (with content, tool calls, etc.), time-to-first-token in ms, and total chunk count.
+	// GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for a deferred span.
+	// The response is built from the streaming accumulator during the final ProcessStreamingChunk call.
+	// Returns nil response if no plugin has called ProcessStreamingChunk (callers should nil-check).
 	// Returns nil, 0, 0 if no accumulated data exists.
-	GetAccumulatedChunks(traceID string) (response *BifrostResponse, ttftMs int64, chunkCount int)
+	GetAccumulatedChunks(traceID string) (response *BifrostResponse, ttftNs int64, chunkCount int)
 
 	// CreateStreamAccumulator creates a new stream accumulator for the given trace ID.
 	// This should be called at the start of a streaming request.

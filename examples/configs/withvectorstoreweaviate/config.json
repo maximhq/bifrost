@@ -1,0 +1,33 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": ".config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": ".logs.db"
+    }
+  },
+  "vector_store": {
+    "enabled": true,
+    "type": "weaviate",
+    "config": {
+      "scheme": "http",
+      "host": "localhost:9000",
+      "grpc_config": {
+        "host": "localhost:50051",
+        "secured": false
+      }
+    }
+  },
+  "client": {
+    "enable_logging": true,
+    "log_retention_days": 30
+  }
+}

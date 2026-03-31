@@ -1,0 +1,25 @@
+rerank:
+  post:
+    operationId: rerankDocuments
+    summary: Rerank documents
+    description: |
+      Reorders input documents by relevance to a query.
+    tags:
+      - Rerank
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/rerank.yaml#/RerankRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/rerank.yaml#/RerankResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

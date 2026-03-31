@@ -114,12 +114,64 @@ LogEntry:
     cache_debug:
       type: object
       additionalProperties: true
+    metadata:
+      type: object
+      additionalProperties: true
+      description: Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)
     selected_key:
       type: object
       additionalProperties: true
     virtual_key:
       type: object
       additionalProperties: true
+    passthrough_request_body:
+      type: string
+      description: Raw passthrough request body (for passthrough integration routes)
+    passthrough_response_body:
+      type: string
+      description: Raw passthrough response body (for passthrough integration routes)
+    routing_engine_logs:
+      type: object
+      additionalProperties: true
+      description: Detailed logs from the routing engine decision process
+    is_large_payload_request:
+      type: boolean
+      description: Whether the request payload exceeded the large payload threshold
+    is_large_payload_response:
+      type: boolean
+      description: Whether the response payload exceeded the large payload threshold
+    rerank_output:
+      type: object
+      additionalProperties: true
+      description: Rerank operation output
+    video_generation_input:
+      type: object
+      additionalProperties: true
+      description: Video generation request input
+    video_generation_output:
+      type: object
+      additionalProperties: true
+      description: Video generation response output
+    video_retrieve_output:
+      type: object
+      additionalProperties: true
+      description: Video retrieve response output
+    video_list_output:
+      type: object
+      additionalProperties: true
+      description: Video list response output
+    video_delete_output:
+      type: object
+      additionalProperties: true
+      description: Video delete response output
+    video_download_output:
+      type: object
+      additionalProperties: true
+      description: Video download response output
+    list_models_output:
+      type: object
+      additionalProperties: true
+      description: List models response output
 
 MCPToolLogEntry:
   type: object
@@ -167,10 +219,18 @@ MCPToolLogEntry:
       type: string
       enum: ["processing", "success", "error"]
       description: Execution status
+    metadata:
+      type: object
+      additionalProperties: true
+      description: Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)
     created_at:
       type: string
       format: date-time
       description: When the log entry was created
+    virtual_key:
+      type: object
+      additionalProperties: true
+      description: Full virtual key object (populated when virtual_key_id is set)
 
 MCPToolLogSearchFilters:
   type: object
@@ -372,12 +432,32 @@ SearchLogsResponse:
       type: array
       items:
         $ref: '#/LogEntry'
-    total:
+    pagination:
+      $ref: '#/PaginationOptions'
+    stats:
+      $ref: '#/LogStats'
+    has_logs:
+      type: boolean
+      description: Whether any logs exist in the system
+
+PaginationOptions:
+  type: object
+  description: Pagination metadata for list responses
+  properties:
+    limit:
       type: integer
     offset:
       type: integer
-    limit:
+    sort_by:
+      type: string
+      enum: [timestamp, latency, tokens, cost]
+    order:
+      type: string
+      enum: [asc, desc]
+    total_count:
       type: integer
+      format: int64
+      description: Total number of items matching the query
 
 LogStats:
   type: object
@@ -462,3 +542,288 @@ RecalculateCostResponse:
       type: integer
     remaining:
       type: integer
+
+# Histogram schemas
+
+HistogramBucket:
+  type: object
+  description: Time-bucketed request count
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    count:
+      type: integer
+      format: int64
+    success:
+      type: integer
+      format: int64
+    error:
+      type: integer
+      format: int64
+
+HistogramResult:
+  type: object
+  description: Time-bucketed request count histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/HistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+TokenHistogramBucket:
+  type: object
+  description: Time-bucketed token usage
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    prompt_tokens:
+      type: integer
+      format: int64
+    completion_tokens:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+
+TokenHistogramResult:
+  type: object
+  description: Time-bucketed token usage histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/TokenHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+CostHistogramBucket:
+  type: object
+  description: Time-bucketed cost data with model breakdown
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    total_cost:
+      type: number
+    by_model:
+      type: object
+      additionalProperties:
+        type: number
+      description: Cost breakdown by model name
+
+CostHistogramResult:
+  type: object
+  description: Time-bucketed cost histogram with model breakdown
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/CostHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    models:
+      type: array
+      items:
+        type: string
+      description: List of models present in the histogram
+
+ModelUsageStats:
+  type: object
+  description: Usage statistics for a single model
+  properties:
+    total:
+      type: integer
+      format: int64
+    success:
+      type: integer
+      format: int64
+    error:
+      type: integer
+      format: int64
+
+ModelHistogramBucket:
+  type: object
+  description: Time-bucketed model usage with success/error breakdown
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_model:
+      type: object
+      additionalProperties:
+        $ref: '#/ModelUsageStats'
+      description: Usage breakdown by model name
+
+ModelHistogramResult:
+  type: object
+  description: Time-bucketed model usage histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ModelHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    models:
+      type: array
+      items:
+        type: string
+
+LatencyHistogramBucket:
+  type: object
+  description: Time-bucketed latency percentiles
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    avg_latency:
+      type: number
+    p90_latency:
+      type: number
+    p95_latency:
+      type: number
+    p99_latency:
+      type: number
+    total_requests:
+      type: integer
+      format: int64
+
+LatencyHistogramResult:
+  type: object
+  description: Time-bucketed latency histogram
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/LatencyHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+
+ProviderCostHistogramBucket:
+  type: object
+  description: Time-bucketed cost data with provider breakdown
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    total_cost:
+      type: number
+    by_provider:
+      type: object
+      additionalProperties:
+        type: number
+      description: Cost breakdown by provider name
+
+ProviderCostHistogramResult:
+  type: object
+  description: Time-bucketed cost histogram with provider breakdown
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ProviderCostHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    providers:
+      type: array
+      items:
+        type: string
+
+ProviderTokenStats:
+  type: object
+  description: Token statistics for a single provider
+  properties:
+    prompt_tokens:
+      type: integer
+      format: int64
+    completion_tokens:
+      type: integer
+      format: int64
+    total_tokens:
+      type: integer
+      format: int64
+
+ProviderTokenHistogramBucket:
+  type: object
+  description: Time-bucketed token usage with provider breakdown
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_provider:
+      type: object
+      additionalProperties:
+        $ref: '#/ProviderTokenStats'
+      description: Token usage breakdown by provider name
+
+ProviderTokenHistogramResult:
+  type: object
+  description: Time-bucketed token histogram with provider breakdown
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ProviderTokenHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    providers:
+      type: array
+      items:
+        type: string
+
+ProviderLatencyStats:
+  type: object
+  description: Latency statistics for a single provider
+  properties:
+    avg_latency:
+      type: number
+    p90_latency:
+      type: number
+    p95_latency:
+      type: number
+    p99_latency:
+      type: number
+    total_requests:
+      type: integer
+      format: int64
+
+ProviderLatencyHistogramBucket:
+  type: object
+  description: Time-bucketed latency data with provider breakdown
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    by_provider:
+      type: object
+      additionalProperties:
+        $ref: '#/ProviderLatencyStats'
+      description: Latency breakdown by provider name
+
+ProviderLatencyHistogramResult:
+  type: object
+  description: Time-bucketed latency histogram with provider breakdown
+  properties:
+    buckets:
+      type: array
+      items:
+        $ref: '#/ProviderLatencyHistogramBucket'
+    bucket_size_seconds:
+      type: integer
+      format: int64
+    providers:
+      type: array
+      items:
+        type: string

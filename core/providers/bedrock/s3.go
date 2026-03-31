@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -120,7 +119,7 @@ func ConvertBedrockRequestsToJSONL(requests []schemas.BatchRequestItem, modelID 
 		}
 
 		// Marshal the request as a JSON line
-		line, err := sonic.Marshal(bedrockReq)
+		line, err := providerUtils.MarshalSorted(bedrockReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal batch request item %s: %w", req.CustomID, err)
 		}

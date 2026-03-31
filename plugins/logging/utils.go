@@ -21,6 +21,9 @@ type KeyPair struct {
 
 // LogManager defines the main interface that combines all logging functionality
 type LogManager interface {
+	// GetLog retrieves a single log entry by ID (includes all fields, including raw_request/raw_response)
+	GetLog(ctx context.Context, id string) (*logstore.Log, error)
+
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 
@@ -39,6 +42,21 @@ type LogManager interface {
 	// GetModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters
 	GetModelHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ModelHistogramResult, error)
 
+	// GetLatencyHistogram returns time-bucketed latency percentiles for the given filters
+	GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
+
+	// GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters
+	GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error)
+
+	// GetProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters
+	GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error)
+
+	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
+	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
+
+	// GetModelRankings returns models ranked by usage with trend comparison
+	GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
@@ -56,6 +74,9 @@ type LogManager interface {
 
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
+
+	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
+	GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error)
 
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
@@ -82,6 +103,15 @@ type LogManager interface {
 	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
 	GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair
 
+	// GetMCPHistogram returns time-bucketed MCP tool call volume
+	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+
+	// GetMCPCostHistogram returns time-bucketed MCP cost data
+	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
+
+	// GetMCPTopTools returns the top N MCP tools by call count
+	GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error)
+
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
 }
@@ -89,6 +119,10 @@ type LogManager interface {
 // PluginLogManager implements LogManager interface wrapping the plugin
 type PluginLogManager struct {
 	plugin *LoggerPlugin
+}
+
+func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	return p.plugin.GetLog(ctx, id)
 }
 
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -133,6 +167,41 @@ func (p *PluginLogManager) GetModelHistogram(ctx context.Context, filters *logst
 	return p.plugin.GetModelHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
+func (p *PluginLogManager) GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderCostHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderTokenHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetModelRankings(ctx, *filters)
+}
+
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 	return p.plugin.droppedRequests.Load()
 }
@@ -160,6 +229,13 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return map[string][]string{}, nil
+	}
+	return p.plugin.store.GetDistinctMetadataKeys(ctx)
 }
 
 // DeleteLog deletes a log from the log store
@@ -225,6 +301,30 @@ func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context) []Key
 	return p.plugin.GetAvailableMCPVirtualKeys(ctx)
 }
 
+// GetMCPHistogram returns time-bucketed MCP tool call volume
+func (p *PluginLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPCostHistogram returns time-bucketed MCP cost data
+func (p *PluginLogManager) GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPCostHistogramResult{}, nil
+	}
+	return p.plugin.store.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetMCPTopTools returns the top N MCP tools by call count
+func (p *PluginLogManager) GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return &logstore.MCPTopToolsResult{}, nil
+	}
+	return p.plugin.store.GetMCPTopTools(ctx, filters, limit)
+}
+
 // DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 func (p *PluginLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
@@ -282,6 +382,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
 	}
 	if request.TextCompletionRequest != nil {
+		if request.TextCompletionRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		var text string
 		if request.TextCompletionRequest.Input.PromptStr != nil {
 			text = *request.TextCompletionRequest.Input.PromptStr
@@ -302,6 +405,11 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.EmbeddingRequest != nil {
+		// Large payload passthrough can intentionally leave Input nil to avoid
+		// materializing giant request bodies. Logging should degrade gracefully.
+		if request.EmbeddingRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		texts := request.EmbeddingRequest.Input.Texts
 
 		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {
@@ -325,6 +433,20 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 				},
 			},
 		}, []schemas.ResponsesMessage{}
+	}
+	if request.RerankRequest != nil {
+		query := request.RerankRequest.Query
+		return []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &query,
+				},
+			},
+		}, []schemas.ResponsesMessage{}
+	}
+	if request.CountTokensRequest != nil && len(request.CountTokensRequest.Input) > 0 {
+		return []schemas.ChatMessage{}, request.CountTokensRequest.Input
 	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }

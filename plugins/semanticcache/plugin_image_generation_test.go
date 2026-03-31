@@ -48,7 +48,7 @@ func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 	t.Logf("Response: ID=%s, Images=%d", response1.ID, len(response1.Data))
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request (should be served from cache)...")
 
@@ -161,7 +161,7 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 	t.Logf("First request completed in %v", duration1)
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request - very similar text to test semantic matching
 	secondRequest := CreateImageGenerationRequest(
@@ -260,7 +260,7 @@ func TestImageGenerationDifferentParameters(t *testing.T) {
 		return
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request with different size - should NOT be cached
 	request2 := CreateImageGenerationRequest(basePrompt, "1024x1536", "low")
@@ -275,7 +275,7 @@ func TestImageGenerationDifferentParameters(t *testing.T) {
 	// Should NOT be cached (different size)
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ImageGenerationResponse: response2})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Third request with different quality - should NOT be cached
 	request3 := CreateImageGenerationRequest(basePrompt, "1024x1024", "high")
@@ -341,7 +341,7 @@ func TestImageGenerationStreamCaching(t *testing.T) {
 	t.Logf("First streaming request completed in %v with %d chunks", duration1, len(responses1))
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical streaming request (should be served from cache)...")
 

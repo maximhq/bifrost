@@ -5,26 +5,22 @@ import { ProviderName } from "./logs";
  * Parse a date string in YYYY-MM-DD format with strict validation.
  * Returns null if the string is empty, malformed, or represents an invalid date.
  */
-function parseTrialExpiry (dateStr: string | undefined): Date | null {
-	if (!dateStr || !dateStr.trim()) return null
+function parseTrialExpiry(dateStr: string | undefined): Date | null {
+	if (!dateStr || !dateStr.trim()) return null;
 
 	// Strict format check: YYYY-MM-DD
-	const dateRegex = /^\d{4}-\d{2}-\d{2}$/
-	if (!dateRegex.test(dateStr)) return null
+	const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+	if (!dateRegex.test(dateStr)) return null;
 
-	const [year, month, day] = dateStr.split('-').map(Number)
-	const date = new Date(year, month - 1, day)
+	const [year, month, day] = dateStr.split("-").map(Number);
+	const date = new Date(year, month - 1, day);
 
 	// Validate the date components match (catches invalid dates like 2024-02-30)
-	if (
-		date.getFullYear() !== year ||
-		date.getMonth() !== month - 1 ||
-		date.getDate() !== day
-	) {
-		return null
+	if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+		return null;
 	}
 
-	return date
+	return date;
 }
 
 // Model placeholders based on provider type
@@ -50,6 +46,8 @@ export const ModelPlaceholders = {
 	nebius: "e.g. openai/gpt-oss-120b, google/gemma-2-9b-it-fast, Qwen/Qwen2.5-VL-72B-Instruct",
 	xai: "e.g. grok-4-0709, grok-3-mini, grok-3, grok-2-vision-1212",
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
+	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
+	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -73,6 +71,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	nebius: true,
 	xai: true,
 	replicate: true,
+	runway: true,
+	vllm: false,
 };
 
 export const DefaultNetworkConfig = {
@@ -81,6 +81,11 @@ export const DefaultNetworkConfig = {
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
+	insecure_skip_verify: false,
+	ca_cert_pem: "",
+	stream_idle_timeout_in_seconds: 60,
+	max_conns_per_host: 5000,
+	enforce_http2: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {
@@ -115,6 +120,12 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_edit_stream",
 		"image_variation",
 		"count_tokens",
+		"video_generation",
+		"video_retrieve",
+		"video_download",
+		"video_delete",
+		"video_list",
+		"video_remix",
 	],
 	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
 	gemini: [
@@ -131,6 +142,12 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_generation",
 		"image_edit",
 		"count_tokens",
+		"video_generation",
+		"video_retrieve",
+		"video_download",
+		"video_delete",
+		"video_list",
+		"video_remix",
 	],
 	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
 	bedrock: [
@@ -156,6 +173,12 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_generation_stream",
 		"image_edit",
 		"image_edit_stream",
+		"video_generation",
+		"video_retrieve",
+		"video_download",
+		"video_delete",
+		"video_list",
+		"video_remix",
 	],
 };
 

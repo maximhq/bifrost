@@ -29,17 +29,21 @@ type PerplexityProvider struct {
 func NewPerplexityProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*PerplexityProvider, error) {
 	config.CheckAndSetDefaults()
 
+	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 	client := &fasthttp.Client{
-		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
-		MaxConnsPerHost:     5000,
+		ReadTimeout:         requestTimeout,
+		WriteTimeout:        requestTimeout,
+		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConnDuration: 30 * time.Second,
-		MaxConnWaitTimeout:  10 * time.Second,
+		MaxConnWaitTimeout:  requestTimeout,
+		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
+		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.perplexity.ai"
@@ -63,7 +67,7 @@ func (provider *PerplexityProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Perplexity's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, model string) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, model string) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -80,30 +84,36 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Perplexity) {
+		req.SetBody(jsonData)
+	}
 
 	// Send the request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
-		return nil, latency, bifrostErr
+		return nil, latency, nil, bifrostErr
 	}
+
+	// Extract provider response headers before status check so error responses also forward them
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-		return nil, latency, openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), model)
+		return nil, latency, providerResponseHeaders, openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), model)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
 	}
 
 	// Read the response body and copy it before releasing the response
 	// to avoid use-after-free since resp.Body() references fasthttp's internal buffer
 	bodyCopy := append([]byte(nil), body...)
 
-	return bodyCopy, latency, nil
+	return bodyCopy, latency, providerResponseHeaders, nil
 }
 
 // ListModels performs a list models request to Perplexity's API.
@@ -137,7 +147,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"), key.Value.GetValue(), request.Model)
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"), key.Value.GetValue(), request.Model)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -155,6 +165,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -199,6 +210,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -237,6 +249,11 @@ func (provider *PerplexityProvider) Embedding(ctx *schemas.BifrostContext, key s
 // Speech is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+}
+
+// Rerank is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Perplexity provider.
@@ -279,6 +296,36 @@ func (provider *PerplexityProvider) ImageVariation(ctx *schemas.BifrostContext, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// VideoGeneration is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+}
+
+// VideoRetrieve is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+}
+
+// VideoDownload is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+}
+
+// VideoDelete is not supported by Perplexity provider.
+func (provider *PerplexityProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by Perplexity provider.
+func (provider *PerplexityProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by Perplexity provider.
+func (provider *PerplexityProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by Perplexity provider.
 func (provider *PerplexityProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
@@ -297,6 +344,11 @@ func (provider *PerplexityProvider) BatchRetrieve(_ *schemas.BifrostContext, _ [
 // BatchCancel is not supported by Perplexity provider.
 func (provider *PerplexityProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchDelete is not supported by Perplexity provider.
+func (provider *PerplexityProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
 // BatchResults is not supported by Perplexity provider.
@@ -377,4 +429,13 @@ func (provider *PerplexityProvider) ContainerFileContent(_ *schemas.BifrostConte
 // ContainerFileDelete is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+}
+
+func (provider *PerplexityProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

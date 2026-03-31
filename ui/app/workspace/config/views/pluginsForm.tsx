@@ -9,18 +9,15 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetProvidersQuery, useUpdatePluginMutation } from "@/lib/store";
-import { CacheConfig, ModelProviderName } from "@/lib/types/config";
+import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
+import { cacheConfigSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-const defaultCacheConfig: CacheConfig = {
-	provider: "openai" as ModelProviderName,
-	keys: [],
-	embedding_model: "text-embedding-3-small",
-	dimension: 0,
+const defaultCacheConfig: EditorCacheConfig = {
 	ttl_seconds: 300,
 	threshold: 0.8,
 	conversation_history_threshold: 3,
@@ -29,15 +26,60 @@ const defaultCacheConfig: CacheConfig = {
 	cache_by_provider: true,
 };
 
+const toEditorCacheConfig = (config?: Partial<CacheConfig>): EditorCacheConfig => ({
+	...defaultCacheConfig,
+	...config,
+});
+
+const normalizeCacheConfigForSave = (config: EditorCacheConfig) => {
+	const normalized: Record<string, unknown> = {
+		ttl_seconds: config.ttl_seconds,
+		threshold: config.threshold,
+		cache_by_model: config.cache_by_model,
+		cache_by_provider: config.cache_by_provider,
+	};
+
+	if (config.conversation_history_threshold !== undefined) {
+		normalized.conversation_history_threshold = config.conversation_history_threshold;
+	}
+	if (config.exclude_system_prompt !== undefined) {
+		normalized.exclude_system_prompt = config.exclude_system_prompt;
+	}
+	if (config.created_at !== undefined) {
+		normalized.created_at = config.created_at;
+	}
+	if (config.updated_at !== undefined) {
+		normalized.updated_at = config.updated_at;
+	}
+	if (config.keys !== undefined) {
+		normalized.keys = config.keys;
+	}
+
+	const provider = config.provider?.trim();
+	const embeddingModel = config.embedding_model?.trim();
+
+	if (provider) {
+		normalized.provider = provider;
+	}
+	if (embeddingModel) {
+		normalized.embedding_model = embeddingModel;
+	}
+	if (config.dimension !== undefined) {
+		normalized.dimension = config.dimension;
+	}
+
+	return normalized;
+};
+
 interface PluginsFormProps {
 	isVectorStoreEnabled: boolean;
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
-	const [cacheConfig, setCacheConfig] = useState<CacheConfig>(defaultCacheConfig);
+	const [cacheConfig, setCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [originalCacheEnabled, setOriginalCacheEnabled] = useState<boolean>(false);
-	const [serverCacheConfig, setServerCacheConfig] = useState<CacheConfig>(defaultCacheConfig);
+	const [serverCacheConfig, setServerCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [serverCacheEnabled, setServerCacheEnabled] = useState<boolean>(false);
 
 	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
@@ -59,11 +101,13 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	const semanticCachePlugin = useMemo(() => plugins?.find((plugin) => plugin.name === SEMANTIC_CACHE_PLUGIN), [plugins]);
 
 	const isSemanticCacheEnabled = Boolean(semanticCachePlugin?.enabled);
+	const loadedDirectOnlyConfig = serverCacheConfig.dimension === 1 && !serverCacheConfig.provider;
+	const hasInvalidProviderBackedDimension = cacheConfig.dimension === 1 && Boolean(cacheConfig.provider?.trim());
 
 	// Initialize cache config from plugin data
 	useEffect(() => {
 		if (semanticCachePlugin?.config) {
-			const config = { ...defaultCacheConfig, ...semanticCachePlugin.config };
+			const config = toEditorCacheConfig(semanticCachePlugin.config as Partial<CacheConfig>);
 			setCacheConfig(config);
 			setServerCacheConfig(config);
 			setOriginalCacheEnabled(semanticCachePlugin.enabled);
@@ -77,6 +121,8 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 			setCacheConfig((prev) => ({
 				...prev,
 				provider: providers[0].name as ModelProviderName,
+				embedding_model: prev.embedding_model ?? "text-embedding-3-small",
+				dimension: prev.dimension ?? 1536,
 			}));
 		}
 	}, [providers, semanticCachePlugin?.config]);
@@ -103,31 +149,47 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 	};
 
 	// Update cache config locally
-	const updateCacheConfigLocal = (updates: Partial<CacheConfig>) => {
+	const updateCacheConfigLocal = (updates: Partial<EditorCacheConfig>) => {
 		setCacheConfig((prev) => ({ ...prev, ...updates }));
 	};
 
 	// Save all changes
 	const handleSave = async () => {
+		if (hasInvalidProviderBackedDimension) {
+			toast.error("Provider-backed semantic cache requires the embedding model's real dimension. Use a value greater than 1, or remove the provider to keep direct-only mode.")
+			return
+		}
+
+		const parseResult = cacheConfigSchema.safeParse(normalizeCacheConfigForSave(cacheConfig));
+		if (!parseResult.success) {
+			const firstIssue = parseResult.error.issues[0]?.message ?? "Semantic cache configuration is invalid."
+			toast.error(firstIssue)
+			return
+		}
+
+		const savedConfig = parseResult.data as CacheConfig;
+
 		try {
 			if (semanticCachePlugin) {
 				// Update existing plugin
 				await updatePlugin({
 					name: SEMANTIC_CACHE_PLUGIN,
-					data: { enabled: originalCacheEnabled, config: cacheConfig },
+					data: { enabled: originalCacheEnabled, config: savedConfig },
 				}).unwrap();
 			} else {
 				// Create new plugin
 				await createPlugin({
 					name: SEMANTIC_CACHE_PLUGIN,
 					enabled: originalCacheEnabled,
-					config: cacheConfig,
+					config: savedConfig,
 					path: "",
 				}).unwrap();
 			}
 			toast.success("Plugin configuration updated successfully");
 			// Update server state to match current state
-			setServerCacheConfig(cacheConfig);
+			const normalizedConfig = toEditorCacheConfig(savedConfig);
+			setCacheConfig(normalizedConfig);
+			setServerCacheConfig(normalizedConfig);
 			setServerCacheEnabled(originalCacheEnabled);
 		} catch (error) {
 			const errorMessage = getErrorMessage(error);
@@ -177,7 +239,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 							}}
 						/>
 						{(isSemanticCacheEnabled || originalCacheEnabled) && (
-							<Button onClick={handleSave} disabled={!hasChanges || isUpdating || isCreating} size="sm">
+							<Button onClick={handleSave} disabled={!hasChanges || isUpdating || isCreating || hasInvalidProviderBackedDimension} size="sm">
 								{isUpdating || isCreating ? "Saving..." : "Save"}
 							</Button>
 						)}
@@ -194,6 +256,18 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 					) : (
 						<div className="mt-4 space-y-4">
 							<Separator />
+							{loadedDirectOnlyConfig && (
+								<div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+									This plugin was loaded in direct-only mode via <code>config.json</code>. The Web UI currently edits provider-backed
+									semantic cache settings; keep using <code>config.json</code> if you want to stay in direct-only mode.
+								</div>
+							)}
+							{hasInvalidProviderBackedDimension && (
+								<div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900">
+									You selected a provider while keeping <code>dimension: 1</code>. That is only valid for direct-only mode. Set the
+									embedding model&apos;s real dimension before saving, or remove the provider to stay in direct-only mode.
+								</div>
+							)}
 							{/* Provider and Model Settings */}
 							<div className="space-y-4">
 								<h3 className="text-sm font-medium">Provider and Model Settings</h3>
@@ -208,7 +282,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 												<SelectValue placeholder="Select provider" />
 											</SelectTrigger>
 											<SelectContent>
-												{providers.map((provider) => (
+												{providers.filter((provider) => provider.name).map((provider) => (
 													<SelectItem key={provider.name} value={provider.name}>
 														{getProviderLabel(provider.name)}
 													</SelectItem>
@@ -221,7 +295,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										<Input
 											id="embedding_model"
 											placeholder="text-embedding-3-small"
-											value={cacheConfig.embedding_model}
+											value={cacheConfig.embedding_model ?? ""}
 											onChange={(e) => updateCacheConfigLocal({ embedding_model: e.target.value })}
 										/>
 									</div>
@@ -279,7 +353,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 										<Input
 											id="dimension"
 											type="number"
-											min="0"
+											min="1"
 											value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? '' : cacheConfig.dimension}
 											onChange={(e) => {
 												const value = e.target.value

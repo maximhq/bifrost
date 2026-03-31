@@ -114,23 +114,33 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 
 // createBedrockInvokeWithResponseStreamRouteConfig creates a route configuration for the Bedrock Invoke With Response Stream API endpoint
 // Handles POST /bedrock/model/{modelId}/invoke-with-response-stream
+// Uses the same dual-path routing as createBedrockInvokeRouteConfig.
 func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
 	return RouteConfig{
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/invoke-with-response-stream",
 		Method: "POST",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.TextCompletionRequest
+			return bedrock.DetectInvokeRequestType(ctx.Request.Body())
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &bedrock.BedrockTextCompletionRequest{}
+			return &bedrock.BedrockInvokeRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			if bedrockReq, ok := req.(*bedrock.BedrockTextCompletionRequest); ok {
-				// Mark as streaming request
-				bedrockReq.Stream = true
+			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
+				invokeReq.Stream = true
+				if invokeReq.IsMessagesRequest() {
+					// Messages-based → Responses path (streaming)
+					converseReq := invokeReq.ToBedrockConverseRequest()
+					responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert invoke messages stream request: %w", err)
+					}
+					return &schemas.BifrostRequest{ResponsesRequest: responsesReq}, nil
+				}
+				// Prompt-based → Text Completion path (streaming)
 				return &schemas.BifrostRequest{
-					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(ctx),
+					TextCompletionRequest: invokeReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")
@@ -155,6 +165,9 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 				}
 				return "", nil, nil
 			},
+			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				return bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, resp)
+			},
 		},
 		PreCallback: bedrockPreCallback(handlerStore),
 	}
@@ -162,27 +175,118 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 
 // createBedrockInvokeRouteConfig creates a route configuration for the Bedrock Invoke API endpoint
 // Handles POST /bedrock/model/{modelId}/invoke
+// Uses BedrockInvokeRequest as a union type that supports all model families.
+// Messages-based requests (Anthropic Messages, Nova, AI21) are routed through the Responses path,
+// while prompt-based requests (Anthropic legacy, Mistral, Llama, Cohere) go through Text Completion.
 func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
 	return RouteConfig{
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/invoke",
 		Method: "POST",
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-			return schemas.TextCompletionRequest
+			return bedrock.DetectInvokeRequestType(ctx.Request.Body())
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &bedrock.BedrockTextCompletionRequest{}
+			return &bedrock.BedrockInvokeRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			if bedrockReq, ok := req.(*bedrock.BedrockTextCompletionRequest); ok {
+			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
+				if invokeReq.IsMessagesRequest() {
+					// Messages-based (Anthropic Messages, Nova, AI21) → Responses path
+					converseReq := invokeReq.ToBedrockConverseRequest()
+					responsesReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert invoke messages request: %w", err)
+					}
+					return &schemas.BifrostRequest{ResponsesRequest: responsesReq}, nil
+				}
+				// Prompt-based (Anthropic legacy, Mistral, Llama, Cohere) → Text Completion path
+				// Also handles Cohere Command R (message → prompt conversion)
 				return &schemas.BifrostRequest{
-					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(ctx),
+					TextCompletionRequest: invokeReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			return bedrock.ToBedrockTextCompletionResponse(resp), nil
+		},
+		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			return bedrock.ToBedrockInvokeMessagesResponse(ctx, resp)
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: bedrockPreCallback(handlerStore),
+	}
+}
+
+// createBedrockRerankRouteConfig creates a route configuration for the Bedrock Rerank API endpoint
+// Handles POST /bedrock/rerank
+func createBedrockRerankRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/rerank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &bedrock.BedrockRerankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if bedrockReq, ok := req.(*bedrock.BedrockRerankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: bedrockReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Bedrock {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: bedrockBatchPreCallback(handlerStore),
+	}
+}
+
+// createBedrockCountTokensRouteConfig creates a route configuration for the Bedrock CountTokens API endpoint
+// Handles POST /bedrock/model/{modelId}/count-tokens
+func createBedrockCountTokensRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/model/{modelId}/count-tokens",
+		Method: "POST",
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &bedrock.BedrockCountTokensRequest{}
+		},
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.CountTokensRequest
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if countTokensReq, ok := req.(*bedrock.BedrockCountTokensRequest); ok {
+				if countTokensReq.Input.Converse == nil {
+					return nil, errors.New("input.converse is required for count-tokens")
+				}
+				bifrostReq, err := countTokensReq.Input.Converse.ToBifrostResponsesRequest(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert bedrock count tokens request: %w", err)
+				}
+				return &schemas.BifrostRequest{
+					CountTokensRequest: bifrostReq,
+				}, nil
+			}
+			return nil, errors.New("invalid request type for Bedrock count tokens")
+		},
+		CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			return bedrock.ToBedrockCountTokensResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
@@ -198,6 +302,8 @@ func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore)
 		createBedrockConverseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeRouteConfig(pathPrefix, handlerStore),
+		createBedrockRerankRouteConfig(pathPrefix, handlerStore),
+		createBedrockCountTokensRouteConfig(pathPrefix, handlerStore),
 	}
 }
 
@@ -599,7 +705,7 @@ func NewBedrockRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, lo
 	routes = append(routes, createBedrockFilesRouteConfigs("/bedrock/files", handlerStore)...)
 
 	return &BedrockRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
 
@@ -1093,6 +1199,12 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 		case *bedrock.BedrockConverseRequest:
 			r.ModelID = fullModelID
 		case *bedrock.BedrockTextCompletionRequest:
+			r.ModelID = fullModelID
+		case *bedrock.BedrockCountTokensRequest:
+			if r.Input.Converse != nil {
+				r.Input.Converse.ModelID = fullModelID
+			}
+		case *bedrock.BedrockInvokeRequest:
 			r.ModelID = fullModelID
 		default:
 			return errors.New("invalid request type for bedrock model extraction")

@@ -10,11 +10,12 @@ import (
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
-		name             string
-		model            string
-		message          schemas.ResponsesMessage
-		expectedIncluded bool
-		description      string
+		name                     string
+		model                    string
+		message                  schemas.ResponsesMessage
+		expectedIncluded         bool
+		expectedEncryptedContent *string // if non-nil, assert converted message preserves this value
+		description              string
 	}{
 		{
 			name:  "reasoning-only message skipped for non-gpt-oss model",
@@ -64,7 +65,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			description:      "Message with non-empty Summary should be preserved even if it has ContentBlocks",
 		},
 		{
-			name:  "message with EncryptedContent preserved for non-gpt-oss model",
+			name:  "message with EncryptedContent skipped for non-reasoning model",
 			model: "gpt-4o",
 			message: schemas.ResponsesMessage{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
@@ -81,8 +82,30 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 					},
 				},
 			},
-			expectedIncluded: true,
-			description:      "Message with non-nil EncryptedContent should be preserved even if Summary is empty",
+			expectedIncluded: false,
+			description:      "Non-reasoning models don't produce encrypted reasoning; cross-provider content should be skipped",
+		},
+		{
+			name:  "message with EncryptedContent preserved for reasoning model",
+			model: "o3",
+			message: schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
+					EncryptedContent: schemas.Ptr("encrypted"),              // non-nil EncryptedContent
+				},
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text: schemas.Ptr("reasoning text"),
+						},
+					},
+				},
+			},
+			expectedIncluded:         true,
+			expectedEncryptedContent: schemas.Ptr("encrypted"),
+			description:              "Reasoning models (o1/o3) produce encrypted content; should be preserved for multi-turn",
 		},
 		{
 			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",
@@ -188,6 +211,16 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			// If message should be excluded, verify it's not present
 			if !tt.expectedIncluded && messageCount > 0 {
 				t.Errorf("Expected message to be excluded but found %d message(s) in result", messageCount)
+			}
+
+			// If expectedEncryptedContent is set, verify the converted message preserves it
+			if tt.expectedEncryptedContent != nil && messageCount > 0 {
+				msg := result.Input.OpenAIResponsesRequestInputArray[0]
+				if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil {
+					t.Error("Expected EncryptedContent to be preserved but ResponsesReasoning or EncryptedContent is nil")
+				} else if *msg.ResponsesReasoning.EncryptedContent != *tt.expectedEncryptedContent {
+					t.Errorf("Expected EncryptedContent=%q, got %q", *tt.expectedEncryptedContent, *msg.ResponsesReasoning.EncryptedContent)
+				}
 			}
 		})
 	}
@@ -1377,6 +1410,94 @@ func TestResponsesTool_EdgeCases(t *testing.T) {
 			t.Error("name mismatch")
 		}
 	})
+}
+
+func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
+	// Create function tool with unsorted properties
+	unsortedParams := &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("zebra", map[string]interface{}{"type": "string"}),
+			schemas.KV("alpha", map[string]interface{}{"type": "number"}),
+		),
+		Required: []string{"zebra"},
+	}
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("test_func"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: unsortedParams,
+					},
+				},
+				{
+					Type: schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Find the function tool in the result (filterUnsupportedTools may reorder)
+	var funcTool *schemas.ResponsesTool
+	var nonFuncToolCount int
+	for i := range result.Tools {
+		if result.Tools[i].Type == schemas.ResponsesToolTypeFunction {
+			funcTool = &result.Tools[i]
+		} else {
+			nonFuncToolCount++
+		}
+	}
+
+	if funcTool == nil {
+		t.Fatal("expected function tool in result")
+	}
+
+	// Verify parameters are normalized: Properties keys should preserve original order
+	// (user-defined property names are kept in client order for LLM generation quality)
+	normalizedParams := funcTool.ResponsesToolFunction.Parameters
+	if normalizedParams == nil {
+		t.Fatal("expected normalized parameters to be non-nil")
+	}
+	keys := normalizedParams.Properties.Keys()
+	if len(keys) != 2 || keys[0] != "zebra" || keys[1] != "alpha" {
+		t.Errorf("expected Properties keys preserved as [zebra, alpha], got %v", keys)
+	}
+
+	// Verify non-function tools are present and unaffected
+	if nonFuncToolCount != 1 {
+		t.Errorf("expected 1 non-function tool, got %d", nonFuncToolCount)
+	}
+
+	// Verify original bifrostReq.Params.Tools was NOT mutated
+	origParams := bifrostReq.Params.Tools[0].ResponsesToolFunction.Parameters
+	origKeys := origParams.Properties.Keys()
+	if len(origKeys) != 2 || origKeys[0] != "zebra" || origKeys[1] != "alpha" {
+		t.Errorf("original parameters were mutated: expected [zebra, alpha], got %v", origKeys)
+	}
+
+	// Verify the ResponsesToolFunction pointer is a different object
+	if funcTool.ResponsesToolFunction == bifrostReq.Params.Tools[0].ResponsesToolFunction {
+		t.Error("expected ResponsesToolFunction pointer to be a copy, not the original")
+	}
 }
 
 // =============================================================================

@@ -29,10 +29,20 @@ Semantic caching uses vector similarity search to intelligently cache AI respons
 
 Semantic caching requires a configured vector store. Bifrost supports the following vector databases:
 
-- **[Weaviate](/architecture/framework/vector-store#weaviate)**: Production-ready vector database with gRPC support
-- **[Redis](/architecture/framework/vector-store#redis)**: High-performance in-memory vector store using RediSearch
-- **[Qdrant](/architecture/framework/vector-store#qdrant)**: Rust-based vector search engine with advanced filtering
-- **[Pinecone](/architecture/framework/vector-store#pinecone)**: Managed vector database service with serverless options
+<CardGroup cols={2}>
+  <Card title="Weaviate" icon="database" href="/integrations/vector-databases/weaviate">
+    Production-ready vector database with gRPC support.
+  </Card>
+  <Card title="Redis / Valkey" icon="database" href="/integrations/vector-databases/redis">
+    High-performance in-memory vector store using RediSearch-compatible APIs.
+  </Card>
+  <Card title="Qdrant" icon="database" href="/integrations/vector-databases/qdrant">
+    Rust-based vector search engine with advanced filtering.
+  </Card>
+  <Card title="Pinecone" icon="database" href="/integrations/vector-databases/pinecone">
+    Managed vector database service with serverless options.
+  </Card>
+</CardGroup>
 
 <Info>
 For detailed setup instructions and configuration options for each vector store, see the [Vector Store documentation](/architecture/framework/vector-store).
@@ -103,7 +113,7 @@ import (
 )
 
 // Configure semantic cache plugin
-cacheConfig := semanticcache.Config{
+cacheConfig := &semanticcache.Config{
     // Embedding model configuration (Required)
     Provider:       schemas.OpenAI,
     Keys:          []schemas.Key{{Value: "sk-..."}},
@@ -156,6 +166,7 @@ bifrostConfig := schemas.BifrostConfig{
 **Required Fields:**
 - **Provider**: The provider to use for caching.
 - **Embedding Model**: The embedding model to use for caching.
+- **Dimension**: The embedding dimension for the configured embedding model.
 
 **Note**: Changes will need a restart of the Bifrost server to take effect, because the plugin is loaded on startup only.
 
@@ -172,6 +183,7 @@ bifrostConfig := schemas.BifrostConfig{
       "config": {        
         "provider": "openai",
         "embedding_model": "text-embedding-3-small",
+        "dimension": 1536,
         
         "cleanup_on_shutdown": true,
         "ttl": "5m",
@@ -188,7 +200,9 @@ bifrostConfig := schemas.BifrostConfig{
 }
 ```
 
-> **Note**: All the available keys will be taken from the provider config on initialization, so make sure to add the keys to the provider you have specified in the config. Any updates to the keys will not be reflected until next restart.
+> **Note**: In `config.json` setups, provider keys are taken from the provider config on initialization, so you do not need to duplicate `keys` inside the plugin config. Any updates to the provider keys will not be reflected until next restart.
+
+> **UI Note**: The current Web UI flow configures provider-backed semantic caching. If you want direct-only mode (`dimension: 1` with no `provider`), configure it through `config.json`.
 
 **TTL Format Options:**
 - Duration strings: `"30s"`, `"5m"`, `"1h"`, `"24h"`
@@ -197,6 +211,151 @@ bifrostConfig := schemas.BifrostConfig{
 </Tab>
 
 </Tabs>
+
+---
+
+## Direct Hash Mode (Embedding-Free)
+
+Direct hash mode provides exact-match caching without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
+
+Exact-match direct entries are stored and retrieved using a deterministic cache ID. This keeps repeated direct cache lookups fast and consistent across retries, streaming responses, and restarts.
+
+**When to use direct hash mode:**
+- You only need exact-match deduplication (no fuzzy/semantic matching)
+- You cannot or do not want to call an external embedding API
+- You want the lowest possible latency with zero embedding overhead
+- Cost-sensitive environments where embedding API calls add up
+
+### Setup
+
+To enable direct-only mode globally, set `dimension: 1` and omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
+
+> **Important**: If you specify `dimension: 1` and also provide a `provider`, Bifrost treats the config as provider-backed semantic mode, not direct-only mode. To use direct-only mode, omit the `provider` field entirely.
+
+<Warning>
+A vector store is still required as the storage backend, even in direct hash mode. See [Recommended Vector Store](#recommended-vector-store) below for the best choice.
+</Warning>
+
+<Tabs group="direct-hash-setup">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/plugins/semanticcache"
+)
+
+cacheConfig := &semanticcache.Config{
+    // No Provider, Keys, or EmbeddingModel -- direct hash mode only
+    Dimension: 1, // Placeholder; entries are stored as metadata-only (no embedding vectors). Change dimension before switching to dual-layer mode to avoid mixed-dimension issues.
+
+    TTL:               5 * time.Minute,
+    CleanUpOnShutdown: true,
+    CacheByModel:      bifrost.Ptr(true),
+    CacheByProvider:   bifrost.Ptr(true),
+}
+
+plugin, err := semanticcache.Init(ctx, cacheConfig, logger, store)
+```
+
+</Tab>
+
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1
+        ttl: "5m"
+        cleanup_on_shutdown: true
+        cache_by_model: true
+        cache_by_provider: true
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {
+        "dimension": 1,
+        "ttl": "5m",
+        "cleanup_on_shutdown": true,
+        "cache_by_model": true,
+        "cache_by_provider": true
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+</Tabs>
+
+When initialized this way, all requests automatically use direct hash matching regardless of the `x-bf-cache-type` header. No embeddings are generated, and no embedding provider credentials are needed.
+
+### Recommended Vector Store
+
+**Redis/Valkey-compatible stores** are recommended for direct hash mode. They do not require vectors for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
+
+<Warning>
+Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require a vector for every entry; the plugin's zero-vector placeholder codepath requires an initialised embedding client, so storage will fail if no provider is set. Weaviate requires a vector per entry as well and is therefore also not recommended for direct-only mode.
+</Warning>
+
+<Tabs group="direct-hash-redis">
+
+<Tab title="Helm">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    external:
+      enabled: true
+      host: "redis-or-valkey.example.com"
+      port: 6379
+      password: "your-redis-password"
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379"
+    }
+  }
+}
+```
+
+<Info>
+For Valkey deployments, keep `vector_store.type` as `"redis"` and point `config.addr` to your Valkey endpoint.
+</Info>
+
+</Tab>
+
+</Tabs>
+
+### Per-Request Cache Type Override
+
+When the plugin is initialized **without** an embedding provider (direct-only mode), all requests use direct hash matching automatically. The `x-bf-cache-type` header has no effect.
+
+When the plugin is initialized **with** an embedding provider (dual-layer mode), you can force direct-only matching on specific requests using the `x-bf-cache-type: direct` header. See [Cache Type Control](#cache-type-control) for details.
 
 ---
 
@@ -214,10 +373,10 @@ Must set cache key in request context:
 ```go
 // This request WILL be cached
 ctx = context.WithValue(ctx, semanticcache.CacheKey, "session-123")
-response, err := client.ChatCompletionRequest(ctx, request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 
 // This request will NOT be cached (no context value)
-response, err := client.ChatCompletionRequest(context.Background(), request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
 ```
 
 </Tab>
@@ -245,7 +404,7 @@ Override default TTL and similarity threshold per request:
 
 <Tab title="Go SDK">
 
-You can set TTL and threshold in the request context, in the keys you configured in the plugin config:
+You can set TTL and threshold in the request context using the semantic cache context keys:
 
 ```go
 // Go SDK: Custom TTL and threshold
@@ -512,5 +671,5 @@ The semantic cache namespace and all its cache entries are deleted when Bifrost 
 ---
 
 <Info>
-**Vector Store Requirement**: Semantic caching requires a configured vector store. Bifrost supports Weaviate, Redis, Qdrant, and Pinecone. See the [Vector Store documentation](/architecture/framework/vector-store) for setup details.
+**Vector Store Requirement**: Semantic caching requires a configured vector store. Bifrost supports Weaviate, Redis/Valkey-compatible endpoints, Qdrant, and Pinecone. See the [Vector Store documentation](/architecture/framework/vector-store) for setup details.
 </Info>

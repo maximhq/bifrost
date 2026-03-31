@@ -302,7 +302,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 // Test calculateBackoff - exponential growth (base calculations without jitter)
 func TestCalculateBackoff_ExponentialGrowth(t *testing.T) {
 	config := createTestConfig(5, 100*time.Millisecond, 5*time.Second)
-	
+
 	// Test the base exponential calculation by checking that results fall within expected ranges
 	// Since we can't easily mock rand.Float64, we'll test the bounds instead
 	testCases := []struct {
@@ -399,6 +399,8 @@ func TestIsRateLimitError_AllPatterns(t *testing.T) {
 		"api rate limit",
 		"usage limit",
 		"concurrent requests limit",
+		"burst_rate",
+		"rate increased",
 	}
 
 	for _, pattern := range patterns {
@@ -479,6 +481,20 @@ func TestIsRateLimitError_EdgeCases(t *testing.T) {
 		message := "RATE LIMIT exceeded 🚫"
 		if !IsRateLimitErrorMessage(message) {
 			t.Error("Message with unicode should still detect rate limit pattern")
+		}
+	})
+
+	t.Run("DashScopeErrorCode", func(t *testing.T) {
+		// DashScope returns "limit_burst_rate" as the error code
+		if !IsRateLimitErrorMessage("limit_burst_rate") {
+			t.Error("DashScope error code 'limit_burst_rate' should be detected as rate limit error")
+		}
+	})
+
+	t.Run("DashScopeErrorMessage", func(t *testing.T) {
+		// DashScope returns this as the error message
+		if !IsRateLimitErrorMessage("Request rate increased too quickly, please slow down and try again") {
+			t.Error("DashScope error message should be detected as rate limit error")
 		}
 	})
 }
@@ -671,6 +687,236 @@ func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.
 		return keys, nil
 	}
 	return nil, fmt.Errorf("no keys for provider %s", provider)
+}
+
+func (ma *MockAccount) SetKeysForProvider(provider schemas.ModelProvider, keys []schemas.Key) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.keys[provider] = keys
+}
+
+// mockKVStore implements schemas.KVStore for session stickiness tests.
+type mockKVStore struct {
+	mu   sync.RWMutex
+	data map[string]struct {
+		value any
+		ttl   time.Duration
+	}
+}
+
+func newMockKVStore() *mockKVStore {
+	return &mockKVStore{data: make(map[string]struct {
+		value any
+		ttl   time.Duration
+	})}
+}
+
+func (m *mockKVStore) Get(key string) (any, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if e, ok := m.data[key]; ok {
+		return e.value, nil
+	}
+	return nil, fmt.Errorf("key not found")
+}
+
+func (m *mockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[key] = struct {
+		value any
+		ttl   time.Duration
+	}{value: value, ttl: ttl}
+	return nil
+}
+
+func (m *mockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[key]; ok {
+		return false, nil
+	}
+	m.data[key] = struct {
+		value any
+		ttl   time.Duration
+	}{value: value, ttl: ttl}
+	return true, nil
+}
+
+func (m *mockKVStore) Delete(key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[key]; ok {
+		delete(m.data, key)
+		return true, nil
+	}
+	return false, nil
+}
+
+// Test selectKeyFromProviderForModel with session stickiness
+func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	// Use 2 keys so we hit the keySelector path (single key returns early)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+	})
+
+	var keySelectorCalls int
+	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		keySelectorCalls++
+		return keys[0], nil // always return first key
+	}
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account:     account,
+		Logger:      NewDefaultLogger(schemas.LogLevelError),
+		KVStore:     kvStore,
+		KeySelector: deterministicSelector,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
+
+	// First call: cache miss, keySelector runs, key stored
+	key1, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("first selectKeyFromProviderForModel: %v", err)
+	}
+	if key1.ID != "key-a" {
+		t.Errorf("first call: expected key-a, got %s", key1.ID)
+	}
+	if keySelectorCalls != 1 {
+		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
+	}
+
+	// Verify kvstore was written
+	kvKey := buildSessionKey(schemas.OpenAI, "sess-123", "gpt-4")
+	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
+		t.Errorf("kvstore after first call: expected key-a, got %v (err=%v)", raw, err)
+	}
+
+	// Second call: cache hit, same key returned, keySelector NOT called
+	key2, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("second selectKeyFromProviderForModel: %v", err)
+	}
+	if key2.ID != "key-a" {
+		t.Errorf("second call: expected key-a (sticky), got %s", key2.ID)
+	}
+	if keySelectorCalls != 1 {
+		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
+	}
+}
+
+// Test selectKeyFromProviderForModel - no stickiness when session ID absent
+func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+	})
+
+	var keySelectorCalls int
+	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		keySelectorCalls++
+		return keys[0], nil
+	}
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account:     account,
+		Logger:      NewDefaultLogger(schemas.LogLevelError),
+		KVStore:     kvStore,
+		KeySelector: deterministicSelector,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// No session ID set
+
+	for i := 0; i < 2; i++ {
+		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err != nil {
+			t.Fatalf("selectKeyFromProviderForModel call %d: %v", i+1, err)
+		}
+		if key.ID != "key-a" {
+			t.Fatalf("call %d: expected key-a, got %s", i+1, key.ID)
+		}
+	}
+	if keySelectorCalls != 2 {
+		t.Errorf("expected 2 keySelector calls without a session id, got %d", keySelectorCalls)
+	}
+	// KVStore should not have a sticky entry for an empty session id
+	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
+		t.Error("kvstore should not have a sticky entry for an empty session id")
+	}
+}
+
+func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("all keys blacklist model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+		})
+		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err == nil {
+			t.Fatal("expected error when model is only blacklisted")
+		}
+		if !strings.Contains(err.Error(), "no keys found that support model") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("blacklist wins over models allow list", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{
+				ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1,
+				Models:            []string{"gpt-4"},
+				BlacklistedModels: []string{"gpt-4"},
+			},
+		})
+		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err == nil {
+			t.Fatal("expected error when model is both allowed and blacklisted")
+		}
+	})
+
+	t.Run("second key used when first blacklists", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1},
+		})
+		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if key.ID != "k2" {
+			t.Fatalf("expected k2, got %s", key.ID)
+		}
+	})
 }
 
 // Test UpdateProvider functionality
@@ -996,3 +1242,4 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 		}
 	})
 }
+

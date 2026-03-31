@@ -2,13 +2,13 @@
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getExampleBaseUrl } from "@/lib/utils/port";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { AlertTriangle, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
-import { CodeEditor } from "./codeEditor";
 
 type Provider = "openai" | "anthropic" | "genai" | "litellm" | "langchain";
 type Language = "python" | "typescript";
@@ -42,10 +42,7 @@ interface CodeBlockProps {
 }
 
 function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = false, readonly = true }: CodeBlockProps) {
-	const copyToClipboard = () => {
-		navigator.clipboard.writeText(code);
-		toast.success("Copied to clipboard");
-	};
+	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	return (
 		<div className="relative">
@@ -65,7 +62,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 						</SelectContent>
 					</Select>
 				)}
-				<Button variant="ghost" size="icon" onClick={copyToClipboard}>
+				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)}>
 					<Copy className="size-4" />
 				</Button>
 			</div>

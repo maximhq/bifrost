@@ -1,0 +1,88 @@
+---
+title: "Reranking"
+description: "Rerank documents with Bifrost Go SDK using client.RerankRequest."
+icon: "book-open-cover"
+---
+
+Use the Go SDK to rank candidate documents by relevance to a query.
+
+Provider/model examples:
+- Cohere: `Provider: schemas.Cohere`, `Model: "rerank-v3.5"`
+- vLLM: `Provider: schemas.VLLM`, `Model: "BAAI/bge-reranker-v2-m3"`
+
+## Basic Example
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &MyAccount{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer client.Shutdown()
+
+	request := &schemas.BifrostRerankRequest{
+		Provider: schemas.Cohere,
+		Model:    "rerank-v3.5",
+		Query:    "What is Bifrost?",
+		Documents: []schemas.RerankDocument{
+			{Text: "Bifrost is an AI gateway that unifies many LLM providers."},
+			{Text: "Paris is the capital of France."},
+			{Text: "Bifrost exposes an OpenAI-compatible API."},
+		},
+		Params: &schemas.RerankParameters{
+			TopN:            bifrost.Ptr(2),
+			ReturnDocuments: bifrost.Ptr(true),
+		},
+	}
+
+	resp, bfErr := client.RerankRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
+	if bfErr != nil {
+		panic(bfErr.Error.Message)
+	}
+
+	for _, result := range resp.Results {
+		fmt.Printf("index=%d score=%.4f\n", result.Index, result.RelevanceScore)
+	}
+}
+```
+
+## Parameters
+
+- `Provider`, `Model`: provider/model to use for rerank
+- `Query`: query text
+- `Documents`: documents to score (`text`, optional `id`, `meta`)
+- `Params.TopN`: max result count
+- `Params.MaxTokensPerDoc`: provider-dependent token cap
+- `Params.Priority`: provider-dependent priority hint
+- `Params.ReturnDocuments`: include source document in each result
+- `Fallbacks`: fallback provider/model choices
+
+For vLLM, set `Provider` to `schemas.VLLM` and use the upstream model ID as `Model` (without the `vllm/` prefix that is used in Gateway HTTP requests).
+
+## Response
+
+`BifrostRerankResponse` includes:
+
+- `Results []RerankResult` (`index`, `relevance_score`, optional `document`)
+- `Model`
+- optional `Usage`
+- `ExtraFields` metadata (`provider`, `latency`, `request_type`, etc.)
+
+## Next Steps
+
+- **[Streaming Responses](./streaming)** - Real-time response processing
+- **[Tool Calling](./tool-calling)** - Enable AI to use external functions
+- **[Multimodal AI](./multimodal)** - Process images and multimedia content
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities

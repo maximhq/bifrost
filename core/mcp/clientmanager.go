@@ -56,6 +56,14 @@ func (m *MCPManager) ReconnectClient(id string) error {
 	config := client.ExecutionConfig
 	m.mu.Unlock()
 
+	// Guard against concurrent reconnects for the same client from any caller
+	// (health monitor, manual API call, etc.). LoadOrStore is atomic — whichever
+	// caller arrives second gets the "already in progress" error immediately.
+	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer m.reconnectingClients.Delete(id)
+
 	// Reconnect using the client's configuration
 	// Retry logic is handled internally by connectToMCPClient
 	if err := m.connectToMCPClient(config); err != nil {
@@ -67,7 +75,8 @@ func (m *MCPManager) ReconnectClient(id string) error {
 
 // AddClient adds a new MCP client to the manager.
 // It validates the client configuration and establishes a connection.
-// If connection fails, the client entry is automatically cleaned up.
+// If connection fails, the client entry is retained in Disconnected state and
+// a health monitor is started to automatically reconnect with exponential backoff.
 //
 // Parameters:
 //   - config: MCP client configuration
@@ -111,57 +120,8 @@ func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
 
 	// Connect using the copied config
 	if err := m.connectToMCPClient(configCopy); err != nil {
-		// Re-lock to clean up the failed entry
-		m.mu.Lock()
-		delete(m.clientMap, config.ID)
-		m.mu.Unlock()
-		return fmt.Errorf("failed to connect to MCP client %s: %w", config.Name, err)
-	}
-
-	return nil
-}
-
-// AddClientInMemory adds an MCP client to memory and connects it, but does NOT persist to database.
-// This is used when the MCP config already exists in the database (e.g., after OAuth completion).
-//
-// Parameters:
-//   - config: MCP client configuration
-//
-// Returns:
-//   - error: Any error that occurred during client addition or connection
-func (m *MCPManager) AddClientInMemory(config *schemas.MCPClientConfig) error {
-	if err := validateMCPClientConfig(config); err != nil {
-		return fmt.Errorf("invalid MCP client configuration: %w", err)
-	}
-
-	// Make a copy of the config to use after unlocking
-	configCopy := config
-
-	m.mu.Lock()
-
-	if _, ok := m.clientMap[config.ID]; ok {
-		m.mu.Unlock()
-		return fmt.Errorf("client %s already exists", config.Name)
-	}
-
-	// Create placeholder entry
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name:            config.Name,
-		ExecutionConfig: config,
-		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
-		ConnectionInfo: &schemas.MCPClientConnectionInfo{
-			Type: config.ConnectionType,
-		},
-	}
-
-	// Temporarily unlock for the connection attempt
-	// This is to avoid deadlocks when the connection attempt is made
-	m.mu.Unlock()
-
-	// Connect using the copied config
-	if err := m.connectToMCPClient(configCopy); err != nil {
-		// Re-lock to clean up the failed entry
+		// Clean up the failed entry — this is a user-initiated action (UI/API),
+		// so surface the error cleanly rather than retaining a ghost entry.
 		m.mu.Lock()
 		delete(m.clientMap, config.ID)
 		m.mu.Unlock()
@@ -248,7 +208,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		return fmt.Errorf("client %s not found", id)
 	}
 
-	if err := validateMCPClientName(updatedConfig.Name); err != nil {
+	if err := ValidateMCPClientName(updatedConfig.Name); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
@@ -470,10 +430,13 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		// Update connection type for this connection attempt
 		existingClient.ConnectionInfo.Type = config.ConnectionType
 	}
-	// Create new client entry with configuration
+	// Create new client entry with configuration.
+	// Initialize State to Disconnected so the API never returns an empty state
+	// during connection attempts; it transitions to Connected only on success.
 	m.clientMap[config.ID] = &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateDisconnected,
 		ToolMap:         make(map[string]schemas.ChatTool),
 		ToolNameMapping: make(map[string]string),
 		ConnectionInfo: &schemas.MCPClientConnectionInfo{
@@ -626,8 +589,12 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 
 	// Retrieve tools from the external server (this also requires network I/O)
+	// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
+	// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
 	m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
-	tools, toolNameMapping, err := retrieveExternalTools(ctx, externalClient, config.Name, m.logger)
+	toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
+	defer toolRetrievalCancel()
+	tools, toolNameMapping, err := retrieveExternalTools(toolRetrievalCtx, externalClient, config.Name, m.logger)
 	if err != nil {
 		m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 		// Continue with connection even if tool retrieval fails

@@ -28,7 +28,7 @@ const (
 
 func GetProviderDefaultFormat(provider schemas.ModelProvider) string {
 	switch provider {
-	case schemas.Gemini:
+	case schemas.Gemini, schemas.Groq:
 		return "wav"
 	default:
 		return "mp3"
@@ -60,6 +60,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "achernar"
 		}
+	case schemas.Groq:
+		switch voiceType {
+		case "primary":
+			return "troy"
+		case "secondary":
+			return "autumn"
+		case "tertiary":
+			return "diana"
+		default:
+			return "troy"
+		}
 	case schemas.Elevenlabs:
 		switch voiceType {
 		case "primary":
@@ -89,21 +100,27 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 type SampleToolType string
 
 const (
-	SampleToolTypeWeather   SampleToolType = "weather"
-	SampleToolTypeCalculate SampleToolType = "calculate"
-	SampleToolTypeTime      SampleToolType = "time"
+	SampleToolTypeWeather       SampleToolType = "weather"
+	SampleToolTypeCalculate     SampleToolType = "calculate"
+	SampleToolTypeTime          SampleToolType = "time"
+	SampleToolTypePingWithEmpty SampleToolType = "ping_empty"
+	SampleToolTypePingWithNil   SampleToolType = "ping_nil"
 )
 
 var SampleToolFunctions = map[SampleToolType]*schemas.ChatToolFunction{
-	SampleToolTypeWeather:   WeatherToolFunction,
-	SampleToolTypeCalculate: CalculatorToolFunction,
-	SampleToolTypeTime:      TimeToolFunction,
+	SampleToolTypeWeather:       WeatherToolFunction,
+	SampleToolTypeCalculate:     CalculatorToolFunction,
+	SampleToolTypeTime:          TimeToolFunction,
+	SampleToolTypePingWithEmpty: PingToolFunctionWithEmpty,
+	SampleToolTypePingWithNil:   PingToolFunctionWithNil,
 }
 
 var sampleToolDescriptions = map[SampleToolType]string{
-	SampleToolTypeWeather:   "Get the current weather in a given location",
-	SampleToolTypeCalculate: "Perform basic mathematical calculations",
-	SampleToolTypeTime:      "Get the current time in a specific timezone",
+	SampleToolTypeWeather:       "Get the current weather in a given location",
+	SampleToolTypeCalculate:     "Perform basic mathematical calculations",
+	SampleToolTypeTime:          "Get the current time in a specific timezone",
+	SampleToolTypePingWithEmpty: "A simple ping tool with no parameters (explicit empty properties)",
+	SampleToolTypePingWithNil:   "A simple ping tool with no parameters (nil properties)",
 }
 
 var WeatherToolFunction = &schemas.ChatToolFunction{
@@ -149,6 +166,22 @@ var TimeToolFunction = &schemas.ChatToolFunction{
 	},
 }
 
+// PingToolFunctionWithEmpty has an explicitly empty OrderedMap for properties
+var PingToolFunctionWithEmpty = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type:       "object",
+		Properties: schemas.NewOrderedMap(), // Explicitly empty OrderedMap
+	},
+}
+
+// PingToolFunctionWithNil has nil properties that get auto-initialized during marshalling
+var PingToolFunctionWithNil = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type:       "object",
+		Properties: nil, // Will be auto-populated during marshalling
+	},
+}
+
 func GetSampleChatTool(toolName SampleToolType) *schemas.ChatTool {
 	function, ok := SampleToolFunctions[toolName]
 	if !ok {
@@ -160,10 +193,16 @@ func GetSampleChatTool(toolName SampleToolType) *schemas.ChatTool {
 		return nil
 	}
 
+	// Use "ping" as the tool name for ping tools
+	toolDisplayName := string(toolName)
+	if toolName == SampleToolTypePingWithEmpty || toolName == SampleToolTypePingWithNil {
+		toolDisplayName = "ping"
+	}
+
 	return &schemas.ChatTool{
 		Type: "function",
 		Function: &schemas.ChatToolFunction{
-			Name:        string(toolName),
+			Name:        toolDisplayName,
 			Description: bifrost.Ptr(description),
 			Parameters:  function.Parameters,
 		},
@@ -181,9 +220,15 @@ func GetSampleResponsesTool(toolName SampleToolType) *schemas.ResponsesTool {
 		return nil
 	}
 
+	// Use "ping" as the tool name for ping tools
+	toolDisplayName := string(toolName)
+	if toolName == SampleToolTypePingWithEmpty || toolName == SampleToolTypePingWithNil {
+		toolDisplayName = "ping"
+	}
+
 	return &schemas.ResponsesTool{
 		Type:        "function",
-		Name:        bifrost.Ptr(string(toolName)),
+		Name:        bifrost.Ptr(toolDisplayName),
 		Description: bifrost.Ptr(description),
 		ResponsesToolFunction: &schemas.ResponsesToolFunction{
 			Parameters: function.Parameters,
@@ -302,7 +347,8 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 		Content: &schemas.ResponsesMessageContent{
 			ContentBlocks: []schemas.ResponsesMessageContentBlock{
 				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
-				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: bifrost.Ptr(imageURL),
 					},
@@ -362,6 +408,7 @@ type ToolCallInfo struct {
 	Name      string
 	Arguments string
 	ID        string
+	Index     int // OpenAI tool_calls index (0, 1, 2, ...); -1 when not available
 }
 
 // GetChatContent returns the string content from a BifrostChatResponse
@@ -469,8 +516,9 @@ func ExtractChatToolCalls(response *schemas.BifrostChatResponse) []ToolCallInfo 
 	for _, choice := range response.Choices {
 		if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-				info := ToolCallInfo{
-					ID: *toolCall.ID,
+				info := ToolCallInfo{}
+				if toolCall.ID != nil {
+					info.ID = *toolCall.ID
 				}
 				if toolCall.Function.Name != nil {
 					info.Name = *toolCall.Function.Name
@@ -539,9 +587,8 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 	return []ToolCallInfo{}
 }
 
-// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
-func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
-
+// getEmbeddingVector extracts the float64 vector from a BifrostEmbeddingResponse.
+func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float64, error) {
 	if embedding.Embedding.EmbeddingArray != nil {
 		return embedding.Embedding.EmbeddingArray, nil
 	}
@@ -604,6 +651,8 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 			"format":   format,
 		},
 	}
+	// Note: Raw request/response validation is skipped here since this is a utility function
+	// without access to testConfig. The tests that use this audio will validate raw fields.
 	expectations := SpeechExpectations(100) // Minimum expected bytes
 	expectations = ModifyExpectationsForProvider(expectations, provider)
 	speechRetryConfig := SpeechRetryConfig{

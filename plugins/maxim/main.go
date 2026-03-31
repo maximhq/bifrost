@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/maxim-go"
 	"github.com/maximhq/maxim-go/logging"
+	maximSchemas "github.com/maximhq/maxim-go/schemas"
 )
 
 // PluginName is the canonical name for the maxim plugin.
@@ -284,14 +285,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	provider, model, _ := req.GetRequestFields()
 
 	// Determine request type and set appropriate tags
-	var messages []logging.CompletionRequest
+	var messages []maximSchemas.CompletionRequest
 	var latestMessage string
 
 	modelParams := make(map[string]interface{})
 
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		messages = append(messages, logging.CompletionRequest{
+		messages = append(messages, maximSchemas.CompletionRequest{
 			Role:    string(schemas.ChatMessageRoleUser),
 			Content: req.TextCompletionRequest.Input,
 		})
@@ -314,7 +315,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		for _, message := range req.ChatRequest.Input {
-			messages = append(messages, logging.CompletionRequest{
+			messages = append(messages, maximSchemas.CompletionRequest{
 				Role:    string(message.Role),
 				Content: message.Content,
 			})
@@ -346,14 +347,14 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 				json.Unmarshal(jsonData, &modelParams)
 			}
 		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		for _, message := range req.ResponsesRequest.Input {
 			if message.Content != nil {
 				role := schemas.ChatMessageRoleUser
 				if message.Role != nil {
 					role = schemas.ChatMessageRole(*message.Role)
 				}
-				messages = append(messages, logging.CompletionRequest{
+				messages = append(messages, maximSchemas.CompletionRequest{
 					Role:    string(role),
 					Content: message.Content,
 				})
@@ -435,6 +436,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Add generation to the effective log repository
 	logger.AddGenerationToTrace(traceID, &generationConfig)
 
+	// Extract and log attachments from message content
+	for _, att := range ExtractAttachmentsFromRequest(req) {
+		if att != nil {
+			logger.GenerationAddAttachment(generationID, att)
+		}
+	}
+
 	if ctx != nil {
 		if _, ok := ctx.Value(TraceIDKey).(string); !ok {
 			ctx.SetValue(TraceIDKey, traceID)
@@ -515,8 +523,9 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 
-			// Return if no stream response or it's a delta response
-			if streamResponse == nil || !isFinalChunk {
+			// For streaming: only process on final chunk. Skip intermediate chunks.
+			// When there's an error, streamResponse may be nil but we must still log bifrostErr.
+			if !isFinalChunk {
 				return
 			}
 		}
@@ -540,7 +549,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 						errorType = *bifrostErr.Error.Type
 					}
 				}
-				genErr := logging.GenerationError{
+				genErr := maximSchemas.GenerationError{
 					Message: message,
 					Code:    &code,
 					Type:    &errorType,
@@ -568,7 +577,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 					} else {
 						logger.AddResultToGeneration(generationID, result.ChatResponse)
 					}
-				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 					if streamResponse != nil {
 						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
 					} else {

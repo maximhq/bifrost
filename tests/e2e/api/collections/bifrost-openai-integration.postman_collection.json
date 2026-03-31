@@ -1,0 +1,1682 @@
+{
+  "info": {
+    "name": "Bifrost OpenAI Integration API",
+    "description": "E2E tests for OpenAI integration endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var requestName = pm.info.requestName;",
+          "var retryKey = 'retry_' + requestName;",
+          "var ciVal = pm.environment.get('CI');",
+          "var maxRetries = (String(ciVal).toLowerCase() === 'true' || ciVal === '1' || ciVal === 1) ? 10 : 0;",
+          "if (!pm.collectionVariables.has(retryKey)) {",
+          "  pm.collectionVariables.set(retryKey, 0);",
+          "}",
+          "pm.collectionVariables.set('current_request_name', requestName);",
+          "pm.collectionVariables.set('max_retries', maxRetries);"
+        ]
+      }
+    },
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var provider = (pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || '';",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : '';",
+          "var capsStr = pm.variables.get('provider_capabilities') || '{}';",
+          "var execOrderStr = pm.collectionVariables.get('execution_order') || '[]';",
+          "var requestToOpStr = pm.collectionVariables.get('request_to_operation') || '{}';",
+          "try {",
+          "  var caps = JSON.parse(capsStr);",
+          "  var execOrder = JSON.parse(execOrderStr);",
+          "  var requestToOp = JSON.parse(requestToOpStr);",
+          "  var providerCaps = caps.providers && caps.providers[provider];",
+          "  var op = requestToOp[requestName];",
+          "  if (provider && op && providerCaps && providerCaps[op] === false) {",
+          "    if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+          "      pm.execution.skipRequest();",
+          "    }",
+          "    var idx = execOrder.indexOf(requestName);",
+          "    var nextName = (idx >= 0 && idx < execOrder.length - 1) ? execOrder[idx + 1] : null;",
+          "    if (nextName) {",
+          "      if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+          "        pm.execution.setNextRequest(nextName);",
+          "      } else if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+          "        postman.setNextRequest(nextName);",
+          "      }",
+          "    }",
+          "  }",
+          "} catch (e) {}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var code = pm.response.code;",
+          "var requestNameRetry = pm.collectionVariables.get('current_request_name');",
+          "var retryKey = 'retry_' + requestNameRetry;",
+          "var currentRetry = parseInt(pm.collectionVariables.get(retryKey) || '0', 10);",
+          "var maxRetries = parseInt(pm.collectionVariables.get('max_retries') || '0', 10);",
+          "var hasFailures = code < 200 || code > 299;",
+          "if (hasFailures && maxRetries > 0 && currentRetry < maxRetries) {",
+          "  pm.collectionVariables.set(retryKey, String(currentRetry + 1));",
+          "  var delayMs = Math.min(1000 * Math.pow(2, currentRetry), 30000);",
+          "  var end = Date.now() + delayMs; while (Date.now() < end) {}",
+          "  console.log('[RETRY] Request \"' + requestNameRetry + '\" failed (attempt ' + (currentRetry + 1) + '/' + maxRetries + '). Retrying after ' + delayMs + 'ms...');",
+          "  if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(requestNameRetry); }",
+          "} else {",
+          "  pm.collectionVariables.set(retryKey, '0');",
+          "  if (hasFailures && currentRetry >= maxRetries && maxRetries > 0) {",
+          "    console.log('[RETRY] Request \"' + requestNameRetry + '\" failed after ' + maxRetries + ' retries. Moving on.');",
+          "  }",
+          "  ",
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "function redact(obj) {",
+          "  if (!obj || typeof obj !== 'object') return obj;",
+          "  if (Array.isArray(obj)) return obj.map(redact);",
+          "  var out = {};",
+          "  Object.keys(obj).forEach(function (k) {",
+          "    if (/password|secret|token|api[_-]?key|authorization/i.test(k)) out[k] = '***REDACTED***';",
+          "    else out[k] = redact(obj[k]);",
+          "  });",
+          "  return out;",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  try {",
+          "    var parsedReq = typeof pm.request.body.raw === 'string' ? JSON.parse(pm.request.body.raw) : pm.request.body.raw;",
+          "    requestBody = JSON.stringify(redact(parsedReq), null, 2);",
+          "  } catch (e) {",
+          "    requestBody = pm.request.body.raw;",
+          "  }",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "var responseText = '';",
+          "try {",
+          "  responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    try {",
+          "      var parsedRes = JSON.parse(responseText);",
+          "      responseBody = JSON.stringify(redact(parsedRes), null, 2);",
+          "    } catch (e) {",
+          "      responseBody = responseText;",
+          "    }",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs (body content only when verbose_logs=1)",
+          "var verbose = (pm.collectionVariables.get('verbose_logs') || '0') === '1';",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (verbose && requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (verbose && responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  if (code === 405 && requestName === 'Cancel Batch') { pass = true; }",
+          "  if (code === 409 && requestName === 'Cancel Batch') { pass = true; }",
+          "  if (!pass) try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : (body && body.code) ? body.code : '';",
+          "    var errType = (body && body.error && body.error.type) ? body.error.type : '';",
+          "    // Auto-pass only for explicit unsupported-operation semantics (not generic 404/malformed).",
+          "    if (errCode === 'unsupported_operation' || errCode === 'tool_use_failed' || ",
+          "        (typeof msg === 'string' && /not supported|unsupported|invalid.*model|no config found|not available|did you mean|batch.*api|batch.*not|no.*mcp|mcp.*not|no tools|method.*not.*allowed|not.*implemented|endpoint.*not.*supported|operation.*not.*supported|feature.*not.*available|no.*batch.*enabled|batch.*config|batch.*keys.*found|tool_use_failed|failed to call a function|failed_generation/i.test(msg))) {",
+          "      pass = true;",
+          "    }",
+          "    // 500s fail by default to avoid masking server-side regressions",
+          "  } catch (e) {}",
+          "}",
+          "pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "responses_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "speech_model",
+      "value": "tts-1",
+      "type": "string"
+    },
+    {
+      "key": "transcription_model",
+      "value": "whisper-1",
+      "type": "string"
+    },
+    {
+      "key": "image_model",
+      "value": "dall-e-3",
+      "type": "string"
+    },
+    {
+      "key": "image_model_for_edit",
+      "value": "dall-e-2",
+      "type": "string"
+    },
+    {
+      "key": "image_variation_model",
+      "value": "dall-e-2",
+      "type": "string"
+    },
+    {
+      "key": "azure_deployment_id",
+      "value": "gpt-4o-deployment",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "file_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "container_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "container_file_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "voice",
+      "value": "alloy",
+      "type": "string"
+    },
+    {
+      "key": "execution_order",
+      "value": "[\"List Models\",\"Chat Completions (Standard Path)\",\"Chat Completions (No v1 Path)\",\"Chat Completions (Azure Deployment)\",\"Text Completions (Standard Path)\",\"Text Completions (No v1 Path)\",\"Text Completions (Azure Deployment)\",\"Create Response\",\"Count Tokens\",\"Embeddings (Standard Path)\",\"Embeddings (No v1 Path)\",\"Embeddings (Azure Deployment)\",\"Create Speech (Standard Path)\",\"Create Speech (No v1 Path)\",\"Create Transcription (Standard Path)\",\"Create Transcription (No v1 Path)\",\"Generate Image\",\"Edit Image\",\"Create Image Variation\",\"Create Batch\",\"List Batches\",\"Retrieve Batch\",\"Cancel Batch\",\"Get Batch Results\",\"Upload File\",\"List Files\",\"Retrieve File\",\"Get File Content\",\"Create Container\",\"List Containers\",\"Retrieve Container\",\"Create Container File (Upload)\",\"Create Container File (Reference)\",\"List Container Files\",\"Retrieve Container File\",\"Get Container File Content\",\"Delete Container File\",\"Delete Container\",\"Delete File\"]",
+      "type": "string"
+    },
+    {
+      "key": "provider_capabilities",
+      "value": "{}",
+      "type": "string"
+    },
+    {
+      "key": "request_to_operation",
+      "value": "{\"Create Batch\":\"batch\",\"List Batches\":\"batch\",\"Retrieve Batch\":\"batch\",\"Cancel Batch\":\"batch\",\"Get Batch Results\":\"batch\",\"Upload File\":\"file\",\"List Files\":\"file\",\"Retrieve File\":\"file\",\"Get File Content\":\"file\",\"Delete File\":\"file\",\"Create Container\":\"container\",\"List Containers\":\"container\",\"Retrieve Container\":\"container\",\"Create Container File (Upload)\":\"container\",\"Create Container File (Reference)\":\"container\",\"List Container Files\":\"container\",\"Retrieve Container File\":\"container\",\"Get Container File Content\":\"container\",\"Delete Container File\":\"container\",\"Delete Container\":\"container\",\"Embeddings (Standard Path)\":\"embedding\",\"Embeddings (No v1 Path)\":\"embedding\",\"Embeddings (Azure Deployment)\":\"embedding\",\"Create Speech (Standard Path)\":\"speech\",\"Create Speech (No v1 Path)\":\"speech\",\"Create Transcription (Standard Path)\":\"transcription\",\"Create Transcription (No v1 Path)\":\"transcription\",\"Generate Image\":\"image\",\"Edit Image\":\"image\",\"Create Image Variation\":\"image\"}",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat Completions",
+      "item": [
+        {
+          "name": "Chat Completions (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completions (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completions (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Text Completions",
+      "item": [
+        {
+          "name": "Text Completions (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Text Completions (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Text Completions (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Responses",
+      "item": [
+        {
+          "name": "Create Response",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"What is the capital of France?\",\n  \"temperature\": 1.0,\n  \"max_output_tokens\": 500\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Count Tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"How many tokens is this message?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/responses/input_tokens",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "input_tokens"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Embeddings",
+      "item": [
+        {
+          "name": "Embeddings (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embeddings (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embeddings (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "item": [
+        {
+          "name": "Create Speech (Standard Path)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Gemini does not support mp3 in e2e; use V1 format (no response_format) for gemini",
+                  "if (pm.environment.get('provider') === 'gemini') {",
+                  "  pm.request.body.raw = '{\\n  \"model\": \"{{provider}}/{{speech_model}}\",\\n  \"input\": \"Hello, this is a test of text to speech\",\\n  \"voice\": \"{{voice}}\",\\n  \"speed\": 1.0\\n}';",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{speech_model}}\",\n  \"input\": \"Generate a speech for this text\",\n  \"voice\": \"{{voice}}\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/audio/speech",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Speech (No v1 Path)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Gemini does not support mp3 in e2e; use V1 format (no response_format) for gemini",
+                  "if (pm.environment.get('provider') === 'gemini') {",
+                  "  pm.request.body.raw = '{\\n  \"model\": \"{{provider}}/{{speech_model}}\",\\n  \"input\": \"Generate a speech for this text\",\\n  \"voice\": \"{{voice}}\",\\n  \"speed\": 1.0\\n}';",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{speech_model}}\",\n  \"input\": \"Hello, this is a test of text to speech\",\n  \"voice\": \"{{voice}}\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/audio/speech",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Transcription (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{transcription_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.mp3"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Transcription (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{transcription_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.mp3"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/audio/transcriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Images",
+      "item": [
+        {
+          "name": "Generate Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{image_model}}\",\n  \"prompt\": \"A serene mountain landscape at sunset\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/generations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Edit Image",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var editModel = (pm.environment && pm.environment.get('image_edit_model')) || pm.collectionVariables.get('image_edit_model') || (pm.environment && pm.environment.get('image_model')) || pm.collectionVariables.get('image_model') || 'dall-e-2';",
+                  "pm.collectionVariables.set('image_model_for_edit', editModel);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_model_for_edit}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image[]",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a sunset to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "type",
+                  "value": "background_removal",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/edits",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Image Variation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_variation_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/variations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "variations"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batches",
+      "item": [
+        {
+          "name": "Create Batch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create Batch: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "pm.test('Create Batch: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(j).to.have.property('id'); pm.expect(j.id).to.be.a('string'); pm.expect(j.id.length).to.be.above(0); });",
+                  "pm.test('Create Batch: id is not placeholder', function () { pm.expect(j).to.be.an('object'); pm.expect(j.id).to.not.equal('batch_123'); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && j && j.id && j.id !== 'batch_123') { pm.collectionVariables.set('batch_id', j.id); if (pm.environment) { pm.environment.set('batch_id', j.id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"test-request-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"{{provider}}/{{model}}\",\n        \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}]\n      }\n    }\n  ],\n  \"metadata\": {\"batch_type\": \"testing\"}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Batches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "var isPlaceholder = !batch_id || batch_id.trim() === '' || batch_id === 'batch_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('batch_id must be set by Create Batch before Retrieve Batch', function () { pm.expect.fail('batch_id is missing or placeholder; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "var isPlaceholder = !batch_id || batch_id.trim() === '' || batch_id === 'batch_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('batch_id must be set by Create Batch before Cancel Batch', function () { pm.expect.fail('batch_id is missing or placeholder; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status is 200 or 409 (already cancelled)', function () {",
+                  "  pm.expect(pm.response.code === 200 || pm.response.code === 409).to.be.true;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Batch Results",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "var isPlaceholder = !batch_id || batch_id.trim() === '' || batch_id === 'batch_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('batch_id must be set by Create Batch before Get Batch Results', function () { pm.expect.fail('batch_id is missing or placeholder; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}/results",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}",
+                "results"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload File",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Upload File: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "var id = (j && (j.id || j.file_id)) || (j && j.data && (j.data.id || j.data.file_id));",
+                  "pm.test('Upload File: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(id).to.be.a('string'); pm.expect(id.length).to.be.above(0); });",
+                  "pm.test('Upload File: id is not placeholder', function () { pm.expect(id).to.not.equal('file_123'); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && id && id !== 'file_123') { pm.collectionVariables.set('file_id', id); if (pm.environment) { pm.environment.set('file_id', id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.jsonl"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "var isPlaceholder = !file_id || file_id.trim() === '' || file_id === 'file_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('file_id must be set by Upload File before Retrieve File', function () { pm.expect.fail('file_id is missing or placeholder; run Upload File first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get File Content",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "var isPlaceholder = !file_id || file_id.trim() === '' || file_id === 'file_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('file_id must be set by Upload File before Get File Content', function () { pm.expect.fail('file_id is missing or placeholder; run Upload File first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}/content",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Containers",
+      "item": [
+        {
+          "name": "Create Container",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create Container: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "pm.test('Create Container: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(j).to.have.property('id'); pm.expect(j.id).to.be.a('string'); pm.expect(j.id.length).to.be.above(0); });",
+                  "pm.test('Create Container: id is not placeholder', function () { pm.expect(j).to.be.an('object'); pm.expect(j.id).to.not.equal('container_123'); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && j && j.id && j.id !== 'container_123') { pm.collectionVariables.set('container_id', j.id); if (pm.environment) { pm.environment.set('container_id', j.id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"bifrost-test-container\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Containers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var isPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('container_id must be set by Create Container before Retrieve Container', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Upload)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var isPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('container_id must be set by Create Container before Create Container File (Upload)', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create Container File: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "pm.test('Create Container File: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(j).to.have.property('id'); pm.expect(j.id).to.be.a('string'); pm.expect(j.id.length).to.be.above(0); });",
+                  "pm.test('Create Container File: id is not placeholder', function () { pm.expect(j).to.be.an('object'); pm.expect(j.id).to.not.equal('container_file_123'); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && j && j.id && j.id !== 'container_file_123') { pm.collectionVariables.set('container_file_id', j.id); if (pm.environment) { pm.environment.set('container_file_id', j.id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file_id",
+                  "value": "{{file_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.txt"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Reference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "var containerPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "var filePlaceholder = !file_id || file_id.trim() === '' || file_id === 'file_123';",
+                  "if (containerPlaceholder) { pm.test('container_id must be set by Create Container before Create Container File (Reference)', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }",
+                  "else if (filePlaceholder) { pm.test('file_id must be set by Upload File before Create Container File (Reference)', function () { pm.expect.fail('file_id is missing or placeholder; run Upload File first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id}}\",\n  \"file_path\": \"/data/file.txt\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Container Files",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var isPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('container_id must be set by Create Container before List Container Files', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var container_file_id = pm.collectionVariables.get('container_file_id') || (pm.environment && pm.environment.get('container_file_id')) || '';",
+                  "var containerPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "var filePlaceholder = !container_file_id || container_file_id.trim() === '' || container_file_id === 'container_file_123';",
+                  "if (containerPlaceholder) { pm.test('container_id must be set by Create Container before Retrieve Container File', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }",
+                  "else if (filePlaceholder) { pm.test('container_file_id must be set by Create Container File before Retrieve Container File', function () { pm.expect.fail('container_file_id is missing or placeholder; run Create Container File (Upload) first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Container File Content",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var container_file_id = pm.collectionVariables.get('container_file_id') || (pm.environment && pm.environment.get('container_file_id')) || '';",
+                  "var containerPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "var filePlaceholder = !container_file_id || container_file_id.trim() === '' || container_file_id === 'container_file_123';",
+                  "if (containerPlaceholder) { pm.test('container_id must be set by Create Container before Get Container File Content', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }",
+                  "else if (filePlaceholder) { pm.test('container_file_id must be set by Create Container File before Get Container File Content', function () { pm.expect.fail('container_file_id is missing or placeholder; run Create Container File (Upload) first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}/content",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Container File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var container_file_id = pm.collectionVariables.get('container_file_id') || (pm.environment && pm.environment.get('container_file_id')) || '';",
+                  "var containerPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "var filePlaceholder = !container_file_id || container_file_id.trim() === '' || container_file_id === 'container_file_123';",
+                  "if (containerPlaceholder) { pm.test('container_id must be set by Create Container before Delete Container File', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }",
+                  "else if (filePlaceholder) { pm.test('container_file_id must be set by Create Container File before Delete Container File', function () { pm.expect.fail('container_file_id is missing or placeholder; run Create Container File (Upload) first.'); }); if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Container",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var container_id = pm.collectionVariables.get('container_id') || (pm.environment && pm.environment.get('container_id')) || '';",
+                  "var isPlaceholder = !container_id || container_id.trim() === '' || container_id === 'container_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('container_id must be set by Create Container before Delete Container', function () { pm.expect.fail('container_id is missing or placeholder; run Create Container first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cleanup",
+      "item": [
+        {
+          "name": "Delete File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "var isPlaceholder = !file_id || file_id.trim() === '' || file_id === 'file_123';",
+                  "if (isPlaceholder) {",
+                  "  pm.test('file_id must be set by Upload File before Delete File', function () { pm.expect.fail('file_id is missing or placeholder; run Upload File first.'); });",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest(null); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -9,6 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -16,8 +20,8 @@ import (
 
 // Default sync interval and config key
 const (
-	TokenTierAbove128K = 128000
 	TokenTierAbove200K = 200000
+	TokenTierAbove128K = 128000
 )
 
 type ModelCatalog struct {
@@ -37,8 +41,14 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	modelPool      map[schemas.ModelProvider][]string
-	baseModelIndex map[string]string // model string → canonical base model name
+	// Provider-level pricing overrides are maintained separately to avoid contention
+	// with pricing cache rebuilds.
+	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
+	overridesMu       sync.RWMutex
+
+	modelPool           map[schemas.ModelProvider][]string
+	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
+	baseModelIndex      map[string]string                  // model string → canonical base model name
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -48,44 +58,122 @@ type ModelCatalog struct {
 	syncCancel context.CancelFunc
 }
 
-// PricingEntry represents a single model's pricing information
+// PricingEntry represents a single model's pricing information.
+// Field names and JSON tags match the datasheet schema exactly.
 type PricingEntry struct {
-	// Base model name (pre-computed canonical name, e.g., "gpt-4o" for "gpt-4o-2024-08-06")
 	BaseModel string `json:"base_model,omitempty"`
-	// Basic pricing
-	InputCostPerToken  float64 `json:"input_cost_per_token"`
-	OutputCostPerToken float64 `json:"output_cost_per_token"`
-	Provider           string  `json:"provider"`
-	Mode               string  `json:"mode"`
-	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-	// Character-based pricing
-	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
-	// Pricing above 128k tokens
+	Provider  string `json:"provider"`
+	Mode      string `json:"mode"`
+
+	// Costs - Text
+	InputCostPerToken          float64  `json:"input_cost_per_token"`
+	OutputCostPerToken         float64  `json:"output_cost_per_token"`
+	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerCharacter      *float64 `json:"input_cost_per_character,omitempty"`
+	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
 	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
-	//Pricing above 200k tokens
-	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
-	// Cache and batch pricing
-	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
-	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
-	// Image generation pricing
-	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	// Costs - 200k Tier
+	InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+
+	// Costs - Cache
+	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+
+	// Costs - Image
+	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+	InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+	OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+	OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+	OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
+	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
+	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
+	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
+	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
+	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Audio/Video
+	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+	// Model parameters
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+
+	// Costs - Other
+	//
+	// SearchContextCostPerQuery is stored as a single float64, but the pricing datasheet
+	// represents it as a tiered object with three keys: search_context_size_low,
+	// search_context_size_medium, and search_context_size_high.  For every provider except
+	// Perplexity the three tier values are identical, so we collapse the object to its
+	// medium tier value (falling back to low then high).  Perplexity always returns a
+	// pre-computed total_cost in its usage response, so the per-query rate is never
+	// consumed for that provider; the collapsed value is therefore correct in all cases.
+	// See UnmarshalJSON below for the custom decoding logic.
+	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for PricingEntry.
+// It handles the special case where search_context_cost_per_query may arrive as either
+// a plain float64 or a tiered object {"search_context_size_low":…,
+// "search_context_size_medium":…, "search_context_size_high":…}.
+func (p *PricingEntry) UnmarshalJSON(data []byte) error {
+	// Type alias breaks the UnmarshalJSON recursion while keeping all other fields.
+	type PricingEntryAlias PricingEntry
+	var raw struct {
+		PricingEntryAlias
+		SearchContextCostPerQuery *struct {
+			Low    *float64 `json:"search_context_size_low"`
+			Medium *float64 `json:"search_context_size_medium"`
+			High   *float64 `json:"search_context_size_high"`
+		} `json:"search_context_cost_per_query,omitempty"`
+	}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = PricingEntry(raw.PricingEntryAlias)
+
+	// search_context_cost_per_query arrives as a tiered object – all three values are
+	// equal for non-Perplexity providers; we prefer medium, then low, then high.
+	// Perplexity always returns a pre-computed total_cost so the per-query rate is
+	// never consumed for that provider.
+	if q := raw.SearchContextCostPerQuery; q != nil {
+		switch {
+		case q.Medium != nil:
+			p.SearchContextCostPerQuery = q.Medium
+		case q.Low != nil:
+			p.SearchContextCostPerQuery = q.Low
+		case q.High != nil:
+			p.SearchContextCostPerQuery = q.High
+		}
+	}
+	return nil
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced
@@ -112,7 +200,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		modelPool:              make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
@@ -121,6 +211,23 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
+		// Register a cache miss handler so that on first request for a model,
+		// the cache lazily loads its parameters from the database.
+		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
+			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			params, err := configStore.GetModelParameters(missCtx, model)
+			if err != nil || params == nil {
+				return nil
+			}
+			var p struct {
+				MaxOutputTokens *int `json:"max_output_tokens"`
+			}
+			if err := json.Unmarshal([]byte(params.Data), &p); err != nil || p.MaxOutputTokens == nil {
+				return nil
+			}
+			return &providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		})
 		if mc.distributedLockManager == nil {
 			if err := mc.loadPricingFromDatabase(ctx); err != nil {
 				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
@@ -128,6 +235,12 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			if err := mc.syncPricing(ctx); err != nil {
 				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 			}
+			// Sync model parameters asynchronously - not needed for startup
+			go func() {
+				if err := mc.syncModelParameters(ctx); err != nil {
+					mc.logger.Warn("failed to sync model parameters data: %v", err)
+				}
+			}()
 		} else {
 			lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
 			if err != nil {
@@ -144,6 +257,12 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			if err := mc.syncPricing(ctx); err != nil {
 				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 			}
+			// Sync model parameters asynchronously - not needed for startup
+			go func() {
+				if err := mc.syncModelParameters(ctx); err != nil {
+					mc.logger.Warn("failed to sync model parameters data: %v", err)
+				}
+			}()
 		}
 	} else {
 		// Load pricing data from config memory
@@ -158,9 +277,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
-	mc.configStore = configStore
-	mc.logger = logger
-
 	return mc, nil
 }
 
@@ -198,6 +314,11 @@ func (mc *ModelCatalog) ReloadPricing(ctx context.Context, config *Config) error
 		return fmt.Errorf("failed to sync pricing data: %w", err)
 	}
 
+	// Also sync model parameters
+	if err := mc.syncModelParameters(ctx); err != nil {
+		mc.logger.Warn("failed to sync model parameters during reload: %v", err)
+	}
+
 	return nil
 }
 
@@ -222,6 +343,12 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
+
+	// Also sync model parameters
+	if err := mc.syncModelParameters(ctx); err != nil {
+		mc.logger.Warn("failed to sync model parameters during force reload: %v", err)
+	}
+
 	return nil
 }
 
@@ -249,8 +376,13 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		schemas.ChatCompletionRequest,
 		schemas.ResponsesRequest,
 		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
 		schemas.SpeechRequest,
 		schemas.TranscriptionRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageEditRequest,
+		schemas.ImageVariationRequest,
+		schemas.VideoGenerationRequest,
 	} {
 		key := makeKey(model, string(provider), normalizeRequestType(mode))
 		pricing, ok := mc.pricingData[key]
@@ -267,6 +399,22 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	defer mc.mu.RUnlock()
 
 	models, exists := mc.modelPool[provider]
+	if !exists {
+		return []string{}
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
+
+// GetUnfilteredModelsForProvider returns all available models for a given provider (thread-safe)
+func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	models, exists := mc.unfilteredModelPool[provider]
 	if !exists {
 		return []string{}
 	}
@@ -302,7 +450,14 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 
 	providers := make([]schemas.ModelProvider, 0)
 	for provider, models := range mc.modelPool {
-		if slices.Contains(models, model) {
+		isModelMatch := false
+		for _, m := range models {
+			if m == model || mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) {
+				isModelMatch = true
+				break
+			}
+		}
+		if isModelMatch {
 			providers = append(providers, provider)
 		}
 	}
@@ -441,7 +596,14 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 func (mc *ModelCatalog) GetBaseModelName(model string) string {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
+	return mc.getBaseModelNameUnsafe(model)
+}
 
+// getBaseModelNameUnsafe returns the canonical base model name for a given model string without locking.
+// This is used to avoid locking overhead when getting the base model name for many models.
+// Make sure the caller function is holding the read lock before calling this function.
+// It is not safe to use this function when the model pool is being updated.
+func (mc *ModelCatalog) getBaseModelNameUnsafe(model string) string {
 	// Step 1: Direct lookup in base model index
 	if base, ok := mc.baseModelIndex[model]; ok {
 		return base
@@ -483,10 +645,11 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 	defer mc.mu.Unlock()
 
 	delete(mc.modelPool, provider)
+	delete(mc.unfilteredModelPool, provider)
 }
 
 // UpsertModelDataForProvider upserts model data for a given provider
-func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model) {
+func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model, deniedModels []schemas.Model) {
 	if modelData == nil {
 		return
 	}
@@ -515,7 +678,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 		}
 	}
 	// If modelData is empty, then we allow all models
-	if len(modelData.Data) == 0 && len(allowedModels) == 0 {
+	if len(modelData.Data) == 0 && len(allowedModels) == 0 && len(deniedModels) == 0 {
 		mc.modelPool[provider] = providerModels
 		return
 	}
@@ -546,9 +709,17 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 			finalModelList = append(finalModelList, parsedModel)
 		}
 	}
-	// If there are no allowed models, we add all models from the provider models
+
 	if len(allowedModels) == 0 {
+		deniedSet := make(map[string]struct{}, len(deniedModels))
+		for _, d := range deniedModels {
+			_, modelName := schemas.ParseModelString(d.ID, "")
+			deniedSet[modelName] = struct{}{}
+		}
 		for _, model := range providerModels {
+			if _, denied := deniedSet[model]; denied {
+				continue
+			}
 			if !seenModels[model] {
 				seenModels[model] = true
 				finalModelList = append(finalModelList, model)
@@ -556,6 +727,40 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 		}
 	}
 	mc.modelPool[provider] = finalModelList
+}
+
+// UpsertUnfilteredModelDataForProvider upserts unfiltered model data for a given provider
+func (mc *ModelCatalog) UpsertUnfilteredModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse) {
+	if modelData == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	// Populating models from pricing data for the given provider
+	providerModels := []string{}
+	seenModels := make(map[string]bool)
+	for _, pricing := range mc.pricingData {
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+		if normalizedProvider != provider {
+			continue
+		}
+		if !seenModels[pricing.Model] {
+			seenModels[pricing.Model] = true
+			providerModels = append(providerModels, pricing.Model)
+		}
+	}
+	for _, model := range modelData.Data {
+		parsedProvider, parsedModel := schemas.ParseModelString(model.ID, "")
+		if parsedProvider != provider {
+			continue
+		}
+		if !seenModels[parsedModel] {
+			seenModels[parsedModel] = true
+			providerModels = append(providerModels, parsedModel)
+		}
+	}
+	mc.unfilteredModelPool[provider] = providerModels
 }
 
 // RefineModelForProvider refines the model for a given provider by performing a lookup
@@ -568,38 +773,53 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 // - When the provider is not handled or no refinement is needed, returns the original model unchanged
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
 	switch provider {
-	// These providers have {provider}/{model} format for models
 	case schemas.Groq:
 		if strings.Contains(model, "gpt-") {
 			return "openai/" + model, nil
 		}
-		// Check if the model without provider prefix is present in the provider's catalog
-		// Guard concurrent access to mc.modelPool with read lock
-		mc.mu.RLock()
-		models, ok := mc.modelPool[provider]
-		mc.mu.RUnlock()
-
-		if ok {
-			var candidateModels []string
-			for _, poolModel := range models {
-				providerPart, modelPart := schemas.ParseModelString(poolModel, "")
-				if model == modelPart {
-					candidateModels = append(candidateModels, string(providerPart)+"/"+modelPart)
-				}
-			}
-			// Handle candidateModels based on count
-			if len(candidateModels) == 1 {
-				return candidateModels[0], nil
-			} else if len(candidateModels) == 0 {
-				// No matches found, return original model to allow fallback
-				return model, nil
-			} else {
-				// Multiple matches found, return error
-				return "", fmt.Errorf("multiple compatible models found for model %s: %v", model, candidateModels)
-			}
-		}
+		return mc.refineNestedProviderModel(provider, model)
+	case schemas.Replicate:
+		return mc.refineNestedProviderModel(provider, model)
 	}
 	return model, nil
+}
+
+// refineNestedProviderModel resolves provider-native model slugs such as
+// "openai/gpt-5-nano" from a base model request like "gpt-5-nano".
+// It only considers catalog entries whose leading segment is a known Bifrost provider,
+// so Replicate owner/model identifiers like "meta/llama-3-8b" are left untouched.
+func (mc *ModelCatalog) refineNestedProviderModel(provider schemas.ModelProvider, model string) (string, error) {
+	mc.mu.RLock()
+	models, ok := mc.modelPool[provider]
+	mc.mu.RUnlock()
+	if !ok {
+		return model, nil
+	}
+
+	candidateModels := make([]string, 0)
+	seenCandidates := make(map[string]struct{})
+	for _, poolModel := range models {
+		providerPart, modelPart := schemas.ParseModelString(poolModel, "")
+		if providerPart == "" || model != modelPart {
+			continue
+		}
+
+		candidate := string(providerPart) + "/" + modelPart
+		if _, seen := seenCandidates[candidate]; seen {
+			continue
+		}
+		seenCandidates[candidate] = struct{}{}
+		candidateModels = append(candidateModels, candidate)
+	}
+
+	switch len(candidateModels) {
+	case 0:
+		return model, nil
+	case 1:
+		return candidateModels[0], nil
+	default:
+		return "", fmt.Errorf("multiple compatible models found for model %s: %v", model, candidateModels)
+	}
 }
 
 // IsTextCompletionSupported checks if a model supports text completion for the given provider.
@@ -623,6 +843,7 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 
 	// Clear existing model pool and base model index
 	mc.modelPool = make(map[schemas.ModelProvider][]string)
+	mc.unfilteredModelPool = make(map[schemas.ModelProvider][]string)
 	mc.baseModelIndex = make(map[string]string)
 
 	// Map to track unique models per provider
@@ -654,6 +875,7 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 			models = append(models, model)
 		}
 		mc.modelPool[provider] = models
+		mc.unfilteredModelPool[provider] = models
 	}
 
 	// Log the populated model pool for debugging
@@ -690,9 +912,11 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:      make(map[schemas.ModelProvider][]string),
-		baseModelIndex: baseModelIndex,
-		pricingData:    make(map[string]configstoreTables.TableModelPricing),
-		done:           make(chan struct{}),
+		modelPool:           make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
+		baseModelIndex:      baseModelIndex,
+		pricingData:         make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		done:                make(chan struct{}),
 	}
 }

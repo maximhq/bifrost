@@ -7,7 +7,6 @@
         ],
         "disable_content_logging": false,
         "drop_excess_requests": false,
-        "enable_governance": true,
         "enable_litellm_fallbacks": false,
         "enable_logging": true,
         "enforce_governance_header": true,

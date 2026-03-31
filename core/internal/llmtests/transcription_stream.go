@@ -97,8 +97,9 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						"model":    speechSynthesisModel,
 					},
 				}
-				ttsExpectations := SpeechExpectations(100)
-				ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, testConfig.Provider)
+				// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+				ttsExpectations := ApplyRawExpectations(SpeechExpectations(100), testConfig, false, false, true)
+				ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, speechSynthesisProvider)
 				ttsSpeechRetryConfig := SpeechRetryConfig{
 					MaxAttempts: ttsRetryConfig.MaxAttempts,
 					BaseDelay:   ttsRetryConfig.BaseDelay,

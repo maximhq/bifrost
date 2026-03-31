@@ -1,6 +1,8 @@
 package gemini_test
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -24,6 +26,7 @@ func TestGemini(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
@@ -40,7 +43,9 @@ func TestGemini(t *testing.T) {
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel: "gemini-3-pro-preview",
+		ReasoningModel:       "gemini-3-pro-preview",
+		VideoGenerationModel: "veo-3.1-generate-preview",
+		PassthroughModel:     "gemini-2.5-flash",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -48,7 +53,8 @@ func TestGemini(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			WebSearchTool:         true,
@@ -58,6 +64,9 @@ func TestGemini(t *testing.T) {
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
 			ImageEdit:             true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoDownload:         false,
 			FileBase64:            true,
 			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,
@@ -81,13 +90,13 @@ func TestGemini(t *testing.T) {
 			FileBatchInput:        true,
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			PassthroughAPI:        true,
 		},
 	}
 
 	t.Run("GeminiTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestEmptyCandidatesRegression is a regression test for PR #1018
@@ -166,7 +175,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -191,11 +200,29 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 	}
 }
 
+func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+		Embeddings: []gemini.GeminiEmbedding{
+			{
+				Values: []float64{want},
+			},
+		},
+	}, "gemini-embedding-001")
+
+	require.NotNil(t, resp)
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	assert.Equal(t, want, got)
+	assert.NotEqual(t, float64(float32(want)), got)
+}
+
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
 // for both streaming and non-streaming responses to enable round-trip compatibility
 func TestThoughtSignatureInToolCalls(t *testing.T) {
 	thoughtSig := []byte{0x01, 0x02, 0x03, 0x04, 0x05} // Sample signature
-	
+
 	tests := []struct {
 		name     string
 		response *gemini.GenerateContentResponse
@@ -217,9 +244,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_123",
-										Args: map[string]interface{}{
-											"location": "San Francisco",
-										},
+										Args: json.RawMessage(`{"location":"San Francisco"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -246,9 +271,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_456",
-										Args: map[string]interface{}{
-											"location": "New York",
-										},
+										Args: json.RawMessage(`{"location":"New York"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -270,16 +293,16 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
 
 			require.NotNil(t, bifrostResp, "Response should not be nil")
 			require.NotEmpty(t, bifrostResp.Choices, "Should have choices")
-			
+
 			choice := bifrostResp.Choices[0]
-			
+
 			// Get tool calls from appropriate response type
 			var toolCalls []schemas.ChatAssistantMessageToolCall
 			if tt.isStream {
@@ -297,15 +320,15 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			require.Len(t, toolCalls, 1, "Should have exactly one tool call")
 			toolCall := toolCalls[0]
 			require.NotNil(t, toolCall.ID, "Tool call must have ID")
-			
+
 			// Verify thought signature is embedded in the ID (format: "call_id_ts_base64sig")
 			assert.Contains(t, *toolCall.ID, "_ts_", "Tool call ID must contain thought signature separator")
-			
+
 			// Verify we can extract the thought signature from the ID for round-trip
 			parts := strings.SplitN(*toolCall.ID, "_ts_", 2)
 			require.Len(t, parts, 2, "Should be able to split ID into base and signature")
 			assert.NotEmpty(t, parts[1], "Signature part should not be empty")
-			
+
 			// Verify reasoning details also contain the signature (backward compatibility)
 			var reasoningDetails []schemas.ChatReasoningDetails
 			if tt.isStream {
@@ -313,7 +336,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			} else {
 				reasoningDetails = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ReasoningDetails
 			}
-			
+
 			assert.NotEmpty(t, reasoningDetails, "Should have reasoning details")
 			foundEncrypted := false
 			for _, detail := range reasoningDetails {
@@ -325,6 +348,87 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			assert.True(t, foundEncrypted, "Should have encrypted reasoning detail with signature")
 		})
 	}
+}
+
+func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
+	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr("call_1"),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: `{"location":"Boston"}`,
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":"10C"}`)},
+			},
+		},
+	})
+
+	require.Len(t, result.Contents, 3)
+	require.Len(t, result.Contents[1].Parts, 1)
+	assert.Equal(t, []byte("skip_thought_signature_validator"), result.Contents[1].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I="`)
+}
+
+func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
+	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
+	callID := "call_1_ts_" + thoughtSig
+
+	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:   schemas.Ptr(callID),
+					Type: schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      schemas.Ptr("get_weather"),
+						Arguments: `{"location":"Boston"}`,
+					},
+				}},
+			},
+		}},
+	})
+
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	assert.NotEqual(t, []byte("skip_thought_signature_validator"), result.Contents[0].Parts[0].ThoughtSignature)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+}
+
+func TestThoughtSignatureBypassSentinelRoundTripsThroughJSON(t *testing.T) {
+	part := gemini.Part{ThoughtSignature: []byte("skip_thought_signature_validator")}
+
+	encoded, err := json.Marshal(part)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"thoughtSignature":"skip_thought_signature_validator"`)
+
+	var decoded gemini.Part
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, []byte("skip_thought_signature_validator"), decoded.ThoughtSignature)
 }
 
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
@@ -845,6 +949,95 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 			tt.validate(t, result)
 		})
 	}
+}
+
+func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "AnswerResponseModel",
+					Description: schemas.Ptr("Extract answer"),
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("chain_of_thought", map[string]interface{}{"type": "string", "description": "Reasoning"}),
+							schemas.KV("answer", map[string]interface{}{"type": "string", "description": "The answer"}),
+							schemas.KV("citations", map[string]interface{}{"type": "array"}),
+						),
+						Required: []string{"chain_of_thought", "answer"},
+					},
+				},
+			}},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(input)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// CoT: PropertyOrdering preserves client's intended field order
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, fd.Parameters.PropertyOrdering,
+		"PropertyOrdering should preserve original property order")
+
+	// All properties present in map
+	assert.Len(t, fd.Parameters.Properties, 3)
+	assert.Contains(t, fd.Parameters.Properties, "chain_of_thought")
+	assert.Contains(t, fd.Parameters.Properties, "answer")
+	assert.Contains(t, fd.Parameters.Properties, "citations")
+}
+
+func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: "nested_tool",
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("output", schemas.NewOrderedMapFromPairs(
+								schemas.KV("type", "object"),
+								schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+									schemas.KV("verdict", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+									schemas.KV("score", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+									schemas.KV("explanation", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+								)),
+							)),
+							schemas.KV("reasoning", map[string]interface{}{"type": "string"}),
+						),
+					},
+				},
+			}},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(input)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// Top-level property ordering
+	assert.Equal(t, []string{"output", "reasoning"}, fd.Parameters.PropertyOrdering)
+
+	// Nested property ordering
+	outputSchema := fd.Parameters.Properties["output"]
+	require.NotNil(t, outputSchema)
+	assert.Equal(t, []string{"verdict", "score", "explanation"}, outputSchema.PropertyOrdering,
+		"nested PropertyOrdering should preserve original order")
 }
 
 // TestStructuredOutputConversion tests that response_format with json_schema is properly converted to Gemini's responseJsonSchema
@@ -1976,7 +2169,7 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 			},
 			expected: &schemas.BifrostLLMUsage{
 				PromptTokens:     6,
-				CompletionTokens: 42,
+				CompletionTokens: 83,
 				TotalTokens:      48,
 				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
 					TextTokens:  6,
@@ -2009,9 +2202,9 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				CompletionTokens: 50,
 				TotalTokens:      200,
 				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-					TextTokens:   50,
-					ImageTokens:  100,
-					CachedTokens: 100,
+					TextTokens:       50,
+					ImageTokens:      100,
+					CachedReadTokens: 100,
 				},
 				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
 					TextTokens: 50,
@@ -2107,7 +2300,7 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				assert.Equal(t, tt.expected.PromptTokensDetails.TextTokens, result.PromptTokensDetails.TextTokens)
 				assert.Equal(t, tt.expected.PromptTokensDetails.AudioTokens, result.PromptTokensDetails.AudioTokens)
 				assert.Equal(t, tt.expected.PromptTokensDetails.ImageTokens, result.PromptTokensDetails.ImageTokens)
-				assert.Equal(t, tt.expected.PromptTokensDetails.CachedTokens, result.PromptTokensDetails.CachedTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.CachedReadTokens, result.PromptTokensDetails.CachedReadTokens)
 			} else {
 				assert.Nil(t, result.PromptTokensDetails)
 			}
@@ -2159,7 +2352,7 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 			expected: &schemas.ResponsesResponseUsage{
 				TotalTokens:  150,
 				InputTokens:  100,
-				OutputTokens: 50,
+				OutputTokens: 55,
 				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
 					TextTokens:  60,
 					AudioTokens: 20,
@@ -2191,8 +2384,8 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				InputTokens:  200,
 				OutputTokens: 100,
 				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-					TextTokens:   200,
-					CachedTokens: 150,
+					TextTokens:       200,
+					CachedReadTokens: 150,
 				},
 				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
 					TextTokens: 100,
@@ -2265,7 +2458,7 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				assert.Equal(t, tt.expected.InputTokensDetails.TextTokens, result.InputTokensDetails.TextTokens)
 				assert.Equal(t, tt.expected.InputTokensDetails.AudioTokens, result.InputTokensDetails.AudioTokens)
 				assert.Equal(t, tt.expected.InputTokensDetails.ImageTokens, result.InputTokensDetails.ImageTokens)
-				assert.Equal(t, tt.expected.InputTokensDetails.CachedTokens, result.InputTokensDetails.CachedTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.CachedReadTokens, result.InputTokensDetails.CachedReadTokens)
 			}
 
 			// Check output token details
@@ -2277,4 +2470,79 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGeminiToolInputKeyOrderPreservation verifies that multiple parallel tool calls
+// preserve the client's original key ordering after conversion to Gemini format.
+func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	require.NotNil(t, result)
+
+	// Collect all FunctionCall parts
+	var argsList []json.RawMessage
+	for _, content := range result.Contents {
+		for _, part := range content.Parts {
+			if part.FunctionCall != nil {
+				argsList = append(argsList, part.FunctionCall.Args)
+			}
+		}
+	}
+
+	require.Len(t, argsList, 2, "expected 2 FunctionCall parts")
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	s0 := string(argsList[0])
+	descIdx := strings.Index(s0, `"description"`)
+	timeoutIdx := strings.Index(s0, `"timeout"`)
+	commandIdx := strings.Index(s0, `"command"`)
+	require.NotEqual(t, -1, descIdx, "block 0: missing description key in: %s", s0)
+	require.NotEqual(t, -1, timeoutIdx, "block 0: missing timeout key in: %s", s0)
+	require.NotEqual(t, -1, commandIdx, "block 0: missing command key in: %s", s0)
+	assert.True(t, descIdx < timeoutIdx && timeoutIdx < commandIdx,
+		"block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	s1 := string(argsList[1])
+	commandIdx = strings.Index(s1, `"command"`)
+	descIdx = strings.Index(s1, `"description"`)
+	require.NotEqual(t, -1, commandIdx, "block 1: missing command key in: %s", s1)
+	require.NotEqual(t, -1, descIdx, "block 1: missing description key in: %s", s1)
+	assert.True(t, commandIdx < descIdx,
+		"block 1: key order not preserved, expected command < description in: %s", s1)
 }
