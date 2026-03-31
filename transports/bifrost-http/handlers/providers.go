@@ -939,6 +939,35 @@ func getValidKeyIDsForProvider(config *configstore.ProviderConfig, keyIDs []stri
 	return valid
 }
 
+func getStrictKeyIDsForProvider(config *configstore.ProviderConfig, keyIDs []string) []string {
+	if config == nil || len(keyIDs) == 0 {
+		return nil
+	}
+
+	existing := make(map[string]bool, len(config.Keys))
+	for _, key := range config.Keys {
+		if key.Enabled != nil && !*key.Enabled {
+			continue
+		}
+		existing[key.ID] = true
+	}
+
+	valid := make([]string, 0, len(keyIDs))
+	seen := make(map[string]bool, len(keyIDs))
+	for _, keyID := range keyIDs {
+		trimmed := strings.TrimSpace(keyID)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if !existing[trimmed] {
+			return []string{}
+		}
+		valid = append(valid, trimmed)
+	}
+	return valid
+}
+
 func (h *ProviderHandler) getLegacyFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
 	var models []string
 	if unfiltered {
@@ -991,7 +1020,7 @@ func (h *ProviderHandler) getStrictFilteredModelsForProvider(provider schemas.Mo
 		return []string{}, map[string][]string{}
 	}
 
-	validKeyIDs := getValidKeyIDsForProvider(config, keyIDs)
+	validKeyIDs := getStrictKeyIDsForProvider(config, keyIDs)
 	if len(validKeyIDs) == 0 {
 		return []string{}, map[string][]string{}
 	}

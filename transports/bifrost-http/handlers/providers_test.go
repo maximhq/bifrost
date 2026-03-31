@@ -274,6 +274,71 @@ func TestListModelDetails_FailsClosedForUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestListModelDetails_FailsClosedForMixedValidAndUnknownKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+	)
+	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-a,missing")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 0 || len(resp.Models) != 0 {
+		t.Fatalf("expected no models, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_FailsClosedForDisabledKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{
+			{ID: "key-a"},
+			{ID: "key-disabled", Enabled: boolPtr(false)},
+		},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+	)
+	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-a,key-disabled")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 0 || len(resp.Models) != 0 {
+		t.Fatalf("expected no models, got %#v", resp.Models)
+	}
+}
+
 func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
