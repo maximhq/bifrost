@@ -453,10 +453,10 @@ VALUES (1, 'migration-test-hash-abc123def456', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_budgets (reset_duration is a string like "1d", "1h", etc.)
-INSERT INTO governance_budgets (id, max_limit, current_usage, reset_duration, last_reset, config_hash, created_at, updated_at)
-VALUES 
-  ('budget-migration-test-1', 1000.00, 100.00, '1d', $now, 'budget-hash-001', $now, $now),
-  ('budget-migration-test-2', 5000.00, 250.00, '7d', $now, 'budget-hash-002', $now, $now)
+INSERT INTO governance_budgets (id, max_limit, current_usage, reset_duration, last_reset, config_hash, created_at, updated_at, calendar_aligned)
+VALUES
+  ('budget-migration-test-1', 1000.00, 100.00, '1d', $now, 'budget-hash-001', $now, $now, 0),
+  ('budget-migration-test-2', 5000.00, 250.00, '7d', $now, 'budget-hash-002', $now, $now, 1)
 ON CONFLICT DO NOTHING;
 
 -- governance_rate_limits (flexible duration format with token_* and request_* columns)

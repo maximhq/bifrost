@@ -1,0 +1,4 @@
+- fix: fixed timeout status code handling across all providers
+- fix: preserve cached provider metadata on cross-provider cache hits
+- fix: prevent reasoning text from leaking into Gemini response content
+- feat: added Anthropic beta headers support

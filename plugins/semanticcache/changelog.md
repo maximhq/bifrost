@@ -1,0 +1,1 @@
+- fix: preserve cached provider metadata on cross-provider cache hits

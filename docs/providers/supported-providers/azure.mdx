@@ -39,13 +39,17 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 
 ## Beta Headers
 
-For Anthropic models on Azure, Bifrost validates `anthropic-beta` headers. Azure supports most Anthropic beta features.
+For Anthropic models on Azure, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request. Azure supports most Anthropic beta features.
 
 **Supported**: `computer-use-*`, `structured-outputs-*`, `advanced-tool-use-*`, `mcp-client-*`, `prompt-caching-scope-*`, `compact-*`, `context-management-*`, `files-api-*`, `interleaved-thinking-*`, `skills-*`, `context-1m-*`, `redact-thinking-*`
 
 **Not supported**: `fast-mode-*`
 
 You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
+
+<Frame>
+  <img src="/media/azure-setting-anthropic-beta-headers.png" alt="Azure Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options" />
+</Frame>
 
 ---
 
