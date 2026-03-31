@@ -242,6 +242,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				}
 			}()
 		} else {
+			// Load initial pricing data
+			if err := mc.loadPricingFromDatabase(ctx); err != nil {
+				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
+			}
+			// lock for model_catalog_pricing_sync
 			lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
 			if err != nil {
 				return nil, fmt.Errorf("failed to create model catalog pricing sync lock: %w", err)
@@ -250,15 +255,22 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				return nil, fmt.Errorf("failed to acquire model catalog pricing sync lock: %w", err)
 			}
 			defer lock.Unlock(ctx)
-			// Load initial pricing data
-			if err := mc.loadPricingFromDatabase(ctx); err != nil {
-				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
-			}
 			if err := mc.syncPricing(ctx); err != nil {
 				return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 			}
 			// Sync model parameters asynchronously - not needed for startup
 			go func() {
+				// We created separate lock as here pods can keep on waiting on this lock
+				parameterSyncLock, err := mc.distributedLockManager.NewLockWithTTL("model_catalog_parameter_sync", 1*time.Minute)
+				if err != nil {
+					mc.logger.Warn("failed to create model catalog parameter sync lock: %v", err)
+					return
+				}
+				if err := parameterSyncLock.LockWithRetry(ctx, 10); err != nil {
+					mc.logger.Warn("failed to acquire model catalog parameter sync lock: %v", err)
+					return
+				}
+				defer parameterSyncLock.Unlock(ctx)
 				if err := mc.syncModelParameters(ctx); err != nil {
 					mc.logger.Warn("failed to sync model parameters data: %v", err)
 				}
