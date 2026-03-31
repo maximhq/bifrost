@@ -44,18 +44,17 @@
       };
 
       packages = forEachSupportedSystem (
-        {
-          pkgs,
-          system,
-          lib,
-          self,
-        }:
+        { pkgs, system }:
         let
+          lib = pkgs.lib;
           version = lib.strings.fileContents (self + /core/version);
+          vendorHash = "sha256-Ck1cwv/DYI9EXmp7U2ZSNXlU+Qok8BFn5bcN1Pv7Nmc=";
+          npmDepsHash = "sha256-+tI2NUJtpHwvI9sAYMXO7r00Y3Pb1E62ms1ZSd3O0hM=";
 
           bifrost-ui = pkgs.callPackage ./nix/packages/bifrost-ui.nix {
             src = self;
             inherit version;
+            inherit npmDepsHash;
           };
         in
         {
@@ -65,6 +64,7 @@
             inherit inputs;
             src = self;
             inherit version;
+            inherit vendorHash;
             inherit bifrost-ui;
           };
 
