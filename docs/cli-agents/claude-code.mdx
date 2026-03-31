@@ -27,7 +27,6 @@ If you have a Claude Pro or Max subscription, Claude Code authenticates via brow
 1. **Set environment variables**
    ```bash
    export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
-   export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key  # same value
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -47,8 +46,7 @@ Teams and Enterprise users authenticate the same way — via browser OAuth with 
 
 1. **Set environment variables**
    ```bash
-   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
-   export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key  # same value
+   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled   
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -68,8 +66,7 @@ For users with Anthropic Console API keys or Bifrost virtual keys:
 
 1. **Configure environment variables**
    ```bash
-   export ANTHROPIC_API_KEY=your-api-key  # Anthropic Console key or Bifrost virtual key
-   export ANTHROPIC_AUTH_TOKEN=your-api-key  # Same value — ensures bearer token auth works too
+   export ANTHROPIC_API_KEY=your-api-key  # Anthropic Console key or Bifrost virtual key   
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
@@ -82,51 +79,36 @@ For users with Anthropic Console API keys or Bifrost virtual keys:
 When launching Claude Code through the [Bifrost CLI](/quickstart/cli/getting-started), both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are set automatically from your virtual key — no manual export needed.
 </Tip>
 
-### Custom authentication
-
-For enterprise setups where Bifrost handles authentication centrally, Claude Code supports additional auth mechanisms:
-
-- **`ANTHROPIC_AUTH_TOKEN`** — Sets the `Authorization: Bearer` header. Use this when your gateway requires a custom bearer token.
-  ```bash
-  export ANTHROPIC_API_KEY=your-bearer-token  # required even when using AUTH_TOKEN
-  export ANTHROPIC_AUTH_TOKEN=your-bearer-token
-  export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-  ```
-
-- **`apiKeyHelper`** — A script that dynamically generates credentials. Configure in Claude Code settings:
-  ```json
-  {
-    "apiKeyHelper": "/path/to/your/credential-script.sh"
-  }
-  ```
-  Set `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` to control the refresh interval (in milliseconds).
-
-<Note>
-`ANTHROPIC_AUTH_TOKEN` takes precedence over `ANTHROPIC_API_KEY`. The `apiKeyHelper` has the lowest precedence — it is only used when neither `ANTHROPIC_AUTH_TOKEN` nor `ANTHROPIC_API_KEY` is set. Note: `ANTHROPIC_API_KEY` (even a dummy value) is always required when using a custom `ANTHROPIC_BASE_URL`.
-</Note>
-
-Now all Claude Code traffic flows through Bifrost, giving you access to any provider/model configured in your Bifrost setup, plus MCP tools and observability.
-
-## Cloud Provider Passthrough
-
-Bifrost can act as a gateway between Claude Code and cloud providers like Amazon Bedrock, Google Vertex AI, and Azure. This lets you route Claude Code traffic through Bifrost while using your cloud provider's infrastructure.
 
 ### Amazon Bedrock via Bifrost
 
-Route Claude Code through Bifrost's Bedrock endpoint, which handles AWS authentication on your behalf:
+#### Setup
+
+Configure environment variables 
 
 ```bash
-# Enable Bedrock mode
-export CLAUDE_CODE_USE_BEDROCK=1
-export ANTHROPIC_BEDROCK_BASE_URL=http://localhost:8080/bedrock
-export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1  # Bifrost handles AWS auth
-export AWS_REGION=us-east-1 # This acts as a placeholder - adaptive load balancer automatically flips based on provider availability
+   export ANTHROPIC_API_KEY=bifrost-virtual-key
+   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```
 
-# Pin model versions (recommended)
-export ANTHROPIC_DEFAULT_SONNET_MODEL="us.anthropic.claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="us.anthropic.claude-haiku-4-5-20251001-v1:0"
+#### Pin model versions (recommended)
 
-# Start Claude Code
+```bash
+export ANTHROPIC_DEFAULT_SONNET_MODEL="bedrock/global.anthropic.claude-sonnet-4-6"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+```
+
+If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models > Model Providers > AWS Bedrock > Key. And add deployments
+
+
+<Frame>
+   <img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
+</Frame>
+
+
+
+#### Start Claude Code
+```
 claude
 ```
 
@@ -136,38 +118,55 @@ Always pin model versions with `ANTHROPIC_DEFAULT_*_MODEL` when using Bedrock. W
 
 ### Google Vertex AI via Bifrost
 
-Route Claude Code through Bifrost's Vertex AI endpoint:
+#### Setup
+
+Configure environment variables 
 
 ```bash
-# Enable Vertex AI mode
-export CLAUDE_CODE_USE_VERTEX=1
-export ANTHROPIC_VERTEX_BASE_URL=http://localhost:8080/genai
-export CLAUDE_CODE_SKIP_VERTEX_AUTH=1  # Bifrost handles GCP auth
-export ANTHROPIC_VERTEX_PROJECT_ID=your-project-id
-export CLOUD_ML_REGION=us-east5
+   export ANTHROPIC_API_KEY=bifrost-virtual-key
+   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```
 
-# Pin model versions (recommended)
-export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="claude-haiku-4-5@20251001"
+#### Pin model versions (recommended)
 
-# Start Claude Code
+```bash
+export ANTHROPIC_DEFAULT_SONNET_MODEL="vertex/claude-sonnet-4-6"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="vertex/claude-haiku-4-5"
+```
+
+#### Start Claude Code
+```
 claude
 ```
 
 ### Azure via Bifrost
 
-Claude Code doesn't have native Azure passthrough like Bedrock or Vertex. Instead, route through Bifrost's Anthropic endpoint and let Bifrost handle routing to Azure-hosted models:
+
+#### Setup
+
+Configure environment variables 
 
 ```bash
-# Use Bifrost's Anthropic endpoint
-export ANTHROPIC_API_KEY=your-bifrost-virtual-key
-export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+   export ANTHROPIC_API_KEY=bifrost-virtual-key
+   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
+```
 
-# Point model tiers to Azure-hosted models in your Bifrost config
-export ANTHROPIC_DEFAULT_SONNET_MODEL="azure/claude-sonnet-4-5"
+#### Pin model versions (recommended)
+
+```bash
+export ANTHROPIC_DEFAULT_SONNET_MODEL="azure/claude-sonnet-4-6"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
+```
 
-# Start Claude Code
+You will also have to map these model names to actual deployment names on Bifrost dashboard.
+
+<Frame>
+   <img src="/media/cli/claude-azure-pinning.png" alt="Claude bedrock pinning" />
+</Frame>
+
+
+#### Start Claude Code
+```
 claude
 ```
 
@@ -215,14 +214,9 @@ claude --model claude-haiku-4-5-20251001
 Use the `/model` command to switch models during an active session:
 
 ```bash
-# Using shorthand
-/model opus
-/model sonnet
-/model haiku
-
 # Using full model names
-/model claude-opus-4-5-20251101
-/model claude-sonnet-4-5-20250929
+/model claude-opus-4-5-20251101 # This will be used from anthropic provider
+/model claude-sonnet-4-5-20250929 # This will be used from anthropic provider
 
 # Using different providers dynamically via Bifrost
 /model vertex/claude-haiku-4-5
@@ -249,84 +243,3 @@ If you use Claude-specific features like **web search**, **computer use**, or **
 
 If you experience issues with tool calls not executing properly, try switching to a different provider in your Bifrost configuration.
 </Warning>
-
-## Example: Full Bifrost Setup
-
-### Anthropic API passthrough (most common)
-
-```bash
-# Core Bifrost configuration
-export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-
-# Always required (use Bifrost virtual key or "dummy" for OAuth-only setups)
-export ANTHROPIC_API_KEY=your-bifrost-virtual-key
-export ANTHROPIC_AUTH_TOKEN=your-bifrost-virtual-key
-
-# Custom model tiers (optional)
-export ANTHROPIC_DEFAULT_SONNET_MODEL="anthropic/claude-sonnet-4-5-20250929"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="azure/claude-haiku-4-5"
-
-# Start Claude Code
-claude
-```
-
-### Bedrock passthrough
-
-```bash
-# Bedrock via Bifrost
-export CLAUDE_CODE_USE_BEDROCK=1
-export ANTHROPIC_BEDROCK_BASE_URL=http://localhost:8080/bedrock
-export CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
-export AWS_REGION=us-east-1
-
-# Pin model versions
-export ANTHROPIC_DEFAULT_SONNET_MODEL="us.anthropic.claude-sonnet-4-6"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="us.anthropic.claude-haiku-4-5-20251001-v1:0"
-
-# Start Claude Code
-claude
-```
-
-<Note>
-Add these exports to your `~/.bashrc` or `~/.zshrc` for persistent configuration across terminal sessions.
-</Note>
-
-## Using Non-Anthropic Models with Claude Code
-
-Bifrost automatically translates Anthropic API requests to other providers, so you can use Claude Code with models from OpenAI, Google, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model.
-
-**Override default model tiers:**
-
-```bash
-# Use OpenAI for the primary (Sonnet) tier
-export ANTHROPIC_DEFAULT_SONNET_MODEL="openai/gpt-5"
-
-# Use Google Gemini for the Opus tier
-export ANTHROPIC_DEFAULT_OPUS_MODEL="gemini/gemini-2.5-pro"
-
-# Use Groq for the Haiku (fast) tier
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="groq/llama-3.3-70b-versatile"
-```
-
-**Switch models mid-session:**
-
-```bash
-/model openai/gpt-5
-/model gemini/gemini-2.5-pro
-/model mistral/mistral-large-latest
-/model xai/grok-3
-```
-
-### Supported Providers
-
-Bifrost supports the following providers with the `provider/model-name` format:
-
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
-
-<Warning>
-Non-Anthropic models **must support tool use** for Claude Code to work properly. Claude Code relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
-</Warning>
-
-<Note>
-Claude-specific features like **extended thinking**, **web search**, **computer use**, and **citations** are not available when using non-Anthropic models. Core functionality — chat, streaming, and tool use — works across most providers.
-</Note>
