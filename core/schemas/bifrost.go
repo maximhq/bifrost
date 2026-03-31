@@ -209,6 +209,8 @@ const (
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
 	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
+	BifrostContextKeyMCPUserSession                      BifrostContextKey = "bifrost-mcp-user-session"                         // string (per-user OAuth session token from X-Bifrost-MCP-Session header)
+	BifrostContextKeyOAuthRedirectURI                    BifrostContextKey = "bifrost-oauth-redirect-uri"                       // string (OAuth callback URL, e.g. https://host/api/oauth/callback - set by HTTP middleware)
 	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
@@ -1203,12 +1205,13 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider               ModelProvider `json:"provider,omitempty"`
-	OriginalModelRequested string        `json:"original_model_requested,omitempty"`
-	ResolvedModelUsed      string        `json:"resolved_model_used,omitempty"`
-	RequestType            RequestType   `json:"request_type,omitempty"`
-	RawRequest             interface{}   `json:"raw_request,omitempty"`
-	RawResponse            interface{}   `json:"raw_response,omitempty"`
-	LiteLLMCompat          bool          `json:"litellm_compat,omitempty"`
-	KeyStatuses            []KeyStatus   `json:"key_statuses,omitempty"`
+	Provider               ModelProvider              `json:"provider,omitempty"`
+	OriginalModelRequested string                     `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed      string                     `json:"resolved_model_used,omitempty"`
+	RequestType            RequestType                `json:"request_type,omitempty"`
+	RawRequest             interface{}                `json:"raw_request,omitempty"`
+	RawResponse            interface{}                `json:"raw_response,omitempty"`
+	LiteLLMCompat          bool                       `json:"litellm_compat,omitempty"`
+	KeyStatuses            []KeyStatus                `json:"key_statuses,omitempty"`
+	MCPAuthRequired        *MCPUserOAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user OAuth MCP tool requires authentication
 }

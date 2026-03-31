@@ -92,6 +92,10 @@ type ServerCallbacks interface {
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
+	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	// SetClientTools updates the tool map for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// Logging related callbacks
 	NewLogEntryAdded(ctx context.Context, logEntry *logstore.Log) error
@@ -234,6 +238,17 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
 	return nil
+}
+
+// VerifyPerUserOAuthConnection delegates to the Bifrost client to verify an MCP
+// server using a temporary access token and discover available tools.
+func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error) {
+	return s.Client.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+}
+
+// SetClientTools delegates to the Bifrost client to update tool map for an existing MCP client.
+func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	s.Client.SetClientTools(clientID, tools, toolNameMapping)
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
@@ -1065,6 +1080,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
+	// OAuth metadata + per-user OAuth endpoints (no auth middleware — must be publicly accessible)
+	oauthMetadataHandler := handlers.NewOAuthMetadataHandler(s.Config)
+	oauthMetadataHandler.RegisterRoutes(s.Router)
+	perUserOAuthHandler := handlers.NewPerUserOAuthHandler(s.Config)
+	perUserOAuthHandler.RegisterRoutes(s.Router)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}

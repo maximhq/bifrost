@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -37,6 +40,9 @@ type ToolsManager struct {
 	clientManager         ClientManager
 	logger                schemas.Logger
 	agentModeExecutor     *AgentModeExecutor
+
+	// OAuth2Provider for per-user OAuth token management
+	oauth2Provider schemas.OAuth2Provider
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -74,6 +80,7 @@ func NewToolsManager(
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	pluginPipelineProvider func() PluginPipeline,
 	releasePluginPipeline func(pipeline PluginPipeline),
+	oauth2Provider schemas.OAuth2Provider,
 	logger schemas.Logger,
 ) *ToolsManager {
 	return NewToolsManagerWithCodeMode(
@@ -83,6 +90,7 @@ func NewToolsManager(
 		pluginPipelineProvider,
 		releasePluginPipeline,
 		nil, // Use default code mode (will be set later via SetCodeMode)
+		oauth2Provider,
 		logger,
 	)
 }
@@ -107,6 +115,7 @@ func NewToolsManagerWithCodeMode(
 	pluginPipelineProvider func() PluginPipeline,
 	releasePluginPipeline func(pipeline PluginPipeline),
 	codeMode CodeMode,
+	oauth2Provider schemas.OAuth2Provider,
 	logger schemas.Logger,
 ) *ToolsManager {
 	if config == nil {
@@ -143,6 +152,7 @@ func NewToolsManagerWithCodeMode(
 		codeMode:               codeMode,
 		logger:                 logger,
 		agentModeExecutor:      agentModeExecutor,
+		oauth2Provider:         oauth2Provider,
 	}
 
 	// Initialize atomic values
@@ -568,6 +578,75 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		Header: utils.GetHeadersForToolExecution(ctx, client),
 	}
 
+	// Handle per-user OAuth: inject user-specific Authorization header
+	if client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		if m.oauth2Provider == nil {
+			return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
+		}
+		sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
+		if sessionToken == "" {
+			// No session token — the user hasn't authenticated with this upstream provider yet.
+			// Return an error with the URL to initiate upstream OAuth via Bifrost's proxy.
+			redirectURI := buildRedirectURIFromContext(ctx)
+			if redirectURI == "" {
+				return nil, "", "", fmt.Errorf("per-user OAuth requires a redirect URI but none is available in context")
+			}
+			// Extract base URL from redirect URI (strip /api/oauth/callback)
+			baseURL := strings.TrimSuffix(redirectURI, "/api/oauth/callback")
+			// Build upstream authorize URL pointing to Bifrost's upstream OAuth proxy
+			authorizeURL := fmt.Sprintf("%s/api/oauth/per-user/upstream/authorize?mcp_client_id=%s&session=%s",
+				baseURL, client.ExecutionConfig.ID, "")
+			return nil, "", "", &schemas.MCPUserOAuthRequiredError{
+				MCPClientID:   client.ExecutionConfig.ID,
+				MCPClientName: client.ExecutionConfig.Name,
+				AuthorizeURL:  authorizeURL,
+				SessionID:     "",
+				Message:       fmt.Sprintf("Authentication required for %s. Please visit the authorize URL to connect your account.", client.ExecutionConfig.Name),
+			}
+		}
+		// Have session → look up upstream token by identity (persistent) or session (fallback)
+		virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+		userID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceUserID).(string)
+		accessToken, err := m.oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
+		}
+
+		if client.Conn == nil {
+			// No persistent connection — create temporary connection with user's token
+			toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+			toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
+			defer cancel()
+
+			toolResponse, callErr := executeToolWithUserToken(toolCtx, client.ExecutionConfig, originalMCPToolName, arguments, accessToken, m.logger)
+			if callErr != nil {
+				if toolCtx.Err() == context.DeadlineExceeded {
+					return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+				}
+				m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
+				return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
+			}
+			responseText := extractTextFromMCPResponse(toolResponse, toolName)
+			return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
+		}
+
+		// Persistent connection exists — use per-call headers
+		headers := make(http.Header)
+		if client.ExecutionConfig.Headers != nil {
+			for key, value := range client.ExecutionConfig.Headers {
+				headers.Add(key, value.GetValue())
+			}
+		}
+		headers.Set("Authorization", "Bearer "+accessToken)
+		callRequest.Header = headers
+	} else if client.ExecutionConfig.Headers != nil {
+		headers := make(http.Header)
+		for key, value := range client.ExecutionConfig.Headers {
+			headers.Add(key, value.GetValue())
+		}
+		callRequest.Header = headers
+	}
+
 	// Create timeout context for tool execution
 	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
@@ -688,6 +767,86 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
+}
+
+// executeToolWithUserToken creates a temporary MCP connection using the user's
+// OAuth access token, calls the specified tool, and closes the connection.
+// This is used for per_user_oauth clients which have no persistent connection —
+// each tool call gets its own short-lived connection authenticated with the
+// requesting user's token.
+//
+// Parameters:
+//   - ctx: context with timeout for the entire operation
+//   - config: MCP client configuration (connection URL, name)
+//   - toolName: original MCP tool name to call
+//   - arguments: tool call arguments
+//   - accessToken: user's OAuth access token
+//   - logger: logger instance
+//
+// Returns:
+//   - *mcp.CallToolResult: tool execution result
+//   - error: any error during connection or execution
+func executeToolWithUserToken(ctx context.Context, config *schemas.MCPClientConfig, toolName string, arguments map[string]interface{}, accessToken string, logger schemas.Logger) (*mcp.CallToolResult, error) {
+	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
+		return nil, fmt.Errorf("connection URL is required for per-user OAuth tool execution")
+	}
+
+	// Create HTTP transport with the user's Bearer token, preserving configured headers
+	headers := make(map[string]string)
+	if config.Headers != nil {
+		for key, value := range config.Headers {
+			headers[key] = value.GetValue()
+		}
+	}
+	headers["Authorization"] = "Bearer " + accessToken
+	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
+	}
+
+	// Create temporary MCP client
+	tempClient := client.NewClient(httpTransport)
+	if err := tempClient.Start(ctx); err != nil {
+		return nil, fmt.Errorf("failed to start temporary MCP connection: %w", err)
+	}
+	defer tempClient.Close()
+
+	// Initialize MCP handshake
+	initRequest := mcp.InitializeRequest{
+		Params: mcp.InitializeParams{
+			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			Capabilities:    mcp.ClientCapabilities{},
+			ClientInfo: mcp.Implementation{
+				Name:    fmt.Sprintf("Bifrost-%s-user", config.Name),
+				Version: "1.0.0",
+			},
+		},
+	}
+	if _, err := tempClient.Initialize(ctx, initRequest); err != nil {
+		return nil, fmt.Errorf("failed to initialize temporary MCP connection: %w", err)
+	}
+
+	// Call the tool
+	callRequest := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Params: mcp.CallToolParams{
+			Name:      toolName,
+			Arguments: arguments,
+		},
+	}
+	return tempClient.CallTool(ctx, callRequest)
+}
+
+// buildRedirectURIFromContext extracts the OAuth redirect URI from context.
+// The URI is set by the HTTP middleware from the request's host.
+func buildRedirectURIFromContext(ctx *schemas.BifrostContext) string {
+	if uri, ok := ctx.Value(schemas.BifrostContextKeyOAuthRedirectURI).(string); ok && uri != "" {
+		return uri
+	}
+	// Fallback — should not happen if middleware is configured correctly
+	return ""
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.

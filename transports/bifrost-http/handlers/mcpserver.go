@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -30,11 +31,12 @@ type MCPToolManager interface {
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
-	toolManager     MCPToolManager
-	globalMCPServer *server.MCPServer
-	vkMCPServers    map[string]*server.MCPServer // Map of vk value -> mcp server
-	config          *lib.Config
-	mu              sync.RWMutex
+	toolManager          MCPToolManager
+	globalMCPServer      *server.MCPServer
+	vkMCPServers         map[string]*server.MCPServer // Map of vk value -> mcp server
+	config               *lib.Config
+	hasPerUserOAuthServers bool // Whether any per_user_oauth MCP servers are configured
+	mu                   sync.RWMutex
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
@@ -399,6 +401,15 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 
 // Utility methods
 
+// SetHasPerUserOAuthServers updates whether any per_user_oauth MCP servers are
+// configured. When true, the /mcp endpoint returns 401 with WWW-Authenticate
+// for unauthenticated requests to trigger the MCP spec OAuth flow.
+func (h *MCPServerHandler) SetHasPerUserOAuthServers(value bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hasPerUserOAuthServers = value
+}
+
 func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -408,6 +419,43 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 	h.config.Mu.RUnlock()
 
 	vk := getVKFromRequest(ctx)
+
+	// Check for Bifrost per-user OAuth Bearer token (not a VK)
+	perUserSession := h.getPerUserOAuthSession(ctx)
+
+	// If per_user_oauth servers are configured and no valid auth, return 401 with discovery
+	if h.hasPerUserOAuthServers && vk == "" && perUserSession == nil {
+		if !enforceVK {
+			// Even without enforced VK, per_user_oauth servers require auth
+			scheme := "http"
+			if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+				scheme = "https"
+			}
+			host := string(ctx.Host())
+			resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, host)
+			ctx.Response.Header.Set("WWW-Authenticate",
+				fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
+			return nil, fmt.Errorf("OAuth authentication required for MCP access")
+		}
+	}
+
+	// If a per-user OAuth session is present, inject it into context and use global server.
+	// Also attach user identity to the session if not already set (first request after auth).
+	if perUserSession != nil {
+		// Propagate the access token so ConvertToBifrostContext picks it up
+		// and downstream tool execution can find the per-user OAuth session.
+		if perUserSession.AccessToken != "" {
+			ctx.Request.Header.Set("X-Bifrost-MCP-Session", perUserSession.AccessToken)
+		}
+		ctx.SetUserValue(string(schemas.BifrostContextKeyMCPUserSession), perUserSession.AccessToken)
+
+		// Identity (VirtualKeyID, UserID) is resolved by governance middleware downstream.
+		// Do not store the raw VK secret here — governance resolves the actual VK ID.
+
+		if vk == "" {
+			return h.globalMCPServer, nil
+		}
+	}
 
 	// Return global MCP server if not enforcing virtual key header and no virtual key is provided
 	if !enforceVK && vk == "" {
@@ -426,6 +474,35 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 	}
 
 	return vkServer, nil
+}
+
+// getPerUserOAuthSession extracts and validates a Bifrost-issued per-user OAuth
+// token from the Authorization header. Returns the session if valid, nil otherwise.
+func (h *MCPServerHandler) getPerUserOAuthSession(ctx *fasthttp.RequestCtx) *tables.TablePerUserOAuthSession {
+	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
+	if authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return nil
+	}
+	token := strings.TrimSpace(authHeader[7:])
+	if token == "" || strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
+		return nil // It's a virtual key, not a per-user OAuth token
+	}
+
+	if h.config.ConfigStore == nil {
+		return nil
+	}
+
+	session, err := h.config.ConfigStore.GetPerUserOAuthSessionByAccessToken(ctx, token)
+	if err != nil || session == nil {
+		return nil
+	}
+
+	// Check expiry
+	if session.ExpiresAt.Before(time.Now()) {
+		return nil
+	}
+
+	return session
 }
 
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {

@@ -680,3 +680,328 @@ func generateSecureRandomString(length int) (string, error) {
 	}
 	return base64.URLEncoding.EncodeToString(bytes)[:length], nil
 }
+
+// generateSessionToken generates a cryptographically secure opaque session token (hex-encoded)
+func generateSessionToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("failed to generate session token: %w", err)
+	}
+	return fmt.Sprintf("%x", bytes), nil
+}
+
+// ---------- Per-User OAuth Methods ----------
+
+// InitiateUserOAuthFlow creates a per-user OAuth session and returns the authorization URL.
+// It reuses the template OAuth config (which holds client_id, token_url, etc.) to build the flow.
+func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string) (*schemas.OAuth2FlowInitiation, string, error) {
+	// Load the template OAuth config
+	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to load template oauth config: %w", err)
+	}
+	if templateConfig == nil {
+		return nil, "", schemas.ErrOAuth2ConfigNotFound
+	}
+
+	// Generate state token for CSRF protection
+	state, err := generateSecureRandomString(32)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate state token: %w", err)
+	}
+
+	// Generate PKCE challenge
+	codeVerifier, codeChallenge, err := GeneratePKCEChallenge()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate PKCE challenge: %w", err)
+	}
+
+	// Parse scopes from template config
+	var scopes []string
+	if templateConfig.Scopes != "" {
+		json.Unmarshal([]byte(templateConfig.Scopes), &scopes)
+	}
+
+	// Generate session token upfront to avoid empty unique-index collisions on pending sessions
+	sessionToken, err := generateSessionToken()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate session token: %w", err)
+	}
+
+	// Create per-user OAuth session
+	sessionID := uuid.New().String()
+	expiresAt := time.Now().Add(15 * time.Minute)
+	session := &tables.TableOauthUserSession{
+		ID:            sessionID,
+		MCPClientID:   mcpClientID,
+		OauthConfigID: oauthConfigID,
+		State:         state,
+		RedirectURI:   redirectURI,
+		CodeVerifier:  codeVerifier,
+		SessionToken:  sessionToken,
+		Status:        "pending",
+		ExpiresAt:     expiresAt,
+	}
+
+	if err := p.configStore.CreateOauthUserSession(ctx, session); err != nil {
+		return nil, "", fmt.Errorf("failed to create per-user oauth session: %w", err)
+	}
+
+	// Build authorize URL with PKCE
+	authURL := p.buildAuthorizeURLWithPKCE(
+		templateConfig.AuthorizeURL,
+		templateConfig.ClientID,
+		redirectURI,
+		state,
+		codeChallenge,
+		scopes,
+	)
+
+	logger.Debug("Per-user OAuth flow initiated: session_id=%s, mcp_client_id=%s", sessionID, mcpClientID)
+
+	return &schemas.OAuth2FlowInitiation{
+		OauthConfigID: oauthConfigID,
+		AuthorizeURL:  authURL,
+		State:         state,
+		ExpiresAt:     expiresAt,
+	}, sessionID, nil
+}
+
+// CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
+// It looks up the session by state, exchanges code for tokens, and returns a session token.
+func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error) {
+	// Atomically claim session by state to prevent concurrent callback races
+	session, err := p.configStore.ClaimOauthUserSessionByState(ctx, state)
+	if err != nil {
+		return "", fmt.Errorf("failed to claim per-user oauth session: %w", err)
+	}
+	if session == nil {
+		// State not found or already claimed — not a per-user session
+		return "", schemas.ErrOAuth2NotPerUserSession
+	}
+
+	// Check expiry
+	if time.Now().After(session.ExpiresAt) {
+		session.Status = "expired"
+		p.configStore.UpdateOauthUserSession(ctx, session)
+		return "", fmt.Errorf("per-user oauth flow expired")
+	}
+
+	// Load template OAuth config for token_url, client_id, etc.
+	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, session.OauthConfigID)
+	if err != nil || templateConfig == nil {
+		session.Status = "failed"
+		p.configStore.UpdateOauthUserSession(ctx, session)
+		return "", fmt.Errorf("failed to load template oauth config: %w", err)
+	}
+
+	// Exchange code for tokens with PKCE verifier
+	// Use the redirect URI stored in the session (same one used in authorize step)
+	// to satisfy OAuth spec requirement that redirect_uri must match
+	redirectURI := session.RedirectURI
+	if redirectURI == "" {
+		redirectURI = templateConfig.RedirectURI
+	}
+	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
+		templateConfig.TokenURL,
+		code,
+		templateConfig.ClientID,
+		templateConfig.ClientSecret,
+		redirectURI,
+		session.CodeVerifier,
+	)
+	if err != nil {
+		session.Status = "failed"
+		p.configStore.UpdateOauthUserSession(ctx, session)
+		return "", fmt.Errorf("per-user token exchange failed: %w", err)
+	}
+
+	// Use existing session token if set (e.g., Bifrost session ID from MCP spec OAuth flow),
+	// otherwise generate a new one (for standalone per-user OAuth via X-Bifrost-MCP-Session header).
+	sessionToken := session.SessionToken
+	if sessionToken == "" {
+		sessionToken, err = generateSessionToken()
+		if err != nil {
+			session.Status = "failed"
+			p.configStore.UpdateOauthUserSession(ctx, session)
+			return "", err
+		}
+	}
+
+	// Parse scopes
+	var scopes []string
+	if tokenResponse.Scope != "" {
+		scopes = strings.Split(tokenResponse.Scope, " ")
+	}
+	scopesJSON, _ := json.Marshal(scopes)
+
+	// Create per-user OAuth token record, propagating identity from session
+	tokenRecord := &tables.TableOauthUserToken{
+		ID:            uuid.New().String(),
+		SessionToken:  sessionToken,
+		VirtualKeyID:  session.VirtualKeyID,
+		UserID:        session.UserID,
+		MCPClientID:   session.MCPClientID,
+		OauthConfigID: session.OauthConfigID,
+		AccessToken:   strings.TrimSpace(tokenResponse.AccessToken),
+		RefreshToken:  strings.TrimSpace(tokenResponse.RefreshToken),
+		TokenType:     tokenResponse.TokenType,
+		ExpiresAt:     time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
+		Scopes:        string(scopesJSON),
+	}
+
+	if err := p.configStore.CreateOauthUserToken(ctx, tokenRecord); err != nil {
+		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
+	}
+
+	// Update session with session token and mark as authorized
+	session.SessionToken = sessionToken
+	session.Status = "authorized"
+	if err := p.configStore.UpdateOauthUserSession(ctx, session); err != nil {
+		return "", fmt.Errorf("failed to update per-user oauth session: %w", err)
+	}
+
+	logger.Debug("Per-user OAuth flow completed: session_id=%s, mcp_client_id=%s", session.ID, session.MCPClientID)
+
+	return sessionToken, nil
+}
+
+// GetUserAccessToken retrieves the access token for a per-user OAuth session.
+// If the token is expired, it automatically attempts a refresh.
+func (p *OAuth2Provider) GetUserAccessToken(ctx context.Context, sessionToken string) (string, error) {
+	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+	if err != nil {
+		return "", fmt.Errorf("failed to load per-user oauth token: %w", err)
+	}
+	if token == nil {
+		return "", fmt.Errorf("per-user oauth token not found for session")
+	}
+
+	// Check if token is expired
+	if time.Now().After(token.ExpiresAt) {
+		if err := p.RefreshUserAccessToken(ctx, sessionToken); err != nil {
+			return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
+		}
+		// Reload token after refresh
+		token, err = p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+		if err != nil || token == nil {
+			return "", fmt.Errorf("failed to reload per-user token after refresh")
+		}
+	}
+
+	accessToken := strings.TrimSpace(token.AccessToken)
+	if accessToken == "" {
+		return "", fmt.Errorf("per-user access token is empty after sanitization")
+	}
+	return accessToken, nil
+}
+
+// GetUserAccessTokenByIdentity retrieves the upstream access token for a user
+// identified by virtualKeyID, userID, or sessionToken (fallback), for a specific
+// MCP client. Identity-based lookups persist tokens across sessions so users don't
+// need to re-authenticate with upstream providers on reconnect.
+func (p *OAuth2Provider) GetUserAccessTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (string, error) {
+	token, err := p.configStore.GetOauthUserTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, mcpClientID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load per-user oauth token by identity: %w", err)
+	}
+	if token == nil {
+		return "", fmt.Errorf("per-user oauth token not found for this user and MCP server")
+	}
+
+	// Check if token is expired — attempt refresh
+	if time.Now().After(token.ExpiresAt) {
+		if token.SessionToken != "" {
+			if err := p.RefreshUserAccessToken(ctx, token.SessionToken); err != nil {
+				return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
+			}
+			// Reload after refresh
+			token, err = p.configStore.GetOauthUserTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, mcpClientID)
+			if err != nil || token == nil {
+				return "", fmt.Errorf("failed to reload per-user token after refresh")
+			}
+		} else {
+			return "", fmt.Errorf("per-user token expired and no session token available for refresh")
+		}
+	}
+
+	accessToken := strings.TrimSpace(token.AccessToken)
+	if accessToken == "" {
+		return "", fmt.Errorf("per-user access token is empty after sanitization")
+	}
+	return accessToken, nil
+}
+
+// RefreshUserAccessToken refreshes a per-user OAuth access token.
+func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToken string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+	if err != nil || token == nil {
+		return fmt.Errorf("per-user oauth token not found: %w", err)
+	}
+
+	if token.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available for per-user oauth session")
+	}
+
+	// Load template OAuth config for token_url, client_id, etc.
+	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, token.OauthConfigID)
+	if err != nil || templateConfig == nil {
+		return fmt.Errorf("failed to load template oauth config for refresh: %w", err)
+	}
+
+	// Exchange refresh token
+	newTokenResponse, err := p.exchangeRefreshToken(
+		templateConfig.TokenURL,
+		templateConfig.ClientID,
+		templateConfig.ClientSecret,
+		token.RefreshToken,
+	)
+	if err != nil {
+		return fmt.Errorf("per-user token refresh failed: %w", err)
+	}
+
+	// Update token
+	now := time.Now()
+	token.AccessToken = strings.TrimSpace(newTokenResponse.AccessToken)
+	if newTokenResponse.RefreshToken != "" {
+		token.RefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
+	}
+	token.ExpiresAt = now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
+	token.LastRefreshedAt = &now
+
+	if err := p.configStore.UpdateOauthUserToken(ctx, token); err != nil {
+		return fmt.Errorf("failed to update per-user token after refresh: %w", err)
+	}
+
+	logger.Debug("Per-user OAuth token refreshed: session_token=...%s", sessionToken[len(sessionToken)-4:])
+	return nil
+}
+
+// RevokeUserToken revokes a per-user OAuth token and marks the session as revoked.
+func (p *OAuth2Provider) RevokeUserToken(ctx context.Context, sessionToken string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	token, err := p.configStore.GetOauthUserTokenBySessionToken(ctx, sessionToken)
+	if err != nil || token == nil {
+		return fmt.Errorf("per-user oauth token not found: %w", err)
+	}
+
+	// Delete the token
+	if err := p.configStore.DeleteOauthUserToken(ctx, token.ID); err != nil {
+		return fmt.Errorf("failed to delete per-user oauth token: %w", err)
+	}
+
+	// Update session status
+	session, err := p.configStore.GetOauthUserSessionBySessionToken(ctx, sessionToken)
+	if err == nil && session != nil {
+		session.Status = "revoked"
+		p.configStore.UpdateOauthUserSession(ctx, session)
+	}
+
+	logger.Debug("Per-user OAuth token revoked: session_token=...%s", sessionToken[len(sessionToken)-4:])
+	return nil
+}

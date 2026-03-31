@@ -2,12 +2,13 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth]
+  enum: [none, headers, oauth, per_user_oauth]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
     - headers: Header-based authentication (API keys, custom headers, etc.)
-    - oauth: OAuth 2.0 authentication
+    - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
+    - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
 
 MCPConnectionType:
   type: string

@@ -301,6 +301,35 @@ type ConfigStore interface {
 	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
 
+	// Per-user OAuth session CRUD
+	GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error)
+	GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
+	ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error)
+	GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error)
+	CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
+	UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error
+
+	// Per-user OAuth token CRUD
+	GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error)
+	GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error)
+	CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
+	UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error
+	DeleteOauthUserToken(ctx context.Context, id string) error
+	DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error
+
+	// Per-user OAuth Authorization Server CRUD (Bifrost as OAuth server)
+	GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error)
+	CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error
+	GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error)
+	GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error)
+	CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
+	UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error
+	DeletePerUserOAuthSession(ctx context.Context, id string) error
+	GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
+	ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error)
+	CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
+	UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
+
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 

@@ -532,10 +532,10 @@ export default function AppSidebar() {
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "Tool groups",
+						title: "Virtual MCP Servers",
 						url: "/workspace/mcp-tool-groups",
 						icon: ToolCase,
-						description: "MCP tool groups",
+						description: "Virtual MCP servers",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
