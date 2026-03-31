@@ -270,6 +270,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
+	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 	r.DELETE("/api/governance/virtual-keys", lib.ChainMiddlewares(h.bulkDeleteVirtualKeys, middlewares...))
 
 	// Team CRUD operations
@@ -1190,6 +1191,25 @@ func (h *GovernanceHandler) deleteVirtualKeyByID(ctx *fasthttp.RequestCtx, vkID 
 	return h.configStore.DeleteVirtualKey(ctx, vkID)
 }
 
+// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a single virtual key
+func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
+	vkID := ctx.UserValue("vk_id").(string)
+	if err := h.deleteVirtualKeyByID(ctx, vkID); err != nil {
+		switch {
+		case errors.Is(err, configstore.ErrNotFound):
+			SendError(ctx, fasthttp.StatusNotFound, "Virtual key not found")
+		default:
+			logger.Error("failed to delete virtual key %s: %v", vkID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete virtual key")
+		}
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Virtual key deleted successfully",
+	})
+}
+
 // bulkDeleteVirtualKeys handles DELETE /api/governance/virtual-keys with body { ids: [...] } - Delete multiple virtual keys
 func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 	const maxBulkDeleteVirtualKeys = 100
@@ -1233,10 +1253,18 @@ func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 
 	deletedCount := 0
 	failedIDs := []string{}
+	notFoundCount := 0
+	unexpectedFailureCount := 0
 
 	for _, vkID := range sanitizedIDs {
 		if err := h.deleteVirtualKeyByID(ctx, vkID); err != nil {
-			logger.Error("failed to delete virtual key %s: %v", vkID, err)
+			if errors.Is(err, configstore.ErrNotFound) {
+				logger.Warn("virtual key %s not found during bulk delete", vkID)
+				notFoundCount++
+			} else {
+				logger.Error("failed to delete virtual key %s: %v", vkID, err)
+				unexpectedFailureCount++
+			}
 			failedIDs = append(failedIDs, vkID)
 			continue
 		}
@@ -1252,9 +1280,12 @@ func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 	}
 
 	switch {
+	case deletedCount == 0 && unexpectedFailureCount == 0 && notFoundCount > 0:
+		response["message"] = "No matching virtual keys were found"
+		SendJSONWithStatus(ctx, response, fasthttp.StatusNotFound)
 	case deletedCount == 0:
 		response["message"] = "Failed to delete any virtual keys"
-		SendJSONWithStatus(ctx, response, fasthttp.StatusInternalServerError)
+		SendJSONWithStatus(ctx, response, fasthttp.StatusUnprocessableEntity)
 	case len(failedIDs) > 0:
 		response["message"] = fmt.Sprintf("Deleted %d virtual key(s); %d failed", deletedCount, len(failedIDs))
 		SendJSONWithStatus(ctx, response, fasthttp.StatusMultiStatus)

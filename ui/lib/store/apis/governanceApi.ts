@@ -35,6 +35,29 @@ import {
 } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
+function updateVirtualKeyListCaches(dispatch: any, getState: () => unknown, deletedIDs: string[]) {
+	if (deletedIDs.length === 0) {
+		return;
+	}
+
+	const deletedIDSet = new Set(deletedIDs);
+	const queries = (getState() as any).api.queries;
+	for (const entry of Object.values(queries) as any[]) {
+		if (entry?.endpointName !== "getVirtualKeys" || entry?.status !== "fulfilled") continue;
+		dispatch(
+			governanceApi.util.updateQueryData("getVirtualKeys", entry.originalArgs, (draft) => {
+				if (!draft.virtual_keys) return;
+				const before = draft.virtual_keys.length;
+				draft.virtual_keys = draft.virtual_keys.filter((vk) => !deletedIDSet.has(vk.id));
+				const removedCount = before - draft.virtual_keys.length;
+				if (removedCount === 0) return;
+				draft.count = draft.virtual_keys.length;
+				draft.total_count = Math.max(0, (draft.total_count || 0) - removedCount);
+			}),
+		);
+	}
+}
+
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Virtual Keys
@@ -88,21 +111,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					if ((data.failed_ids ?? []).includes(vkId)) {
 						return;
 					}
-
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
-						if (entry?.endpointName !== "getVirtualKeys" || entry?.status !== "fulfilled") continue;
-						dispatch(
-							governanceApi.util.updateQueryData("getVirtualKeys", entry.originalArgs, (draft) => {
-								if (!draft.virtual_keys) return;
-								const before = draft.virtual_keys.length;
-								draft.virtual_keys = draft.virtual_keys.filter((vk) => vk.id !== vkId);
-								if (draft.virtual_keys.length === before) return;
-								draft.count = draft.virtual_keys.length;
-								draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
-							}),
-						);
-					}
+					updateVirtualKeyListCaches(dispatch, getState, [vkId]);
 				} catch {
 					// Mutation failed
 				}
@@ -121,25 +130,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					const { data } = await queryFulfilled;
 					const failedIDs = new Set(data.failed_ids ?? []);
 					const deletedIDs = ids.filter((id) => !failedIDs.has(id));
-					if (deletedIDs.length === 0) {
-						return;
-					}
-
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
-						if (entry?.endpointName !== "getVirtualKeys" || entry?.status !== "fulfilled") continue;
-						dispatch(
-							governanceApi.util.updateQueryData("getVirtualKeys", entry.originalArgs, (draft) => {
-								if (!draft.virtual_keys) return;
-								const before = draft.virtual_keys.length;
-								draft.virtual_keys = draft.virtual_keys.filter((vk) => !deletedIDs.includes(vk.id));
-								const removedCount = before - draft.virtual_keys.length;
-								if (removedCount === 0) return;
-								draft.count = draft.virtual_keys.length;
-								draft.total_count = Math.max(0, (draft.total_count || 0) - removedCount);
-							}),
-						);
-					}
+					updateVirtualKeyListCaches(dispatch, getState, deletedIDs);
 				} catch {
 					// Mutation failed
 				}

@@ -124,6 +124,7 @@ export function RoutingRulesTable({
 					deletedCount > 0 ? `${failedIds.length} routing rule(s) could not be deleted.` : "Failed to delete the selected routing rules.",
 				);
 				setSelectedIds(new Set(failedIds));
+				setShowBulkDeleteDialog(false);
 				return;
 			}
 

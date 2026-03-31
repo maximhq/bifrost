@@ -12,6 +12,7 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
+	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
@@ -99,18 +100,19 @@ function SingleLogDeleteButton({
 
 	return (
 		<AlertDialog open={open} onOpenChange={setOpen}>
-			<Button
-				variant="outline"
-				size="icon"
-				onClick={(event) => {
-					event.stopPropagation();
-					setOpen(true);
-				}}
-				disabled={!hasDeleteAccess}
-				data-testid={`logs-delete-btn-${log.id}`}
-			>
-				<Trash2 />
-			</Button>
+			<AlertDialogTrigger asChild>
+				<Button
+					variant="outline"
+					size="icon"
+					onClick={(event) => {
+						event.stopPropagation();
+					}}
+					disabled={!hasDeleteAccess}
+					data-testid={`logs-delete-btn-${log.id}`}
+				>
+					<Trash2 />
+				</Button>
+			</AlertDialogTrigger>
 			<AlertDialogContent onClick={(event) => event.stopPropagation()}>
 				<AlertDialogHeader>
 					<AlertDialogTitle>Delete Log</AlertDialogTitle>
