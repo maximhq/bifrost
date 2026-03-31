@@ -125,7 +125,7 @@ cd "$REPO_ROOT/tests/integrations/python"
 # Check if uv is available
 if command -v uv >/dev/null 2>&1; then
   echo "📦 Installing Python dependencies with uv..."
-  uv sync --quiet
+  uv sync --frozen --quiet
   
   echo ""
   echo "🏃 Running Python tests..."
@@ -162,7 +162,7 @@ cd "$REPO_ROOT/tests/integrations/typescript"
 # Install dependencies if needed
 if [ ! -d "node_modules" ]; then
   echo "📦 Installing TypeScript dependencies with npm..."
-  npm install
+  npm ci
 fi
 
 echo ""
