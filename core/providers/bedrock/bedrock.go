@@ -152,6 +152,28 @@ func ensureBedrockKeyConfig(key *schemas.Key) bool {
 	return false
 }
 
+// isStreamTransportError reports whether err is a transport-level connection
+// failure that occurred while reading the EventStream body — as opposed to a
+// semantic error (JSON parse failure, AWS exception event, etc.).
+//
+// Transport errors are caused by the underlying TCP/HTTP/2 connection being
+// closed or reset (e.g. AWS Bedrock closing idle connections after ~60 s).
+// They are retryable: the request has not yet been partially processed by the
+// provider, so a fresh connection can be used to retry transparently.
+//
+// Detected cases:
+//   - *net.OpError  — "use of closed network connection", connection reset, etc.
+//   - *net.DNSError — transient DNS failure
+//   - io.ErrUnexpectedEOF — HTTP/2 stream closed mid-frame (body abruptly ended)
+func isStreamTransportError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
+}
+
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
@@ -454,9 +476,21 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderNetworkError, respErr, providerName)
+			return nil, deployment, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   respErr,
+				},
+			}
 		}
-		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
+		return nil, deployment, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderDoRequest,
+				Error:   respErr,
+			},
+		}
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -939,7 +973,24 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.TextCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1178,7 +1229,24 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ChatCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1557,7 +1625,24 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ResponsesStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
