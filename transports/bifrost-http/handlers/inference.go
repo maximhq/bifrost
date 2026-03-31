@@ -20,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -813,6 +814,12 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+
+	// Detect CLI user agent for MCP tool deduplication
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingTextCompletion(ctx, bifrostTextReq, bifrostCtx, cancel)
 		return
@@ -924,6 +931,12 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+
+	// Detect CLI user agent for MCP tool deduplication
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
@@ -1017,6 +1030,11 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
+	}
+
+	// Detect CLI user agent for MCP tool deduplication
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
 	}
 
 	if req.Stream != nil && *req.Stream {
