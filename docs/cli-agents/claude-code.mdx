@@ -20,69 +20,20 @@ npm install -g @anthropic-ai/claude-code
 
 Claude Code supports multiple authentication methods. Choose the one that matches your account type.
 
-### Claude Pro / Max accounts
-
-If you have a Claude Pro or Max subscription, Claude Code authenticates via browser-based OAuth. When routing through a custom base URL like Bifrost, an API key is still required.
-
 1. **Set environment variables**
    ```bash
    export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
    ```
 
-2. **Run Claude Code and log in**
-   ```bash
-   claude
-   ```
-   A browser window opens for you to log in with your Claude.ai account. All traffic automatically routes through Bifrost.
+2. **Run Claude Code*
+```bash
+claude
+```
 
-<Note>
-Max subscriptions default to **Opus**, while Pro subscriptions default to **Sonnet**. You can change this with the `/model` command or environment variables.
-</Note>
+## Amazon Bedrock via Bifrost
 
-### Claude for Teams / Enterprise accounts
-
-Teams and Enterprise users authenticate the same way — via browser OAuth with their team Claude.ai account. When routing through a custom base URL like Bifrost, an API key is still required.
-
-1. **Set environment variables**
-   ```bash
-   export ANTHROPIC_API_KEY=your-bifrost-virtual-key  # or "dummy" if virtual keys are not enabled   
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-   ```
-
-2. **Run Claude Code and log in**
-   ```bash
-   claude
-   ```
-   Log in with the Claude.ai account your team admin invited you to.
-
-<Tip>
-Team **Premium** defaults to Opus, Team **Standard** defaults to Sonnet. Enterprise users have access to Opus but it may not be the default — check with your admin.
-</Tip>
-
-### API key based usage
-
-For users with Anthropic Console API keys or Bifrost virtual keys:
-
-1. **Configure environment variables**
-   ```bash
-   export ANTHROPIC_API_KEY=your-api-key  # Anthropic Console key or Bifrost virtual key   
-   export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
-   ```
-
-2. **Run Claude Code**
-   ```bash
-   claude
-   ```
-
-<Tip>
-When launching Claude Code through the [Bifrost CLI](/quickstart/cli/getting-started), both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are set automatically from your virtual key — no manual export needed.
-</Tip>
-
-
-### Amazon Bedrock via Bifrost
-
-#### Setup
+### Setup
 
 Configure environment variables 
 
@@ -91,7 +42,7 @@ Configure environment variables
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
 ```
 
-#### Pin model versions (recommended)
+### Pin model versions (recommended)
 
 ```bash
 export ANTHROPIC_DEFAULT_SONNET_MODEL="bedrock/global.anthropic.claude-sonnet-4-6"
@@ -107,7 +58,7 @@ If you don't pin using CLI - you can pin these in UI. Go to Dashboard > Models >
 
 
 
-#### Start Claude Code
+### Start Claude Code
 ```
 claude
 ```
@@ -116,9 +67,9 @@ claude
 Always pin model versions with `ANTHROPIC_DEFAULT_*_MODEL` when using Bedrock. Without pinning, Claude Code aliases resolve to the latest version, which may not be enabled in your Bedrock account.
 </Warning>
 
-### Google Vertex AI via Bifrost
+## Google Vertex AI via Bifrost
 
-#### Setup
+### Setup
 
 Configure environment variables 
 
@@ -127,22 +78,21 @@ Configure environment variables
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
 ```
 
-#### Pin model versions (recommended)
+### Pin model versions (recommended)
 
 ```bash
 export ANTHROPIC_DEFAULT_SONNET_MODEL="vertex/claude-sonnet-4-6"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="vertex/claude-haiku-4-5"
 ```
 
-#### Start Claude Code
+### Start Claude Code
 ```
 claude
 ```
 
-### Azure via Bifrost
+## Azure via Bifrost
 
-
-#### Setup
+### Setup
 
 Configure environment variables 
 
@@ -151,7 +101,7 @@ Configure environment variables
    export ANTHROPIC_BASE_URL=http://localhost:8080/anthropic
 ```
 
-#### Pin model versions (recommended)
+### Pin model versions (recommended)
 
 ```bash
 export ANTHROPIC_DEFAULT_SONNET_MODEL="azure/claude-sonnet-4-6"
@@ -165,7 +115,7 @@ You will also have to map these model names to actual deployment names on Bifros
 </Frame>
 
 
-#### Start Claude Code
+### Start Claude Code
 ```
 claude
 ```
