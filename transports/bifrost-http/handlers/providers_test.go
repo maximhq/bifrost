@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -61,7 +62,7 @@ func providerHandlerForTest(keys []schemas.Key, filtered, unfiltered []string) *
 
 func boolPtr(v bool) *bool { return &v }
 
-func TestListModels_FailsClosedForUnknownKeys(t *testing.T) {
+func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -85,11 +86,16 @@ func TestListModels_FailsClosedForUnknownKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 0 {
-		t.Fatalf("expected total=0, got %d", resp.Total)
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2, got %d", resp.Total)
 	}
-	if len(resp.Models) != 0 {
-		t.Fatalf("expected no models, got %#v", resp.Models)
+	if len(resp.Models) != 2 {
+		t.Fatalf("expected all models to be returned, got %#v", resp.Models)
+	}
+	for _, model := range resp.Models {
+		if len(model.AccessibleByKeys) != 0 {
+			t.Fatalf("expected no accessible_by_keys annotations, got %#v", resp.Models)
+		}
 	}
 }
 
@@ -138,7 +144,7 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 	}
 }
 
-func TestListModels_UnfilteredStillHonorsKeys(t *testing.T) {
+func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -164,8 +170,14 @@ func TestListModels_UnfilteredStillHonorsKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0].Name != "gpt-4o-mini" {
-		t.Fatalf("expected only gpt-4o-mini, got %#v", resp.Models)
+	if resp.Total != 2 || len(resp.Models) != 2 {
+		t.Fatalf("expected both unfiltered models, got %#v", resp.Models)
+	}
+
+	for _, model := range resp.Models {
+		if len(model.AccessibleByKeys) != 0 {
+			t.Fatalf("expected no accessible_by_keys when unfiltered bypasses key filtering, got %#v", resp.Models)
+		}
 	}
 }
 
@@ -223,5 +235,70 @@ func TestListModelDetails_ErrorsWhenModelCatalogUnavailable(t *testing.T) {
 
 	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestListModelDetails_FailsClosedForUnknownKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+	)
+	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=missing")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 0 || len(resp.Models) != 0 {
+		t.Fatalf("expected no models, got %#v", resp.Models)
+	}
+}
+
+func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		[]schemas.Key{
+			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
+		},
+		[]string{"gpt-4o"},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+	)
+	h.inMemoryStore.ModelCatalog = &modelcatalog.ModelCatalog{}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-b&unfiltered=true")
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0].Name != "gpt-4o-mini" {
+		t.Fatalf("expected only gpt-4o-mini, got %#v", resp.Models)
+	}
+	if len(resp.Models[0].AccessibleByKeys) != 1 || resp.Models[0].AccessibleByKeys[0] != "key-b" {
+		t.Fatalf("expected exact accessible_by_keys for gpt-4o-mini, got %#v", resp.Models[0].AccessibleByKeys)
 	}
 }

@@ -670,7 +670,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		models, accessByModel := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
+		models, accessByModel := h.getLegacyFilteredModelsForProvider(provider, keyIDs, unfiltered)
 		models = filterModelNames(models, queryParam)
 		for _, model := range models {
 			entry := ModelResponse{
@@ -690,7 +690,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		}
 
 		for _, provider := range providers {
-			models, accessByModel := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
+			models, accessByModel := h.getLegacyFilteredModelsForProvider(provider, keyIDs, unfiltered)
 			models = filterModelNames(models, queryParam)
 			for _, model := range models {
 				entry := ModelResponse{
@@ -752,7 +752,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		models, accessByModel := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
+		models, accessByModel := h.getStrictFilteredModelsForProvider(provider, keyIDs, unfiltered)
 		models = filterModelNames(models, queryParam)
 		for _, model := range models {
 			details := ModelDetailsResponse{
@@ -778,7 +778,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		}
 
 		for _, provider := range providers {
-			models, accessByModel := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
+			models, accessByModel := h.getStrictFilteredModelsForProvider(provider, keyIDs, unfiltered)
 			models = filterModelNames(models, queryParam)
 			for _, model := range models {
 				details := ModelDetailsResponse{
@@ -913,7 +913,37 @@ func getValidKeyIDsForProvider(config *configstore.ProviderConfig, keyIDs []stri
 	return valid
 }
 
-func (h *ProviderHandler) getFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
+func (h *ProviderHandler) getLegacyFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
+	var models []string
+	if unfiltered {
+		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		return models, nil
+	}
+	models = h.modelsManager.GetModelsForProvider(provider)
+
+	if len(keyIDs) == 0 {
+		return models, nil
+	}
+
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil {
+		logger.Warn("Failed to get config for provider %s: %v", provider, err)
+		return models, nil
+	}
+	if config == nil {
+		logger.Warn("Failed to get config for provider %s: nil provider config", provider)
+		return models, nil
+	}
+
+	validKeyIDs := getValidKeyIDsForProvider(config, keyIDs)
+	if len(validKeyIDs) == 0 {
+		return models, nil
+	}
+
+	return filterModelsByKeysWithAccessMap(config, models, validKeyIDs)
+}
+
+func (h *ProviderHandler) getStrictFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
 	var models []string
 	if unfiltered {
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
