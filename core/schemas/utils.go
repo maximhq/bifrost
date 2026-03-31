@@ -787,6 +787,7 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	if original.InputAudio != nil {
 		copyAudio := ChatInputAudio{
 			Data: original.InputAudio.Data,
+			URL:  original.InputAudio.URL,
 		}
 		if original.InputAudio.Format != nil {
 			copyFormat := *original.InputAudio.Format
@@ -1127,6 +1128,7 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		copyAudio := &ResponsesInputMessageContentBlockAudio{
 			Format: original.Audio.Format,
 			Data:   original.Audio.Data,
+			URL:    original.Audio.URL,
 		}
 		copy.Audio = copyAudio
 	}

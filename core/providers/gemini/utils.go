@@ -1693,8 +1693,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							})
 						}
 					} else if block.InputAudio != nil {
+						audioData := block.InputAudio.Data
+						if audioData == "" && block.InputAudio.URL != "" {
+							var err error
+							audioData, err = providerUtils.DownloadURLToBase64(context.Background(), block.InputAudio.URL)
+							if err != nil {
+								continue
+							}
+						}
+
 						// Decode the audio data (handles both standard and URL-safe base64)
-						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
+						decodedData, err := decodeBase64StringToBytes(audioData)
 						if err != nil || len(decodedData) == 0 {
 							continue
 						}
