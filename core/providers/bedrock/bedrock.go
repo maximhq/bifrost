@@ -482,6 +482,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 					Message: schemas.ErrProviderNetworkError,
 					Error:   respErr,
 				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					Provider: providerName,
+				},
 			}
 		}
 		return nil, deployment, &schemas.BifrostError{
@@ -489,6 +492,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
 				Error:   respErr,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider: providerName,
 			},
 		}
 	}
