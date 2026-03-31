@@ -410,8 +410,6 @@ func isClaudeModel(model, deployment, provider string) bool {
 // extractAnthropicListModelsParams extracts query parameters for list models request
 func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-		// Set provider to Anthropic
-		listModelsReq.Provider = schemas.Anthropic
 
 		// Extract limit from query parameters
 		if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {

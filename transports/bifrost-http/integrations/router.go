@@ -845,7 +845,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.ListModelsRequest != nil:
 		// Determine provider: explicit header overrides request field; otherwise
 		// fall back to the request field and finally to list-all behavior.
-		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-list-models-provider")))
+		listModelsProvider := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-model-provider")))
 		switch listModelsProvider {
 		case "":
 			// keep any provider already set on the request
