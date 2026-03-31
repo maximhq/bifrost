@@ -200,6 +200,81 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
+func Test_createBedrockInvokeWithResponseStreamRouteConfig_Passthrough(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", handlerStore)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Test passthrough when provider is Bedrock and RawResponse is available
+	rawJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`
+	resp := &schemas.BifrostResponsesStreamResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Bedrock,
+			RawResponse: rawJSON,
+		},
+	}
+
+	_, result, err := route.StreamConfig.ResponsesStreamResponseConverter(ctx, resp)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Should return BedrockStreamEvent with InvokeModelRawChunk containing the raw JSON
+	bedrockEvent, ok := result.(*bedrock.BedrockStreamEvent)
+	require.True(t, ok, "Expected *bedrock.BedrockStreamEvent, got %T", result)
+	assert.Equal(t, []byte(rawJSON), bedrockEvent.InvokeModelRawChunk)
+}
+
+func Test_createBedrockInvokeWithResponseStreamRouteConfig_FallbackConversion(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", handlerStore)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Test fallback to conversion when provider is not Bedrock (cross-provider routing)
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:       schemas.Anthropic, // Different provider
+			ModelRequested: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		},
+	}
+
+	_, result, err := route.StreamConfig.ResponsesStreamResponseConverter(ctx, resp)
+	require.NoError(t, err)
+	// Should use conversion path, not passthrough
+	// The Created event produces a message_start event
+	require.NotNil(t, result)
+}
+
+func Test_createBedrockConverseStreamRouteConfig_Passthrough(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockConverseStreamRouteConfig("/bedrock", handlerStore)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Test passthrough when provider is Bedrock and RawResponse is available
+	// This is native Bedrock Converse stream format (not Anthropic SSE)
+	rawJSON := `{"contentBlockIndex":0,"delta":{"text":"Hello"}}`
+	resp := &schemas.BifrostResponsesStreamResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Bedrock,
+			RawResponse: rawJSON,
+		},
+	}
+
+	_, result, err := route.StreamConfig.ResponsesStreamResponseConverter(ctx, resp)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Should return BedrockStreamEvent parsed from raw JSON
+	bedrockEvent, ok := result.(*bedrock.BedrockStreamEvent)
+	require.True(t, ok, "Expected *bedrock.BedrockStreamEvent, got %T", result)
+	// Verify it was parsed correctly
+	assert.NotNil(t, bedrockEvent.ContentBlockIndex)
+	assert.Equal(t, 0, *bedrockEvent.ContentBlockIndex)
+}
+
 func Test_createBedrockRerankRouteConfig(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)

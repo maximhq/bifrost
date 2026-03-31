@@ -1,1 +1,2 @@
 - fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
+- fix: Bedrock integration - add passthrough for streaming endpoints to avoid conversion bugs [@tefimov](https://github.com/tefimov)
