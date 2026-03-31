@@ -5,6 +5,7 @@ import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
+import { LoggingDisabledView } from "@/components/loggingDisabledView";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
+	useGetCoreConfigQuery,
 	useDeleteLogsMutation,
 	useGetAvailableFilterDataQuery,
 	useLazyGetLogsHistogramQuery,
@@ -46,6 +48,8 @@ export default function LogsPage() {
 	const [fetchingHistogram, setFetchingHistogram] = useState(false); // on histogram fetch
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
+	const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
+	const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
 	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
 
@@ -54,6 +58,7 @@ export default function LogsPage() {
 	const [triggerGetStats] = useLazyGetLogsStatsQuery();
 	const [triggerGetHistogram] = useLazyGetLogsHistogramQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
+	const { data: bifrostConfig, isLoading: isCoreConfigLoading } = useGetCoreConfigQuery({ fromDB: true });
 
 	const [isChartOpen, setIsChartOpen] = useState(true);
 	const [triggerGetLogById] = useLazyGetLogByIdQuery();
@@ -107,7 +112,7 @@ export default function LogsPage() {
 	// Derive selectedLog: find in current logs array, or fetch by ID from API
 	const selectedLogId = urlState.selected_log || null;
 	const selectedLogFromData = useMemo(
-		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
+		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
 		[selectedLogId, logs],
 	);
 
@@ -198,21 +203,31 @@ export default function LogsPage() {
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
 			missing_cost_only: urlState.missing_cost_only,
-			metadata_filters: urlState.metadata_filters ? (() => {
-				try {
-					return JSON.parse(urlState.metadata_filters);
-				} catch {
-					return undefined;
-				}
-			})() : undefined,
+			metadata_filters: urlState.metadata_filters
+				? (() => {
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
+				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
-			urlState.providers, urlState.models, urlState.status, urlState.objects,
-			urlState.selected_key_ids, urlState.virtual_key_ids, urlState.routing_rule_ids,
-			urlState.routing_engine_used, urlState.content_search,
-			urlState.start_time, urlState.end_time,
-			urlState.missing_cost_only, urlState.metadata_filters,
+			urlState.providers,
+			urlState.models,
+			urlState.status,
+			urlState.objects,
+			urlState.selected_key_ids,
+			urlState.virtual_key_ids,
+			urlState.routing_rule_ids,
+			urlState.routing_engine_used,
+			urlState.content_search,
+			urlState.start_time,
+			urlState.end_time,
+			urlState.missing_cost_only,
+			urlState.metadata_filters,
 		],
 	);
 
@@ -227,6 +242,71 @@ export default function LogsPage() {
 	);
 
 	const liveEnabled = urlState.live_enabled;
+
+	const reloadLogsState = useCallback(
+		async (nextOffset: number, deletedIds: Set<string> = new Set()) => {
+			const nextPagination = {
+				...pagination,
+				offset: nextOffset,
+			};
+
+			setFetchingLogs(true);
+			setFetchingStats(true);
+			setFetchingHistogram(true);
+			setError(null);
+
+			try {
+				const [logsResult, statsResult, histogramResult] = await Promise.all([
+					triggerGetLogs({ filters, pagination: nextPagination }),
+					triggerGetStats({ filters }),
+					triggerGetHistogram({ filters }),
+				]);
+
+				if (logsResult.error) {
+					throw logsResult.error;
+				}
+
+				if (logsResult.data) {
+					setLogs(logsResult.data.logs || []);
+					setTotalItems(logsResult.data.stats.total_requests);
+					if (!logsResult.data.has_logs) {
+						setShowEmptyState(true);
+					}
+				}
+
+				if (statsResult.data) {
+					setStats(statsResult.data);
+				}
+
+				if (histogramResult.data) {
+					setHistogram(histogramResult.data);
+				}
+
+				if (statsResult.error) {
+					setStats(null);
+				}
+
+				if (histogramResult.error) {
+					setHistogram(null);
+				}
+
+				if (deletedIds.size > 0 && urlState.selected_log && deletedIds.has(urlState.selected_log)) {
+					setUrlState({ selected_log: "", offset: nextOffset });
+				} else if (nextOffset !== pagination.offset) {
+					setUrlState({ offset: nextOffset });
+				}
+			} catch (reloadError) {
+				setError(getErrorMessage(reloadError));
+				setLogs([]);
+				setTotalItems(0);
+			} finally {
+				setFetchingLogs(false);
+				setFetchingStats(false);
+				setFetchingHistogram(false);
+			}
+		},
+		[filters, pagination, setUrlState, triggerGetHistogram, triggerGetLogs, triggerGetStats, urlState.selected_log],
+	);
 
 	// Helper to update filters in URL
 	const setFilters = useCallback(
@@ -309,18 +389,63 @@ export default function LogsPage() {
 		async (log: LogEntry) => {
 			try {
 				await deleteLogs({ ids: [log.id] }).unwrap();
-				setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
-				setTotalItems((prev) => prev - 1);
-				// Clear selected log if it was the deleted one
-				if (urlState.selected_log === log.id) {
-					setUrlState({ selected_log: "" });
-				}
+				const nextTotal = Math.max(0, totalItems - 1);
+				const lastValidOffset = nextTotal > 0 ? Math.floor((nextTotal - 1) / pagination.limit) * pagination.limit : 0;
+				const nextOffset = Math.min(pagination.offset, lastValidOffset);
+				await reloadLogsState(nextOffset, new Set([log.id]));
 			} catch (error) {
 				setError(getErrorMessage(error));
 			}
 		},
-		[deleteLogs, urlState.selected_log, setUrlState],
+		[deleteLogs, pagination.limit, pagination.offset, reloadLogsState, totalItems],
 	);
+
+	const toggleLogSelection = useCallback((logId: string) => {
+		setSelectedLogIds((previous) => {
+			const next = new Set(previous);
+			if (next.has(logId)) {
+				next.delete(logId);
+			} else {
+				next.add(logId);
+			}
+			return next;
+		});
+	}, []);
+
+	const toggleSelectAllLogs = useCallback(() => {
+		setSelectedLogIds((previous) => {
+			const visibleLogIds = logs.map((log) => log.id);
+			if (visibleLogIds.length === 0) {
+				return new Set();
+			}
+
+			const allVisibleSelected = visibleLogIds.every((logId) => previous.has(logId));
+			if (allVisibleSelected) {
+				return new Set();
+			}
+
+			return new Set(visibleLogIds);
+		});
+	}, [logs]);
+
+	const handleBulkDelete = useCallback(async () => {
+		if (isBulkDeleting || selectedLogIds.size === 0) return;
+
+		setIsBulkDeleting(true);
+		try {
+			const ids = Array.from(selectedLogIds);
+			await deleteLogs({ ids }).unwrap();
+			const nextTotal = Math.max(0, totalItems - ids.length);
+			const lastValidOffset = nextTotal > 0 ? Math.floor((nextTotal - 1) / pagination.limit) * pagination.limit : 0;
+			const nextOffset = Math.min(pagination.offset, lastValidOffset);
+			await reloadLogsState(nextOffset, new Set(ids));
+			setSelectedLogIds(new Set());
+		} catch (deleteError) {
+			setError(getErrorMessage(deleteError));
+		} finally {
+			setIsBulkDeleting(false);
+		}
+	}, [deleteLogs, isBulkDeleting, pagination.limit, pagination.offset, reloadLogsState, selectedLogIds, totalItems]);
 
 	const handleLogMessage = useCallback((log: LogEntry, operation: "create" | "update") => {
 		const { logs, filters, pagination, showEmptyState, liveEnabled } = latest.current;
@@ -567,13 +692,12 @@ export default function LogsPage() {
 			const result = await triggerGetStats({ filters });
 
 			if (result.error) {
-				// Don't show error for stats failure, just log it
-				console.error("Failed to fetch stats:", result.error);
+				setStats(null);
 			} else if (result.data) {
 				setStats(result.data);
 			}
-		} catch (error) {
-			console.error("Failed to fetch stats:", error);
+		} catch {
+			setStats(null);
 		} finally {
 			setFetchingStats(false);
 		}
@@ -586,13 +710,12 @@ export default function LogsPage() {
 			const result = await triggerGetHistogram({ filters });
 
 			if (result.error) {
-				// Don't show error for histogram failure, just log it
-				console.error("Failed to fetch histogram:", result.error);
+				setHistogram(null);
 			} else if (result.data) {
 				setHistogram(result.data);
 			}
-		} catch (error) {
-			console.error("Failed to fetch histogram:", error);
+		} catch {
+			setHistogram(null);
 		} finally {
 			setFetchingHistogram(false);
 		}
@@ -770,13 +893,31 @@ export default function LogsPage() {
 		return Object.keys(filterData.metadata_keys).sort();
 	}, [filterData?.metadata_keys]);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
+	const isAllLogsSelected = selectedLogIds.size === logs.length && logs.length > 0;
+
+	useEffect(() => {
+		const visibleLogIDs = new Set(logs.map((log) => log.id));
+		setSelectedLogIds((previous) => new Set(Array.from(previous).filter((id) => visibleLogIDs.has(id))));
+	}, [logs]);
+
+	useEffect(() => {
+		setSelectedLogIds(new Set());
+	}, [filters, pagination.offset, pagination.limit, pagination.sort_by, pagination.order]);
+
+	const columns = useMemo(
+		() =>
+			createColumns(handleDelete, hasDeleteAccess, metadataKeys, {
+				selectedIds: selectedLogIds,
+				isAllSelected: isAllLogsSelected,
+				onToggleAll: toggleSelectAllLogs,
+				onToggleOne: toggleLogSelection,
+				isLogSelected: (logId: string) => selectedLogIds.has(logId),
+			}),
+		[handleDelete, hasDeleteAccess, metadataKeys, selectedLogIds, isAllLogsSelected, toggleSelectAllLogs, toggleLogSelection],
+	);
 
 	// Navigation for log detail sheet
-	const selectedLogIndex = useMemo(
-		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
-		[selectedLogId, logs],
-	);
+	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -832,8 +973,10 @@ export default function LogsPage() {
 
 	return (
 		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
-			{initialLoading ? (
+			{initialLoading || isCoreConfigLoading ? (
 				<FullPageLoader />
+			) : showEmptyState && bifrostConfig?.client_config && !bifrostConfig.client_config.enable_logging ? (
+				<LoggingDisabledView />
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
@@ -844,7 +987,7 @@ export default function LogsPage() {
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
-										<div className="min-w-0 w-full">
+										<div className="w-full min-w-0">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
@@ -887,7 +1030,7 @@ export default function LogsPage() {
 								onFiltersChange={setFilters}
 								onPaginationChange={setPagination}
 								onRowClick={(row, columnId) => {
-									if (columnId === "actions") return;
+									if (columnId === "actions" || columnId === "select") return;
 									setUrlState({ selected_log: row.id }, { history: "replace" });
 								}}
 								isSocketConnected={isSocketConnected}
@@ -896,6 +1039,10 @@ export default function LogsPage() {
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
 								metadataKeys={metadataKeys}
+								selectedCount={selectedLogIds.size}
+								canBulkDelete={hasDeleteAccess}
+								onBulkDelete={handleBulkDelete}
+								isBulkDeleting={isBulkDeleting}
 							/>
 						</div>
 					</div>

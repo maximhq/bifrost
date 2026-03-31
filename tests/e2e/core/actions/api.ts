@@ -109,7 +109,9 @@ export const virtualKeysApi = {
    * Delete a virtual key
    */
   async delete(request: APIRequestContext, id: string) {
-    const response = await request.delete(`${API_BASE}/governance/virtual-keys/${id}`)
+    const response = await request.delete(`${API_BASE}/governance/virtual-keys`, {
+      data: { ids: [id] },
+    })
     return response.ok()
   },
 }

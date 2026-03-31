@@ -25,13 +25,14 @@ import { formatCurrency } from "@/lib/utils/governance"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard"
 import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
 import VirtualKeySheet from "./virtualKeySheet"
 
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration
+const setHasSameValues = (left: Set<string>, right: Set<string>) => left.size === right.size && Array.from(left).every((value) => right.has(value))
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -119,11 +120,30 @@ export default function VirtualKeysTable({
 	};
 
 	const handleBulkDelete = async () => {
+		if (isBulkDeleting || selectedIds.size === 0) return;
+
 		setIsBulkDeleting(true);
 		try {
 			const keysToDelete = Array.from(selectedIds);
-			await bulkDeleteVirtualKeys(keysToDelete).unwrap();
-			toast.success(`${keysToDelete.length} virtual key(s) deleted successfully`);
+			const response = await bulkDeleteVirtualKeys(keysToDelete).unwrap();
+			const failedIDs = new Set(response.failed_ids ?? []);
+			const succeededCount = response.deleted_count ?? 0;
+
+			if (succeededCount > 0) {
+				toast.success(`${succeededCount} virtual key(s) deleted successfully`);
+			}
+
+			if (failedIDs.size > 0) {
+				const failedCount = failedIDs.size;
+				toast.error(
+					succeededCount > 0
+						? `${failedCount} virtual key(s) could not be deleted.`
+						: response.message || "Failed to delete the selected virtual keys.",
+				);
+				setSelectedIds(new Set(keysToDelete.filter((id) => failedIDs.has(id))));
+				return;
+			}
+
 			setSelectedIds(new Set());
 			setShowBulkDeleteDialog(false);
 		} catch (error) {
@@ -132,6 +152,14 @@ export default function VirtualKeysTable({
 			setIsBulkDeleting(false);
 		}
 	};
+
+	useEffect(() => {
+		const visibleIDs = new Set(virtualKeys.map((vk) => vk.id));
+		setSelectedIds((previous) => {
+			const next = new Set(Array.from(previous).filter((id) => visibleIDs.has(id)));
+			return setHasSameValues(previous, next) ? previous : next;
+		});
+	}, [virtualKeys]);
 
 	const handleAddVirtualKey = () => {
 		setEditingVirtualKeyId(null);
@@ -229,12 +257,18 @@ export default function VirtualKeysTable({
 						<span className="text-sm font-medium">
 							{selectedIds.size} key{selectedIds.size !== 1 ? 's' : ''} selected
 						</span>
-						<AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
+						<AlertDialog
+							open={showBulkDeleteDialog}
+							onOpenChange={(open) => {
+								if (!open && isBulkDeleting) return;
+								setShowBulkDeleteDialog(open);
+							}}
+						>
 							<AlertDialogTrigger asChild>
 								<Button 
 									variant="destructive" 
 									size="sm" 
-									disabled={!hasDeleteAccess}
+									disabled={!hasDeleteAccess || isBulkDeleting}
 									data-testid="bulk-delete-btn"
 								>
 									<Trash2 className="h-4 w-4 mr-2" />
@@ -249,9 +283,12 @@ export default function VirtualKeysTable({
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>
-									<AlertDialogCancel>Cancel</AlertDialogCancel>
+									<AlertDialogCancel disabled={isBulkDeleting}>Cancel</AlertDialogCancel>
 									<AlertDialogAction 
-										onClick={handleBulkDelete} 
+										onClick={(e) => {
+											e.preventDefault();
+											void handleBulkDelete();
+										}}
 										disabled={isBulkDeleting}
 										data-testid="confirm-bulk-delete-btn"
 									>

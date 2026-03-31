@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -24,7 +25,7 @@ import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Input } from "@/components/ui/input";
 import { ChevronLeft, ChevronRight, Edit, Plus, Search, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
 import { CustomersEmptyState } from "./customersEmptyState";
@@ -33,6 +34,8 @@ import { CustomersEmptyState } from "./customersEmptyState";
 const formatResetDuration = (duration: string) => {
 	return resetDurationLabels[duration] || duration;
 };
+
+const setHasSameValues = (left: Set<string>, right: Set<string>) => left.size === right.size && Array.from(left).every((value) => right.has(value));
 
 interface CustomersTableProps {
 	customers: Customer[];
@@ -50,6 +53,9 @@ interface CustomersTableProps {
 export default function CustomersTable({ customers, totalCount, teams, virtualKeys, search, debouncedSearch, onSearchChange, offset, limit, onOffsetChange }: CustomersTableProps) {
 	const [showCustomerDialog, setShowCustomerDialog] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+	const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+	const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -63,6 +69,65 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 			toast.success("Customer deleted successfully");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const toggleRowSelection = (customerId: string) => {
+		setSelectedIds((previous) => {
+			const next = new Set(previous);
+			if (next.has(customerId)) {
+				next.delete(customerId);
+			} else {
+				next.add(customerId);
+			}
+			return next;
+		});
+	};
+
+	const toggleSelectAll = () => {
+		if (selectedIds.size === customers.length && customers.length > 0) {
+			setSelectedIds(new Set());
+			return;
+		}
+		setSelectedIds(new Set(customers.map((customer) => customer.id)));
+	};
+
+	const handleBulkDelete = async () => {
+		if (isBulkDeleting || selectedIds.size === 0) return;
+
+		setIsBulkDeleting(true);
+		try {
+			const customerIds = Array.from(selectedIds);
+			let deletedCount = 0;
+			const failedIds: string[] = [];
+
+			for (const customerId of customerIds) {
+				try {
+					await deleteCustomer(customerId).unwrap();
+					deletedCount += 1;
+				} catch {
+					failedIds.push(customerId);
+				}
+			}
+
+			if (deletedCount > 0) {
+				toast.success(`${deletedCount} customer(s) deleted successfully`);
+			}
+
+			if (failedIds.length > 0) {
+				toast.error(
+					deletedCount > 0
+						? `${failedIds.length} customer(s) could not be deleted.`
+						: "Failed to delete the selected customers.",
+				);
+				setSelectedIds(new Set(failedIds));
+				return;
+			}
+
+			setSelectedIds(new Set());
+			setShowBulkDeleteDialog(false);
+		} finally {
+			setIsBulkDeleting(false);
 		}
 	};
 
@@ -90,6 +155,15 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 	};
 
 	const hasActiveFilters = debouncedSearch;
+	const isAllSelected = selectedIds.size === customers.length && customers.length > 0;
+
+	useEffect(() => {
+		const visibleIDs = new Set(customers.map((customer) => customer.id));
+		setSelectedIds((previous) => {
+			const next = new Set(Array.from(previous).filter((id) => visibleIDs.has(id)));
+			return setHasSameValues(previous, next) ? previous : next;
+		});
+	}, [customers]);
 
 	// True empty state: no customers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
@@ -124,6 +198,55 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 						</Button>
 					</div>
 
+					{selectedIds.size > 0 && (
+						<div className="flex items-center justify-between rounded-md border border-border bg-secondary px-4 py-3">
+							<span className="text-sm font-medium">
+								{selectedIds.size} customer{selectedIds.size !== 1 ? "s" : ""} selected
+							</span>
+							<AlertDialog
+								open={showBulkDeleteDialog}
+								onOpenChange={(open) => {
+									if (!open && isBulkDeleting) return;
+									setShowBulkDeleteDialog(open);
+								}}
+							>
+								<AlertDialogTrigger asChild>
+									<Button
+										variant="destructive"
+										size="sm"
+										disabled={!hasDeleteAccess || isBulkDeleting}
+										data-testid="customers-bulk-delete-btn"
+									>
+										<Trash2 className="mr-2 h-4 w-4" />
+										Delete
+									</Button>
+								</AlertDialogTrigger>
+								<AlertDialogContent>
+									<AlertDialogHeader>
+										<AlertDialogTitle>Delete Customers</AlertDialogTitle>
+										<AlertDialogDescription>
+											Are you sure you want to delete {selectedIds.size} customer{selectedIds.size !== 1 ? "s" : ""}? This action cannot be undone.
+										</AlertDialogDescription>
+									</AlertDialogHeader>
+									<AlertDialogFooter>
+										<AlertDialogCancel disabled={isBulkDeleting}>Cancel</AlertDialogCancel>
+										<AlertDialogAction
+											onClick={(event) => {
+												event.preventDefault();
+												void handleBulkDelete();
+											}}
+											disabled={isBulkDeleting}
+											className="bg-red-600 hover:bg-red-700"
+											data-testid="customers-confirm-bulk-delete-btn"
+										>
+											{isBulkDeleting ? "Deleting..." : "Delete"}
+										</AlertDialogAction>
+									</AlertDialogFooter>
+								</AlertDialogContent>
+							</AlertDialog>
+						</div>
+					)}
+
 					<div className="flex items-center gap-3">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
@@ -142,6 +265,14 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 						<Table>
 							<TableHeader>
 								<TableRow>
+									<TableHead className="w-12">
+										<Checkbox
+											checked={isAllSelected}
+											onCheckedChange={toggleSelectAll}
+											aria-label="Select all customers"
+											data-testid="customers-select-all-checkbox"
+										/>
+									</TableHead>
 									<TableHead>Name</TableHead>
 									<TableHead>Teams</TableHead>
 									<TableHead>Budget</TableHead>
@@ -153,7 +284,7 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 							<TableBody>
 								{customers.length === 0 ? (
 									<TableRow>
-										<TableCell colSpan={6} className="h-24 text-center">
+										<TableCell colSpan={7} className="h-24 text-center">
 											<span className="text-muted-foreground text-sm">No matching customers found.</span>
 										</TableCell>
 									</TableRow>
@@ -199,6 +330,14 @@ export default function CustomersTable({ customers, totalCount, teams, virtualKe
 											data-testid={`customer-row-${customer.name}`}
 											className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
 										>
+											<TableCell>
+												<Checkbox
+													checked={selectedIds.has(customer.id)}
+													onCheckedChange={() => toggleRowSelection(customer.id)}
+													aria-label={`Select customer ${customer.name}`}
+													data-testid={`customer-checkbox-${customer.name}`}
+												/>
+											</TableCell>
 											<TableCell className="max-w-[200px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-medium">{customer.name}</span>

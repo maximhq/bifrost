@@ -1,13 +1,32 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
+import {
+	buildPinStyle,
+	ColumnConfigDropdown,
+	DraggableColumnHeader,
+	PIN_SHADOW_LEFT,
+	PIN_SHADOW_RIGHT,
+	useColumnConfig,
+	useHeaderCellRefs,
+	usePinOffsets,
+} from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pause, RefreshCw, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
@@ -21,7 +40,6 @@ const COLUMN_LABELS: Record<string, string> = {
 	tokens: "Tokens",
 	cost: "Cost",
 };
-
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -39,6 +57,10 @@ interface DataTableProps {
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
 	metadataKeys?: string[];
+	selectedCount?: number;
+	canBulkDelete?: boolean;
+	onBulkDelete?: () => Promise<void>;
+	isBulkDeleting?: boolean;
 }
 
 export function LogsDataTable({
@@ -57,8 +79,13 @@ export function LogsDataTable({
 	fetchLogs,
 	fetchStats,
 	metadataKeys = [],
+	selectedCount = 0,
+	canBulkDelete = false,
+	onBulkDelete,
+	isBulkDeleting = false,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
+	const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
 
@@ -122,6 +149,12 @@ export function LogsDataTable({
 		}
 	}, [calculatedPageSize]);
 
+	useEffect(() => {
+		if (selectedCount === 0 && showBulkDeleteDialog) {
+			setShowBulkDeleteDialog(false);
+		}
+	}, [selectedCount, showBulkDeleteDialog]);
+
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
 		const newSorting = typeof updaterOrValue === "function" ? updaterOrValue(sorting) : updaterOrValue;
 		setSorting(newSorting);
@@ -178,17 +211,61 @@ export function LogsDataTable({
 						fetchStats={fetchStats}
 					/>
 				</div>
-				<ColumnConfigDropdown
-					entries={entries}
-					labels={columnLabels}
-					onToggleVisibility={toggleVisibility}
-					onReset={reset}
-				/>
+				<ColumnConfigDropdown entries={entries} labels={columnLabels} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
+
+			{selectedCount > 0 && (
+				<div className="border-border bg-secondary flex items-center justify-between rounded-md border px-4 py-3">
+					<span className="text-sm font-medium">
+						{selectedCount} log{selectedCount !== 1 ? "s" : ""} selected
+					</span>
+					<AlertDialog
+						open={showBulkDeleteDialog}
+						onOpenChange={(open) => {
+							if (!open && isBulkDeleting) return;
+							setShowBulkDeleteDialog(open);
+						}}
+					>
+						<Button
+							variant="destructive"
+							size="sm"
+							onClick={() => setShowBulkDeleteDialog(true)}
+							disabled={!canBulkDelete || isBulkDeleting}
+							data-testid="logs-bulk-delete-btn"
+						>
+							<Trash2 className="mr-2 h-4 w-4" />
+							Delete
+						</Button>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>Delete Logs</AlertDialogTitle>
+								<AlertDialogDescription>
+									Are you sure you want to delete {selectedCount} log{selectedCount !== 1 ? "s" : ""}? This action cannot be undone.
+								</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel disabled={isBulkDeleting}>Cancel</AlertDialogCancel>
+								<AlertDialogAction
+									onClick={(event) => {
+										event.preventDefault();
+										setShowBulkDeleteDialog(false);
+										void onBulkDelete?.();
+									}}
+									disabled={!canBulkDelete || isBulkDeleting}
+									className="bg-destructive hover:bg-destructive/90"
+									data-testid="logs-confirm-bulk-delete-btn"
+								>
+									{isBulkDeleting ? "Deleting..." : "Delete"}
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
+				</div>
+			)}
 
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
+					<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] px-2 dark:bg-[#27272a] [&_tr]:border-b")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
 								key={headerGroup.id}
@@ -250,12 +327,15 @@ export function LogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
 											{row.getVisibleCells().map((cell) => {
 												const pinned = cell.column.getIsPinned();
 												return (
 													<TableCell
-														onClick={() => onRowClick?.(row.original, cell.column.id)}
+														onClick={() => {
+															if (cell.column.id === "select") return;
+															onRowClick?.(row.original, cell.column.id);
+														}}
 														key={cell.id}
 														style={buildPinStyle(cell.column, pinOffsets)}
 														className={cn(
@@ -291,7 +371,14 @@ export function LogsDataTable({
 				</div>
 
 				<div className="flex items-center gap-2">
-					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} data-testid="prev-page" aria-label="Previous page">
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => goToPage(currentPage - 1)}
+						disabled={currentPage <= 1}
+						data-testid="prev-page"
+						aria-label="Previous page"
+					>
 						<ChevronLeft className="size-3" />
 					</Button>
 

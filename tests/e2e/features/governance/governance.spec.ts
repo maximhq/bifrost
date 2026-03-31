@@ -102,6 +102,25 @@ test.describe('Governance - Teams', () => {
     exists = await governancePage.teamExists(teamData.name)
     expect(exists).toBe(false)
   })
+
+  test('should delete multiple teams at once', async ({ governancePage }) => {
+    const teamNames = [
+      `E2E Bulk Team A ${Date.now()}`,
+      `E2E Bulk Team B ${Date.now() + 1}`,
+    ]
+
+    for (const name of teamNames) {
+      createdTeams.push(name)
+      await governancePage.createTeam(createTeamData({ name }))
+    }
+
+    await governancePage.deleteTeams(teamNames)
+    for (const name of teamNames) {
+      const idx = createdTeams.indexOf(name)
+      if (idx >= 0) createdTeams.splice(idx, 1)
+      await expect.poll(() => governancePage.teamExists(name), { timeout: 10000 }).toBe(false)
+    }
+  })
 })
 
 test.describe('Governance - Customers', () => {
@@ -169,5 +188,24 @@ test.describe('Governance - Customers', () => {
 
     exists = await governancePage.customerExists(customerData.name)
     expect(exists).toBe(false)
+  })
+
+  test('should delete multiple customers at once', async ({ governancePage }) => {
+    const customerNames = [
+      `E2E Bulk Customer A ${Date.now()}`,
+      `E2E Bulk Customer B ${Date.now() + 1}`,
+    ]
+
+    for (const name of customerNames) {
+      createdCustomers.push(name)
+      await governancePage.createCustomer(createCustomerData({ name }))
+    }
+
+    await governancePage.deleteCustomers(customerNames)
+    for (const name of customerNames) {
+      const idx = createdCustomers.indexOf(name)
+      if (idx >= 0) createdCustomers.splice(idx, 1)
+      await expect.poll(() => governancePage.customerExists(name), { timeout: 10000 }).toBe(false)
+    }
   })
 })

@@ -338,12 +338,15 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Delete logs by their IDs
-		deleteLogs: builder.mutation<void, { ids: string[] }>({
-			query: ({ ids }) => ({
+		// Delete logs by their IDs or by current filters
+		deleteLogs: builder.mutation<{ message: string; deleted_count: number }, { ids?: string[]; filters?: LogFilters }>({
+			query: ({ ids, filters }) => ({
 				url: "/logs",
 				method: "DELETE",
-				body: { ids },
+				body: {
+					...(ids ? { ids } : {}),
+					...(filters ? { filters } : {}),
+				},
 			}),
 			invalidatesTags: ["Logs"],
 		}),

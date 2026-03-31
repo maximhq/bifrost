@@ -287,6 +287,33 @@ export class RoutingRulesPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
+  async deleteRoutingRules(names: string[]): Promise<void> {
+    if (names.length === 0) return
+
+    await this.dismissToasts()
+    for (const name of names) {
+      const row = this.getRuleRow(name)
+      await row.scrollIntoViewIfNeeded()
+      await row.getByTestId(`routing-rule-checkbox-${name}`).click()
+    }
+
+    const bulkDeleteBtn = this.page.getByTestId('routing-rules-bulk-delete-btn')
+    await bulkDeleteBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await bulkDeleteBtn.click()
+
+    const confirmBtn = this.page.getByTestId('routing-rules-confirm-bulk-delete-btn')
+    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await confirmBtn.click()
+
+    await this.waitForSuccessToast('delete routing rules')
+    await this.dismissToasts()
+    await waitForNetworkIdle(this.page)
+
+    for (const name of names) {
+      await expect.poll(() => this.ruleExists(name), { timeout: 10000 }).toBe(false)
+    }
+  }
+
   /**
    * Toggle rule enabled state
    */

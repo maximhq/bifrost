@@ -270,7 +270,6 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
-	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 	r.DELETE("/api/governance/virtual-keys", lib.ChainMiddlewares(h.bulkDeleteVirtualKeys, middlewares...))
 
 	// Team CRUD operations
@@ -713,33 +712,33 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					vk.Budget = nil
 				}
 			} else if vk.BudgetID != nil {
-			// Update existing budget
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
-				return err
-			}
-
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			vk.Budget = &budget
+
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				vk.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -751,23 +750,23 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			calAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: calAligned,
-				LastReset:       budgetLastReset(calAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			vk.BudgetID = &budget.ID
-			vk.Budget = &budget
+				calAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: calAligned,
+					LastReset:       budgetLastReset(calAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				vk.BudgetID = &budget.ID
+				vk.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -876,25 +875,25 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						AllowedModels: pc.AllowedModels,
 						Keys:          keys,
 					}
-				// Create budget for provider config if provided
-				if pc.Budget != nil {
-					pcCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
-					budget := configstoreTables.TableBudget{
-						ID:              uuid.NewString(),
-						MaxLimit:        *pc.Budget.MaxLimit,
-						ResetDuration:   *pc.Budget.ResetDuration,
-						CalendarAligned: pcCalAligned,
-						LastReset:       budgetLastReset(pcCalAligned, *pc.Budget.ResetDuration),
-						CurrentUsage:    0,
+					// Create budget for provider config if provided
+					if pc.Budget != nil {
+						pcCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
+						budget := configstoreTables.TableBudget{
+							ID:              uuid.NewString(),
+							MaxLimit:        *pc.Budget.MaxLimit,
+							ResetDuration:   *pc.Budget.ResetDuration,
+							CalendarAligned: pcCalAligned,
+							LastReset:       budgetLastReset(pcCalAligned, *pc.Budget.ResetDuration),
+							CurrentUsage:    0,
+						}
+						if err := validateBudget(&budget); err != nil {
+							return err
+						}
+						if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+							return err
+						}
+						providerConfig.BudgetID = &budget.ID
 					}
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					providerConfig.BudgetID = &budget.ID
-				}
 					// Create rate limit for provider config if provided
 					if pc.RateLimit != nil {
 						rateLimit := configstoreTables.TableRateLimit{
@@ -951,31 +950,31 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 								existing.Budget = nil
 							}
 						} else if existing.BudgetID != nil {
-						// Update existing budget
-						budget := configstoreTables.TableBudget{}
-						if err := tx.First(&budget, "id = ?", *existing.BudgetID).Error; err != nil {
-							return err
-						}
-						if pc.Budget.MaxLimit != nil {
-							budget.MaxLimit = *pc.Budget.MaxLimit
-						}
-						if pc.Budget.ResetDuration != nil {
-							budget.ResetDuration = *pc.Budget.ResetDuration
-						}
-						if pc.Budget.CalendarAligned != nil {
-							wasCalendarAligned := budget.CalendarAligned
-							budget.CalendarAligned = *pc.Budget.CalendarAligned
-							if *pc.Budget.CalendarAligned && !wasCalendarAligned {
-								budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-								budget.CurrentUsage = 0
+							// Update existing budget
+							budget := configstoreTables.TableBudget{}
+							if err := tx.First(&budget, "id = ?", *existing.BudgetID).Error; err != nil {
+								return err
 							}
-						}
-						if err := validateBudget(&budget); err != nil {
-							return err
-						}
-						if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-							return err
-						}
+							if pc.Budget.MaxLimit != nil {
+								budget.MaxLimit = *pc.Budget.MaxLimit
+							}
+							if pc.Budget.ResetDuration != nil {
+								budget.ResetDuration = *pc.Budget.ResetDuration
+							}
+							if pc.Budget.CalendarAligned != nil {
+								wasCalendarAligned := budget.CalendarAligned
+								budget.CalendarAligned = *pc.Budget.CalendarAligned
+								if *pc.Budget.CalendarAligned && !wasCalendarAligned {
+									budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+									budget.CurrentUsage = 0
+								}
+							}
+							if err := validateBudget(&budget); err != nil {
+								return err
+							}
+							if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+								return err
+							}
 						} else {
 							// Create new budget for existing provider config
 							if pc.Budget.MaxLimit == nil || pc.Budget.ResetDuration == nil {
@@ -987,22 +986,22 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							if _, err := configstoreTables.ParseDuration(*pc.Budget.ResetDuration); err != nil {
 								return fmt.Errorf("invalid provider config budget reset duration format: %s", *pc.Budget.ResetDuration)
 							}
-						pcExistCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
-						budget := configstoreTables.TableBudget{
-							ID:              uuid.NewString(),
-							MaxLimit:        *pc.Budget.MaxLimit,
-							ResetDuration:   *pc.Budget.ResetDuration,
-							CalendarAligned: pcExistCalAligned,
-							LastReset:       budgetLastReset(pcExistCalAligned, *pc.Budget.ResetDuration),
-							CurrentUsage:    0,
-						}
-						if err := validateBudget(&budget); err != nil {
-							return err
-						}
-						if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-							return err
-						}
-						existing.BudgetID = &budget.ID
+							pcExistCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
+							budget := configstoreTables.TableBudget{
+								ID:              uuid.NewString(),
+								MaxLimit:        *pc.Budget.MaxLimit,
+								ResetDuration:   *pc.Budget.ResetDuration,
+								CalendarAligned: pcExistCalAligned,
+								LastReset:       budgetLastReset(pcExistCalAligned, *pc.Budget.ResetDuration),
+								CurrentUsage:    0,
+							}
+							if err := validateBudget(&budget); err != nil {
+								return err
+							}
+							if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+								return err
+							}
+							existing.BudgetID = &budget.ID
 						}
 					}
 					// Handle rate limit updates for provider config
@@ -1178,42 +1177,23 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a single virtual key
-func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
-	vkID := ctx.UserValue("vk_id").(string)
-	// Fetch the virtual key from the database to get the budget and rate limit
+func (h *GovernanceHandler) deleteVirtualKeyByID(ctx *fasthttp.RequestCtx, vkID string) error {
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, 404, "Virtual key not found")
-			return
-		}
-		SendError(ctx, 500, "Failed to retrieve virtual key")
-		return
+		return err
 	}
-	// Removing key from in-memory store
-	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove virtual key: %v", err)
+
+	if err := h.governanceManager.RemoveVirtualKey(ctx, vk.ID); err != nil {
+		logger.Error("failed to remove virtual key from memory: %v", err)
 	}
-	// Deleting key from database
-	if err := h.configStore.DeleteVirtualKey(ctx, vkID); err != nil {
-		if errors.Is(err, configstore.ErrNotFound) {
-			SendError(ctx, 404, "Virtual key not found")
-			return
-		}
-		logger.Error("failed to delete virtual key: %v", err)
-		SendError(ctx, 500, "Failed to delete virtual key")
-		return
-	}
-	SendJSON(ctx, map[string]interface{}{
-		"message": "Virtual key deleted successfully",
-	})
+
+	return h.configStore.DeleteVirtualKey(ctx, vkID)
 }
 
 // bulkDeleteVirtualKeys handles DELETE /api/governance/virtual-keys with body { ids: [...] } - Delete multiple virtual keys
 func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
+	const maxBulkDeleteVirtualKeys = 100
+
 	var payload struct {
 		IDs []string `json:"ids"`
 	}
@@ -1228,30 +1208,34 @@ func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	seenIDs := make(map[string]struct{}, len(payload.IDs))
+	sanitizedIDs := make([]string, 0, len(payload.IDs))
+	for _, rawID := range payload.IDs {
+		vkID := strings.TrimSpace(rawID)
+		if vkID == "" {
+			continue
+		}
+		if _, exists := seenIDs[vkID]; exists {
+			continue
+		}
+		seenIDs[vkID] = struct{}{}
+		sanitizedIDs = append(sanitizedIDs, vkID)
+	}
+
+	if len(sanitizedIDs) == 0 {
+		SendError(ctx, 400, "No valid IDs provided")
+		return
+	}
+	if len(sanitizedIDs) > maxBulkDeleteVirtualKeys {
+		SendError(ctx, 400, fmt.Sprintf("A maximum of %d virtual keys can be deleted per request", maxBulkDeleteVirtualKeys))
+		return
+	}
+
 	deletedCount := 0
 	failedIDs := []string{}
 
-	for _, vkID := range payload.IDs {
-		// Fetch the virtual key from the database
-		vk, err := h.configStore.GetVirtualKey(ctx, vkID)
-		if err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				failedIDs = append(failedIDs, vkID)
-				continue
-			}
-			logger.Error("failed to retrieve virtual key %s: %v", vkID, err)
-			failedIDs = append(failedIDs, vkID)
-			continue
-		}
-
-		// Remove key from in-memory store
-		err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
-		if err != nil {
-			logger.Error("failed to remove virtual key from memory: %v", err)
-		}
-
-		// Delete key from database
-		if err := h.configStore.DeleteVirtualKey(ctx, vkID); err != nil {
+	for _, vkID := range sanitizedIDs {
+		if err := h.deleteVirtualKeyByID(ctx, vkID); err != nil {
 			logger.Error("failed to delete virtual key %s: %v", vkID, err)
 			failedIDs = append(failedIDs, vkID)
 			continue
@@ -1260,12 +1244,23 @@ func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
 		deletedCount++
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	response := map[string]interface{}{
 		"message":       fmt.Sprintf("Deleted %d virtual key(s)", deletedCount),
 		"deleted_count": deletedCount,
 		"failed_ids":    failedIDs,
-		"total":         len(payload.IDs),
-	})
+		"total":         len(sanitizedIDs),
+	}
+
+	switch {
+	case deletedCount == 0:
+		response["message"] = "Failed to delete any virtual keys"
+		SendJSONWithStatus(ctx, response, fasthttp.StatusInternalServerError)
+	case len(failedIDs) > 0:
+		response["message"] = fmt.Sprintf("Deleted %d virtual key(s); %d failed", deletedCount, len(failedIDs))
+		SendJSONWithStatus(ctx, response, fasthttp.StatusMultiStatus)
+	default:
+		SendJSON(ctx, response)
+	}
 }
 
 // Team CRUD Operations
@@ -1398,23 +1393,23 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			CalendarAligned: req.Budget.CalendarAligned,
-			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:              uuid.NewString(),
+				MaxLimit:        req.Budget.MaxLimit,
+				ResetDuration:   req.Budget.ResetDuration,
+				CalendarAligned: req.Budget.CalendarAligned,
+				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+				CurrentUsage:    0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			team.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		team.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1533,32 +1528,32 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					team.Budget = nil
 				}
 			} else if team.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1570,23 +1565,23 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			teamCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: teamCalAligned,
-				LastReset:       budgetLastReset(teamCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.BudgetID = &budget.ID
-			team.Budget = &budget
+				teamCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: teamCalAligned,
+					LastReset:       budgetLastReset(teamCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.BudgetID = &budget.ID
+				team.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -1810,23 +1805,23 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			Name: req.Name,
 		}
 
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			CalendarAligned: req.Budget.CalendarAligned,
-			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:              uuid.NewString(),
+				MaxLimit:        req.Budget.MaxLimit,
+				ResetDuration:   req.Budget.ResetDuration,
+				CalendarAligned: req.Budget.CalendarAligned,
+				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+				CurrentUsage:    0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			customer.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		customer.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1935,32 +1930,32 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 					customer.Budget = nil
 				}
 			} else if customer.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1972,23 +1967,23 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			custCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: custCalAligned,
-				LastReset:       budgetLastReset(custCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.BudgetID = &budget.ID
-			customer.Budget = &budget
+				custCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: custCalAligned,
+					LastReset:       budgetLastReset(custCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.BudgetID = &budget.ID
+				customer.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2463,32 +2458,32 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 					mc.Budget = nil
 				}
 			} else if mc.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -2500,23 +2495,23 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			mcCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: mcCalAligned,
-				LastReset:       budgetLastReset(mcCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.BudgetID = &budget.ID
-			mc.Budget = &budget
+				mcCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: mcCalAligned,
+					LastReset:       budgetLastReset(mcCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.BudgetID = &budget.ID
+				mc.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2735,54 +2730,54 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 					provider.Budget = nil
 				}
 			} else if provider.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
 					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
 				}
-			provCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: provCalAligned,
-				LastReset:       budgetLastReset(provCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.BudgetID = &budget.ID
-			provider.Budget = &budget
+				provCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: provCalAligned,
+					LastReset:       budgetLastReset(provCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.BudgetID = &budget.ID
+				provider.Budget = &budget
 			}
 		}
 		// Handle rate limit updates

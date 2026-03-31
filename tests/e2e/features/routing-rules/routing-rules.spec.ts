@@ -131,6 +131,23 @@ test.describe('Routing Rules', () => {
       expect(exists).toBe(false)
     })
 
+    test('should delete multiple routing rules at once', async ({ routingRulesPage }) => {
+      const ruleNames = [
+        `Bulk Delete Rule A ${Date.now()}`,
+        `Bulk Delete Rule B ${Date.now() + 1}`,
+      ]
+
+      for (const name of ruleNames) {
+        await routingRulesPage.createRoutingRule(createRoutingRuleData({ name }))
+      }
+
+      await routingRulesPage.deleteRoutingRules(ruleNames)
+
+      for (const name of ruleNames) {
+        await expect.poll(() => routingRulesPage.ruleExists(name), { timeout: 10000 }).toBe(false)
+      }
+    })
+
     test('should toggle rule enabled state', async ({ routingRulesPage }) => {
       // Create a rule first
       const ruleData = createRoutingRuleData({
