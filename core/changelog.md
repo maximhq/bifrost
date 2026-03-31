@@ -1,0 +1,12 @@
+- fix: send Gemini function responses with user role for Vertex tool calling (thanks [@mrcfps](https://github.com/mrcfps)!)
+- feat: added compaction support for Anthropic provider
+- feat: MCP config validation for configs in config.json
+- feat: exposed max-open-connections for provider domains as a configurable field
+- fix: include function_call items in streaming response.completed output (thanks [@majiayu000](https://github.com/majiayu000)!)
+- fix: Bedrock API key authentication without requiring bedrock_key_config (thanks [@eliasbiondo](https://github.com/eliasbiondo)!)
+- fix: Bedrock fallback to estimated token count when count-tokens API is unsupported (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: OpenAI-to-Anthropic-to-OpenAI thinking content conversion
+- fix: Anthropic header selection across providers
+- fix: Gemini flow for OpenAI-compatible integration
+- fix: removed map marshals from core for improved serialization
+- fix: PG query optimizations

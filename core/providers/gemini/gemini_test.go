@@ -1450,7 +1450,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Validate tool response content (last Content)
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role, "Tool responses use 'model' role in Gemini")
+				assert.Equal(t, "user", toolResponseContent.Role, "Tool responses use 'user' role in Gemini")
 				require.Len(t, toolResponseContent.Parts, 1, "Should have exactly 1 part for single tool response")
 
 				// Verify ONLY functionResponse part (no text part)
@@ -1521,7 +1521,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Validate grouped tool responses (last Content)
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role, "Grouped tool responses use 'model' role")
+				assert.Equal(t, "user", toolResponseContent.Role, "Grouped tool responses use 'user' role")
 				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 tool responses (parallel calling)")
 
 				// Verify first tool response - ONLY functionResponse
@@ -1581,7 +1581,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, grouped tool responses")
 
 				toolResponseContent := result.Contents[2]
-				assert.Equal(t, "model", toolResponseContent.Role)
+				assert.Equal(t, "user", toolResponseContent.Role)
 				require.Len(t, toolResponseContent.Parts, 3, "Should have exactly 3 parts for 3 tool responses")
 
 				// Verify all are functionResponse only (no text)
@@ -1640,7 +1640,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Grouped tool responses
 				toolContent := result.Contents[2]
-				assert.Equal(t, "model", toolContent.Role)
+				assert.Equal(t, "user", toolContent.Role)
 				require.Len(t, toolContent.Parts, 2, "Tool responses should be grouped")
 				for _, part := range toolContent.Parts {
 					assert.NotNil(t, part.FunctionResponse)
@@ -1689,7 +1689,7 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 				// Grouped tool responses at the end should still be flushed
 				toolContent := result.Contents[2]
-				assert.Equal(t, "model", toolContent.Role)
+				assert.Equal(t, "user", toolContent.Role)
 				require.Len(t, toolContent.Parts, 2, "Tool responses at end should be grouped and flushed")
 				for _, part := range toolContent.Parts {
 					assert.NotNil(t, part.FunctionResponse)
@@ -1780,7 +1780,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, toolResponseContent, "Should have a Content with function responses")
-				assert.Equal(t, "model", toolResponseContent.Role, "Function responses use 'model' role")
+				assert.Equal(t, "user", toolResponseContent.Role, "Function responses use 'user' role")
 				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 function outputs (parallel calling)")
 
 				// Verify first function response - ONLY functionResponse
@@ -1843,7 +1843,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, toolResponseContent)
-				assert.Equal(t, "model", toolResponseContent.Role)
+				assert.Equal(t, "user", toolResponseContent.Role)
 				require.Len(t, toolResponseContent.Parts, 1, "Single function output should have 1 part")
 
 				// Verify ONLY functionResponse part (no text/content)
@@ -1920,7 +1920,7 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 
 				require.NotNil(t, groupedToolContent, "Should have grouped function responses")
-				assert.Equal(t, "model", groupedToolContent.Role)
+				assert.Equal(t, "user", groupedToolContent.Role)
 				require.Len(t, groupedToolContent.Parts, 2, "Function outputs should be grouped before user message")
 
 				// Verify both are functionResponse only
