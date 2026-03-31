@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -841,14 +842,39 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 }
 
 // keyAllowsModelForList reports whether a provider key permits model for catalog listing.
-func keyAllowsModelForList(key schemas.Key, model string) bool {
-	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
+func keyAllowsModelForList(provider schemas.ModelProvider, model string, key schemas.Key, modelCatalog *modelcatalog.ModelCatalog) bool {
+	if len(key.BlacklistedModels) > 0 && keyModelListAllowsModel(provider, model, key.BlacklistedModels, modelCatalog) {
 		return false
 	}
 	if len(key.Models) > 0 {
-		return slices.Contains(key.Models, model)
+		return keyModelListAllowsModel(provider, model, key.Models, modelCatalog)
 	}
 	return true
+}
+
+func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
+	if len(allowedModels) == 0 {
+		return false
+	}
+
+	if modelCatalog == nil {
+		return slices.Contains(allowedModels, model)
+	}
+
+	if modelCatalog.IsModelAllowedForProvider(provider, model, allowedModels) {
+		return true
+	}
+
+	for _, allowedModel := range allowedModels {
+		if strings.Contains(allowedModel, "/") {
+			continue
+		}
+		if modelCatalog.IsSameModel(allowedModel, model) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func splitAndTrimCSV(value string) []string {
@@ -940,7 +966,7 @@ func (h *ProviderHandler) getLegacyFilteredModelsForProvider(provider schemas.Mo
 		return models, nil
 	}
 
-	return filterModelsByKeysWithAccessMap(config, models, validKeyIDs)
+	return filterModelsByKeysWithAccessMap(config, provider, h.inMemoryStore.ModelCatalog, models, validKeyIDs)
 }
 
 func (h *ProviderHandler) getStrictFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
@@ -970,12 +996,12 @@ func (h *ProviderHandler) getStrictFilteredModelsForProvider(provider schemas.Mo
 		return []string{}, map[string][]string{}
 	}
 
-	return filterModelsByKeysWithAccessMap(config, models, validKeyIDs)
+	return filterModelsByKeysWithAccessMap(config, provider, h.inMemoryStore.ModelCatalog, models, validKeyIDs)
 }
 
 // filterModelsByKeysWithAccessMap filters models based on key-level model restrictions
 // and returns the exact key IDs that grant access to each returned model.
-func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, models []string, keyIDs []string) ([]string, map[string][]string) {
+func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provider schemas.ModelProvider, modelCatalog *modelcatalog.ModelCatalog, models []string, keyIDs []string) ([]string, map[string][]string) {
 	if config == nil {
 		return []string{}, map[string][]string{}
 	}
@@ -1010,7 +1036,7 @@ func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, models 
 	for _, model := range models {
 		grantedBy := make([]string, 0, len(matchedKeys))
 		for _, matched := range matchedKeys {
-			if keyAllowsModelForList(matched.key, model) {
+			if keyAllowsModelForList(provider, model, matched.key, modelCatalog) {
 				grantedBy = append(grantedBy, matched.id)
 			}
 		}

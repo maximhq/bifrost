@@ -40,21 +40,21 @@ func (m *mockModelsManager) GetUnfilteredModelsForProvider(provider schemas.Mode
 	return result
 }
 
-func providerHandlerForTest(keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
+func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {
+				provider: {
 					Keys: keys,
 				},
 			},
 		},
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
-				schemas.OpenAI: filtered,
+				provider: filtered,
 			},
 			unfiltered: map[schemas.ModelProvider][]string{
-				schemas.OpenAI: unfiltered,
+				provider: unfiltered,
 			},
 		},
 	}
@@ -66,6 +66,7 @@ func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
@@ -103,6 +104,7 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
 			{ID: "key-b", Models: []string{"gpt-4o", "gpt-4o-mini"}},
@@ -148,6 +150,7 @@ func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
 		},
@@ -185,6 +188,7 @@ func TestListModels_UnfilteredWithoutKeysReturnsAllUnfilteredModels(t *testing.T
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
 		},
@@ -222,6 +226,7 @@ func TestListModelDetails_ErrorsWhenModelCatalogUnavailable(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o"},
@@ -242,6 +247,7 @@ func TestListModelDetails_FailsClosedForUnknownKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
@@ -272,6 +278,7 @@ func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
+		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
 		},
@@ -300,5 +307,40 @@ func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
 	}
 	if len(resp.Models[0].AccessibleByKeys) != 1 || resp.Models[0].AccessibleByKeys[0] != "key-b" {
 		t.Fatalf("expected exact accessible_by_keys for gpt-4o-mini, got %#v", resp.Models[0].AccessibleByKeys)
+	}
+}
+
+func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{
+			{ID: "key-a", Models: []string{"gpt-4o-2024-08-06"}},
+		},
+		[]string{"gpt-4o"},
+		[]string{"gpt-4o"},
+	)
+	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(map[string]string{
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0].Name != "gpt-4o" {
+		t.Fatalf("expected gpt-4o to be matched through alias allowlist, got %#v", resp.Models)
 	}
 }
