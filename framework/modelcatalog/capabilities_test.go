@@ -80,6 +80,109 @@ func TestGetModelCapabilityEntryForModel_FallsBackToAnyModeDeterministically(t *
 	}
 }
 
+func TestGetModelCapabilityEntryForModel_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
+	contextLengthChat := 128000
+
+	mc := &ModelCatalog{
+		pricingData: map[string]configstoreTables.TableModelPricing{
+			makeKey("gpt-4o-2024-08-06", "openai", "responses"): {
+				Model:           "gpt-4o-2024-08-06",
+				BaseModel:       "gpt-4o",
+				Provider:        "openai",
+				Mode:            "responses",
+				ContextLength:   capabilityIntPtr(64000),
+				MaxOutputTokens: capabilityIntPtr(8000),
+			},
+			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+				Model:           "gpt-4o-2024-08-06",
+				BaseModel:       "gpt-4o",
+				Provider:        "openai",
+				Mode:            "chat",
+				ContextLength:   &contextLengthChat,
+				MaxOutputTokens: capabilityIntPtr(16000),
+			},
+		},
+		baseModelIndex: map[string]string{
+			"gpt-4o-2024-08-06": "gpt-4o",
+		},
+	}
+
+	entry := mc.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI)
+	if entry == nil {
+		t.Fatal("expected capability entry for base-model alias")
+	}
+	if entry.Mode != "chat" {
+		t.Fatalf("expected chat mode to win for alias family, got %q", entry.Mode)
+	}
+	if entry.ContextLength == nil || *entry.ContextLength != contextLengthChat {
+		t.Fatalf("expected alias family context_length=%d, got %#v", contextLengthChat, entry.ContextLength)
+	}
+}
+
+func TestGetModelCapabilityEntryForModel_ResolvesProviderPrefixedAlias(t *testing.T) {
+	mc := &ModelCatalog{
+		pricingData: map[string]configstoreTables.TableModelPricing{
+			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+				Model:           "gpt-4o-2024-08-06",
+				BaseModel:       "gpt-4o",
+				Provider:        "openai",
+				Mode:            "chat",
+				ContextLength:   capabilityIntPtr(128000),
+				MaxOutputTokens: capabilityIntPtr(16000),
+			},
+		},
+		baseModelIndex: map[string]string{
+			"gpt-4o-2024-08-06": "gpt-4o",
+		},
+	}
+
+	entry := mc.GetModelCapabilityEntryForModel("openai/gpt-4o", schemas.OpenAI)
+	if entry == nil {
+		t.Fatal("expected capability entry for provider-prefixed alias")
+	}
+	if entry.Mode != "chat" {
+		t.Fatalf("expected chat mode for provider-prefixed alias, got %q", entry.Mode)
+	}
+}
+
+func TestGetModelCapabilityEntryForModel_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
+	literalContextLength := 32000
+	aliasContextLength := 128000
+
+	mc := &ModelCatalog{
+		pricingData: map[string]configstoreTables.TableModelPricing{
+			makeKey("gpt-4o", "openai", "chat"): {
+				Model:           "gpt-4o",
+				BaseModel:       "gpt-4o",
+				Provider:        "openai",
+				Mode:            "chat",
+				ContextLength:   &literalContextLength,
+				MaxOutputTokens: capabilityIntPtr(4000),
+			},
+			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+				Model:           "gpt-4o-2024-08-06",
+				BaseModel:       "gpt-4o",
+				Provider:        "openai",
+				Mode:            "chat",
+				ContextLength:   &aliasContextLength,
+				MaxOutputTokens: capabilityIntPtr(16000),
+			},
+		},
+		baseModelIndex: map[string]string{
+			"gpt-4o":            "gpt-4o",
+			"gpt-4o-2024-08-06": "gpt-4o",
+		},
+	}
+
+	entry := mc.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI)
+	if entry == nil {
+		t.Fatal("expected literal capability entry")
+	}
+	if entry.ContextLength == nil || *entry.ContextLength != literalContextLength {
+		t.Fatalf("expected literal match to win with context_length=%d, got %#v", literalContextLength, entry.ContextLength)
+	}
+}
+
 func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	modality := "text"
 	entry := PricingEntry{

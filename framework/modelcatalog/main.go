@@ -402,6 +402,25 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
+	if entry := mc.getCapabilityEntryForExactModelUnsafe(model, provider); entry != nil {
+		return entry
+	}
+
+	baseModel := mc.getBaseModelNameUnsafe(model)
+	if baseModel != model {
+		if entry := mc.getCapabilityEntryForExactModelUnsafe(baseModel, provider); entry != nil {
+			return entry
+		}
+	}
+
+	if entry := mc.getCapabilityEntryForModelFamilyUnsafe(baseModel, provider); entry != nil {
+		return entry
+	}
+
+	return nil
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForExactModelUnsafe(model string, provider schemas.ModelProvider) *PricingEntry {
 	preferredModes := []schemas.RequestType{
 		schemas.ChatCompletionRequest,
 		schemas.ResponsesRequest,
@@ -423,8 +442,53 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 			matchingKeys = append(matchingKeys, key)
 		}
 	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForModelFamilyUnsafe(baseModel string, provider schemas.ModelProvider) *PricingEntry {
+	if baseModel == "" {
+		return nil
+	}
+
+	matchingKeys := make([]string, 0)
+	for key, pricing := range mc.pricingData {
+		if normalizeProvider(pricing.Provider) != string(provider) {
+			continue
+		}
+		if mc.getBaseModelNameUnsafe(pricing.Model) != baseModel {
+			continue
+		}
+		matchingKeys = append(matchingKeys, key)
+	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *PricingEntry {
 	if len(matchingKeys) == 0 {
 		return nil
+	}
+
+	preferredModes := []string{
+		normalizeRequestType(schemas.ChatCompletionRequest),
+		normalizeRequestType(schemas.ResponsesRequest),
+		normalizeRequestType(schemas.TextCompletionRequest),
+	}
+
+	for _, mode := range preferredModes {
+		modeMatches := make([]string, 0)
+		for _, key := range matchingKeys {
+			parts := strings.SplitN(key, "|", 3)
+			if len(parts) != 3 || parts[2] != mode {
+				continue
+			}
+			modeMatches = append(modeMatches, key)
+		}
+		if len(modeMatches) == 0 {
+			continue
+		}
+		slices.Sort(modeMatches)
+		pricing := mc.pricingData[modeMatches[0]]
+		return convertTableModelPricingToPricingData(&pricing)
 	}
 
 	slices.Sort(matchingKeys)
