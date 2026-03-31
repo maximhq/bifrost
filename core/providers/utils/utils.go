@@ -137,11 +137,27 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running client.Do goroutine.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			statusCode := 504
+			errorType := schemas.RequestTimedOut
+			return latency, &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Type:    &errorType,
+					Message: fmt.Sprintf("Request timed out by context: %v", ctx.Err()),
+					Error:   ctx.Err(),
+				},
+			}, func() { <-errChan }
+		}
+		statusCode := 499
+		errorType := schemas.RequestCancelled
 		return latency, &schemas.BifrostError{
 			IsBifrostError: true,
+			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr(schemas.RequestCancelled),
-				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+				Type:    &errorType,
+				Message: fmt.Sprintf("Request cancelled by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
 		}, func() { <-errChan }
@@ -162,12 +178,12 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
+				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
+				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks
 			var opErr *net.OpError
@@ -1596,6 +1612,26 @@ func NewBifrostOperationError(message string, err error, providerType schemas.Mo
 		IsBifrostError: true,
 		Error: &schemas.ErrorField{
 			Message: message,
+			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider: providerType,
+		},
+	}
+}
+
+// NewBifrostTimeoutError creates a standardized error for provider request timeout errors.
+// Sets StatusCode to 504 (Gateway Timeout) and Error.Type to RequestTimedOut,
+// consistent with HandleStreamTimeout for streaming requests.
+func NewBifrostTimeoutError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := 504
+	errorType := schemas.RequestTimedOut
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: message,
+			Type:    &errorType,
 			Error:   err,
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
