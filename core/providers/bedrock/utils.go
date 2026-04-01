@@ -1035,12 +1035,11 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	}
 
 	description := "Returns structured JSON output"
-	if format.JSONSchema.Description != nil {
-		description = *format.JSONSchema.Description
-	}
-
 	if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
 		return nil, nil // Schema is required for structured output
+	}
+	if format.JSONSchema.Description != nil {
+		description = *format.JSONSchema.Description
 	}
 	schemaObj := *format.JSONSchema.Schema
 
