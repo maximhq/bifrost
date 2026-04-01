@@ -15,7 +15,10 @@ import (
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("mustMarshalJSON: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -40,7 +43,10 @@ func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...int
 // mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
 // matching the conversion code path for deterministic output.
 func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
-	b, _ := json.Marshal(params)
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic("mustMarshalToolParams: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -175,53 +181,53 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:      "cohere.embed-v4:0",
-		RerankModel:         rerankModelARN,
-		ReasoningModel:      "claude-4.5-sonnet",
-		PromptCachingModel:  "claude-4.5-sonnet",
-		ImageEditModel:      "amazon.nova-canvas-v1:0",
-		ImageVariationModel: "amazon.nova-canvas-v1:0",
+		EmbeddingModel:           "cohere.embed-v4:0",
+		RerankModel:              rerankModelARN,
+		ReasoningModel:           "claude-4.5-sonnet",
+		PromptCachingModel:       "claude-4.5-sonnet",
+		ImageEditModel:           "amazon.nova-canvas-v1:0",
+		ImageVariationModel:      "amazon.nova-canvas-v1:0",
 		InterleavedThinkingModel: "global.anthropic.claude-opus-4-5-20251101-v1:0",
-		BatchExtraParams:        batchExtraParams,
-		FileExtraParams:         fileExtraParams,
+		BatchExtraParams:         batchExtraParams,
+		FileExtraParams:          fileExtraParams,
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // Bedrock doesn't support image URL
-			ImageBase64:           true,
-			MultipleImages:        false, // Since one of the image is URL
-			FileBase64:            true,
-			FileURL:               false, // S3 urls supported for nova models
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Rerank:                rerankModelARN != "",
-			ListModels:            true,
-			Reasoning:             true,
-			PromptCaching:         true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           true,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			ImageEdit:             true,
-			ImageVariation:        true,
-			StructuredOutputs:     true,
-			InterleavedThinking:  true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // Bedrock doesn't support image URL
+			ImageBase64:                true,
+			MultipleImages:             false, // Since one of the image is URL
+			FileBase64:                 true,
+			FileURL:                    false, // S3 urls supported for nova models
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Rerank:                     rerankModelARN != "",
+			ListModels:                 true,
+			Reasoning:                  true,
+			PromptCaching:              true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                true,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			ImageEdit:                  true,
+			ImageVariation:             true,
+			StructuredOutputs:          true,
+			InterleavedThinking:        true,
 		},
 	}
 
@@ -1256,7 +1262,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-123",
 									Name:      "get_weather",
-									Input: json.RawMessage(`{"location":"NYC"}`),
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 						},
@@ -1331,7 +1337,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "tool-use-456",
 									Name:      "calculate",
-									Input: json.RawMessage(`{"expression":"2+2"}`),
+									Input:     json.RawMessage(`{"expression":"2+2"}`),
 								},
 							},
 						},
@@ -1860,7 +1866,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 								ToolUse: &bedrock.BedrockToolUse{
 									ToolUseID: "call-111",
 									Name:      "get_weather",
-									Input: json.RawMessage(`{"location":"NYC"}`),
+									Input:     json.RawMessage(`{"location":"NYC"}`),
 								},
 							},
 							{
@@ -2248,7 +2254,7 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONObjectResult",
 			toolResultContent:   `{"location":"NYC","temperature":72}`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"location": "NYC", "temperature": float64(72)}),
 		},
 		{
 			name:                "JSONArrayResult",
@@ -2265,37 +2271,37 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			name:                "JSONPrimitiveNumberResult",
 			toolResultContent:   `42`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": float64(42)}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": float64(42)}),
 		},
 		{
 			name:                "JSONPrimitiveStringResult",
 			toolResultContent:   `"hello world"`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": "hello world"}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": "hello world"}),
 		},
 		{
 			name:                "JSONPrimitiveBooleanResult",
 			toolResultContent:   `true`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": true}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": true}),
 		},
 		{
 			name:                "JSONPrimitiveNullResult",
 			toolResultContent:   `null`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"value": nil}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"value": nil}),
 		},
 		{
 			name:                "EmptyJSONObjectResult",
 			toolResultContent:   `{}`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{}),
+			expectedJSON:        mustMarshalJSON(map[string]any{}),
 		},
 		{
 			name:                "EmptyJSONArrayResult",
 			toolResultContent:   `[]`,
 			expectedContentType: "json",
-			expectedJSON: mustMarshalJSON(map[string]any{"results": []any{}}),
+			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{}}),
 		},
 	}
 
