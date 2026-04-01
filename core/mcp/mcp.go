@@ -143,10 +143,10 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 					}
 					manager.mu.Unlock()
 					isPingAvailable := true
-				if clientConfig.IsPingAvailable != nil {
-					isPingAvailable = *clientConfig.IsPingAvailable
-				}
-				monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
+					if clientConfig.IsPingAvailable != nil {
+						isPingAvailable = *clientConfig.IsPingAvailable
+					}
+					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
 					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
@@ -155,6 +155,13 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	}
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// SetPluginPipeline updates the plugin pipeline provider and release function on the manager's
+// ToolsManager and CodeMode. Call this after attaching an externally-created MCPManager to a Bifrost
+// instance so that nested tool calls in code mode can run through Bifrost's plugin hooks.
+func (manager *MCPManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	manager.toolsManager.SetPluginPipeline(provider, release)
 }
 
 // AddToolsToRequest parses available MCP tools from the context and adds them to the request.

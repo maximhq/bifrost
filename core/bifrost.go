@@ -3495,11 +3495,31 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 
 // SetMCPManager sets the MCP manager for this Bifrost instance.
 // This allows injecting a custom MCP manager implementation (e.g., for enterprise features).
+// If the provided manager is a concrete *mcp.MCPManager, Bifrost's plugin pipeline is injected
+// into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
 // Parameters:
 //   - manager: The MCP manager to set (must implement MCPManagerInterface)
 func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 	bifrost.MCPManager = manager
+	// Inject Bifrost's plugin pipeline into the manager's CodeMode so that
+	// nested tool calls (e.g. via Starlark executeCode) run through plugin hooks.
+	if m, ok := manager.(*mcp.MCPManager); ok {
+		m.SetPluginPipeline(
+			func() mcp.PluginPipeline {
+				pipeline := bifrost.getPluginPipeline()
+				if pp, ok := any(pipeline).(mcp.PluginPipeline); ok {
+					return pp
+				}
+				return nil
+			},
+			func(pipeline mcp.PluginPipeline) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			},
+		)
+	}
 }
 
 // UpdateMCPClient updates the MCP client.

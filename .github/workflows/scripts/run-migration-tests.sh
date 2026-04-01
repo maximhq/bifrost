@@ -453,10 +453,10 @@ VALUES (1, 'migration-test-hash-abc123def456', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_budgets (reset_duration is a string like "1d", "1h", etc.)
-INSERT INTO governance_budgets (id, max_limit, current_usage, reset_duration, last_reset, config_hash, created_at, updated_at, calendar_aligned)
+INSERT INTO governance_budgets (id, max_limit, current_usage, reset_duration, last_reset, config_hash, calendar_aligned, created_at, updated_at)
 VALUES
-  ('budget-migration-test-1', 1000.00, 100.00, '1d', $now, 'budget-hash-001', $now, $now, 0),
-  ('budget-migration-test-2', 5000.00, 250.00, '7d', $now, 'budget-hash-002', $now, $now, 1)
+  ('budget-migration-test-1', 1000.00, 100.00, '1d', $now, 'budget-hash-001', false, $now, $now),
+  ('budget-migration-test-2', 5000.00, 250.00, '7d', $now, 'budget-hash-002', false, $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_rate_limits (flexible duration format with token_* and request_* columns)
@@ -623,12 +623,9 @@ CROSS JOIN config_keys ck
 WHERE vpc.virtual_key_id = 'vk-migration-test-1' AND ck.name = 'migration-test-key-openai'
 ON CONFLICT DO NOTHING;
 
--- governance_virtual_key_mcp_configs (references virtual_keys and mcp_clients)
--- We need to reference the mcp_client by its internal ID, so use a subquery
-INSERT INTO governance_virtual_key_mcp_configs (virtual_key_id, mcp_client_id, tools_to_execute)
-SELECT 'vk-migration-test-1', id, '["tool1"]'
-FROM config_mcp_clients WHERE client_id = 'mcp-migration-test-001'
-ON CONFLICT DO NOTHING;
+-- governance_virtual_key_mcp_configs: handled dynamically after config_mcp_clients is inserted
+-- (see generate_mcp_clients_insert_postgres/sqlite) so the subquery finds the MCP client row.
+-- Both test VKs are covered to prevent migrationBackfillEmptyVirtualKeyConfigs from adding rows.
 
 -- sessions (id is auto-increment integer, not a string)
 INSERT INTO sessions (token, expires_at, created_at, updated_at)
@@ -707,6 +704,7 @@ append_dynamic_mcp_clients_insert() {
     generate_prompt_repo_tables_insert_postgres "$now" "$faker_sql"
     generate_model_parameters_insert_postgres "$now" "$faker_sql"
     generate_routing_targets_insert_postgres "$now" "$faker_sql"
+    generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -717,6 +715,7 @@ append_dynamic_mcp_clients_insert() {
     generate_prompt_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_model_parameters_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -1191,6 +1190,56 @@ append_dynamic_columns_postgres() {
   fi
 
   # -------------------------------------------------------------------------
+  # v1.5.0 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.mcp_disable_auto_tool_inject (added in v1.5.0)
+  if column_exists_postgres "config_client" "mcp_disable_auto_tool_inject"; then
+    echo "UPDATE config_client SET mcp_disable_auto_tool_inject = false WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
+  # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
+  # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true
+  if column_exists_postgres "governance_virtual_key_provider_configs" "allow_all_keys"; then
+    echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = false WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = true WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.0 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs.plugin_logs (added in v1.5.0)
+  if column_exists_postgres "logs" "plugin_logs"; then
+    echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.19 columns
+  # -------------------------------------------------------------------------
+
+  # governance_model_pricing: context_length, max_input_tokens, max_output_tokens, architecture (added in v1.4.19, removed later)
+  if column_exists_postgres "governance_model_pricing" "context_length"; then
+    echo "UPDATE governance_model_pricing SET context_length = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET context_length = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "max_input_tokens"; then
+    echo "UPDATE governance_model_pricing SET max_input_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET max_input_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "max_output_tokens"; then
+    echo "UPDATE governance_model_pricing SET max_output_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET max_output_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "architecture"; then
+    echo "UPDATE governance_model_pricing SET architecture = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET architecture = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.4.17 columns
   # -------------------------------------------------------------------------
 
@@ -1656,6 +1705,58 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET cached_read_tokens = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
 
   # -------------------------------------------------------------------------
+  # v1.5.0 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_client.mcp_disable_auto_tool_inject (added in v1.5.0)
+    if column_exists_sqlite "$config_db" "config_client" "mcp_disable_auto_tool_inject"; then
+      echo "UPDATE config_client SET mcp_disable_auto_tool_inject = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
+    # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
+    # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true
+    if column_exists_sqlite "$config_db" "governance_virtual_key_provider_configs" "allow_all_keys"; then
+      echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = 0 WHERE virtual_key_id = 'vk-migration-test-1';" >> "$output_file"
+      echo "UPDATE governance_virtual_key_provider_configs SET allow_all_keys = 1 WHERE virtual_key_id = 'vk-migration-test-2';" >> "$output_file"
+    fi
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.5.0 columns - log store tables (emitted unconditionally; fail silently on config_db)
+  # -------------------------------------------------------------------------
+
+  # logs.plugin_logs (added in v1.5.0)
+  echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET plugin_logs = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.4.19 columns
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # governance_model_pricing: context_length, max_input_tokens, max_output_tokens, architecture (added in v1.4.19, removed later)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "context_length"; then
+      echo "UPDATE governance_model_pricing SET context_length = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET context_length = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "max_input_tokens"; then
+      echo "UPDATE governance_model_pricing SET max_input_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET max_input_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "max_output_tokens"; then
+      echo "UPDATE governance_model_pricing SET max_output_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET max_output_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "architecture"; then
+      echo "UPDATE governance_model_pricing SET architecture = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET architecture = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.4.17 columns
   # -------------------------------------------------------------------------
 
@@ -1758,11 +1859,30 @@ generate_mcp_clients_insert_postgres() {
     cols="$cols, encryption_status"
     vals="$vals, 'plain_text'"
   fi
+
+  # config_mcp_clients.allowed_extra_headers_json (added in v1.5.0)
+  if column_exists_postgres "config_mcp_clients" "allowed_extra_headers_json"; then
+    cols="$cols, allowed_extra_headers_json"
+    vals="$vals, '[]'"
+  fi
+
+  # config_mcp_clients.allow_on_all_virtual_keys (added in v1.5.0)
+  if column_exists_postgres "config_mcp_clients" "allow_on_all_virtual_keys"; then
+    cols="$cols, allow_on_all_virtual_keys"
+    vals="$vals, false"
+  fi
   
   # Append the dynamic INSERT to the output file
   echo "" >> "$output_file"
   echo "-- config_mcp_clients (MCP server configurations - dynamically generated based on schema)" >> "$output_file"
   echo "INSERT INTO config_mcp_clients ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # governance_virtual_key_mcp_configs: link both test VKs to the test MCP client.
+  # Must run AFTER config_mcp_clients INSERT so the subquery finds the row.
+  # Both VKs covered to prevent migrationBackfillEmptyVirtualKeyConfigs from adding rows.
+  echo "" >> "$output_file"
+  echo "-- governance_virtual_key_mcp_configs (dynamically generated after config_mcp_clients)" >> "$output_file"
+  echo "INSERT INTO governance_virtual_key_mcp_configs (virtual_key_id, mcp_client_id, tools_to_execute) SELECT vk.id, mc.id, '[\"tool1\"]' FROM governance_virtual_keys vk CROSS JOIN config_mcp_clients mc WHERE mc.client_id = 'mcp-migration-test-001' AND vk.id IN ('vk-migration-test-1', 'vk-migration-test-2') ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Get columns that are auto-increment primary keys (don't need faker coverage)
@@ -1972,11 +2092,30 @@ generate_mcp_clients_insert_sqlite() {
     cols="$cols, encryption_status"
     vals="$vals, 'plain_text'"
   fi
+
+  # config_mcp_clients.allowed_extra_headers_json (added in v1.5.0)
+  if column_exists_sqlite "$config_db" "config_mcp_clients" "allowed_extra_headers_json"; then
+    cols="$cols, allowed_extra_headers_json"
+    vals="$vals, '[]'"
+  fi
+
+  # config_mcp_clients.allow_on_all_virtual_keys (added in v1.5.0)
+  if column_exists_sqlite "$config_db" "config_mcp_clients" "allow_on_all_virtual_keys"; then
+    cols="$cols, allow_on_all_virtual_keys"
+    vals="$vals, 0"
+  fi
   
   # Append the dynamic INSERT to the output file
   echo "" >> "$output_file"
   echo "-- config_mcp_clients (MCP server configurations - dynamically generated based on schema)" >> "$output_file"
   echo "INSERT INTO config_mcp_clients ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # governance_virtual_key_mcp_configs: link both test VKs to the test MCP client.
+  # Must run AFTER config_mcp_clients INSERT so the subquery finds the row.
+  # Both VKs covered to prevent migrationBackfillEmptyVirtualKeyConfigs from adding rows.
+  echo "" >> "$output_file"
+  echo "-- governance_virtual_key_mcp_configs (dynamically generated after config_mcp_clients)" >> "$output_file"
+  echo "INSERT INTO governance_virtual_key_mcp_configs (virtual_key_id, mcp_client_id, tools_to_execute) SELECT vk.id, mc.id, '[\"tool1\"]' FROM governance_virtual_keys vk CROSS JOIN config_mcp_clients mc WHERE mc.client_id = 'mcp-migration-test-001' AND vk.id IN ('vk-migration-test-1', 'vk-migration-test-2') ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate async_jobs INSERT based on schema existence for PostgreSQL
@@ -2203,6 +2342,49 @@ generate_routing_targets_insert_sqlite() {
   echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-1', 'openai', 'gpt-4', NULL, 1.0) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', 'anthropic', 'claude-3-opus', NULL, 0.7) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', NULL, NULL, NULL, 0.3) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate governance_pricing_overrides INSERT for PostgreSQL
+# This table was added in v1.5.0 as part of the custom pricing refactor.
+# Two rows: one global (no FK deps) and one virtual_key-scoped (references vk-migration-test-1).
+generate_pricing_overrides_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if the table exists
+  if ! column_exists_postgres "governance_pricing_overrides" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- governance_pricing_overrides (scoped pricing overrides - added in v1.5.0, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-001', 'Migration Test Override Global', 'global', NULL, NULL, NULL, 'exact', 'gpt-4', '[]', '{\"input_cost_per_token\": 0.00001}', 'po-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-002', 'Migration Test Override VK', 'virtual_key', 'vk-migration-test-1', NULL, NULL, 'prefix', 'claude', '[]', '{\"output_cost_per_token\": 0.00002}', 'po-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate governance_pricing_overrides INSERT for SQLite
+# This table was added in v1.5.0 as part of the custom pricing refactor.
+generate_pricing_overrides_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='governance_pricing_overrides';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- governance_pricing_overrides (scoped pricing overrides - added in v1.5.0, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-001', 'Migration Test Override Global', 'global', NULL, NULL, NULL, 'exact', 'gpt-4', '[]', '{\"input_cost_per_token\": 0.00001}', 'po-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO governance_pricing_overrides (id, name, scope_kind, virtual_key_id, provider_id, provider_key_id, match_type, pattern, request_types_json, pricing_patch_json, config_hash, created_at, updated_at) VALUES ('pricing-override-migration-002', 'Migration Test Override VK', 'virtual_key', 'vk-migration-test-1', NULL, NULL, 'prefix', 'claude', '[]', '{\"output_cost_per_token\": 0.00002}', 'po-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Validate faker column coverage for SQLite

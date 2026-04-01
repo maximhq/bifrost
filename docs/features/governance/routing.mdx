@@ -44,7 +44,7 @@ When you configure provider restrictions on a Virtual Key, Bifrost validates tha
 
 ## Weighted Load Balancing
 
-When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider is assigned a weight, and requests are distributed proportionally.
+When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider can be assigned a weight, and requests are distributed proportionally. The `weight` field is optional — omitting it (or setting it to `null`) excludes the provider from weighted selection while still allowing it to be used for direct `provider/model` requests or as a fallback.
 
 **Example Configuration:**
 ```
@@ -152,7 +152,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
    - **Specify models**: Enter specific models (e.g., `["gpt-4o", "gpt-4o-mini"]`) to explicitly whitelist only those models
    - **`["*"]`**: Allow all models (uses the Model Catalog for validation).
    - **Leave blank**: Deny all models (deny-by-default).
-5. Add the weight you want to give to this provider
+5. Optionally add a weight for this provider (numeric value for weighted load balancing, or leave blank to exclude from weighted routing while keeping the provider available for direct requests and fallbacks)
 6. Click on the **Save** button
 </Tab>
 
@@ -214,8 +214,9 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 Virtual Keys can be restricted to use only specific provider API keys. When key restrictions are configured, the VK can only access those designated keys, providing fine-grained control over which API keys different users or applications can utilize.
 
 **How It Works:**
-- **No Restrictions** (default): VK can use any available provider keys based on load balancing
+- **No Restrictions** (`key_ids: ["*"]`): VK can use any available provider keys based on load balancing
 - **With Restrictions**: VK limited to only the specified key IDs, regardless of other available keys
+- **All Blocked** (`key_ids: []` or field omitted): VK cannot use any provider keys (deny-by-default)
 
 **Example Scenario:**
 ```
@@ -232,7 +233,7 @@ Virtual Key Restrictions:
 │   ├── Allowed Models: [gpt-4o-mini]
 │   └── Restricted Keys: [key-dev-002, key-test-003] ← Dev + test keys
 └── vk-unrestricted
-    ├── Allowed Models: [all models]
+    ├── Allowed Models: ["*"]  ← All models via catalog
     └── Restricted Keys: ["*"] ← Can use ANY available key
 ```
 
@@ -248,7 +249,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-vk: vk-dev-main" \
   -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'
 
-# VK with no key restrictions - can use any available OpenAI key
+# VK with key_ids: ["*"] - can use any available OpenAI key
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-vk: vk-unrestricted" \
   -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}'

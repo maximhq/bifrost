@@ -2176,10 +2176,13 @@ func CreateBifrostChatCompletionChunkResponse(
 	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
 	model string,
+	created int,
 ) *schemas.BifrostChatResponse {
 	response := &schemas.BifrostChatResponse{
-		ID:     id,
-		Object: "chat.completion.chunk",
+		ID:      id,
+		Model:   model,
+		Created: created,
+		Object:  "chat.completion.chunk",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{

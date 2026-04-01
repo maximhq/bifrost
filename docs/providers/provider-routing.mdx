@@ -304,7 +304,7 @@ Bifrost uses a sophisticated multi-step process to determine if a model is avail
 The `allowed_models` field in provider configs controls which models can be used with that provider. Understanding its behavior is crucial for governance routing.
 
 <Tabs>
-<Tab title="Empty allowed_models (Use Catalog)">
+<Tab title="Wildcard allowed_models (Use Catalog)">
 
 **Configuration**:
 ```json
@@ -312,7 +312,7 @@ The `allowed_models` field in provider configs controls which models can be used
   "provider_configs": [
     {
       "provider": "openai",
-      "allowed_models": [],  // Empty = defer to catalog
+      "allowed_models": ["*"],
       "weight": 1.0
     }
   ]
@@ -340,6 +340,10 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 - Default behavior for most deployments
 - Automatically stays up-to-date with provider's model offerings
 - No manual model list maintenance required
+
+<Warning>
+Using `"allowed_models": []` (empty array) means **deny all models** — no requests will be served. Use `["*"]` to allow all models via the catalog.
+</Warning>
 
 </Tab>
 
@@ -610,7 +614,7 @@ curl -H "x-bf-vk: vk-123" \
       "provider_configs": [
         {
           "provider": "openrouter",
-          "allowed_models": []  // Use catalog
+          "allowed_models": ["*"]
         }
       ]
     }
@@ -700,13 +704,13 @@ curl -H "x-bf-vk: vk-123" \
 
 When a Virtual Key has `provider_configs`, governance uses the model catalog for validation:
 
-**Empty allowed_models Example**:
+**Wildcard allowed_models Example**:
 ```json
 {
   "provider_configs": [
     {
       "provider": "openai",
-      "allowed_models": [],  // Use catalog
+      "allowed_models": ["*"],
       "weight": 0.5
     }
   ]
@@ -871,8 +875,8 @@ When a Virtual Key has `provider_configs` defined:
     ```json
     {
       "provider_configs": [
-        {"provider": "groq", "weight": 0.7},
-        {"provider": "openai", "weight": 0.3}
+        {"provider": "groq", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.7},
+        {"provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.3}
       ]
     }
     ```
@@ -885,11 +889,14 @@ When a Virtual Key has `provider_configs` defined:
       "virtual_keys": [
         {
           "id": "vk-dev",
-          "provider_configs": [{"provider": "ollama"}]
+          "provider_configs": [{"provider": "ollama", "allowed_models": ["*"], "key_ids": ["*"]}]
         },
         {
           "id": "vk-prod",
-          "provider_configs": [{"provider": "openai"}, {"provider": "azure"}]
+          "provider_configs": [
+            {"provider": "openai", "allowed_models": ["*"], "key_ids": ["*"]},
+            {"provider": "azure", "allowed_models": ["*"], "key_ids": ["*"]}
+          ]
         }
       ]
     }
@@ -910,7 +917,9 @@ When a Virtual Key has `provider_configs` defined:
 </AccordionGroup>
 
 <Note>
-**Empty `allowed_models`**: When left empty, Bifrost uses the Model Catalog (populated from pricing data and the provider's list models API) to determine which models are supported. See the [Model Catalog section](#the-model-catalog) above for how syncing works. For configuration instructions, see [Governance Routing](/features/governance/routing).
+**`allowed_models: ["*"]`**: Allows all models supported by the provider, validated via the Model Catalog (populated from pricing data and the provider's list models API). See the [Model Catalog section](#the-model-catalog) above for how syncing works. For configuration instructions, see [Governance Routing](/features/governance/routing).
+
+**`allowed_models: []` (empty array)**: Denies **all** models — no requests will be served for this provider config. This is deny-by-default behavior introduced in v1.5.0.
 
 **Empty `provider_configs`**: When `provider_configs` is empty (no providers configured), **all providers are blocked** (deny-by-default). You must explicitly add provider configurations to allow traffic through a Virtual Key.
 </Note>

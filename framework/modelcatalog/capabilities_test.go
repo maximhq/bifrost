@@ -185,13 +185,17 @@ func TestGetModelCapabilityEntryForModel_PrefersLiteralMatchOverAliasFamily(t *t
 
 func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	modality := "text"
+	inputCost := float64(1)
+	outputCost := float64(2)
 	entry := PricingEntry{
-		BaseModel:          "gpt-4o",
-		Provider:           "openai",
-		Mode:               "chat",
-		InputCostPerToken:  1,
-		OutputCostPerToken: 2,
-		ContextLength:      capabilityIntPtr(128000),
+		BaseModel: "gpt-4o",
+		Provider:  "openai",
+		Mode:      "chat",
+		PricingOptions: PricingOptions{
+			InputCostPerToken:  &inputCost,
+			OutputCostPerToken: &outputCost,
+		},
+		ContextLength:  capabilityIntPtr(128000),
 		MaxInputTokens:     capabilityIntPtr(64000),
 		MaxOutputTokens:    capabilityIntPtr(16000),
 		Architecture: &schemas.Architecture{

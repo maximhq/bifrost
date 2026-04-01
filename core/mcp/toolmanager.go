@@ -176,6 +176,18 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 	}
 }
 
+// SetPluginPipeline updates the plugin pipeline provider and release function
+// on both the ToolsManager and its CodeMode implementation.
+// This is used when an externally-created MCPManager is attached to a Bifrost instance
+// via SetMCPManager, so the CodeMode can route nested tool calls through Bifrost's plugin hooks.
+func (m *ToolsManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	m.pluginPipelineProvider = provider
+	m.releasePluginPipeline = release
+	if m.codeMode != nil {
+		m.codeMode.SetDependencies(m.GetCodeModeDependencies())
+	}
+}
+
 // GetAvailableTools returns the available tools for the given context.
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
@@ -665,8 +677,8 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
 
-	// Update CodeMode configuration if present
-	if m.codeMode != nil && config.CodeModeBindingLevel != "" {
+	// Update CodeMode configuration — propagate whenever either field is set
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: config.ToolExecutionTimeout,

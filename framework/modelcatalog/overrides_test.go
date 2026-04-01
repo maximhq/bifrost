@@ -498,7 +498,8 @@ func TestApplyScopedPricingOverrides_ScopePrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			patched, applied := mc.applyPricingOverrides("gpt-5-nano", schemas.ChatCompletionRequest, base, tc.scopes)
 			require.True(t, applied)
-			assert.Equal(t, tc.expected, patched.InputCostPerToken)
+			require.NotNil(t, patched.InputCostPerToken)
+			assert.Equal(t, tc.expected, *patched.InputCostPerToken)
 		})
 	}
 }
