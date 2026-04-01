@@ -262,7 +262,7 @@ cd "$REPO_ROOT/tests/integrations"
 # Check if uv is available
 if command -v uv >/dev/null 2>&1; then
   echo "📦 Installing dependencies with uv..."
-  uv sync --quiet
+  uv sync --frozen --quiet
   
   echo ""
   echo "🏃 Running tests..."

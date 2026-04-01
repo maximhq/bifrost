@@ -1,0 +1,89 @@
+---
+title: "v1.4.19"
+description: "v1.4.19 changelog - 2026-03-31"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.19
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.19
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.19
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.19">
+## ✨ Features
+
+- **Model Details API** — Added /api/models/details endpoint for model capability metadata
+- **Anthropic Beta Headers** — Support for Anthropic beta feature headers in requests
+
+## 🐞 Fixed
+
+- **Reasoning Content Leak** — Prevented reasoning text from leaking into Gemini response content
+- **Timeout Status Code** — Fixed timeout status code handling across all providers
+- **Cross-Provider Cache** — Preserved cached provider metadata on cross-provider cache hits
+- **Governance Virtual Keys** — Populated customer virtual_keys in governance APIs
+- **List Models Integration** — Removed default provider override on list models request in integrations
+- **Client Settings Headers** — Fixed Client settings UI to accept * as allowed headers
+
+## 🔧 Maintenance
+
+- **FIPS Docker Image** — Switched to FIPS-compliant base image for Docker builds
+- **Security Hardening** — Applied StepSecurity best practices to CI/CD pipeline (thanks [@step-security-bot](https://github.com/step-security-bot)!)
+- **Snyk Fixes** — Addressed Snyk vulnerability findings in Docker configuration
+
+</Update>
+<Update label="Core" description="1.4.16">
+- fix: fixed timeout status code handling across all providers
+- fix: preserve cached provider metadata on cross-provider cache hits
+- fix: prevent reasoning text from leaking into Gemini response content
+- feat: added Anthropic beta headers support
+
+</Update>
+<Update label="Framework" description="1.2.35">
+- feat: added /api/models/details endpoint with model capability metadata
+- fix: populate customer virtual_keys in governance APIs
+- fix: enterprise model catalog sync improvements
+
+</Update>
+<Update label="governance" description="1.4.35">
+- fix: populate customer virtual_keys in governance APIs
+
+</Update>
+<Update label="jsonparser" description="1.4.34">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="litellmcompat" description="0.0.24">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="logging" description="1.4.35">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="maxim" description="1.5.34">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="mocker" description="1.4.34">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="otel" description="1.1.34">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>
+<Update label="semanticcache" description="1.4.33">
+- fix: preserve cached provider metadata on cross-provider cache hits
+
+</Update>
+<Update label="telemetry" description="1.4.35">
+- chore: upgraded core to v1.4.16 and framework to v1.2.35
+
+</Update>

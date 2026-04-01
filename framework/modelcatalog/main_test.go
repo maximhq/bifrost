@@ -144,3 +144,14 @@ func TestIsSameModel_EmptyStrings(t *testing.T) {
 	assert.False(t, mc.IsSameModel("gpt-4o", ""))
 	assert.False(t, mc.IsSameModel("", "gpt-4o"))
 }
+
+func TestIsModelAllowedForProvider_PrefixedAllowedModelInCatalog(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			schemas.OpenRouter: {"openai/gpt-4o"},
+		},
+		nil,
+	)
+
+	assert.True(t, mc.IsModelAllowedForProvider(schemas.OpenRouter, "gpt-4o", []string{"openai/gpt-4o"}))
+}

@@ -161,6 +161,7 @@ export interface NetworkConfig {
 	stream_idle_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
+	beta_header_overrides?: Record<string, boolean>;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize

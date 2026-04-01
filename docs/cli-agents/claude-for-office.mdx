@@ -72,6 +72,29 @@ Bifrost automatically handles:
 - **Tool stripping** — server-side tools like `code_execution`, `web_search`, and `web_fetch` are automatically stripped to prevent API conflicts
 - **Model metadata** — token limits and capabilities are returned in list models responses for proper model selection in the add-in
 
+## Using Other Providers (Azure, Vertex, Bedrock)
+
+By default, Claude for Office sends requests to the Anthropic API. To route requests through Azure, Vertex AI, or Amazon Bedrock instead, you have two options:
+
+### Option 1: Set the Model Name Directly
+
+In the Claude for Office model selector, enter the provider-specific model name or deployment name. Bifrost will automatically route the request to the correct provider based on the model identifier.
+
+For example:
+- **Azure**: Enter your Azure deployment name (e.g., `claude-opus-4-0`)
+- **Vertex AI**: Enter the Vertex model ID (e.g., `claude-opus-4@20250514`)
+- **Bedrock**: Enter the Bedrock model ID (e.g., `anthropic.claude-opus-4-0-20250514-v1:0`)
+
+### Option 2: Use Routing Rules
+
+If you prefer to keep the default model names in Claude for Office and control routing server-side, create a [routing rule](/providers/routing-rules) in Bifrost. This lets you route requests to any provider — with fallbacks — without changing anything in the add-in.
+
+For example, you can create a rule that matches requests from Claude for Office (based on the `origin` header) and routes them to Azure with a Vertex AI fallback:
+
+![Claude for Office routing rule](/media/cli/calude-for-office-rule.png)
+
+This approach is ideal for organization-wide deployments where you want centralized control over which provider handles Claude for Office traffic.
+
 ## Using Virtual Keys
 
 Bifrost [Virtual Keys](/features/governance/virtual-keys) can be used as the API key in Claude for Office. This lets you:

@@ -9,7 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool, betaHeaderOverrides map[string]bool, providerExtraHeaders map[string]string) ([]byte, *schemas.BifrostError) {
 	// Large payload mode: body streams directly from the LP reader — skip all body building
 	// (matches CheckContextAndGetRequestBody guard).
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
@@ -120,20 +120,6 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			}
 		}
 
-		// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-			betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
-			if betaErr != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, betaErr, providerName)
-			}
-			if len(betaHeaders) > 0 {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-			}
-		}
-
 		if isCountTokens {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "max_tokens")
 			if err != nil {
@@ -152,6 +138,13 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		}
 
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "region")
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+	}
+
+	if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(providerExtraHeaders, ctx), schemas.Vertex, betaHeaderOverrides); len(betaHeaders) > 0 {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}

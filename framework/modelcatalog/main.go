@@ -67,6 +67,12 @@ type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
 	Mode      string `json:"mode"`
+
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
 	PricingOptions
 }
 
@@ -127,9 +133,6 @@ type PricingOptions struct {
 	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
-
-	// Model parameters
-	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 
 	// Costs - Other
 	//
@@ -404,6 +407,107 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		}
 	}
 	return nil
+}
+
+// GetModelCapabilityEntryForModel returns capability metadata for a model/provider pair.
+// It prefers chat, then responses, then text-completion entries; if none exist,
+// it falls back to the lexicographically first available mode for deterministic behavior.
+func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	if entry := mc.getCapabilityEntryForExactModelUnsafe(model, provider); entry != nil {
+		return entry
+	}
+
+	baseModel := mc.getBaseModelNameUnsafe(model)
+	if baseModel != model {
+		if entry := mc.getCapabilityEntryForExactModelUnsafe(baseModel, provider); entry != nil {
+			return entry
+		}
+	}
+
+	if entry := mc.getCapabilityEntryForModelFamilyUnsafe(baseModel, provider); entry != nil {
+		return entry
+	}
+
+	return nil
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForExactModelUnsafe(model string, provider schemas.ModelProvider) *PricingEntry {
+	preferredModes := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+
+	for _, mode := range preferredModes {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+
+	prefix := model + "|" + string(provider) + "|"
+	matchingKeys := make([]string, 0)
+	for key := range mc.pricingData {
+		if strings.HasPrefix(key, prefix) {
+			matchingKeys = append(matchingKeys, key)
+		}
+	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForModelFamilyUnsafe(baseModel string, provider schemas.ModelProvider) *PricingEntry {
+	if baseModel == "" {
+		return nil
+	}
+
+	matchingKeys := make([]string, 0)
+	for key, pricing := range mc.pricingData {
+		if normalizeProvider(pricing.Provider) != string(provider) {
+			continue
+		}
+		if mc.getBaseModelNameUnsafe(pricing.Model) != baseModel {
+			continue
+		}
+		matchingKeys = append(matchingKeys, key)
+	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *PricingEntry {
+	if len(matchingKeys) == 0 {
+		return nil
+	}
+
+	preferredModes := []string{
+		normalizeRequestType(schemas.ChatCompletionRequest),
+		normalizeRequestType(schemas.ResponsesRequest),
+		normalizeRequestType(schemas.TextCompletionRequest),
+	}
+
+	for _, mode := range preferredModes {
+		modeMatches := make([]string, 0)
+		for _, key := range matchingKeys {
+			parts := strings.SplitN(key, "|", 3)
+			if len(parts) != 3 || parts[2] != mode {
+				continue
+			}
+			modeMatches = append(modeMatches, key)
+		}
+		if len(modeMatches) == 0 {
+			continue
+		}
+		slices.Sort(modeMatches)
+		pricing := mc.pricingData[modeMatches[0]]
+		return convertTableModelPricingToPricingData(&pricing)
+	}
+
+	slices.Sort(matchingKeys)
+	pricing := mc.pricingData[matchingKeys[0]]
+	return convertTableModelPricingToPricingData(&pricing)
 }
 
 // GetModelsForProvider returns all available models for a given provider (thread-safe)

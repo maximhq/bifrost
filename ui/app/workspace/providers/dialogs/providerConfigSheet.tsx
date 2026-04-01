@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, BetaHeadersFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -15,7 +15,9 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean) => {
+const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "azure"];
+
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -41,6 +43,12 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 			label: "Governance",
 		});
 	}
+	if (isAnthropicFamily) {
+		tabs.push({
+			id: "beta-headers",
+			label: "Beta Headers",
+		});
+	}
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
@@ -59,10 +67,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
+	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -125,6 +134,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="beta-headers">
+							<BetaHeadersFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="debugging">
 							<DebuggingFormFragment provider={provider} />

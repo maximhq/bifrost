@@ -191,33 +191,27 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 }
 
 func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
-	virtualKeys := make(map[string]*configstoreTables.TableVirtualKey)
-	gs.virtualKeys.Range(func(key, value interface{}) bool {
-		vk, ok := value.(*configstoreTables.TableVirtualKey)
-		if !ok || vk == nil {
-			return true // continue
+	refreshVKAssociations := func(vk *configstoreTables.TableVirtualKey) {
+		if vk == nil {
+			return
 		}
-		// Cross-reference live budget/rate limit from standalone maps
-		// (usage updates clone into budgets/rateLimits maps, so embedded pointers go stale)
-		clone := *vk
-		if clone.BudgetID != nil {
-			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+		if vk.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*vk.BudgetID); exists && liveBudget != nil {
 				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-					clone.Budget = b
+					vk.Budget = b
 				}
 			}
 		}
-		if clone.RateLimitID != nil {
-			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+		if vk.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && liveRL != nil {
 				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
-					clone.RateLimit = rl
+					vk.RateLimit = rl
 				}
 			}
 		}
-		// Also fix embedded ProviderConfigs
-		if len(clone.ProviderConfigs) > 0 {
-			configs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(clone.ProviderConfigs))
-			copy(configs, clone.ProviderConfigs)
+		if len(vk.ProviderConfigs) > 0 {
+			configs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
+			copy(configs, vk.ProviderConfigs)
 			for i := range configs {
 				if configs[i].BudgetID != nil {
 					if liveBudget, exists := gs.budgets.Load(*configs[i].BudgetID); exists && liveBudget != nil {
@@ -234,8 +228,38 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 					}
 				}
 			}
-			clone.ProviderConfigs = configs
+			vk.ProviderConfigs = configs
 		}
+	}
+
+	refreshTeamAssociations := func(team *configstoreTables.TableTeam) {
+		if team == nil {
+			return
+		}
+		if team.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*team.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					team.Budget = b
+				}
+			}
+		}
+		if team.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*team.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					team.RateLimit = rl
+				}
+			}
+		}
+	}
+
+	virtualKeys := make(map[string]*configstoreTables.TableVirtualKey)
+	gs.virtualKeys.Range(func(key, value interface{}) bool {
+		vk, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || vk == nil {
+			return true // continue
+		}
+		clone := *vk
+		refreshVKAssociations(&clone)
 		virtualKeys[key.(string)] = &clone
 		return true // continue iteration
 	})
@@ -245,22 +269,8 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if !ok || team == nil {
 			return true // continue
 		}
-		// Cross-reference live budget/rate limit from standalone maps
 		clone := *team
-		if clone.BudgetID != nil {
-			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
-				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
-					clone.Budget = b
-				}
-			}
-		}
-		if clone.RateLimitID != nil {
-			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
-				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
-					clone.RateLimit = rl
-				}
-			}
-		}
+		refreshTeamAssociations(&clone)
 		teams[key.(string)] = &clone
 		return true // continue iteration
 	})
@@ -270,8 +280,9 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if !ok || customer == nil {
 			return true // continue
 		}
-		// Cross-reference live budget/rate limit from standalone maps
 		clone := *customer
+		clone.Teams = make([]configstoreTables.TableTeam, 0)
+		clone.VirtualKeys = make([]configstoreTables.TableVirtualKey, 0)
 		if clone.BudgetID != nil {
 			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
 				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
@@ -289,6 +300,60 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		customers[key.(string)] = &clone
 		return true // continue iteration
 	})
+
+	for _, team := range teams {
+		if team == nil {
+			continue
+		}
+		if team.CustomerID != nil {
+			if customer, exists := customers[*team.CustomerID]; exists && customer != nil {
+				team.Customer = customer
+
+				nestedTeam := *team
+				nestedTeam.Customer = nil
+				customer.Teams = append(customer.Teams, nestedTeam)
+			}
+		}
+	}
+
+	for _, vk := range virtualKeys {
+		if vk == nil {
+			continue
+		}
+		if vk.TeamID != nil {
+			if team, exists := teams[*vk.TeamID]; exists && team != nil {
+				vk.Team = team
+			}
+		}
+		if vk.CustomerID != nil {
+			if customer, exists := customers[*vk.CustomerID]; exists && customer != nil {
+				vk.Customer = customer
+
+				nestedVK := *vk
+				nestedVK.Customer = nil
+				customer.VirtualKeys = append(customer.VirtualKeys, nestedVK)
+			}
+		}
+	}
+
+	for _, customer := range customers {
+		if customer == nil {
+			continue
+		}
+		sort.Slice(customer.Teams, func(i, j int) bool {
+			if customer.Teams[i].CreatedAt.Equal(customer.Teams[j].CreatedAt) {
+				return customer.Teams[i].ID < customer.Teams[j].ID
+			}
+			return customer.Teams[i].CreatedAt.Before(customer.Teams[j].CreatedAt)
+		})
+		sort.Slice(customer.VirtualKeys, func(i, j int) bool {
+			if customer.VirtualKeys[i].CreatedAt.Equal(customer.VirtualKeys[j].CreatedAt) {
+				return customer.VirtualKeys[i].ID < customer.VirtualKeys[j].ID
+			}
+			return customer.VirtualKeys[i].CreatedAt.Before(customer.VirtualKeys[j].CreatedAt)
+		})
+	}
+
 	budgets := make(map[string]*configstoreTables.TableBudget)
 	gs.budgets.Range(func(key, value interface{}) bool {
 		budget, ok := value.(*configstoreTables.TableBudget)

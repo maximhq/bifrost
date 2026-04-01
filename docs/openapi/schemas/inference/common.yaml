@@ -121,6 +121,10 @@ BifrostCacheDebug:
       type: string
     hit_type:
       type: string
+    requested_provider:
+      type: string
+    requested_model:
+      type: string
     provider_used:
       type: string
     model_used:

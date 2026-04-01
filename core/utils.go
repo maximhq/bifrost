@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -169,6 +170,40 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
 			Message: message,
+		},
+	}
+}
+
+// newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
+// It distinguishes DeadlineExceeded (504 RequestTimedOut) from Canceled (499 RequestCancelled).
+func newBifrostCtxDoneError(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestType schemas.RequestType, stage string) *schemas.BifrostError {
+	var statusCode int
+	var errorType string
+	var message string
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		statusCode = 504
+		errorType = schemas.RequestTimedOut
+		message = fmt.Sprintf("request timed out %s: %v", stage, ctx.Err())
+	} else {
+		statusCode = 499
+		errorType = schemas.RequestCancelled
+		message = fmt.Sprintf("request cancelled %s: %v", stage, ctx.Err())
+	}
+
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		AllowFallbacks: new(false),
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: message,
+			Error:   ctx.Err(),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:    requestType,
+			Provider:       provider,
+			ModelRequested: model,
 		},
 	}
 }

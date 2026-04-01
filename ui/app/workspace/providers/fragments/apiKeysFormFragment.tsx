@@ -58,40 +58,40 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
-	const [azureAuthType, setAzureAuthType] = useState<'api_key' | 'entra_id' | 'default_credential'>('api_key')
+	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
 
 	// Auth type state for Bedrock: 'iam_role', 'explicit', or 'api_key'
-	const [bedrockAuthType, setBedrockAuthType] = useState<'iam_role' | 'explicit' | 'api_key'>('iam_role')
+	const [bedrockAuthType, setBedrockAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
-		if (form.formState.isDirty) return
+		if (form.formState.isDirty) return;
 		if (isAzure) {
-			const clientId = form.getValues('key.azure_key_config.client_id')?.value
-			const clientSecret = form.getValues('key.azure_key_config.client_secret')?.value
-			const tenantId = form.getValues('key.azure_key_config.tenant_id')?.value
-			const apiKey = form.getValues('key.value')?.value
+			const clientId = form.getValues("key.azure_key_config.client_id")?.value;
+			const clientSecret = form.getValues("key.azure_key_config.client_secret")?.value;
+			const tenantId = form.getValues("key.azure_key_config.tenant_id")?.value;
+			const apiKey = form.getValues("key.value")?.value;
 			if (clientId || clientSecret || tenantId) {
-				setAzureAuthType('entra_id')
+				setAzureAuthType("entra_id");
 			} else if (!apiKey) {
-				setAzureAuthType('default_credential')
+				setAzureAuthType("default_credential");
 			}
 		}
-	}, [isAzure, form])
+	}, [isAzure, form]);
 
 	useEffect(() => {
-		if (form.formState.isDirty) return
+		if (form.formState.isDirty) return;
 		if (isBedrock) {
-			const accessKey = form.getValues('key.bedrock_key_config.access_key')?.value
-			const secretKey = form.getValues('key.bedrock_key_config.secret_key')?.value
-			const apiKey = form.getValues('key.value')?.value
+			const accessKey = form.getValues("key.bedrock_key_config.access_key")?.value;
+			const secretKey = form.getValues("key.bedrock_key_config.secret_key")?.value;
+			const apiKey = form.getValues("key.value")?.value;
 			if (accessKey || secretKey) {
-				setBedrockAuthType('explicit')
+				setBedrockAuthType("explicit");
 			} else if (apiKey) {
-				setBedrockAuthType('api_key')
+				setBedrockAuthType("api_key");
 			}
 		}
-	}, [isBedrock, form])
+	}, [isBedrock, form]);
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
@@ -171,129 +171,129 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && !(isBedrock) && (
-					<FormField
-						control={control}
-						name={`key.value`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-				)}
-			{!isVLLM && (
-				<>
+			{!isAzure && !isBedrock && (
 				<FormField
 					control={control}
-					name={`key.models`}
+					name={`key.value`}
 					render={({ field }) => (
 						<FormItem>
-							<div className="flex items-center gap-2">
-								<FormLabel>Allowed Models</FormLabel>
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span>
-												<Info className="text-muted-foreground h-3 w-3" />
-											</span>
-										</TooltipTrigger>
-										<TooltipContent>
-											<p>Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.</p>
-										</TooltipContent>
-									</Tooltip>
-								</TooltipProvider>
-							</div>
+							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
-								<ModelMultiselect
-									data-testid="api-keys-models-multiselect"
-									provider={providerName}
-									allowAllOption={true}
-									value={field.value || []}
-									onChange={(models: string[]) => {
-										const hadStar = (field.value || []).includes("*");
-										const hasStar = models.includes("*");
-										if (!hadStar && hasStar) {
-											field.onChange(["*"]);
-										} else if (hadStar && hasStar && models.length > 1) {
-											field.onChange(models.filter((m: string) => m !== "*"));
-										} else {
-											field.onChange(models);
-										}
-									}}
-									placeholder={
-										(field.value || []).includes("*")
-											? "All models allowed"
-											: (field.value || []).length === 0
-												? "No models (deny all)"
-												: "Search models..."
-									}
-									unfiltered={true}
-								/>
+								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
 					)}
 				/>
-				<FormField
-				control={control}
-				name={`key.blacklisted_models`}
-				render={({ field }) => (
-					<FormItem data-testid="apikey-blacklisted-models-field">
-						<div className="flex items-center gap-2">
-							<FormLabel>Blocked Models</FormLabel>
-							<TooltipProvider>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span>
-											<Info className="text-muted-foreground h-3 w-3" />
-										</span>
-									</TooltipTrigger>
-									<TooltipContent className="max-w-sm">
-										<p>
-											Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here, it is blocked.
-											Select "All Models" to block every model on this key.
-										</p>
-									</TooltipContent>
-								</Tooltip>
-							</TooltipProvider>
-						</div>
-						<FormControl>
-							<ModelMultiselect
-								data-testid="api-keys-blocked-models-multiselect"
-								provider={providerName}
-								allowAllOption={true}
-								value={field.value || []}
-								onChange={(models: string[]) => {
-									const hadStar = (field.value || []).includes("*");
-									const hasStar = models.includes("*");
-									if (!hadStar && hasStar) {
-										field.onChange(["*"]);
-									} else if (hadStar && hasStar && models.length > 1) {
-										field.onChange(models.filter((m: string) => m !== "*"));
-									} else {
-										field.onChange(models);
-									}
-								}}
-								placeholder={
-									(field.value || []).includes("*")
-										? "All models blocked"
-										: (field.value || []).length === 0
-											? "No models blocked"
-											: "Search models..."
-								}
-								unfiltered={true}
-							/>
-						</FormControl>
-						<FormMessage />
-					</FormItem>
-				)}
-			/>
-			</>
+			)}
+			{!isVLLM && (
+				<>
+					<FormField
+						control={control}
+						name={`key.models`}
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center gap-2">
+									<FormLabel>Allowed Models</FormLabel>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span>
+													<Info className="text-muted-foreground h-3 w-3" />
+												</span>
+											</TooltipTrigger>
+											<TooltipContent>
+												<p>Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.</p>
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								</div>
+								<FormControl>
+									<ModelMultiselect
+										data-testid="api-keys-models-multiselect"
+										provider={providerName}
+										allowAllOption={true}
+										value={field.value || []}
+										onChange={(models: string[]) => {
+											const hadStar = (field.value || []).includes("*");
+											const hasStar = models.includes("*");
+											if (!hadStar && hasStar) {
+												field.onChange(["*"]);
+											} else if (hadStar && hasStar && models.length > 1) {
+												field.onChange(models.filter((m: string) => m !== "*"));
+											} else {
+												field.onChange(models);
+											}
+										}}
+										placeholder={
+											(field.value || []).includes("*")
+												? "All models allowed"
+												: (field.value || []).length === 0
+													? "No models (deny all)"
+													: "Search models..."
+										}
+										unfiltered={true}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.blacklisted_models`}
+						render={({ field }) => (
+							<FormItem data-testid="apikey-blacklisted-models-field">
+								<div className="flex items-center gap-2">
+									<FormLabel>Blocked Models</FormLabel>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span>
+													<Info className="text-muted-foreground h-3 w-3" />
+												</span>
+											</TooltipTrigger>
+											<TooltipContent className="max-w-sm">
+												<p>
+													Models this key must never serve. The denylist always wins — if a model appears in both Allowed Models and here, it is blocked.
+													Select "All Models" to block every model on this key.
+												</p>
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								</div>
+								<FormControl>
+									<ModelMultiselect
+										data-testid="api-keys-blocked-models-multiselect"
+										provider={providerName}
+										allowAllOption={true}
+										value={field.value || []}
+										onChange={(models: string[]) => {
+											const hadStar = (field.value || []).includes("*");
+											const hasStar = models.includes("*");
+											if (!hadStar && hasStar) {
+												field.onChange(["*"]);
+											} else if (hadStar && hasStar && models.length > 1) {
+												field.onChange(models.filter((m: string) => m !== "*"));
+											} else {
+												field.onChange(models);
+											}
+										}}
+										placeholder={
+											(field.value || []).includes("*")
+												? "All models blocked"
+												: (field.value || []).length === 0
+													? "No models blocked"
+													: "Search models..."
+										}
+										unfiltered={true}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</>
 			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
@@ -331,6 +331,23 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</TabsList>
 						</Tabs>
 					</div>
+					{azureAuthType === "api_key" && (
+						<FormField
+							control={control}
+							name={`key.value`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>
+										API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}
+									</FormLabel>
+									<FormControl>
+										<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 					{azureAuthType === "default_credential" && (
 						<p className="text-muted-foreground text-sm">
 							Uses DefaultAzureCredential — automatically detects managed identity on Azure VMs and containers, workload identity in AKS,
@@ -430,7 +447,12 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											</TooltipProvider>
 										</div>
 										<FormControl>
-											<TagInput data-testid="apikey-azure-scopes-input" placeholder="Add scope (Enter or comma)" value={field.value ?? []} onValueChange={field.onChange} />
+											<TagInput
+												data-testid="apikey-azure-scopes-input"
+												placeholder="Add scope (Enter or comma)"
+												value={field.value ?? []}
+												onValueChange={field.onChange}
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -701,9 +723,15 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							}}
 						>
 							<TabsList className="grid w-full grid-cols-3">
-								<TabsTrigger data-testid="apikey-bedrock-iam-role-tab" value="iam_role">IAM Role (Inherited)</TabsTrigger>
-								<TabsTrigger data-testid="apikey-bedrock-explicit-credentials-tab" value="explicit">Explicit Credentials</TabsTrigger>
-								<TabsTrigger data-testid="apikey-bedrock-api-key-tab" value="api_key">API Key</TabsTrigger>
+								<TabsTrigger data-testid="apikey-bedrock-iam-role-tab" value="iam_role">
+									IAM Role (Inherited)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-bedrock-explicit-credentials-tab" value="explicit">
+									Explicit Credentials
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-bedrock-api-key-tab" value="api_key">
+									API Key
+								</TabsTrigger>
 							</TabsList>
 						</Tabs>
 						{bedrockAuthType === "iam_role" && (
@@ -766,7 +794,12 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
-										<EnvVarInput data-testid="apikey-bedrock-api-key-input" placeholder="API Key or env.BEDROCK_API_KEY" type="text" {...field} />
+										<EnvVarInput
+											data-testid="apikey-bedrock-api-key-input"
+											placeholder="API Key or env.BEDROCK_API_KEY"
+											type="text"
+											{...field}
+										/>
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -817,7 +850,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										<FormLabel>External ID (Optional)</FormLabel>
 										<FormDescription>Required by the role's trust policy when using cross-account access</FormDescription>
 										<FormControl>
-											<EnvVarInput data-testid="apikey-bedrock-external-id-input" placeholder="external-id or env.AWS_EXTERNAL_ID" {...field} />
+											<EnvVarInput
+												data-testid="apikey-bedrock-external-id-input"
+												placeholder="external-id or env.AWS_EXTERNAL_ID"
+												{...field}
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>

@@ -22,8 +22,8 @@
     "codegen": "playwright codegen http://localhost:3000"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@playwright/test": "1.57.0",
+    "@types/node": "20.19.27",
+    "typescript": "5.9.3"
   }
 }

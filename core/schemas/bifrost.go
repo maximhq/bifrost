@@ -837,6 +837,9 @@ type BifrostCacheDebug struct {
 	CacheID *string `json:"cache_id,omitempty"`
 	HitType *string `json:"hit_type,omitempty"`
 
+	RequestedProvider *string `json:"requested_provider,omitempty"`
+	RequestedModel    *string `json:"requested_model,omitempty"`
+
 	// Semantic cache only (provider, model, and input tokens will be present for semantic cache, even if cache is not hit)
 	ProviderUsed *string `json:"provider_used,omitempty"`
 	ModelUsed    *string `json:"model_used,omitempty"`

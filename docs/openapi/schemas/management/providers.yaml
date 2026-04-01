@@ -350,6 +350,45 @@ ModelResponse:
       items:
         type: string
 
+Architecture:
+  type: object
+  properties:
+    modality:
+      type: string
+    tokenizer:
+      type: string
+    instruct_type:
+      type: string
+    input_modalities:
+      type: array
+      items:
+        type: string
+    output_modalities:
+      type: array
+      items:
+        type: string
+
+ModelDetailsResponse:
+  type: object
+  description: Model details with capability metadata
+  properties:
+    name:
+      type: string
+    provider:
+      type: string
+    context_length:
+      type: integer
+    max_input_tokens:
+      type: integer
+    max_output_tokens:
+      type: integer
+    architecture:
+      $ref: '#/Architecture'
+    accessible_by_keys:
+      type: array
+      items:
+        type: string
+
 ListModelsResponse:
   type: object
   description: List models response
@@ -358,5 +397,16 @@ ListModelsResponse:
       type: array
       items:
         $ref: '#/ModelResponse'
+    total:
+      type: integer
+
+ListModelDetailsResponse:
+  type: object
+  description: List model details response
+  properties:
+    models:
+      type: array
+      items:
+        $ref: '#/ModelDetailsResponse'
     total:
       type: integer

@@ -63,7 +63,7 @@ install-ui: cleanup-enterprise
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
 	@echo "$(GREEN)Node.js and npm are installed$(NC)"
-	@cd ui && npm install
+	@cd ui && npm ci
 	@which next > /dev/null || (echo "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
 	@echo "$(GREEN)UI deps are in sync$(NC)"
 
@@ -1257,7 +1257,7 @@ install-playwright: ## Install Playwright test dependencies
 	@echo "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@cd tests/e2e && npm install
+	@cd tests/e2e && npm ci
 	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
 		echo "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
 	else \
