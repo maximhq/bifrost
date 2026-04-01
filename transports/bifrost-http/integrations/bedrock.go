@@ -103,9 +103,10 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 					if rawResp, ok := resp.ExtraFields.RawResponse.(string); ok {
 						// Parse raw response to BedrockStreamEvent struct for proper encoding
 						var bedrockEvent bedrock.BedrockStreamEvent
-						if err := sonic.Unmarshal([]byte(rawResp), &bedrockEvent); err == nil {
-							return "", &bedrockEvent, nil
+						if err := sonic.Unmarshal([]byte(rawResp), &bedrockEvent); err != nil {
+							return "", nil, fmt.Errorf("failed to unmarshal raw Bedrock response: %w", err)
 						}
+						return "", &bedrockEvent, nil
 					}
 				}
 				// Fallback to conversion for cross-provider routing
@@ -1224,7 +1225,9 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			r.ModelID = fullModelID
 			// Enable raw response passthrough for streaming converse requests when routing to Bedrock
 			// This avoids conversion bugs and is more efficient for Bedrock → Bedrock routing
-			if r.Stream && (provider == "" || provider == schemas.Bedrock) {
+			// Note: r.Stream is always false here (set in RequestConverter which runs after PreCallback)
+			// so we detect streaming via the request path instead
+			if strings.HasSuffix(string(ctx.Path()), "/converse-stream") && (provider == "" || provider == schemas.Bedrock) {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 			}
 		case *bedrock.BedrockTextCompletionRequest:
@@ -1237,7 +1240,9 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			r.ModelID = fullModelID
 			// Enable raw response passthrough for streaming invoke requests when routing to Bedrock
 			// This avoids conversion bugs and is more efficient for Bedrock → Bedrock routing
-			if r.Stream && (provider == "" || provider == schemas.Bedrock) {
+			// Note: r.Stream is always false here (set in RequestConverter which runs after PreCallback)
+			// so we detect streaming via the request path instead
+			if strings.HasSuffix(string(ctx.Path()), "/invoke-with-response-stream") && (provider == "" || provider == schemas.Bedrock) {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 			}
 		default:

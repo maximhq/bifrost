@@ -275,6 +275,88 @@ func Test_createBedrockConverseStreamRouteConfig_Passthrough(t *testing.T) {
 	assert.Equal(t, 0, *bedrockEvent.ContentBlockIndex)
 }
 
+func Test_bedrockPreCallback_SetsSendBackRawResponse(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: false}
+
+	tests := []struct {
+		name           string
+		path           string
+		modelID        string
+		reqType        interface{}
+		expectRawResp  bool
+	}{
+		{
+			name:          "converse-stream with native bedrock model enables passthrough",
+			path:          "/bedrock/model/anthropic.claude-sonnet-4-5-20250929-v1:0/converse-stream",
+			modelID:       "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			reqType:       &bedrock.BedrockConverseRequest{},
+			expectRawResp: true,
+		},
+		{
+			name:          "converse-stream with bedrock/ prefix enables passthrough",
+			path:          "/bedrock/model/bedrock%2Fanthropic.claude-sonnet-4-5-20250929-v1:0/converse-stream",
+			modelID:       "bedrock%2Fanthropic.claude-sonnet-4-5-20250929-v1:0",
+			reqType:       &bedrock.BedrockConverseRequest{},
+			expectRawResp: true,
+		},
+		{
+			name:          "converse-stream with anthropic/ prefix disables passthrough",
+			path:          "/bedrock/model/anthropic%2Fclaude-sonnet-4-5-20250929/converse-stream",
+			modelID:       "anthropic%2Fclaude-sonnet-4-5-20250929",
+			reqType:       &bedrock.BedrockConverseRequest{},
+			expectRawResp: false,
+		},
+		{
+			name:          "invoke-with-response-stream enables passthrough",
+			path:          "/bedrock/model/anthropic.claude-sonnet-4-5-20250929-v1:0/invoke-with-response-stream",
+			modelID:       "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			reqType:       &bedrock.BedrockInvokeRequest{},
+			expectRawResp: true,
+		},
+		{
+			name:          "non-streaming converse does not enable passthrough",
+			path:          "/bedrock/model/anthropic.claude-sonnet-4-5-20250929-v1:0/converse",
+			modelID:       "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			reqType:       &bedrock.BedrockConverseRequest{},
+			expectRawResp: false,
+		},
+		{
+			name:          "non-streaming invoke does not enable passthrough",
+			path:          "/bedrock/model/anthropic.claude-sonnet-4-5-20250929-v1:0/invoke",
+			modelID:       "anthropic.claude-sonnet-4-5-20250929-v1:0",
+			reqType:       &bedrock.BedrockInvokeRequest{},
+			expectRawResp: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create fasthttp context with the path
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tt.path)
+			ctx.SetUserValue("modelId", tt.modelID)
+
+			// Create bifrost context
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			// Call preCallback
+			preCallback := bedrockPreCallback(handlerStore)
+			err := preCallback(ctx, bifrostCtx, tt.reqType)
+			require.NoError(t, err)
+
+			// Check if BifrostContextKeySendBackRawResponse was set
+			rawRespValue, ok := bifrostCtx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+			if tt.expectRawResp {
+				assert.True(t, ok, "BifrostContextKeySendBackRawResponse should be set")
+				assert.True(t, rawRespValue, "BifrostContextKeySendBackRawResponse should be true")
+			} else {
+				// Either not set or set to false
+				assert.False(t, ok && rawRespValue, "BifrostContextKeySendBackRawResponse should not be true")
+			}
+		})
+	}
+}
+
 func Test_createBedrockRerankRouteConfig(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
