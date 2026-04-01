@@ -181,8 +181,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												checked={isKeyEnabled}
 												size="md"
 												disabled={!hasUpdateProviderAccess}
-												onCheckedChange={(checked) => {
-													updateProvider({
+												onAsyncCheckedChange={async (checked) => {
+													await updateProvider({
 														...provider,
 														keys: provider.keys.map((k, i) => (i === index ? { ...k, enabled: checked } : k)),
 													})
