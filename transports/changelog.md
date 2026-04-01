@@ -6,10 +6,11 @@
 - fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an MCP gateway.
 - refactor: parallelize model listing for providers to speed up startup time.
 - fix: send back accumulated usage in MCP agent mode.
-- feat: MCP edit UI now supports assigning virtual keys with per-tool access control directly from the MCP server edit sheet.
+- feat: MCP configuration now supports assigning virtual keys with per-tool access control.
 - feat: adds option to allow MCP clients to run on all virtual keys without explicit assignment.
 - feat: add support for pricing overrides.
-- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
+- feat: add StabilityAI provider support to Bedrock.
+- fix: handle text, vtt, srt response formats in OpenAI transcription response.
 
 <Warning>
 **v1.5.0 contains multiple breaking changes** to how Bifrost interprets empty arrays and wildcard values across Virtual Keys, provider keys, and MCP configurations. Existing deployments are protected by automatic database migrations — but any **new** configuration created after upgrading must follow the new semantics described below.
@@ -53,7 +54,7 @@ The following automatic migrations run on upgrade:
 </Note>
 
 <Warning>
-**This migration is not revertible.** Although all migrations are correctly handled automatically, it is recommended to **make a backup copy of your config store database** before upgrading to v1.5.0-prerelease1. If anything goes wrong, a backup is the only way to restore your previous state.
+**This migration is not revertible.** Although all migrations are correctly handled automatically, it is recommended to **make a backup copy of your config store database** before upgrading to v1.5.0-prerelease1. If anything goes wrong, a backup is the only way to restore your previous state. It is also to note that any database which has been successfully migrated to v1.5.0-prereleaseX can not be used to run v1.4.x.
 </Warning>
 
 **The automatic migration only protects your existing data.** If you also define your configuration through `config.json` or manage virtual keys via the API, you must update those manually using this guide.
