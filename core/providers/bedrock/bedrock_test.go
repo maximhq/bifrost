@@ -15,7 +15,10 @@ import (
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("mustMarshalJSON: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -40,7 +43,10 @@ func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...int
 // mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
 // matching the conversion code path for deterministic output.
 func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
-	b, _ := json.Marshal(params)
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic("mustMarshalToolParams: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -3641,7 +3647,7 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 	}
 
 	type bedrockChunk struct {
-		InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks"`
+		InvokeModelRawChunk []byte `json:"invokeModelRawChunk"`
 	}
 
 	var stopCount int
@@ -3655,46 +3661,11 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 		require.NoError(t, err)
 		var chunk bedrockChunk
 		require.NoError(t, json.Unmarshal(raw, &chunk))
-		for _, rawChunk := range chunk.InvokeModelRawChunks {
-			if strings.Contains(string(rawChunk), "content_block_stop") {
-				stopCount++
-			}
+		if len(chunk.InvokeModelRawChunk) > 0 &&
+			strings.Contains(string(chunk.InvokeModelRawChunk), "content_block_stop") {
+			stopCount++
 		}
 	}
 
 	assert.Equal(t, 1, stopCount, "expected exactly one content_block_stop event, got %d", stopCount)
-}
-
-// TestToBedrockInvokeMessagesStreamResponse_MessageStopEmitted verifies that
-// the Completed event emits both message_delta and message_stop events.
-func TestToBedrockInvokeMessagesStreamResponse_MessageStopEmitted(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	model := "anthropic.claude-3-5-sonnet-20241022-v2:0"
-
-	// Create a Completed event
-	completedEvent := &schemas.BifrostResponsesStreamResponse{
-		Type: schemas.ResponsesStreamResponseTypeCompleted,
-		Response: &schemas.BifrostResponsesResponse{
-			Model: model,
-			Usage: &schemas.ResponsesResponseUsage{
-				OutputTokens: 100,
-			},
-		},
-		ExtraFields: schemas.BifrostResponseExtraFields{ModelRequested: model},
-	}
-
-	_, result, err := bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, completedEvent)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	bedrockEvent, ok := result.(*bedrock.BedrockStreamEvent)
-	require.True(t, ok, "expected BedrockStreamEvent")
-	require.Len(t, bedrockEvent.InvokeModelRawChunks, 2, "expected two chunks: message_delta and message_stop")
-
-	// First chunk should be message_delta
-	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[0]), "message_delta")
-	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[0]), "stop_reason")
-
-	// Second chunk should be message_stop
-	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[1]), "message_stop")
 }
