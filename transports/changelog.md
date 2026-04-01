@@ -13,6 +13,7 @@
 - feat: add support for pricing overrides.
 - feat: add StabilityAI provider support to Bedrock.
 - fix: handle text, vtt, srt response formats in OpenAI transcription response.
+- feat: adds support for multiple deployments in Ollama and SGL — each key now targets its own server URL via `ollama_key_config` / `sgl_key_config`, enabling per-key routing and round-robin load balancing across multiple instances.
 
 <Warning>
 **v1.5.0 contains multiple breaking changes** to how Bifrost interprets empty arrays and wildcard values across Virtual Keys, provider keys, and MCP configurations. Existing deployments are protected by automatic database migrations — but any **new** configuration created after upgrading must follow the new semantics described below.
@@ -781,7 +782,7 @@ Provider key management has been separated into dedicated endpoints. The `keys` 
 - `enabled` defaults to `true` if omitted
 - `value` is required and must not be empty
 - Provider-specific config fields (`azure_key_config`, `vertex_key_config`, `bedrock_key_config`, `vllm_key_config`) are supported as before
-- Keyless providers (e.g., Ollama) reject key creation with `400`
+- Keyless providers reject key creation with `400`
 
 **Update key notes:**
 Send the full key object. Redacted values sent back unchanged are automatically preserved (same merge behavior as before).
@@ -855,6 +856,179 @@ curl -X POST localhost:8080/api/providers/openai/keys \
 
 ---
 
+## Breaking Change 10: Ollama and SGL Per-Key URL Configuration
+
+**Who is affected:** Anyone running Ollama or SGL providers configured with `network_config.base_url` and no keys.
+
+### What changed
+
+Ollama and SGL previously used a single provider-level `base_url` and required no API keys (they were "keyless" providers). In v1.5.0, both providers now use a **per-key URL model** — each key must include an `ollama_key_config` (or `sgl_key_config`) with the server `url`. This enables multiple deployments (load balancing across several Ollama/SGL instances).
+
+**Key changes:**
+- `network_config.base_url` is **no longer used at runtime** for Ollama/SGL. The URL must be on each key.
+- Ollama/SGL keys now **require** `ollama_key_config.url` / `sgl_key_config.url`. The API rejects key creation without it.
+- The key management endpoints (`POST/PUT/DELETE /api/providers/{provider}/keys`) are now **enabled** for Ollama and SGL.
+
+### Automatic migration
+
+<Note>
+If you are running Bifrost with a database (SQLite or Postgres), existing Ollama/SGL providers are automatically migrated on startup. For each provider that has a `network_config.base_url` configured, the migration creates a default key with that URL (e.g., "Default Ollama Key") and the `ollama_key_config.url` / `sgl_key_config.url` populated from the old `base_url`.
+</Note>
+
+### How to update
+
+<Tabs>
+<Tab title="config.json">
+
+**Before (v1.4.x):**
+```json
+{
+  "providers": {
+    "ollama": {
+      "network_config": {
+        "base_url": "http://localhost:11434"
+      }
+    }
+  }
+}
+```
+Single server, no keys needed.
+
+**After (v1.5.0):**
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "id": "ollama-local",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": {
+            "url": "http://localhost:11434"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+Each key points to its own Ollama instance.
+
+</Tab>
+<Tab title="Multiple deployments (new)">
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "id": "ollama-gpu-1",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": {
+            "url": "http://gpu-server-1:11434"
+          }
+        },
+        {
+          "id": "ollama-gpu-2",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": {
+            "url": "http://gpu-server-2:11434"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+Requests are load-balanced across both instances using key weights.
+
+</Tab>
+<Tab title="SGL">
+
+**Before (v1.4.x):**
+```json
+{
+  "providers": {
+    "sgl": {
+      "network_config": {
+        "base_url": "http://localhost:30000"
+      }
+    }
+  }
+}
+```
+
+**After (v1.5.0):**
+```json
+{
+  "providers": {
+    "sgl": {
+      "keys": [
+        {
+          "id": "sgl-local",
+          "models": ["*"],
+          "weight": 1.0,
+          "sgl_key_config": {
+            "url": "http://localhost:30000"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="REST API">
+
+**Before (v1.4.x):** Key creation was blocked for Ollama/SGL.
+
+**After (v1.5.0):**
+```bash
+curl -X POST localhost:8080/api/providers/ollama/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "gpu-server-1",
+    "models": ["*"],
+    "weight": 1.0,
+    "ollama_key_config": {
+      "url": "http://gpu-server-1:11434"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="Environment variable URLs">
+
+Server URLs support the `env.` prefix for environment variables:
+
+```json
+{
+  "id": "ollama-prod",
+  "models": ["*"],
+  "weight": 1.0,
+  "ollama_key_config": {
+    "url": "env.OLLAMA_SERVER_URL"
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Breaking Change 11: Go SDK breaking changes
+
+If you import Bifrost's Go packages directly:
+
+- **`HuggingFaceKeyConfig` has been removed** from the `Key` struct. Remove any references to `HuggingFaceKeyConfig` or `huggingface_key_config`.
+- **`providerRequiresKey()` signature changed** — the `providerKey` parameter was removed. It now only accepts `*CustomProviderConfig`.
+
+---
+
 ## Quick Migration Checklist
 
 Use this checklist when upgrading to v1.5.0:
@@ -892,6 +1066,10 @@ Check that none of your lists mix `"*"` with other values (e.g., `["*", "gpt-4o"
 
 <Step title="Migrate key management to dedicated endpoints">
 Stop sending `keys` in provider create/update payloads and stop reading `keys` from provider responses. Use the new `/api/providers/{provider}/keys` endpoints for all key CRUD operations.
+</Step>
+
+<Step title="Migrate Ollama/SGL from base_url to per-key URLs">
+If you use Ollama or SGL providers via `config.json`, move the `network_config.base_url` into per-key `ollama_key_config.url` / `sgl_key_config.url`. Database users are auto-migrated, but `config.json` must be updated manually. Each key must have a URL configured.
 </Step>
 </Steps>
 
@@ -932,3 +1110,9 @@ The `keys` field has been removed from provider API payloads. Use the dedicated 
 ### Existing keys work fine but newly created keys are blocked
 
 The automatic migration only updates existing data. New keys created after upgrade must follow the new semantics. Use `["*"]` for all allow-list fields where you want unrestricted access.
+
+### Ollama/SGL requests fail with "no base URL configured"
+
+After upgrading, Ollama/SGL keys must have `ollama_key_config.url` / `sgl_key_config.url` set. If you are using a database, the migration auto-creates a default key from your old `base_url`. If you use `config.json`, you must update it manually.
+
+**Fix:** Add `ollama_key_config` (or `sgl_key_config`) with the server `url` to each Ollama/SGL key in your `config.json`. See Breaking Change 10 for examples.
