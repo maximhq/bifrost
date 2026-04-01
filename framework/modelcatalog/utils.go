@@ -79,24 +79,31 @@ func normalizeStreamRequestType(rt schemas.RequestType) schemas.RequestType {
 	}
 }
 
-// convertPricingDataToTableModelPricing converts the pricing data to a TableModelPricing struct
-func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) configstoreTables.TableModelPricing {
-	provider := normalizeProvider(entry.Provider)
-
-	// Handle provider/model format - extract just the model name
-	modelName := modelKey
+// extractModelName extracts the model name from a model key that may be in provider/model format
+func extractModelName(modelKey string) string {
 	if strings.Contains(modelKey, "/") {
 		parts := strings.Split(modelKey, "/")
 		if len(parts) > 1 {
-			modelName = strings.Join(parts[1:], "/")
+			return strings.Join(parts[1:], "/")
 		}
 	}
+	return modelKey
+}
+
+// convertPricingDataToTableModelPricing converts the pricing data to a TableModelPricing struct
+func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) configstoreTables.TableModelPricing {
+	provider := normalizeProvider(entry.Provider)
+	modelName := extractModelName(modelKey)
 
 	return configstoreTables.TableModelPricing{
-		Model:     modelName,
-		BaseModel: entry.BaseModel,
-		Provider:  provider,
-		Mode:      entry.Mode,
+		Model:           modelName,
+		BaseModel:       entry.BaseModel,
+		Provider:        provider,
+		Mode:            entry.Mode,
+		ContextLength:   entry.ContextLength,
+		MaxInputTokens:  entry.MaxInputTokens,
+		MaxOutputTokens: entry.MaxOutputTokens,
+		Architecture:    entry.Architecture,
 
 		// Costs - Text
 		InputCostPerToken:                 entry.InputCostPerToken,
@@ -228,10 +235,14 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 	}
 	return &PricingEntry{
-		BaseModel:      pricing.BaseModel,
-		Provider:       pricing.Provider,
-		Mode:           pricing.Mode,
-		PricingOptions: options,
+		BaseModel:       pricing.BaseModel,
+		Provider:        pricing.Provider,
+		Mode:            pricing.Mode,
+		ContextLength:   pricing.ContextLength,
+		MaxInputTokens:  pricing.MaxInputTokens,
+		MaxOutputTokens: pricing.MaxOutputTokens,
+		Architecture:    pricing.Architecture,
+		PricingOptions:  options,
 	}
 }
 

@@ -3,7 +3,7 @@ package vertex
 import (
 	"time"
 
-	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 // Vertex AI Embedding API types
@@ -85,7 +85,7 @@ func (r *VertexRequestBody) GetExtraParams() map[string]interface{} {
 // MarshalJSON implements custom JSON marshalling for VertexRequestBody.
 // It marshals the RequestBody field directly without wrapping.
 func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(r.RequestBody)
+	return providerUtils.MarshalSorted(r.RequestBody)
 }
 
 // VertexRawRequestBody holds pre-serialized JSON bytes to preserve key ordering

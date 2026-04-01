@@ -196,6 +196,11 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 			req:  &UpdateBudgetRequest{ResetDuration: bifrostString("1h")},
 			want: false,
 		},
+		{
+			name: "calendar aligned only is treated as removal",
+			req:  &UpdateBudgetRequest{CalendarAligned: bifrostBool(true)},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -324,5 +329,9 @@ func bifrostInt64(v int64) *int64 {
 }
 
 func bifrostString(v string) *string {
+	return &v
+}
+
+func bifrostBool(v bool) *bool {
 	return &v
 }

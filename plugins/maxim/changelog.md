@@ -1,1 +1,0 @@
-- chore: upgraded maxim-go dependency to latest version

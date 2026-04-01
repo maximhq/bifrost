@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -155,6 +156,31 @@ func TestSonic_OrderedMap_NestedPreservesOrder(t *testing.T) {
 	output, err := Marshal(om)
 	require.NoError(t, err)
 	assert.Equal(t, input, string(output))
+}
+
+func TestSonic_EmbeddingStruct_PreservesFloat64Precision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	var embedding EmbeddingStruct
+	err := embedding.UnmarshalJSON([]byte(`[0.12345678901234568]`))
+	require.NoError(t, err)
+
+	require.Len(t, embedding.EmbeddingArray, 1)
+
+	got := embedding.EmbeddingArray[0]
+	assert.Equal(t, want, got)
+
+	float32Rounded := float64(float32(want))
+	assert.NotEqual(t, float32Rounded, got)
+
+	marshaled, err := embedding.MarshalJSON()
+	require.NoError(t, err)
+
+	var roundTrip []float64
+	err = Unmarshal(marshaled, &roundTrip)
+	require.NoError(t, err)
+	require.Len(t, roundTrip, 1)
+	assert.Equal(t, math.Float64bits(got), math.Float64bits(roundTrip[0]))
 }
 
 // --- ToolFunctionParameters through sonic ---

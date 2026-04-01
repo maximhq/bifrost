@@ -399,6 +399,8 @@ func TestIsRateLimitError_AllPatterns(t *testing.T) {
 		"api rate limit",
 		"usage limit",
 		"concurrent requests limit",
+		"burst_rate",
+		"rate increased",
 	}
 
 	for _, pattern := range patterns {
@@ -479,6 +481,20 @@ func TestIsRateLimitError_EdgeCases(t *testing.T) {
 		message := "RATE LIMIT exceeded 🚫"
 		if !IsRateLimitErrorMessage(message) {
 			t.Error("Message with unicode should still detect rate limit pattern")
+		}
+	})
+
+	t.Run("DashScopeErrorCode", func(t *testing.T) {
+		// DashScope returns "limit_burst_rate" as the error code
+		if !IsRateLimitErrorMessage("limit_burst_rate") {
+			t.Error("DashScope error code 'limit_burst_rate' should be detected as rate limit error")
+		}
+	})
+
+	t.Run("DashScopeErrorMessage", func(t *testing.T) {
+		// DashScope returns this as the error message
+		if !IsRateLimitErrorMessage("Request rate increased too quickly, please slow down and try again") {
+			t.Error("DashScope error message should be detected as rate limit error")
 		}
 	})
 }
@@ -744,8 +760,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	// Use 2 keys so we hit the keySelector path (single key returns early)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int
@@ -805,8 +821,8 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 5, 1000)
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 
 	var keySelectorCalls int

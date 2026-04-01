@@ -53,7 +53,8 @@ func TestGemini(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			WebSearchTool:         true,
@@ -197,6 +198,24 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+		Embeddings: []gemini.GeminiEmbedding{
+			{
+				Values: []float64{want},
+			},
+		},
+	}, "gemini-embedding-001")
+
+	require.NotNil(t, resp)
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	assert.Equal(t, want, got)
+	assert.NotEqual(t, float64(float32(want)), got)
 }
 
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs

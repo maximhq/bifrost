@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";
 import { convertRuleGroupToCEL } from "@/lib/utils/celConverterRouting";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
@@ -46,7 +47,7 @@ export function CELRuleBuilder({
 }: CELRuleBuilderProps) {
 	const [query, setQuery] = useState<RuleGroupType>(initialQuery || defaultQuery);
 	const [celExpression, setCelExpression] = useState("");
-	const [copied, setCopied] = useState(false);
+	const { copy, copied } = useCopyToClipboard();
 	const onChangeRef = useRef(onChange);
 
 	// Keep ref updated so the query effect always invokes the latest callback
@@ -69,11 +70,7 @@ export function CELRuleBuilder({
 		onChangeRef.current?.(expression, query);
 	}, [query]);
 
-	const handleCopy = async () => {
-		await navigator.clipboard.writeText(celExpression);
-		setCopied(true);
-		setTimeout(() => setCopied(false), 2000);
-	};
+	const handleCopy = () => copy(celExpression);
 
 	// Show loading state
 	if (isLoading) {
@@ -122,7 +119,7 @@ export function CELRuleBuilder({
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
 					<Label>CEL Expression Preview</Label>
-					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2">
+					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2" type="button">
 						{copied ? (
 							<>
 								<Check className="h-4 w-4" />

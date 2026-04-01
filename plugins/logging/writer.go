@@ -315,6 +315,8 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		SpeechInputParsed:           pending.InitialData.SpeechInput,
 		TranscriptionInputParsed:    pending.InitialData.TranscriptionInput,
 		ImageGenerationInputParsed:  pending.InitialData.ImageGenerationInput,
+		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
+		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {

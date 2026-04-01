@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"time"
 
-	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -117,7 +117,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 func ConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
 	var buf bytes.Buffer
 	for _, req := range requests {
-		line, err := sonic.Marshal(req)
+		line, err := providerUtils.MarshalSorted(req)
 		if err != nil {
 			return nil, err
 		}

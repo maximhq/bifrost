@@ -18,6 +18,7 @@ import {
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
 } from "@/lib/store";
+import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import type {
 	ChatMessage,
 	ChatMessageContent,
@@ -54,8 +55,9 @@ export default function LogsPage() {
 	const [triggerGetHistogram] = useLazyGetLogsHistogramQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
 
-	const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
 	const [isChartOpen, setIsChartOpen] = useState(true);
+	const [triggerGetLogById] = useLazyGetLogByIdQuery();
+	const [fetchedLog, setFetchedLog] = useState<LogEntry | null>(null);
 
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -94,12 +96,43 @@ export default function LogsPage() {
 			live_enabled: parseAsBoolean.withDefault(true),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
+			selected_log: parseAsString.withDefault(""),
 		},
 		{
 			history: "push",
 			shallow: false,
 		},
 	);
+
+	// Derive selectedLog: find in current logs array, or fetch by ID from API
+	const selectedLogId = urlState.selected_log || null;
+	const selectedLogFromData = useMemo(
+		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
+		[selectedLogId, logs],
+	);
+
+	const activeLogFetchId = useRef<string | null>(null);
+	useEffect(() => {
+		if (!selectedLogId || selectedLogFromData) {
+			setFetchedLog(null);
+			activeLogFetchId.current = null;
+			return;
+		}
+		// Track which log ID this fetch is for to prevent stale responses
+		const fetchId = selectedLogId;
+		activeLogFetchId.current = fetchId;
+		triggerGetLogById(selectedLogId).then((result) => {
+			if (activeLogFetchId.current === fetchId) {
+				if (result.data) {
+					setFetchedLog(result.data);
+				} else if (result.error) {
+					setError(getErrorMessage(result.error));
+				}
+			}
+		});
+	}, [selectedLogId, selectedLogFromData, triggerGetLogById]);
+
+	const selectedLog = selectedLogFromData ?? fetchedLog;
 
 	// Refresh time range defaults on page focus/visibility
 	useEffect(() => {
@@ -278,11 +311,15 @@ export default function LogsPage() {
 				await deleteLogs({ ids: [log.id] }).unwrap();
 				setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
 				setTotalItems((prev) => prev - 1);
+				// Clear selected log if it was the deleted one
+				if (urlState.selected_log === log.id) {
+					setUrlState({ selected_log: "" });
+				}
 			} catch (error) {
 				setError(getErrorMessage(error));
 			}
 		},
-		[deleteLogs],
+		[deleteLogs, urlState.selected_log, setUrlState],
 	);
 
 	const handleLogMessage = useCallback((log: LogEntry, operation: "create" | "update") => {
@@ -315,12 +352,12 @@ export default function LogsPage() {
 					return updatedLogs;
 				});
 
-				// Update selectedLog if it matches (for detail sheet real-time updates)
-				setSelectedLog((prevSelectedLog) => {
-					if (prevSelectedLog && prevSelectedLog.id === log.id) {
+				// Update fetchedLog if it matches (for real-time detail sheet updates when log is not on current page)
+				setFetchedLog((prev) => {
+					if (prev && prev.id === log.id) {
 						return log;
 					}
-					return prevSelectedLog;
+					return prev;
 				});
 
 				setTotalItems((prev: number) => prev + 1);
@@ -456,12 +493,12 @@ export default function LogsPage() {
 			return prevLogs.map((existingLog) => (existingLog.id === updatedLog.id ? updatedLog : existingLog));
 		});
 
-		// Update selectedLog if it matches the updated log (for real-time detail sheet updates)
-		setSelectedLog((prevSelectedLog) => {
-			if (prevSelectedLog && prevSelectedLog.id === updatedLog.id) {
+		// Update fetchedLog if it matches the updated log (for real-time detail sheet updates when log is not on current page)
+		setFetchedLog((prev) => {
+			if (prev && prev.id === updatedLog.id) {
 				return updatedLog;
 			}
-			return prevSelectedLog;
+			return prev;
 		});
 	}, []);
 
@@ -735,6 +772,64 @@ export default function LogsPage() {
 
 	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
 
+	// Navigation for log detail sheet
+	const selectedLogIndex = useMemo(
+		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
+		[selectedLogId, logs],
+	);
+
+	const handleLogNavigate = useCallback(
+		(direction: "prev" | "next") => {
+			const currentLogId = selectedLogId || "";
+			if (direction === "prev") {
+				if (selectedLogIndex > 0) {
+					// Navigate to previous log on current page
+					setUrlState({ selected_log: logs[selectedLogIndex - 1].id });
+				} else if (pagination.offset > 0) {
+					// Go to previous page and select the last item
+					const newOffset = Math.max(0, pagination.offset - pagination.limit);
+					setUrlState({ offset: newOffset, selected_log: "" });
+					// Fetch previous page, then select last log
+					triggerGetLogs({
+						filters,
+						pagination: { ...pagination, offset: newOffset },
+					}).then((result) => {
+						if (result.data?.logs?.length) {
+							const lastLog = result.data.logs[result.data.logs.length - 1];
+							setUrlState({ selected_log: lastLog.id });
+						} else if (result.error) {
+							setUrlState({ offset: pagination.offset, selected_log: currentLogId });
+							setError(getErrorMessage(result.error));
+						}
+					});
+				}
+			} else {
+				if (selectedLogIndex >= 0 && selectedLogIndex < logs.length - 1) {
+					// Navigate to next log on current page
+					setUrlState({ selected_log: logs[selectedLogIndex + 1].id });
+				} else if (pagination.offset + pagination.limit < totalItems) {
+					// Go to next page and select the first item
+					const newOffset = pagination.offset + pagination.limit;
+					setUrlState({ offset: newOffset, selected_log: "" });
+					// Fetch next page, then select first log
+					triggerGetLogs({
+						filters,
+						pagination: { ...pagination, offset: newOffset },
+					}).then((result) => {
+						if (result.data?.logs?.length) {
+							const firstLog = result.data.logs[0];
+							setUrlState({ selected_log: firstLog.id });
+						} else if (result.error) {
+							setUrlState({ offset: pagination.offset, selected_log: currentLogId });
+							setError(getErrorMessage(result.error));
+						}
+					});
+				}
+			}
+		},
+		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
+	);
+
 	return (
 		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
 			{initialLoading ? (
@@ -793,7 +888,7 @@ export default function LogsPage() {
 								onPaginationChange={setPagination}
 								onRowClick={(row, columnId) => {
 									if (columnId === "actions") return;
-									setSelectedLog(row);
+									setUrlState({ selected_log: row.id }, { history: "replace" });
 								}}
 								isSocketConnected={isSocketConnected}
 								liveEnabled={liveEnabled}
@@ -809,8 +904,11 @@ export default function LogsPage() {
 					<LogDetailSheet
 						log={selectedLog}
 						open={selectedLog !== null}
-						onOpenChange={(open) => !open && setSelectedLog(null)}
+						onOpenChange={(open) => !open && setUrlState({ selected_log: "" })}
 						handleDelete={handleDelete}
+						onNavigate={handleLogNavigate}
+						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
+						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 					/>
 				</div>
 			)}

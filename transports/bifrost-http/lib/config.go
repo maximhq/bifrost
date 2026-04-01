@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -573,6 +574,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 	if cc.AllowedOrigins == nil {
 		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
+	}
+	if cc.AllowedHeaders == nil {
+		cc.AllowedHeaders = DefaultClientConfig.AllowedHeaders
 	}
 	if cc.EnableLogging == nil {
 		cc.EnableLogging = new(true)
@@ -3756,20 +3760,58 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
 	}
 
+	dimension, hasDimension, err := semanticCacheConfigDimension(configMap)
+	if err != nil {
+		return err
+	}
+
 	// Check if provider key exists and is a string
 	providerVal, exists := configMap["provider"]
 	if !exists {
-		return fmt.Errorf("semantic_cache plugin missing required 'provider' field")
+		if hasDimension && dimension == 1 {
+			delete(configMap, "keys")
+			delete(configMap, "embedding_model")
+			return nil
+		}
+		return fmt.Errorf("semantic_cache plugin requires 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
 	}
 
 	provider, ok := providerVal.(string)
 	if !ok {
 		return fmt.Errorf("semantic_cache plugin 'provider' field must be a string, got %T", providerVal)
 	}
+	provider = strings.TrimSpace(provider)
+	configMap["provider"] = provider
 
 	if provider == "" {
-		return fmt.Errorf("semantic_cache plugin 'provider' field cannot be empty")
+		if hasDimension && dimension == 1 {
+			delete(configMap, "provider")
+			delete(configMap, "keys")
+			delete(configMap, "embedding_model")
+			return nil
+		}
+		return fmt.Errorf("semantic_cache plugin requires a non-empty 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
 	}
+	if !hasDimension {
+		return fmt.Errorf("semantic_cache plugin requires 'dimension' for provider-backed semantic mode. For direct-only mode, set dimension: 1 and omit provider")
+	}
+	if dimension <= 1 {
+		return fmt.Errorf("semantic_cache plugin requires 'dimension' > 1 when 'provider' is set. Use dimension: 1 only for direct-only mode without a provider")
+	}
+
+	embeddingModelVal, exists := configMap["embedding_model"]
+	if !exists {
+		return fmt.Errorf("semantic_cache plugin requires 'embedding_model' when 'provider' is set")
+	}
+	embeddingModel, ok := embeddingModelVal.(string)
+	if !ok {
+		return fmt.Errorf("semantic_cache plugin 'embedding_model' field must be a string, got %T", embeddingModelVal)
+	}
+	embeddingModel = strings.TrimSpace(embeddingModel)
+	if embeddingModel == "" {
+		return fmt.Errorf("semantic_cache plugin requires a non-empty 'embedding_model' when 'provider' is set")
+	}
+	configMap["embedding_model"] = embeddingModel
 
 	keys, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider))
 	if err != nil {
@@ -3779,6 +3821,50 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	configMap["keys"] = keys.Keys
 
 	return nil
+}
+
+func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, error) {
+	dimensionVal, exists := configMap["dimension"]
+	if !exists {
+		return 0, false, nil
+	}
+
+	switch v := dimensionVal.(type) {
+	case int:
+		if v < 1 {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
+		}
+		return v, true, nil
+	case int32:
+		if v < 1 {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
+		}
+		return int(v), true, nil
+	case int64:
+		if v < 1 {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
+		}
+		return int(v), true, nil
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %v", v)
+		}
+		if v < 1 {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %v", v)
+		}
+		return int(v), true, nil
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %q", v)
+		}
+		if parsed < 1 {
+			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", parsed)
+		}
+		return int(parsed), true, nil
+	default:
+		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
+	}
 }
 
 func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTables.TablePlugin) error {

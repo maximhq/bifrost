@@ -176,6 +176,7 @@ Missing `allowed_models` → all OpenAI models allowed
           {
             "provider": "openai",
             "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           }
         ]
@@ -215,6 +216,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
       {
         "provider": "openai",
         "allowed_models": ["*"],
+        "key_ids": ["*"],
         "weight": 1.0
       }
     ]
@@ -700,7 +702,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 ---
 
-## Breaking Change 7: Compact plugin support two new modes
+## Breaking Change 7: Compact plugin supports two new modes
 
 **Who is affected:** Anyone using the `compact` plugin.
 
@@ -708,13 +710,13 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 
 The `compact` plugin now supports two new modes:
 
-- Chat to responses fallback: If Chat completion API is hit for models that only support Responses API, the chat completion routed via the responses api.
-- OpenAI Compatible paramseters dropping: If a model does not support any standard OpenAI compatible model parameter, it is dropped.
+- Chat to responses fallback: If Chat completion API is hit for models that only support Responses API, the chat completion is routed via the responses API.
+- OpenAI Compatible parameters dropping: If a model does not support any standard OpenAI compatible model parameter, it is dropped.
 
-The option `enable_litellm_fallback` is removed and replaced with:
+The option `enable_litellm_fallbacks` is removed and replaced with:
 - `compat.convert_text_to_chat`: Enable text completion to chat completion fallback (original behavior)
 - `compat.convert_chat_to_responses`: Enable chat completion to responses fallback
-- `compat.should_drop_darams`: Enable OpenAI Compatible parameters dropping
+- `compat.should_drop_params`: Enable OpenAI Compatible parameters dropping
 
 The following fields are removed or added to the response:
 - `extra_fields.litellm_compat` is removed
@@ -744,7 +746,6 @@ Support for image editing via the dedicated `/v1/images/edits` endpoint on Repli
 </Note>
 
 ---
-
 
 ## Quick Migration Checklist
 

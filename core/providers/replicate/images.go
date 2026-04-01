@@ -1,7 +1,6 @@
 package replicate
 
 import (
-	"strconv"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -28,48 +27,6 @@ var modelInputImageFieldMap = map[string]string{
 	"black-forest-labs/flux-krea-dev": "image",
 }
 
-// convertSizeToReplicateFormat converts standard size format (e.g., "1024x1024") to Replicate format.
-// Returns (aspectRatio, imageSize) where imageSize is "1k", "2k", "4k" and aspectRatio is one of:
-// "1:1", "3:4", "4:3", "9:16", or "16:9". Returns empty strings if unparseable or ratio unrecognised.
-func convertSizeToReplicateFormat(size string) (aspectRatio, imageSize string) {
-	parts := strings.Split(size, "x")
-	if len(parts) != 2 {
-		return "", ""
-	}
-
-	width, err1 := strconv.Atoi(parts[0])
-	height, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return "", ""
-	}
-
-	if width <= 0 || height <= 0 {
-		return "", ""
-	}
-
-	if width <= 1024 && height <= 1024 {
-		imageSize = "1K"
-	} else if width <= 2048 && height <= 2048 {
-		imageSize = "2K"
-	} else if width <= 4096 && height <= 4096 {
-		imageSize = "4K"
-	}
-
-	ratio := float64(width) / float64(height)
-	if ratio >= 0.99 && ratio <= 1.01 {
-		aspectRatio = "1:1"
-	} else if ratio >= 0.74 && ratio <= 0.76 {
-		aspectRatio = "3:4"
-	} else if ratio >= 1.32 && ratio <= 1.34 {
-		aspectRatio = "4:3"
-	} else if ratio >= 0.56 && ratio <= 0.57 {
-		aspectRatio = "9:16"
-	} else if ratio >= 1.77 && ratio <= 1.78 {
-		aspectRatio = "16:9"
-	}
-
-	return aspectRatio, imageSize
-}
 
 // ToReplicateImageGenerationInput converts a Bifrost image generation request to Replicate prediction input
 func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationRequest) *ReplicatePredictionRequest {
@@ -85,29 +42,6 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
-		// Map InputImages to the appropriate field based on model
-		if len(params.InputImages) > 0 {
-			fieldName := getInputImageFieldName(bifrostReq.Model)
-
-			switch fieldName {
-			case "image_prompt":
-				// For flux-1.1-pro variants: use first image as image_prompt
-				input.ImagePrompt = &params.InputImages[0]
-
-			case "input_image":
-				// For flux-kontext variants: add to ExtraParams as input_image
-				input.InputImage = &params.InputImages[0]
-
-			case "image":
-				// For flux-dev variants: use first image as image field
-				input.Image = &params.InputImages[0]
-
-			case "input_images":
-				// For all other models: use input_images array
-				input.InputImages = params.InputImages
-			}
-		}
-
 		if bifrostReq.Params.N != nil {
 			input.NumberOfImages = bifrostReq.Params.N
 		}
@@ -117,7 +51,7 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 		}
 
 		if params.Size != nil {
-			aspectRatio, imageSize := convertSizeToReplicateFormat(*params.Size)
+			aspectRatio, imageSize := providerUtils.ConvertSizeToAspectRatioAndResolution(*params.Size)
 			_, hasExplicitResolution := params.ExtraParams["resolution"]
 			if params.AspectRatio == nil && aspectRatio != "" {
 				input.AspectRatio = &aspectRatio
@@ -294,7 +228,7 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 				input.Image = &images[0]
 
 			case "input_images":
-				// For all other models: use input_images array
+				// For all other models: use input_images array (preserves multi-image support)
 				input.InputImages = images
 			}
 		}
@@ -309,7 +243,7 @@ func ToReplicateImageEditInput(bifrostReq *schemas.BifrostImageEditRequest) *Rep
 		}
 
 		if params.Size != nil {
-			aspectRatio, imageSize := convertSizeToReplicateFormat(*params.Size)
+			aspectRatio, imageSize := providerUtils.ConvertSizeToAspectRatioAndResolution(*params.Size)
 			_, hasExplicitAspectRatio := params.ExtraParams["aspect_ratio"]
 			_, hasExplicitResolution := params.ExtraParams["resolution"]
 			if aspectRatio != "" && !hasExplicitAspectRatio {

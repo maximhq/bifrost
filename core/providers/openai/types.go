@@ -7,6 +7,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 const MinMaxCompletionTokens = 16
@@ -234,7 +235,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 		aux.ReasoningEffort = req.Reasoning.Effort
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for OpenAIChatRequest.
@@ -301,7 +302,7 @@ func (r *OpenAIResponsesRequestInput) UnmarshalJSON(data []byte) error {
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequestInput
 func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 	if r.OpenAIResponsesRequestInputStr != nil {
-		return sonic.Marshal(*r.OpenAIResponsesRequestInputStr)
+		return providerUtils.MarshalSorted(*r.OpenAIResponsesRequestInputStr)
 	}
 	if r.OpenAIResponsesRequestInputArray != nil {
 		// First pass: check if we need to modify anything
@@ -315,7 +316,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 		// If no CacheControl found anywhere, marshal as-is
 		if !needsCopy {
-			return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
+			return providerUtils.MarshalSorted(r.OpenAIResponsesRequestInputArray)
 		}
 
 		// Only copy messages that have CacheControl
@@ -458,9 +459,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				}
 			}
 		}
-		return sonic.Marshal(messagesCopy)
+		return providerUtils.MarshalSorted(messagesCopy)
 	}
-	return sonic.Marshal(nil)
+	return providerUtils.MarshalSorted(nil)
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
@@ -653,7 +654,7 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

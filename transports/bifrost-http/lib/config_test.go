@@ -15556,8 +15556,10 @@ var excludedGoFields = map[string]map[string]bool{
 		"customer":    true, // GORM relation
 	},
 	"tables.TableVirtualKeyProviderConfig": {
-		"budget":     true, // GORM relation
-		"rate_limit": true, // GORM relation
+		"budget":       true, // GORM relation
+		"rate_limit":   true, // GORM relation
+		"allow_all_keys": true, // Internal DB field; users configure via key_ids
+		"keys":          true, // GORM many2many relation; users configure via key_ids
 	},
 	"tables.TableVirtualKeyMCPConfig": {
 		"mcp_client": true, // GORM relation
@@ -15601,7 +15603,8 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"allowed_headers": true, // Not in ClientConfig
 	},
 	"governance.virtual_keys.provider_configs": {
-		"keys": true, // Complex nested type, validated separately
+		"keys":    true, // Complex nested type, validated separately
+		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys
 	},
 	"mcp.client_configs": {
 		"websocket_config": true, // Schema documents all connection types

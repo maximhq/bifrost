@@ -3495,11 +3495,31 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 
 // SetMCPManager sets the MCP manager for this Bifrost instance.
 // This allows injecting a custom MCP manager implementation (e.g., for enterprise features).
+// If the provided manager is a concrete *mcp.MCPManager, Bifrost's plugin pipeline is injected
+// into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
 // Parameters:
 //   - manager: The MCP manager to set (must implement MCPManagerInterface)
 func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 	bifrost.MCPManager = manager
+	// Inject Bifrost's plugin pipeline into the manager's CodeMode so that
+	// nested tool calls (e.g. via Starlark executeCode) run through plugin hooks.
+	if m, ok := manager.(*mcp.MCPManager); ok {
+		m.SetPluginPipeline(
+			func() mcp.PluginPipeline {
+				pipeline := bifrost.getPluginPipeline()
+				if pp, ok := any(pipeline).(mcp.PluginPipeline); ok {
+					return pp
+				}
+				return nil
+			},
+			func(pipeline mcp.PluginPipeline) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			},
+		)
+	}
 }
 
 // UpdateMCPClient updates the MCP client.
@@ -4360,13 +4380,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return nil, bifrostErr
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("request cancelled while waiting for queue space")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
+		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
@@ -4404,13 +4418,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			return nil, bifrostErr
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("request cancelled while waiting for queue space")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
+			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
 		}
 	}
 
@@ -4458,20 +4466,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
 		provider, model, _ := req.GetRequestFields()
-		bifrostErr := &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr(schemas.RequestCancelled),
-				Message: fmt.Sprintf("request timed out waiting for provider response: %v", ctx.Err()),
-				Error:   ctx.Err(),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			},
-		}
-		return nil, bifrostErr
+		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "waiting for provider response")
 	}
 }
 
@@ -4651,13 +4646,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("request cancelled while waiting for queue space")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
+		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
@@ -4695,13 +4684,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return nil, bifrostErr
 		case <-ctx.Done():
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("request cancelled while waiting for queue space")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
+			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
 		}
 	}
 
@@ -4843,8 +4826,31 @@ func executeRequestWithRetries[T any](
 		// Attempt the request
 		result, bifrostError = requestHandler()
 
+		// For streaming requests that returned success, check if the first chunk
+		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
+		// This enables retries and fallbacks for providers that embed errors in
+		// the SSE stream instead of returning proper HTTP error status codes.
+		if bifrostError == nil {
+			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
+				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(streamChan)
+				if firstChunkErr != nil {
+					<-drainDone
+					bifrostError = firstChunkErr
+				} else {
+					result = any(checkedStream).(T)
+				}
+			}
+		}
+
 		// Check if result is a streaming channel - if so, defer span completion
-		if _, isStreamChan := any(result).(chan *schemas.BifrostStreamChunk); isStreamChan {
+		// Only defer for successful stream setup; error paths must end the span synchronously
+		isStreamChan := false
+		if bifrostError == nil {
+			if ch, ok := any(result).(chan *schemas.BifrostStreamChunk); ok && ch != nil {
+				isStreamChan = true
+			}
+		}
+		if isStreamChan {
 			// For streaming requests, store the span handle in TraceStore keyed by trace ID
 			// This allows the provider's streaming goroutine to retrieve it later
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
@@ -4892,7 +4898,8 @@ func executeRequestWithRetries[T any](
 		if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) ||
 			(bifrostError.Error != nil &&
 				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
-					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)))) {
+					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
+					(bifrostError.Error.Code != nil && IsRateLimitErrorMessage(*bifrostError.Error.Code)))) {
 			shouldRetry = true
 			logger.Debug("detected rate limit error in message, will retry: %s", bifrostError.Error.Message)
 		}

@@ -143,10 +143,19 @@ Budgets and rate limits support flexible reset durations:
 - `1d` - 1 day
 - `1w` - 1 week
 - `1M` - 1 month
+- `1Y` - 1 year
 
 **Common Patterns:**
 - **Rate Limits**: `1m`, `1h`, `1d` for request throttling
-- **Budgets**: `1d`, `1w`, `1M` for cost control
+- **Budgets**: `1d`, `1w`, `1M`, `1Y` for cost control
+
+### Calendar-aligned budgets
+
+By default, a budget **rolls**: after `reset_duration` elapses since `last_reset`, usage resets. With **`calendar_aligned`: `true`**, the budget resets at the **start of each calendar period in UTC** instead (same instant for every customer of that configuration).
+
+**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) **cannot** use calendar alignment; the API rejects invalid combinations.
+
+Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per–provider-config** budgets. You can set it when creating a budget (`calendar_aligned` on create) or toggle it on update (`calendar_aligned` on the budget in `PUT` requests). Turning calendar alignment **on** for an existing budget resets **current usage to zero** and snaps **`last_reset`** to the current period start.
 
 ---
 
@@ -210,7 +219,8 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
         "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
         "budget": {
           "max_limit": 500.00,
-          "reset_duration": "1M"
+          "reset_duration": "1M",
+          "calendar_aligned": true
         },
         "rate_limit": {
           "token_max_limit": 1000000,
@@ -237,11 +247,14 @@ curl -X POST "https://your-bifrost-instance.com/api/governance/virtual-keys" \
     ],
     "budget": {
       "max_limit": 1000.00,
-      "reset_duration": "1M"
+      "reset_duration": "1M",
+      "calendar_aligned": true
     },
     "is_active": true
   }'
 ```
+
+Use `calendar_aligned` only with `d` / `w` / `M` / `Y` reset durations (see [Calendar-aligned budgets](#calendar-aligned-budgets)).
 
 ### Update Provider Configuration
 
@@ -287,6 +300,7 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
           "max_limit": 500.00,
           "current_usage": 0.00,
           "reset_duration": "1M",
+          "calendar_aligned": true,
           "last_reset": "2024-01-01T00:00:00Z"
         },
         "rate_limit": {
@@ -315,6 +329,7 @@ curl -X PUT "https://your-bifrost-instance.com/api/governance/virtual-keys/{vk_i
 | `allowed_models` | array | Specific models allowed for this provider |
 | `budget.max_limit` | float | Maximum spend in USD |
 | `budget.reset_duration` | string | Reset period (e.g., "1h", "1d", "1M") |
+| `budget.calendar_aligned` | boolean | When true, resets at calendar boundaries in UTC (requires `d`/`w`/`M`/`Y` durations) |
 | `rate_limit.token_max_limit` | integer | Maximum tokens per period |
 | `rate_limit.request_max_limit` | integer | Maximum requests per period |
 
@@ -366,7 +381,8 @@ Configure provider-level governance through Bifrost's configuration file for dec
         ],
         "budget": {
           "max_limit": 2000.00,
-          "reset_duration": "1M"
+          "reset_duration": "1M",
+          "calendar_aligned": true
         },
         "rate_limit": {
           "token_max_limit": 5000000,
@@ -380,6 +396,8 @@ Configure provider-level governance through Bifrost's configuration file for dec
   }
 }
 ```
+
+Optional `calendar_aligned` on each `budget` matches the HTTP API and [calendar-aligned behavior](#calendar-aligned-budgets).
 
 ### Advanced Configuration Examples
 

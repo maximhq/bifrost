@@ -1223,7 +1223,7 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return sonic.Marshal(aux)
+	return providerUtils.MarshalSorted(aux)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for Part.
@@ -1432,7 +1432,7 @@ type GeminiEmbeddingResponse struct {
 
 // GeminiEmbedding represents a single embedding in the response
 type GeminiEmbedding struct {
-	Values     []float32                   `json:"values"`
+	Values     []float64                   `json:"values"`
 	Statistics *ContentEmbeddingStatistics `json:"statistics,omitempty"`
 }
 

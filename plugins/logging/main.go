@@ -208,6 +208,8 @@ type InitialLogData struct {
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
 	ImageGenerationInput   *schemas.ImageGenerationInput
+	ImageEditInput         *schemas.ImageEditInput
+	ImageVariationInput    *schemas.ImageVariationInput
 	VideoGenerationInput   *schemas.VideoGenerationInput
 	Tools                  []schemas.ChatTool
 	RoutingEngineUsed      []string
@@ -492,6 +494,50 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 			initialData.Params = req.ImageGenerationRequest.Params
 			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
+		case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+			params := req.ImageEditRequest.Params
+			input := req.ImageEditRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 {
+					var totalSize int64
+					for _, img := range input.Images {
+						totalSize += int64(len(img.Image))
+					}
+					if totalSize > reqThreshold {
+						logInput := *input
+						logInput.Images = nil
+						initialData.ImageEditInput = &logInput
+					} else {
+						initialData.ImageEditInput = input
+					}
+					if params != nil && int64(len(params.Mask)) > reqThreshold {
+						logParams := *params
+						logParams.Mask = nil
+						initialData.Params = &logParams
+					} else {
+						initialData.Params = params
+					}
+				} else {
+					initialData.ImageEditInput = input
+					initialData.Params = params
+				}
+			} else {
+				initialData.Params = params
+			}
+		case schemas.ImageVariationRequest:
+			initialData.Params = req.ImageVariationRequest.Params
+			input := req.ImageVariationRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 && int64(len(input.Image.Image)) > reqThreshold {
+					logInput := *input
+					logInput.Image = schemas.ImageInput{}
+					initialData.ImageVariationInput = &logInput
+				} else {
+					initialData.ImageVariationInput = input
+				}
+			}
 		case schemas.VideoGenerationRequest:
 			initialData.Params = req.VideoGenerationRequest.Params
 			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input

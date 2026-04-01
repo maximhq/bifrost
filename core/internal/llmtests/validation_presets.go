@@ -131,6 +131,12 @@ func CountTokensExpectations() ResponseExpectations {
 func StreamingExpectations() ResponseExpectations {
 	expectations := BasicChatExpectations()
 
+	// Streaming consolidated responses are assembled from chunks.
+	// The last chunk often does not carry created/model fields,
+	// so we cannot reliably validate them on the consolidated response.
+	expectations.ShouldHaveTimestamps = false
+	expectations.ShouldHaveModel = false
+
 	return expectations
 }
 
@@ -318,7 +324,7 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 	case "FileInput":
 		expectations = FileInputExpectations()
 
-	case "ChatCompletionStream":
+	case "ChatCompletionStream", "TextCompletionStream":
 		expectations = StreamingExpectations()
 
 	case "MultiTurnConversation":
@@ -410,145 +416,122 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 // Each provider is explicitly configured for: usage stats, timestamps, model, and latency.
 // If a provider is not listed, defaults are kept (all true from BasicChatExpectations).
 func ModifyExpectationsForProvider(expectations ResponseExpectations, provider schemas.ModelProvider) ResponseExpectations {
+	// NOTE: This function must NOT set ShouldHaveTimestamps or ShouldHaveModel to true.
+	// StreamingExpectations explicitly disables those fields, and overriding them here
+	// would cause streaming tests to incorrectly assert on fields that consolidated
+	// streaming responses cannot reliably carry.
+	// ShouldHaveUsageStats and ShouldHaveLatency may still be enabled here because no
+	// scenario preset disables them, and some presets (e.g. ReasoningExpectations) omit
+	// ShouldHaveLatency entirely.
 	switch provider {
 	case schemas.OpenAI:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Azure:
 		// Azure OpenAI returns the same fields as OpenAI
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Anthropic:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Bedrock:
 		// Bedrock returns usage stats for most calls via Bifrost normalization, but not all
 		expectations.ShouldHaveTimestamps = false // Bedrock does not return created timestamps
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Cohere:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveModel = false // Cohere does not return model field in all response types
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Vertex:
 		// Google Vertex AI returns usage and model but may not return timestamps
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveTimestamps = false // Vertex does not return created timestamps
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Mistral:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Ollama:
 		// Local models may not return usage or timestamps
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Groq:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Gemini:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveTimestamps = false // Gemini does not return created timestamps
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Perplexity:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveTimestamps = false // Perplexity does not return created timestamps
+		expectations.ShouldHaveModel = false      // Perplexity does not return model field
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Cerebras:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.OpenRouter:
 		// OpenRouter proxies to multiple providers; returns OpenAI-compatible fields
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.XAI:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Nebius:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.SGL:
 		// SGLang local inference — may not return all fields
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Parasail:
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
+		expectations.ShouldHaveTimestamps = false // Parasail does not return created timestamps
+		expectations.ShouldHaveModel = false      // Parasail does not return model field
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Elevenlabs:
 		// Elevenlabs is primarily audio — usage/timestamps may not apply to all calls
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.HuggingFace:
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Replicate:
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.VLLM:
 		// vLLM local inference — OpenAI-compatible
 		expectations.ShouldHaveUsageStats = true
-		expectations.ShouldHaveTimestamps = true
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	case schemas.Runway:
 		// Runway is primarily video/image generation
 		expectations.ShouldHaveUsageStats = false
 		expectations.ShouldHaveTimestamps = false
-		expectations.ShouldHaveModel = true
 		expectations.ShouldHaveLatency = true
 
 	default:

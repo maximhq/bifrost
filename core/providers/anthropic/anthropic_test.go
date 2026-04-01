@@ -41,7 +41,8 @@ func TestAnthropic(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			WebSearchTool:         true,
@@ -69,7 +70,9 @@ func TestAnthropic(t *testing.T) {
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
 			PassthroughAPI:        true,
-			Compaction:            true,
+			Compaction:          true,
+			InterleavedThinking: true,
+			FastMode:            false, // Enable when test API key has Opus 4.6 access
 		},
 	}
 

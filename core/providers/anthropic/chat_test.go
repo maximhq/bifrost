@@ -478,122 +478,10 @@ func TestToBifrostChatResponse_SingleTextBlockNoThinking(t *testing.T) {
 	}
 }
 
-func TestToAnthropicChatRequest_ReconstructsFromBoundaries(t *testing.T) {
-	thinkingText := "Step by step reasoning"
-	textBlock1 := "First answer"
-	textBlock2 := "Second answer"
-	signature := "sig_xyz789"
-
-	// Simulate combined content string
-	combined := thinkingText + "\n\n" + textBlock1 + "\n\n" + textBlock2
-
-	// Build block metadata
-	meta := []contentBlockMeta{
-		{T: "thinking", L: len(thinkingText)},
-		{T: "text", L: len(textBlock1)},
-		{T: "text", L: len(textBlock2)},
-	}
-	metaJSON, _ := json.Marshal(meta)
-	metaStr := string(metaJSON)
-
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Anthropic,
-		Model:    "claude-opus-4-6-20250514",
-		Input: []schemas.ChatMessage{
-			{
-				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Question")},
-			},
-			{
-				Role:    schemas.ChatMessageRoleAssistant,
-				Content: &schemas.ChatMessageContent{ContentStr: &combined},
-				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					ReasoningDetails: []schemas.ChatReasoningDetails{
-						{
-							Index:     0,
-							Type:      schemas.BifrostReasoningDetailsTypeText,
-							Signature: &signature,
-							// Text is nil — was cleared during response conversion
-						},
-						{
-							Index: 1,
-							Type:  schemas.BifrostReasoningDetailsTypeContentBlocks,
-							Text:  &metaStr,
-						},
-					},
-				},
-			},
-			{
-				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Follow up")},
-			},
-		},
-	}
-
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
-	defer cancel()
-	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// The assistant message (index 1, which maps to anthropic messages[1] since user is [0])
-	// Find the assistant message
-	var assistantMsg *AnthropicMessage
-	for i := range result.Messages {
-		if result.Messages[i].Role == "assistant" {
-			assistantMsg = &result.Messages[i]
-			break
-		}
-	}
-	if assistantMsg == nil {
-		t.Fatal("expected assistant message in result")
-	}
-
-	blocks := assistantMsg.Content.ContentBlocks
-	if len(blocks) != 3 {
-		t.Fatalf("expected 3 content blocks, got %d", len(blocks))
-	}
-
-	// Block 0: thinking with signature and text reconstructed from combined string
-	if blocks[0].Type != AnthropicContentBlockTypeThinking {
-		t.Errorf("block 0: expected thinking, got %s", blocks[0].Type)
-	}
-	if blocks[0].Thinking == nil || *blocks[0].Thinking != thinkingText {
-		t.Errorf("block 0: expected thinking text %q, got %v", thinkingText, blocks[0].Thinking)
-	}
-	if blocks[0].Signature == nil || *blocks[0].Signature != signature {
-		t.Errorf("block 0: expected signature %q, got %v", signature, blocks[0].Signature)
-	}
-
-	// Block 1: text block 1
-	if blocks[1].Type != AnthropicContentBlockTypeText {
-		t.Errorf("block 1: expected text, got %s", blocks[1].Type)
-	}
-	if blocks[1].Text == nil || *blocks[1].Text != textBlock1 {
-		t.Errorf("block 1: expected text %q, got %v", textBlock1, blocks[1].Text)
-	}
-
-	// Block 2: text block 2
-	if blocks[2].Type != AnthropicContentBlockTypeText {
-		t.Errorf("block 2: expected text, got %s", blocks[2].Type)
-	}
-	if blocks[2].Text == nil || *blocks[2].Text != textBlock2 {
-		t.Errorf("block 2: expected text %q, got %v", textBlock2, blocks[2].Text)
-	}
-}
-
 func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 	// If content was modified by the client, boundaries won't match — fall back to single text block
 	signature := "sig_fallback"
 	modifiedContent := "The user edited this content"
-
-	meta := []contentBlockMeta{
-		{T: "thinking", L: 100}, // Original was 100 chars, but content is now different
-		{T: "text", L: 50},
-	}
-	metaJSON, _ := json.Marshal(meta)
-	metaStr := string(metaJSON)
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -608,8 +496,7 @@ func TestToAnthropicChatRequest_BoundaryMismatchFallback(t *testing.T) {
 				Content: &schemas.ChatMessageContent{ContentStr: &modifiedContent},
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
 					ReasoningDetails: []schemas.ChatReasoningDetails{
-						{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Signature: &signature},
-						{Index: 1, Type: schemas.BifrostReasoningDetailsTypeContentBlocks, Text: &metaStr},
+						{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: &modifiedContent, Signature: &signature},
 					},
 				},
 			},

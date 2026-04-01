@@ -344,6 +344,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddKeyBlacklistedModelsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5304,6 +5310,84 @@ func migrationAddKeyBlacklistedModelsJSONColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_key_blacklisted_models_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetCalendarAlignedColumn adds the calendar_aligned column to the governance_budgets table.
+func migrationAddBudgetCalendarAlignedColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_budget_calendar_aligned_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to add calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableBudget{}, "calendar_aligned") {
+				if err := mg.DropColumn(&tables.TableBudget{}, "calendar_aligned"); err != nil {
+					return fmt.Errorf("failed to drop calendar_aligned column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_budget_calendar_aligned_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelCapabilityColumns adds model capability metadata columns to governance_model_pricing.
+func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_capability_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"context_length",
+				"max_input_tokens",
+				"max_output_tokens",
+				"architecture",
+			}
+			for _, column := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to add %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"context_length",
+				"max_input_tokens",
+				"max_output_tokens",
+				"architecture",
+			}
+			for _, column := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to drop %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_capability_columns migration: %s", err.Error())
 	}
 	return nil
 }

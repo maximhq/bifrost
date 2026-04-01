@@ -1074,7 +1074,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxOutputTokens := DefaultCompletionMaxTokens
+					maxOutputTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxOutputTokens != nil {
 						maxOutputTokens = *bifrostReq.Params.MaxOutputTokens
 					}

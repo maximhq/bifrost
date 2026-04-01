@@ -9,8 +9,8 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 | Path | Description |
 |------|-------------|
 | `bifrost-v1-complete.postman_collection.json` | Postman collection: all `/v1` endpoints (models, chat, completions, responses, embeddings, audio, images, count tokens, batches, files, containers, MCP) |
-| `bifrost-v1.postman_environment.json` | Optional/legacy Postman environment (OpenAI). `run-newman-tests.sh` uses **BIFROST_*** environment variables as the fallback when no provider-specific env file is passed (see script and `--help`). |
-| `run-newman-tests.sh` | Script to run the V1 collection with Newman (single provider or all providers). |
+| `bifrost-v1.postman_environment.json` | Optional/legacy Postman environment (OpenAI). `run-newman-inference-tests.sh` uses **BIFROST_*** environment variables as the fallback when no provider-specific env file is passed (see script and `--help`). |
+| `run-newman-inference-tests.sh` | Script to run the V1 collection with Newman (single provider or all providers). |
 
 ### Integration Endpoint Tests
 
@@ -49,7 +49,7 @@ Before running **API Management** or **all integration** tests, the runners opti
 - **`setup-plugin.sh`** – Builds `examples/plugins/hello-world` into `build/hello-world.so` (native OS/arch). If the plugin fails to build, plugin tests may fail with "plugin not found" / "failed to load"; those failures are treated as expected when the plugin is missing.
 - **`setup-mcp.sh`** – Builds and starts the test MCP server (`examples/mcps/http-no-ping-server`) on **http://localhost:3001/** so the collection’s test MCP client (connection string `http://localhost:3001/`) can connect. If the server is already listening on 3001 or the script is skipped, MCP client tests accept 404/500 as fallback.
 
-Both are called automatically by `run-newman-api-tests.sh` and `run-all-integration-tests.sh`.
+Both are called automatically by `runners/run-newman-api-tests.sh` and `runners/run-all-integration-tests.sh`.
 
 To run setup manually (from this directory):
 
@@ -68,20 +68,20 @@ From this directory (`tests/e2e/api`):
 
 ```bash
 # Run for all providers in parallel (each provider_config/bifrost-v1-*.postman_environment.json except sgl and ollama)
-./run-newman-tests.sh
+./runners/run-newman-inference-tests.sh
 
 # Run for a single provider (by name or path to .json env)
-./run-newman-tests.sh --env openai
-./run-newman-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
+./runners/run-newman-inference-tests.sh --env openai
+./runners/run-newman-inference-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
 
 # Options
-./run-newman-tests.sh --help
-./run-newman-tests.sh --folder "Chat Completions"
-./run-newman-tests.sh --html --verbose
+./runners/run-newman-inference-tests.sh --help
+./runners/run-newman-inference-tests.sh --folder "Chat Completions"
+./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
-**Retry logic (CI)**  
-When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./run-newman-tests.sh --env openai` or `CI=true ./run-newman-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
+**Retry logic (CI)**
+When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 
 ### Integration Endpoint Tests
 
@@ -186,13 +186,13 @@ Rather than duplicating 100+ tests for each composite integration, we test **rep
 When integration tests are run for **all providers** (e.g. `./run-newman-openai-integration.sh` without `--env`), each collection is executed once per provider environment. Some providers do not support batch, file, container, embedding, audio, or image operations. To avoid failing on those requests, each integration collection has:
 
 - **Collection-level prerequest**: Runs before every request. Reads the current **provider** from the environment and the **request name**. If the request maps to an operation category for which the provider has `false` in `provider_capabilities` (e.g. `providers.anthropic.embedding === false`), the request is **skipped** via `postman.setNextRequest(nextRequestName)` so the next request in execution order runs instead.
-- **Embedded variables**: `execution_order` (JSON array of request names in depth-first order) and `request_to_operation` (JSON map of request name → operation category). For the **V1** collection, `provider_capabilities` is **not** embedded: it is loaded from `provider-capabilities.json` at run time by `run-newman-tests.sh` and passed to Newman as globals.
+- **Embedded variables**: `execution_order` (JSON array of request names in depth-first order) and `request_to_operation` (JSON map of request name → operation category). For the **V1** collection, `provider_capabilities` is **not** embedded: it is loaded from `provider-capabilities.json` at run time by `run-newman-inference-tests.sh` and passed to Newman as globals.
 
 **Config file**: `provider-capabilities.json` in this directory is a map per provider of capability flags (e.g. `chat_completions`, `embedding`, `batch`) to booleans. It is the single source of truth for which operations each provider supports (aligned with `core/providers/*/provider.go` returning `NewUnsupportedOperationError`).
 
 **Updating capabilities or request mappings**:
 
-1. **Change provider support**: Edit `provider-capabilities.json` and set each capability to `true` or `false` under `providers.<name>` (e.g. `providers.anthropic.embedding: false`). It is the only source of truth; the V1 run script loads it at run time (no embedded copy in the collection).
+1. **Change provider support**: Edit `provider-capabilities.json` and set each capability to `true` or `false` under `providers.<name>` (e.g. `providers.anthropic.embedding: false`). It is the only source of truth; the V1 inference run script loads it at run time (no embedded copy in the collection).
 2. **Change which requests are skippable**: Edit `scripts/update-collection-capabilities.js` (function `getRequestToOperationMap`) to adjust the request-name → operation map for each collection.
 3. **Re-inject variables into a collection**: From this directory run:
    ```bash
@@ -216,6 +216,6 @@ The collection and supporting files are maintained under `docs/openapi/`. To ref
 
 - `bifrost-v1-complete.postman_collection.json` ← `docs/openapi/bifrost-v1-complete.postman_collection.json`
 - `bifrost-v1.postman_environment.json` ← `docs/openapi/bifrost-v1.postman_environment.json`
-- `run-newman-tests.sh` ← `docs/openapi/run-newman-tests.sh`
+- `runners/run-newman-inference-tests.sh` ← `docs/openapi/run-newman-inference-tests.sh`
 - `provider_config/*.postman_environment.json` and `provider_config/README.md` ← `docs/openapi/provider_config/` (if syncing from docs)
 - `fixtures/*` ← `docs/openapi/fixtures/`

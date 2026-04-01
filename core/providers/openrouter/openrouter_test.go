@@ -37,7 +37,8 @@ func TestOpenRouter(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    false, // OpenRouter's responses API is in Beta
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false, // OpenRouter's responses API is in Beta

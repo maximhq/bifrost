@@ -376,7 +376,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -677,7 +677,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.AdditionalFormats) > 0 {
-		payload, err := sonic.Marshal(reqBody.AdditionalFormats)
+		payload, err := providerUtils.MarshalSorted(reqBody.AdditionalFormats)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to marshal additional_formats", err, providerName)
 		}
@@ -731,7 +731,7 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 				}
 			}
 		default:
-			payload, err := sonic.Marshal(v)
+			payload, err := providerUtils.MarshalSorted(v)
 			if err != nil {
 				return providerUtils.NewBifrostOperationError("failed to marshal webhook_metadata", err, providerName)
 			}

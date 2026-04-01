@@ -39,6 +39,20 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 **Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
 </Note>
 
+## Beta Headers
+
+For Anthropic models on Vertex AI, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.
+
+**Supported**: `computer-use-*`, `compact-*`, `context-management-*`, `interleaved-thinking-*`, `context-1m-*`
+
+**Not supported**: `structured-outputs-*`, `advanced-tool-use-*`, `mcp-client-*`, `prompt-caching-scope-*`, `files-api-*`, `skills-*`, `fast-mode-*`, `redact-thinking-*`
+
+You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
+
+<Frame>
+  <img src="/media/vertex-ai-setting-anthropic-beta-headers.png" alt="Vertex AI Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options" />
+</Frame>
+
 ---
 
 # 1. Chat Completions
@@ -640,11 +654,11 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 **Code**: `utils.go:33, 71`
 </Accordion>
 
-<Accordion title="Embeddings Float64 Conversion">
+<Accordion title="Embeddings Precision Preservation">
 **Severity**: Low
-**Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
-**Impact**: Minor precision loss (expected for embeddings)
-**Code**: `embedding.go:84-87`
+**Behavior**: Vertex returns float64 embeddings, and Bifrost preserves that precision in normalized embedding responses
+**Impact**: No precision loss in the `/v1/embeddings` response path
+**Code**: `embedding.go:84-91`
 </Accordion>
 
 <Accordion title="List Models API Returns Only Custom Models">

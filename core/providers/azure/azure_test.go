@@ -48,7 +48,8 @@ func TestAzure(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:          true,
+			MultipleToolCallsStreaming: true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -76,6 +77,7 @@ func TestAzure(t *testing.T) {
 			VideoRemix:            false,
 			VideoList:             false,
 			VideoDelete:           false,
+			InterleavedThinking:  true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

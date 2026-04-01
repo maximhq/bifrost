@@ -330,13 +330,13 @@ func (rc ResponsesResponseConversation) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ResponsesResponseConversationStr != nil {
-		return Marshal(*rc.ResponsesResponseConversationStr)
+		return MarshalSorted(*rc.ResponsesResponseConversationStr)
 	}
 	if rc.ResponsesResponseConversationStruct != nil {
-		return Marshal(rc.ResponsesResponseConversationStruct)
+		return MarshalSorted(rc.ResponsesResponseConversationStruct)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -374,13 +374,13 @@ func (rc ResponsesResponseInstructions) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ResponsesResponseInstructionsStr != nil {
-		return Marshal(*rc.ResponsesResponseInstructionsStr)
+		return MarshalSorted(*rc.ResponsesResponseInstructionsStr)
 	}
 	if rc.ResponsesResponseInstructionsArray != nil {
-		return Marshal(rc.ResponsesResponseInstructionsArray)
+		return MarshalSorted(rc.ResponsesResponseInstructionsArray)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -486,7 +486,7 @@ func (d ResponsesResponseInputTokens) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens int `json:"cached_write_tokens"`
 		CachedTokens      int `json:"cached_tokens"`
 	}
-	return Marshal(raw{
+	return MarshalSorted(raw{
 		TextTokens:        d.TextTokens,
 		AudioTokens:       d.AudioTokens,
 		ImageTokens:       d.ImageTokens,
@@ -582,13 +582,13 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ContentStr != nil {
-		return Marshal(*rc.ContentStr)
+		return MarshalSorted(*rc.ContentStr)
 	}
 	if rc.ContentBlocks != nil {
-		return Marshal(rc.ContentBlocks)
+		return MarshalSorted(rc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -753,19 +753,19 @@ type ResponsesToolMessageActionStruct struct {
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesComputerToolCallAction != nil {
-		return Marshal(action.ResponsesComputerToolCallAction)
+		return MarshalSorted(action.ResponsesComputerToolCallAction)
 	}
 	if action.ResponsesWebSearchToolCallAction != nil {
-		return Marshal(action.ResponsesWebSearchToolCallAction)
+		return MarshalSorted(action.ResponsesWebSearchToolCallAction)
 	}
 	if action.ResponsesWebFetchToolCallAction != nil {
-		return Marshal(action.ResponsesWebFetchToolCallAction)
+		return MarshalSorted(action.ResponsesWebFetchToolCallAction)
 	}
 	if action.ResponsesLocalShellToolCallAction != nil {
-		return Marshal(action.ResponsesLocalShellToolCallAction)
+		return MarshalSorted(action.ResponsesLocalShellToolCallAction)
 	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
-		return Marshal(action.ResponsesMCPApprovalRequestAction)
+		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
 	return nil, fmt.Errorf("responses tool message action struct is empty")
 }
@@ -840,13 +840,13 @@ type ResponsesToolMessageOutputStruct struct {
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
-		return Marshal(*output.ResponsesToolCallOutputStr)
+		return MarshalSorted(*output.ResponsesToolCallOutputStr)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
-		return Marshal(output.ResponsesFunctionToolCallOutputBlocks)
+		return MarshalSorted(output.ResponsesFunctionToolCallOutputBlocks)
 	}
 	if output.ResponsesComputerToolCallOutput != nil {
-		return Marshal(output.ResponsesComputerToolCallOutput)
+		return MarshalSorted(output.ResponsesComputerToolCallOutput)
 	}
 	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
@@ -994,13 +994,13 @@ func (rf ResponsesFunctionToolCallOutput) MarshalJSON() ([]byte, error) {
 	}
 
 	if rf.ResponsesFunctionToolCallOutputStr != nil {
-		return Marshal(*rf.ResponsesFunctionToolCallOutputStr)
+		return MarshalSorted(*rf.ResponsesFunctionToolCallOutputStr)
 	}
 	if rf.ResponsesFunctionToolCallOutputBlocks != nil {
-		return Marshal(rf.ResponsesFunctionToolCallOutputBlocks)
+		return MarshalSorted(rf.ResponsesFunctionToolCallOutputBlocks)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesFunctionToolCallOutput.
@@ -1103,10 +1103,10 @@ func (o ResponsesCodeInterpreterOutput) MarshalJSON() ([]byte, error) {
 
 	// Marshal whichever one is present
 	if o.ResponsesCodeInterpreterOutputLogs != nil {
-		return Marshal(o.ResponsesCodeInterpreterOutputLogs)
+		return MarshalSorted(o.ResponsesCodeInterpreterOutputLogs)
 	}
 	if o.ResponsesCodeInterpreterOutputImage != nil {
-		return Marshal(o.ResponsesCodeInterpreterOutputImage)
+		return MarshalSorted(o.ResponsesCodeInterpreterOutputImage)
 	}
 
 	// Return null if neither is set
@@ -1291,13 +1291,13 @@ func (tc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if tc.ResponsesToolChoiceStr != nil {
-		return Marshal(tc.ResponsesToolChoiceStr)
+		return MarshalSorted(tc.ResponsesToolChoiceStr)
 	}
 	if tc.ResponsesToolChoiceStruct != nil {
-		return Marshal(tc.ResponsesToolChoiceStruct)
+		return MarshalSorted(tc.ResponsesToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -1439,7 +1439,7 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 		}
 	}
 	if t.CacheControl != nil {
-		ccBytes, ccErr := Marshal(t.CacheControl)
+		ccBytes, ccErr := MarshalSorted(t.CacheControl)
 		if ccErr != nil {
 			return nil, ccErr
 		}
@@ -1453,47 +1453,47 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	switch t.Type {
 	case ResponsesToolTypeFunction:
 		if t.ResponsesToolFunction != nil {
-			typeBytes, err = Marshal(t.ResponsesToolFunction)
+			typeBytes, err = MarshalSorted(t.ResponsesToolFunction)
 		}
 	case ResponsesToolTypeFileSearch:
 		if t.ResponsesToolFileSearch != nil {
-			typeBytes, err = Marshal(t.ResponsesToolFileSearch)
+			typeBytes, err = MarshalSorted(t.ResponsesToolFileSearch)
 		}
 	case ResponsesToolTypeComputerUsePreview:
 		if t.ResponsesToolComputerUsePreview != nil {
-			typeBytes, err = Marshal(t.ResponsesToolComputerUsePreview)
+			typeBytes, err = MarshalSorted(t.ResponsesToolComputerUsePreview)
 		}
 	case ResponsesToolTypeWebSearch:
 		if t.ResponsesToolWebSearch != nil {
-			typeBytes, err = Marshal(t.ResponsesToolWebSearch)
+			typeBytes, err = MarshalSorted(t.ResponsesToolWebSearch)
 		}
 	case ResponsesToolTypeWebFetch:
 		if t.ResponsesToolWebFetch != nil {
-			typeBytes, err = Marshal(t.ResponsesToolWebFetch)
+			typeBytes, err = MarshalSorted(t.ResponsesToolWebFetch)
 		}
 	case ResponsesToolTypeMCP:
 		if t.ResponsesToolMCP != nil {
-			typeBytes, err = Marshal(t.ResponsesToolMCP)
+			typeBytes, err = MarshalSorted(t.ResponsesToolMCP)
 		}
 	case ResponsesToolTypeCodeInterpreter:
 		if t.ResponsesToolCodeInterpreter != nil {
-			typeBytes, err = Marshal(t.ResponsesToolCodeInterpreter)
+			typeBytes, err = MarshalSorted(t.ResponsesToolCodeInterpreter)
 		}
 	case ResponsesToolTypeImageGeneration:
 		if t.ResponsesToolImageGeneration != nil {
-			typeBytes, err = Marshal(t.ResponsesToolImageGeneration)
+			typeBytes, err = MarshalSorted(t.ResponsesToolImageGeneration)
 		}
 	case ResponsesToolTypeLocalShell:
 		if t.ResponsesToolLocalShell != nil {
-			typeBytes, err = Marshal(t.ResponsesToolLocalShell)
+			typeBytes, err = MarshalSorted(t.ResponsesToolLocalShell)
 		}
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
-			typeBytes, err = Marshal(t.ResponsesToolCustom)
+			typeBytes, err = MarshalSorted(t.ResponsesToolCustom)
 		}
 	case ResponsesToolTypeWebSearchPreview:
 		if t.ResponsesToolWebSearchPreview != nil {
-			typeBytes, err = Marshal(t.ResponsesToolWebSearchPreview)
+			typeBytes, err = MarshalSorted(t.ResponsesToolWebSearchPreview)
 		}
 	}
 	if err != nil {
@@ -1540,7 +1540,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		t.Description = &description
 	}
 	if cacheControl, ok := raw["cache_control"]; ok {
-		bytes, err := Marshal(cacheControl)
+		bytes, err := MarshalSorted(cacheControl)
 		if err != nil {
 			return err
 		}
@@ -1690,7 +1690,7 @@ func (f *ResponsesToolFileSearchFilter) MarshalJSON() ([]byte, error) {
 		if f.ResponsesToolFileSearchCompoundFilter == nil {
 			return nil, fmt.Errorf("compound filter is nil but type is %s", f.Type)
 		}
-		filtersBytes, fErr := Marshal(f.ResponsesToolFileSearchCompoundFilter.Filters)
+		filtersBytes, fErr := MarshalSorted(f.ResponsesToolFileSearchCompoundFilter.Filters)
 		if fErr != nil {
 			return nil, fErr
 		}
@@ -1873,7 +1873,7 @@ func (i *Interval) MarshalJSON() ([]byte, error) {
 		aux.EndTime = (*time.Time)(&i.EndTime)
 	}
 
-	return Marshal(aux)
+	return MarshalSorted(aux)
 }
 
 // ResponsesToolWebSearchUserLocation - The approximate location of the user
@@ -1926,14 +1926,14 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 	}
 
 	if as.Setting != nil {
-		return Marshal(*as.Setting)
+		return MarshalSorted(*as.Setting)
 	}
 	if as.Always != nil || as.Never != nil {
 		// Build JSON bytes with deterministic key order using sjson
 		data := []byte(`{}`)
 		var err error
 		if as.Always != nil {
-			alwaysBytes, aErr := Marshal(as.Always)
+			alwaysBytes, aErr := MarshalSorted(as.Always)
 			if aErr != nil {
 				return nil, aErr
 			}
@@ -1942,7 +1942,7 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 			}
 		}
 		if as.Never != nil {
-			neverBytes, nErr := Marshal(as.Never)
+			neverBytes, nErr := MarshalSorted(as.Never)
 			if nErr != nil {
 				return nil, nErr
 			}
@@ -1953,7 +1953,7 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 		return data, nil
 	}
 	// If all are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesToolMCPAllowedToolsApprovalSetting

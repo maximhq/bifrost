@@ -51,6 +51,7 @@ type AnthropicResponsesStreamState struct {
 	CreatedAt                 int                               // Timestamp for created_at consistency
 	HasEmittedCreated         bool                              // Whether we've emitted response.created
 	HasEmittedInProgress      bool                              // Whether we've emitted response.in_progress
+	HasEmittedMessageDelta    bool                              // Whether we've emitted message_delta (avoids duplicate from response.completed)
 	StructuredOutputToolName  string                            // Name of the structured output tool (if using tool-based SO for Vertex)
 	StructuredOutputIndex     *int                              // Output index of the structured output tool call
 }
@@ -154,6 +155,7 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 	return state
@@ -194,6 +196,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
+	state.HasEmittedMessageDelta = false
 	state.StructuredOutputToolName = ""
 	state.StructuredOutputIndex = nil
 }
@@ -252,6 +255,23 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 				if state.Model != nil {
 					response.Model = *state.Model
+				}
+				// Forward input usage from message_start so clients see cache metrics early
+				if chunk.Message.Usage != nil {
+					response.Usage = &schemas.ResponsesResponseUsage{
+						InputTokens:  chunk.Message.Usage.InputTokens,
+						OutputTokens: chunk.Message.Usage.OutputTokens,
+						TotalTokens:  chunk.Message.Usage.InputTokens + chunk.Message.Usage.OutputTokens,
+					}
+					if chunk.Message.Usage.CacheReadInputTokens > 0 || chunk.Message.Usage.CacheCreationInputTokens > 0 {
+						response.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+							CachedReadTokens:  chunk.Message.Usage.CacheReadInputTokens,
+							CachedWriteTokens: chunk.Message.Usage.CacheCreationInputTokens,
+						}
+						// Bifrost convention: InputTokens includes cached tokens
+						response.Usage.InputTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+						response.Usage.TotalTokens += chunk.Message.Usage.CacheReadInputTokens + chunk.Message.Usage.CacheCreationInputTokens
+					}
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeCreated,
@@ -1293,6 +1313,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				response.Usage = bifrostUsage
 			}
 
+			// Mark that we already emitted a message_delta so response.completed
+			// doesn't synthesize a duplicate one.
+			state.HasEmittedMessageDelta = true
+
 			return []*schemas.BifrostResponsesStreamResponse{{
 				Type:           "message_delta",
 				SequenceNumber: sequenceNumber,
@@ -1379,11 +1403,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
 		if bifrostResp.Response != nil {
-			streamMessage := &AnthropicMessageResponse{
-				Type:    "message",
-				Role:    "assistant",
-				Content: []AnthropicContentBlock{}, // Always empty array in message_start
-				Usage: &AnthropicUsage{
+			// Use actual usage if available (forwarded from upstream message_start),
+			// otherwise fall back to zeros for non-Anthropic providers
+			var messageUsage *AnthropicUsage
+			if bifrostResp.Response.Usage != nil {
+				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			} else {
+				messageUsage = &AnthropicUsage{
 					InputTokens:              0,
 					OutputTokens:             0,
 					CacheReadInputTokens:     0,
@@ -1392,7 +1418,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						Ephemeral5mInputTokens: 0,
 						Ephemeral1hInputTokens: 0,
 					},
-				},
+				}
+			}
+			streamMessage := &AnthropicMessageResponse{
+				Type:    "message",
+				Role:    "assistant",
+				Content: []AnthropicContentBlock{}, // Always empty array in message_start
+				Usage:   messageUsage,
 			}
 			if bifrostResp.Response.ID != nil {
 				streamMessage.ID = *bifrostResp.Response.ID
@@ -1953,6 +1985,11 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
+		// If a message_delta was already emitted from the upstream event, only emit message_stop
+		// to avoid sending a duplicate message_delta to the client.
+		if alreadyEmitted, ok := ctx.Value(schemas.BifrostContextKeyHasEmittedMessageDelta).(bool); ok && alreadyEmitted {
+			return []*AnthropicStreamEvent{streamResp}
+		}
 		anthropicContentDeltaEvent := &AnthropicStreamEvent{
 			Type: AnthropicStreamEventTypeMessageDelta,
 			Delta: &AnthropicStreamDelta{
@@ -2096,6 +2133,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
+	if req.Speed != nil {
+		params.ExtraParams["speed"] = *req.Speed
+	}
 	if req.StopSequences != nil {
 		params.ExtraParams["stop"] = req.StopSequences
 	}
@@ -2127,7 +2167,7 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 			} else if req.Thinking.BudgetTokens != nil {
 				// Fallback: convert budget_tokens to effort
 				params.Reasoning = &schemas.ResponsesParametersReasoning{
-					Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*req.Thinking.BudgetTokens, MinimumReasoningMaxTokens, AnthropicDefaultMaxTokens)),
+					Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*req.Thinking.BudgetTokens, MinimumReasoningMaxTokens, providerUtils.GetMaxOutputTokensOrDefault(req.Model, AnthropicDefaultMaxTokens))),
 					MaxTokens: req.Thinking.BudgetTokens,
 					Summary:   summary,
 				}
@@ -2188,10 +2228,24 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 
 	if req.MCPServers != nil {
+		// Build a map of mcp_toolset configs from tools[] keyed by mcp_server_name
+		toolsetByServer := make(map[string]*AnthropicMCPToolsetTool)
+		if req.Tools != nil {
+			for i := range req.Tools {
+				if req.Tools[i].MCPToolset != nil {
+					toolsetByServer[req.Tools[i].MCPToolset.MCPServerName] = req.Tools[i].MCPToolset
+				}
+			}
+		}
+
 		var bifrostMCPTools []schemas.ResponsesTool
 		for _, mcpServer := range req.MCPServers {
-			bifrostMCPTool := convertAnthropicMCPServerToBifrostTool(&mcpServer)
+			bifrostMCPTool := convertAnthropicMCPServerV2ToBifrostTool(&mcpServer)
 			if bifrostMCPTool != nil {
+				// Merge mcp_toolset configs (allowed tools) if present
+				if toolset, ok := toolsetByServer[mcpServer.Name]; ok {
+					applyMCPToolsetConfigToBifrostTool(bifrostMCPTool, toolset)
+				}
 				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
 			}
 		}
@@ -2224,7 +2278,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: AnthropicDefaultMaxTokens,
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// Convert basic parameters
@@ -2384,6 +2438,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				delete(anthropicReq.ExtraParams, "top_k")
 				anthropicReq.TopK = topK
 			}
+			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
+				delete(anthropicReq.ExtraParams, "speed")
+				anthropicReq.Speed = speed
+			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(anthropicReq.ExtraParams, "stop")
 				anthropicReq.StopSequences = stop
@@ -2408,22 +2466,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools := []AnthropicTool{}
-			mcpServers := []AnthropicMCPServer{}
-			for _, tool := range bifrostReq.Params.Tools {
-				// handle mcp tool differently
-				if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
-					mcpServer := convertBifrostMCPToolToAnthropicServer(&tool)
-					if mcpServer != nil {
-						mcpServers = append(mcpServers, *mcpServer)
-					}
-					continue // Skip converting MCP tools to anthropicTools since they're handled separately
-				}
-				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool, bifrostReq.Provider)
-				if anthropicTool != nil {
-					anthropicTools = append(anthropicTools, *anthropicTool)
-				}
-			}
+			anthropicTools, mcpServers := convertBifrostToolsToAnthropic(bifrostReq.Model, bifrostReq.Params.Tools, bifrostReq.Provider)
 			if len(anthropicTools) > 0 {
 				if anthropicReq.Tools == nil {
 					anthropicReq.Tools = anthropicTools
@@ -2548,6 +2591,11 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		if bifrostUsage.InputTokensDetails.CachedWriteTokens > 0 {
 			anthropicUsage.CacheCreationInputTokens = bifrostUsage.InputTokensDetails.CachedWriteTokens
 			anthropicUsage.InputTokens = anthropicUsage.InputTokens - bifrostUsage.InputTokensDetails.CachedWriteTokens
+			// Populate the cache_creation breakdown — default to ephemeral (5m) since
+			// the Bifrost internal format doesn't distinguish TTL variants.
+			anthropicUsage.CacheCreation = AnthropicUsageCacheCreation{
+				Ephemeral5mInputTokens: bifrostUsage.InputTokensDetails.CachedWriteTokens,
+			}
 		}
 	}
 
@@ -4489,6 +4537,11 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		return nil
 	}
 
+	// Skip mcp_toolset entries — these are merged with mcp_servers in ToBifrostResponsesRequest
+	if tool.MCPToolset != nil {
+		return nil
+	}
+
 	// Handle special tool types first
 	if tool.Type != nil {
 		switch *tool.Type {
@@ -4556,7 +4609,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 			}
 			return bifrostTool
 
-		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution20260120:
+		case AnthropicToolTypeCodeExecution20250522, AnthropicToolTypeCodeExecution, AnthropicToolTypeCodeExecution20260120:
 			return &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeCodeInterpreter,
 			}
@@ -4712,13 +4765,60 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 	return nil
 }
 
+// convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
+// It handles context-dependent conversions like code_interpreter, which must be skipped when
+// web_search or web_fetch is present (Anthropic auto-injects code_execution in that case).
+func convertBifrostToolsToAnthropic(model string, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2) {
+	// Check if web search or web fetch is present — when they are, Anthropic
+	// auto-injects code_execution so we must skip it to avoid conflicts.
+	hasWebSearchOrFetch := false
+	for _, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebFetch {
+			hasWebSearchOrFetch = true
+			break
+		}
+	}
+
+	anthropicTools := []AnthropicTool{}
+	mcpServers := []AnthropicMCPServerV2{}
+	for _, tool := range tools {
+		if tool.Type == schemas.ResponsesToolTypeMCP && tool.ResponsesToolMCP != nil {
+			server, toolset := convertBifrostMCPToolToAnthropicNew(&tool)
+			if server != nil {
+				mcpServers = append(mcpServers, *server)
+			}
+			if toolset != nil {
+				anthropicTools = append(anthropicTools, AnthropicTool{MCPToolset: toolset})
+			}
+			continue
+		}
+		anthropicTool := convertBifrostToolToAnthropic(model, &tool, provider, hasWebSearchOrFetch)
+		if anthropicTool != nil {
+			anthropicTools = append(anthropicTools, *anthropicTool)
+		}
+	}
+	return anthropicTools, mcpServers
+}
+
 // Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider) *AnthropicTool {
+func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
 
 	switch tool.Type {
+	case schemas.ResponsesToolTypeCodeInterpreter:
+		if hasWebSearchOrFetch {
+			// Skip code execution tools when web search/fetch is present —
+			// the Anthropic API auto-injects code_execution in that case.
+			// Including it explicitly causes "Auto-injecting tools would conflict" errors.
+			return nil
+		}
+		// When no web search/fetch, explicitly include code_execution
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeCodeExecution),
+			Name: string(AnthropicToolNameCodeExecution),
+		}
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
 			computerToolType := AnthropicToolTypeComputer20250124
@@ -5074,7 +5174,66 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 }
 
 // Helper functions for MCP tool/server conversion
-// convertAnthropicMCPServerToBifrostTool converts a single Anthropic MCP server to a Bifrost ResponsesTool
+// convertAnthropicMCPServerV2ToBifrostTool converts a new-format MCP server to a Bifrost ResponsesTool.
+func convertAnthropicMCPServerV2ToBifrostTool(mcpServer *AnthropicMCPServerV2) *schemas.ResponsesTool {
+	if mcpServer == nil {
+		return nil
+	}
+
+	bifrostTool := &schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeMCP,
+		ResponsesToolMCP: &schemas.ResponsesToolMCP{
+			ServerLabel: mcpServer.Name,
+		},
+	}
+
+	if mcpServer.URL != "" {
+		bifrostTool.ResponsesToolMCP.ServerURL = schemas.Ptr(mcpServer.URL)
+	}
+	if mcpServer.AuthorizationToken != nil {
+		bifrostTool.ResponsesToolMCP.Authorization = mcpServer.AuthorizationToken
+	}
+
+	return bifrostTool
+}
+
+// applyMCPToolsetConfigToBifrostTool merges mcp_toolset tool configs (from tools[]) into a Bifrost MCP tool.
+// Extracts the allowlist pattern: tools explicitly enabled in configs while default_config has enabled=false.
+func applyMCPToolsetConfigToBifrostTool(bifrostTool *schemas.ResponsesTool, toolset *AnthropicMCPToolsetTool) {
+	if bifrostTool == nil || bifrostTool.ResponsesToolMCP == nil || toolset == nil {
+		return
+	}
+
+	// Extract allowed tools from the allowlist pattern:
+	// default_config.enabled=false + individual tools enabled in configs
+	if toolset.Configs != nil {
+		defaultEnabled := true
+		if toolset.DefaultConfig != nil && toolset.DefaultConfig.Enabled != nil {
+			defaultEnabled = *toolset.DefaultConfig.Enabled
+		}
+
+		if !defaultEnabled {
+			// Allowlist pattern: collect explicitly enabled tools.
+			// Keep an empty allowlist to preserve the "deny all" case.
+			allowedTools := make([]string, 0, len(toolset.Configs))
+			for toolName, config := range toolset.Configs {
+				if config != nil && config.Enabled != nil && *config.Enabled {
+					allowedTools = append(allowedTools, toolName)
+				}
+			}
+			bifrostTool.ResponsesToolMCP.AllowedTools = &schemas.ResponsesToolMCPAllowedTools{
+				ToolNames: allowedTools,
+			}
+		}
+	}
+
+	// Apply cache control if present
+	if toolset.CacheControl != nil {
+		bifrostTool.CacheControl = toolset.CacheControl
+	}
+}
+
+// convertAnthropicMCPServerToBifrostTool converts a deprecated-format Anthropic MCP server to a Bifrost ResponsesTool.
 func convertAnthropicMCPServerToBifrostTool(mcpServer *AnthropicMCPServer) *schemas.ResponsesTool {
 	if mcpServer == nil {
 		return nil
@@ -5107,7 +5266,49 @@ func convertAnthropicMCPServerToBifrostTool(mcpServer *AnthropicMCPServer) *sche
 	return bifrostTool
 }
 
-// convertBifrostMCPToolToAnthropicServer converts a Bifrost MCP tool back to an Anthropic MCP server
+// convertBifrostMCPToolToAnthropicNew converts a Bifrost MCP tool to the new mcp-client-2025-11-20 format.
+// Returns both a simplified server entry (for mcp_servers[]) and a toolset entry (for tools[]).
+func convertBifrostMCPToolToAnthropicNew(tool *schemas.ResponsesTool) (*AnthropicMCPServerV2, *AnthropicMCPToolsetTool) {
+	if tool == nil || tool.Type != schemas.ResponsesToolTypeMCP || tool.ResponsesToolMCP == nil {
+		return nil, nil
+	}
+
+	// Build simplified server (no tool_configuration)
+	server := &AnthropicMCPServerV2{
+		Type: "url",
+		Name: tool.ResponsesToolMCP.ServerLabel,
+	}
+	if tool.ResponsesToolMCP.ServerURL != nil {
+		server.URL = *tool.ResponsesToolMCP.ServerURL
+	}
+	if tool.ResponsesToolMCP.Authorization != nil {
+		server.AuthorizationToken = tool.ResponsesToolMCP.Authorization
+	}
+
+	// Build toolset tool (references server by name)
+	toolset := &AnthropicMCPToolsetTool{
+		Type:          "mcp_toolset",
+		MCPServerName: tool.ResponsesToolMCP.ServerLabel,
+		CacheControl:  tool.CacheControl,
+	}
+
+	// Convert allowed tools to per-tool configs
+	if tool.ResponsesToolMCP.AllowedTools != nil {
+		// Allowlist pattern: default disabled, specific tools enabled
+		toolset.DefaultConfig = &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)}
+		if len(tool.ResponsesToolMCP.AllowedTools.ToolNames) > 0 {
+			toolset.Configs = make(map[string]*AnthropicMCPToolsetConfig, len(tool.ResponsesToolMCP.AllowedTools.ToolNames))
+			for _, toolName := range tool.ResponsesToolMCP.AllowedTools.ToolNames {
+				toolset.Configs[toolName] = &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(true)}
+			}
+		}
+	}
+
+	return server, toolset
+}
+
+// convertBifrostMCPToolToAnthropicServer converts a Bifrost MCP tool to the deprecated mcp-client-2025-04-04 format.
+// Kept for backward compatibility.
 func convertBifrostMCPToolToAnthropicServer(tool *schemas.ResponsesTool) *AnthropicMCPServer {
 	if tool == nil || tool.Type != schemas.ResponsesToolTypeMCP || tool.ResponsesToolMCP == nil {
 		return nil

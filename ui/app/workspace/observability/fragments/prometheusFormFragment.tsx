@@ -10,6 +10,7 @@ import { prometheusFormSchema, type PrometheusFormSchema } from "@/lib/types/sch
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Switch } from "@/components/ui/switch";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { AlertTriangle, Copy, Eye, EyeOff, Info, Plus, Trash, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
@@ -44,7 +45,7 @@ export function PrometheusFormFragment({
 	const hasPrometheusAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showPassword, setShowPassword] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copy, copied } = useCopyToClipboard();
 	const [showBasicAuth, setShowBasicAuth] = useState(!!(initialConfig?.basic_auth?.username || initialConfig?.basic_auth?.password));
 
 	const form = useForm<PrometheusFormSchema, any, PrometheusFormSchema>({
@@ -86,9 +87,7 @@ export function PrometheusFormFragment({
 
 	const handleCopyEndpoint = () => {
 		if (metricsEndpoint) {
-			navigator.clipboard.writeText(metricsEndpoint);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
+			copy(metricsEndpoint);
 		}
 	};
 

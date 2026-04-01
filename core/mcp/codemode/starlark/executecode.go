@@ -180,7 +180,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 				responseText = "Execution completed successfully."
 			}
 			if hasResult {
-				resultJSON, err := sonic.MarshalIndent(result.Result, "", "  ")
+				resultJSON, err := schemas.MarshalSortedIndent(result.Result, "", "  ")
 				if err == nil {
 					responseText += fmt.Sprintf("\nReturn value: %s", string(resultJSON))
 					s.logger.Debug("%s Added return value to response (JSON length: %d chars)", codemcp.CodeModeLogPrefix, len(resultJSON))
@@ -331,8 +331,14 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		},
 	}
 
-	// Set up cancellation check
+	// Set up cancellation check — watch the context and cancel the Starlark
+	// thread so that infinite loops and other long-running scripts are interrupted
+	// when the execution timeout fires.
 	thread.SetLocal("context", timeoutCtx)
+	go func() {
+		<-timeoutCtx.Done()
+		thread.Cancel(timeoutCtx.Err().Error())
+	}()
 
 	// Step 4: Configure Starlark dialect options for a Python-like experience
 	starlarkOpts := &syntax.FileOptions{
@@ -441,7 +447,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 
 	// Marshal arguments to JSON for the tool call
-	argsJSON, err := sonic.Marshal(args)
+	argsJSON, err := schemas.MarshalSorted(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal tool arguments: %v", err)
 	}

@@ -70,7 +70,7 @@ func TestMakeRequestWithContext_SuccessReturnsNoopWait(t *testing.T) {
 	}
 }
 
-func TestMakeRequestWithContext_ContextCancelReturnsBlockingWait(t *testing.T) {
+func TestMakeRequestWithContext_DeadlineExceededReturnsTimeoutError(t *testing.T) {
 	// Server takes 500ms to respond
 	client, cleanup := newTestServer(t, 500*time.Millisecond, 200)
 	defer cleanup()
@@ -79,18 +79,21 @@ func TestMakeRequestWithContext_ContextCancelReturnsBlockingWait(t *testing.T) {
 	resp := fasthttp.AcquireResponse()
 	req.SetRequestURI("http://test/")
 
-	// Cancel context almost immediately
+	// Deadline exceeded almost immediately
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
 
-	// Should get a cancellation error
+	// Should get a timeout error with 504 status
 	if bifrostErr == nil {
-		t.Fatal("expected cancellation error")
+		t.Fatal("expected timeout error")
 	}
-	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestCancelled {
-		t.Fatalf("expected RequestCancelled error type, got: %v", bifrostErr.Error.Type)
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected RequestTimedOut error type, got: %v", bifrostErr.Error.Type)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 504 {
+		t.Fatalf("expected status 504, got: %v", bifrostErr.StatusCode)
 	}
 
 	// wait() should block until the goroutine finishes, then we can safely release
@@ -104,6 +107,48 @@ func TestMakeRequestWithContext_ContextCancelReturnsBlockingWait(t *testing.T) {
 	}
 
 	// Now safe to release
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+}
+
+func TestMakeRequestWithContext_ContextCancelReturnsCancelledError(t *testing.T) {
+	// Server takes 500ms to respond
+	client, cleanup := newTestServer(t, 500*time.Millisecond, 200)
+	defer cleanup()
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	req.SetRequestURI("http://test/")
+
+	// Cancel context explicitly (not deadline)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+
+	// Should get a cancellation error with 499 status
+	if bifrostErr == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestCancelled {
+		t.Fatalf("expected RequestCancelled error type, got: %v", bifrostErr.Error.Type)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 499 {
+		t.Fatalf("expected status 499, got: %v", bifrostErr.StatusCode)
+	}
+
+	// wait() should block until the goroutine finishes
+	start := time.Now()
+	wait()
+	elapsed := time.Since(start)
+
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("wait() returned too quickly (%v), expected it to block until goroutine finishes", elapsed)
+	}
+
 	fasthttp.ReleaseRequest(req)
 	fasthttp.ReleaseResponse(resp)
 }
@@ -246,6 +291,26 @@ func TestMakeRequestWithContext_ConcurrentRequestsWithCancellation(t *testing.T)
 		// All requests completed
 	case <-time.After(10 * time.Second):
 		t.Fatalf("timed out waiting for requests, only %d/%d completed", completed.Load(), numRequests)
+	}
+}
+
+func TestNewBifrostTimeoutError(t *testing.T) {
+	err := NewBifrostTimeoutError("test timeout", context.DeadlineExceeded, "openai")
+
+	if !err.IsBifrostError {
+		t.Fatal("expected IsBifrostError to be true")
+	}
+	if err.StatusCode == nil || *err.StatusCode != 504 {
+		t.Fatalf("expected StatusCode 504, got %v", err.StatusCode)
+	}
+	if err.Error.Type == nil || *err.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected RequestTimedOut type, got %v", err.Error.Type)
+	}
+	if err.Error.Message != "test timeout" {
+		t.Fatalf("expected 'test timeout', got %s", err.Error.Message)
+	}
+	if err.ExtraFields.Provider != "openai" {
+		t.Fatalf("expected provider openai, got %s", err.ExtraFields.Provider)
 	}
 }
 

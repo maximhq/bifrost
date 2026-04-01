@@ -447,7 +447,7 @@ func HandleGeminiChatCompletionStream(
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -978,7 +978,7 @@ func HandleGeminiResponsesStream(
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -1507,7 +1507,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1825,7 +1825,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey()), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -2701,7 +2701,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			// The body is in OpenAI format (with "messages"), so we need to convert
 			// messages to Gemini's "contents" format using the standard conversion.
 			if rawMessages, ok := body["messages"]; ok {
-				messagesBytes, err := sonic.Marshal(rawMessages)
+				messagesBytes, err := providerUtils.MarshalSorted(rawMessages)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError("failed to marshal messages", err, providerName)
 				}
@@ -2716,7 +2716,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				geminiReq.SystemInstruction = systemInstruction
 			} else {
 				// If no "messages" key, try direct unmarshal (already in Gemini format)
-				requestBytes, err := sonic.Marshal(body)
+				requestBytes, err := providerUtils.MarshalSorted(body)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err, providerName)
 				}
@@ -2744,7 +2744,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		}
 	}
 
-	jsonData, err := sonic.Marshal(batchReq)
+	jsonData, err := providerUtils.MarshalSorted(batchReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
@@ -3693,12 +3693,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create metadata field", err, providerName)
 	}
-	metadata := map[string]interface{}{
-		"file": map[string]string{
-			"displayName": request.Filename,
-		},
-	}
-	metadataJSON, err := sonic.Marshal(metadata)
+	metadataJSON, err := providerUtils.SetJSONField([]byte(`{}`), "file.displayName", request.Filename)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal metadata", err, providerName)
 	}
@@ -4251,17 +4246,10 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			return nil, bifrostErr
 		}
 
-		var payload map[string]any
-		if err := sonic.Unmarshal(jsonData, &payload); err == nil {
-			delete(payload, "toolConfig")
-			delete(payload, "generationConfig")
-			delete(payload, "systemInstruction")
-			newData, err := sonic.Marshal(payload)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
-			}
-			jsonData = newData
-		}
+		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
+		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
+		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
+		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
 	}
 
 	providerName := provider.GetProviderKey()
@@ -4517,7 +4505,7 @@ func (provider *GeminiProvider) PassthroughStream(
 			}
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
 	}

@@ -203,6 +203,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddImageEditInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddImageVariationInputColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPluginLogsColumn(ctx, db); err != nil {
 		return err
 	}
@@ -2066,6 +2072,74 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn) error {
 		}
 	}
 
+	return nil
+}
+
+// migrationAddImageEditInputColumn adds the image_edit_input column to the logs table.
+func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_edit_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_edit_input") {
+				if err := migrator.AddColumn(&Log{}, "image_edit_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_edit_input") {
+				if err := migrator.DropColumn(&Log{}, "image_edit_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
+func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_variation_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
+	}
 	return nil
 }
 

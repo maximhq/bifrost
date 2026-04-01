@@ -329,6 +329,229 @@ func (s *directFastPathStore) DeleteAll(ctx context.Context, namespace string, q
 
 func (s *directFastPathStore) Close(ctx context.Context, namespace string) error { return nil }
 
+func newCrossProviderChatRequest(provider schemas.ModelProvider, model string, requestType schemas.RequestType, prompt string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: bifrost.Ptr(prompt),
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	config := getDefaultTestConfig()
+	config.CacheByProvider = bifrost.Ptr(false)
+	config.CacheByModel = bifrost.Ptr(false)
+	config.ConversationHistoryThreshold = DefaultConversationHistoryThreshold
+	plugin := &Plugin{
+		store:  store,
+		config: config,
+		logger: logger,
+	}
+
+	const cacheKey = "cross-provider-direct-single"
+	const prompt = "Explain green threading in Go in one short sentence."
+
+	seedCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	seedReq := newCrossProviderChatRequest(schemas.OpenAI, "gpt-5.2", schemas.ChatCompletionRequest, prompt)
+
+	_, shortCircuit, err := plugin.PreLLMHook(seedCtx, seedReq)
+	if err != nil {
+		t.Fatalf("seed PreLLMHook failed: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Fatal("expected seed request to miss cache")
+	}
+
+	seedResponse := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID: "cross-provider-direct-single",
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: bifrost.Ptr("Go schedules lightweight goroutines in user space onto a smaller pool of OS threads."),
+							},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-5.2",
+				RequestType:    schemas.ChatCompletionRequest,
+			},
+		},
+	}
+
+	if _, _, err = plugin.PostLLMHook(seedCtx, seedResponse, nil); err != nil {
+		t.Fatalf("seed PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	hitCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	hitReq := newCrossProviderChatRequest(schemas.Anthropic, "claude-sonnet-4-6", schemas.ChatCompletionRequest, prompt)
+
+	_, shortCircuit, err = plugin.PreLLMHook(hitCtx, hitReq)
+	if err != nil {
+		t.Fatalf("hit PreLLMHook failed: %v", err)
+	}
+	if shortCircuit == nil || shortCircuit.Response == nil || shortCircuit.Response.ChatResponse == nil {
+		t.Fatal("expected cross-provider direct cache hit to return a response")
+	}
+
+	extraFields := shortCircuit.Response.ChatResponse.ExtraFields
+	if extraFields.Provider != schemas.OpenAI {
+		t.Fatalf("expected cached provider %q, got %q", schemas.OpenAI, extraFields.Provider)
+	}
+	if extraFields.ModelRequested != "gpt-5.2" {
+		t.Fatalf("expected cached model_requested %q, got %q", "gpt-5.2", extraFields.ModelRequested)
+	}
+	if extraFields.CacheDebug == nil {
+		t.Fatal("expected cache_debug on cache hit")
+	}
+	if !extraFields.CacheDebug.CacheHit {
+		t.Fatal("expected cache hit to be marked in cache_debug")
+	}
+	if extraFields.CacheDebug.HitType == nil || *extraFields.CacheDebug.HitType != string(CacheTypeDirect) {
+		t.Fatalf("expected hit_type %q, got %v", CacheTypeDirect, extraFields.CacheDebug.HitType)
+	}
+	if extraFields.CacheDebug.RequestedProvider == nil || *extraFields.CacheDebug.RequestedProvider != string(schemas.Anthropic) {
+		t.Fatalf("expected requested_provider %q, got %v", schemas.Anthropic, extraFields.CacheDebug.RequestedProvider)
+	}
+	if extraFields.CacheDebug.RequestedModel == nil || *extraFields.CacheDebug.RequestedModel != "claude-sonnet-4-6" {
+		t.Fatalf("expected requested_model %q, got %v", "claude-sonnet-4-6", extraFields.CacheDebug.RequestedModel)
+	}
+}
+
+func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	config := getDefaultTestConfig()
+	config.CacheByProvider = bifrost.Ptr(false)
+	config.CacheByModel = bifrost.Ptr(false)
+	config.ConversationHistoryThreshold = DefaultConversationHistoryThreshold
+	plugin := &Plugin{
+		store:  store,
+		config: config,
+		logger: logger,
+	}
+
+	const cacheKey = "cross-provider-direct-stream"
+	const prompt = "Explain green threading in Go in one short sentence."
+
+	seedCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	seedReq := newCrossProviderChatRequest(schemas.OpenAI, "gpt-5.2", schemas.ChatCompletionStreamRequest, prompt)
+
+	_, shortCircuit, err := plugin.PreLLMHook(seedCtx, seedReq)
+	if err != nil {
+		t.Fatalf("seed PreLLMHook failed: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Fatal("expected seed request to miss cache")
+	}
+
+	chunks := []struct {
+		content      string
+		chunkIndex   int
+		finishReason *string
+		streamEnd    bool
+	}{
+		{content: "Go schedules lightweight goroutines", chunkIndex: 0, finishReason: nil, streamEnd: false},
+		{content: " onto a smaller pool of OS threads.", chunkIndex: 1, finishReason: bifrost.Ptr("stop"), streamEnd: true},
+	}
+
+	for _, chunk := range chunks {
+		seedCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, chunk.streamEnd)
+		chunkResponse := &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				ID: "cross-provider-direct-stream",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index:        chunk.chunkIndex,
+						FinishReason: chunk.finishReason,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Content: bifrost.Ptr(chunk.content),
+							},
+						},
+					},
+				},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider:       schemas.OpenAI,
+					ModelRequested: "gpt-5.2",
+					RequestType:    schemas.ChatCompletionStreamRequest,
+					ChunkIndex:     chunk.chunkIndex,
+				},
+			},
+		}
+
+		if _, _, err = plugin.PostLLMHook(seedCtx, chunkResponse, nil); err != nil {
+			t.Fatalf("seed PostLLMHook failed for chunk %d: %v", chunk.chunkIndex, err)
+		}
+		plugin.WaitForPendingOperations()
+	}
+
+	hitCtx := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
+	hitReq := newCrossProviderChatRequest(schemas.Anthropic, "claude-sonnet-4-6", schemas.ChatCompletionStreamRequest, prompt)
+
+	_, shortCircuit, err = plugin.PreLLMHook(hitCtx, hitReq)
+	if err != nil {
+		t.Fatalf("hit PreLLMHook failed: %v", err)
+	}
+	if shortCircuit == nil || shortCircuit.Stream == nil {
+		t.Fatal("expected cross-provider streaming direct cache hit to return a stream")
+	}
+
+	chunkCount := 0
+	for chunk := range shortCircuit.Stream {
+		if chunk.BifrostChatResponse == nil {
+			t.Fatal("expected cached chat stream chunk")
+		}
+
+		extraFields := chunk.BifrostChatResponse.ExtraFields
+		if extraFields.Provider != schemas.OpenAI {
+			t.Fatalf("expected cached provider %q on chunk %d, got %q", schemas.OpenAI, chunkCount, extraFields.Provider)
+		}
+		if extraFields.ModelRequested != "gpt-5.2" {
+			t.Fatalf("expected cached model_requested %q on chunk %d, got %q", "gpt-5.2", chunkCount, extraFields.ModelRequested)
+		}
+		if chunkCount == len(chunks)-1 {
+			if extraFields.CacheDebug == nil || !extraFields.CacheDebug.CacheHit {
+				t.Fatal("expected final cached stream chunk to include cache_debug cache_hit=true")
+			}
+			if extraFields.CacheDebug.HitType == nil || *extraFields.CacheDebug.HitType != string(CacheTypeDirect) {
+				t.Fatalf("expected final stream hit_type %q, got %v", CacheTypeDirect, extraFields.CacheDebug.HitType)
+			}
+			if extraFields.CacheDebug.RequestedProvider == nil || *extraFields.CacheDebug.RequestedProvider != string(schemas.Anthropic) {
+				t.Fatalf("expected final stream requested_provider %q, got %v", schemas.Anthropic, extraFields.CacheDebug.RequestedProvider)
+			}
+			if extraFields.CacheDebug.RequestedModel == nil || *extraFields.CacheDebug.RequestedModel != "claude-sonnet-4-6" {
+				t.Fatalf("expected final stream requested_model %q, got %v", "claude-sonnet-4-6", extraFields.CacheDebug.RequestedModel)
+			}
+		}
+
+		chunkCount++
+	}
+
+	if chunkCount != len(chunks) {
+		t.Fatalf("expected %d cached stream chunks, got %d", len(chunks), chunkCount)
+	}
+}
+
 func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	store := newDirectFastPathStore()

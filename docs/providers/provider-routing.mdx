@@ -875,8 +875,8 @@ When a Virtual Key has `provider_configs` defined:
     ```json
     {
       "provider_configs": [
-        {"provider": "groq", "allowed_models": ["*"], "weight": 0.7},
-        {"provider": "openai", "allowed_models": ["*"], "weight": 0.3}
+        {"provider": "groq", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.7},
+        {"provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 0.3}
       ]
     }
     ```
@@ -889,13 +889,13 @@ When a Virtual Key has `provider_configs` defined:
       "virtual_keys": [
         {
           "id": "vk-dev",
-          "provider_configs": [{"provider": "ollama", "allowed_models": ["*"]}]
+          "provider_configs": [{"provider": "ollama", "allowed_models": ["*"], "key_ids": ["*"]}]
         },
         {
           "id": "vk-prod",
           "provider_configs": [
-            {"provider": "openai", "allowed_models": ["*"]},
-            {"provider": "azure", "allowed_models": ["*"]}
+            {"provider": "openai", "allowed_models": ["*"], "key_ids": ["*"]},
+            {"provider": "azure", "allowed_models": ["*"], "key_ids": ["*"]}
           ]
         }
       ]

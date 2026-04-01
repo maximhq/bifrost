@@ -1328,32 +1328,10 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: setQueryParams(handlerStore),
 		})
 	}
 
 	return routes
-}
-
-// setQueryParams creates a pre-callback for OpenAI list models
-// that handles query parameter extraction
-func setQueryParams(_ lib.HandlerStore) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		// Then extract query parameters for list models
-		if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-			if listModelsReq.Provider == "" {
-				if isAzureSDKRequest(ctx) {
-					listModelsReq.Provider = schemas.Azure
-				} else {
-					listModelsReq.Provider = schemas.OpenAI
-				}
-			}
-
-			return nil
-		}
-
-		return nil
-	}
 }
 
 // CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.

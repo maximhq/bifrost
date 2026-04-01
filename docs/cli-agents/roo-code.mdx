@@ -6,6 +6,10 @@ icon: "code"
 
 [Roo Code](https://roo-code.net/) is an AI-powered VS Code extension that supports OpenAI-compatible APIs. By connecting it to Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys and built-in observability.
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Roo Code, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 ### 1. Install Roo Code

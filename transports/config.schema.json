@@ -286,6 +286,11 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "Last time budget was reset"
+              },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap resets to calendar boundaries (day/week/month/year start)",
+                "default": false
               }
             },
             "required": [
@@ -1143,7 +1148,8 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "description": "Provider to use for generating embeddings",
+                      "minLength": 1,
+                      "description": "Provider to use for generating embeddings. Required for semantic search; omit it for direct hash mode with dimension: 1.",
                       "enum": [
                         "openai",
                         "anthropic",
@@ -1167,14 +1173,14 @@
                     },
                     "keys": {
                       "type": "array",
-                      "description": "API keys for the embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)",
+                      "description": "API keys for the embedding provider. These are injected at runtime for config-driven setups and are not needed for direct caching with dimension: 1.",
                       "items": {
                         "type": "string"
                       }
                     },
                     "embedding_model": {
                       "type": "string",
-                      "description": "Model to use for generating embeddings (optional)"
+                      "description": "Model to use for generating embeddings in provider-backed semantic caching. Required when provider is set and not allowed in direct-only mode."
                     },
                     "cleanup_on_shutdown": {
                       "type": "boolean",
@@ -1231,9 +1237,46 @@
                     }
                   },
                   "required": [
-                    "provider",
-                    "keys",
                     "dimension"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "provider": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "provider",
+                          "embedding_model"
+                        ],
+                        "properties": {
+                          "dimension": {
+                            "type": "integer",
+                            "minimum": 2
+                          }
+                        }
+                      },
+                      "else": {
+                        "not": {
+                          "required": [
+                            "embedding_model"
+                          ]
+                        },
+                        "properties": {
+                          "dimension": {
+                            "const": 1
+                          }
+                        }
+                      }
+                    }
                   ],
                   "additionalProperties": false
                 }
@@ -1674,6 +1717,13 @@
           "minimum": 1,
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "beta_header_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         }
       },
       "additionalProperties": false
@@ -2228,6 +2278,13 @@
         "tool_sync_interval": {
           "type": "string",
           "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+        },
+        "allowed_extra_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlist of request-level headers that callers may forward to this MCP server at execution time. Use ['*'] to allow all headers."
         },
         "is_ping_available": {
           "type": "boolean",

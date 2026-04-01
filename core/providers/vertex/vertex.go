@@ -419,16 +419,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-					betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
-					if betaErr != nil {
-						return nil, fmt.Errorf("unsupported beta header: %w", betaErr)
-					}
-					if len(betaHeaders) > 0 {
-						rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
-						if err != nil {
-							return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
-						}
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
 					}
 				}
 				// Remove model field (it's in URL for Vertex)
@@ -559,7 +553,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
+	// anthropic_beta body field instead, and other model families don't use it.
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 
 	// If auth query is set, add it to the URL
 	// Otherwise, get the oauth2 token and set the Authorization header
@@ -790,16 +786,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					}
 				}
 				// Inject beta headers into body as anthropic_beta (Vertex uses body field, not HTTP header)
-				if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-					betaHeaders, betaErr := anthropic.FilterBetaHeadersForProvider(extraHeaders["anthropic-beta"], schemas.Vertex)
-					if betaErr != nil {
-						return nil, fmt.Errorf("unsupported beta header: %w", betaErr)
-					}
-					if len(betaHeaders) > 0 {
-						rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
-						if err != nil {
-							return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
-						}
+				if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_beta", betaHeaders)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set anthropic_beta: %w", err)
 					}
 				}
 
@@ -861,6 +851,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
@@ -1034,7 +1025,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	if schemas.IsAnthropicModel(deployment) {
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, false)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1070,7 +1061,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 
 		// Getting oauth2 token
 		tokenSource, err := getAuthTokenSource(key)
@@ -1359,7 +1350,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
 
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, true, false)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, true, false, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1405,6 +1396,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			jsonBody,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
@@ -2574,11 +2566,8 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 	}
 
-	// Create request body with operation name
-	requestBody := map[string]string{
-		"operationName": taskID,
-	}
-	jsonBody, err := sonic.Marshal(requestBody)
+	// Create request body with operation name (using sjson to avoid map marshaling)
+	jsonBody, err := providerUtils.SetJSONField([]byte(`{}`), "operationName", taskID)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal request", err, providerName)
 	}
@@ -2891,7 +2880,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	)
 
 	if schemas.IsAnthropicModel(deployment) {
-		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, true)
+		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, true, provider.networkConfig.BetaHeaderOverrides, provider.networkConfig.ExtraHeaders)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -2911,17 +2900,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		// Skip field-stripping when large payload mode is active — jsonBody is nil
 		// and the raw body will stream directly from the ingress reader.
 		if jsonBody != nil {
-			var payload map[string]any
-			if err := sonic.Unmarshal(jsonBody, &payload); err == nil {
-				delete(payload, "toolConfig")
-				delete(payload, "generationConfig")
-				delete(payload, "systemInstruction")
-				newBody, err := sonic.Marshal(payload)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-				jsonBody = newBody
-			}
+			// Use sjson to delete fields directly from JSON bytes, preserving key ordering
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "toolConfig")
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "generationConfig")
+			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "systemInstruction")
 		}
 	}
 
@@ -2973,7 +2955,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
 
 	if authQuery != "" {
 		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
@@ -3421,7 +3403,7 @@ func (provider *VertexProvider) PassthroughStream(
 			}
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
 	}

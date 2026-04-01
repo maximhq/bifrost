@@ -210,7 +210,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
 				// Estimate effort from max_tokens
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := DefaultCompletionMaxTokens
+				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}

@@ -239,6 +239,8 @@ bifrost:
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
+    #     beta_header_overrides:                         # Override Anthropic beta header support (optional)
+    #       redact-thinking-: true                       # Enable/disable specific beta headers by prefix
     #   # Concurrency configuration (optional)
     #   concurrency_and_buffer_size:
     #     concurrency: 100                              # Number of concurrent requests

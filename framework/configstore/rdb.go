@@ -64,6 +64,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Name:               key.Name,
 		Value:              key.Value,
 		Models:             key.Models,
+		BlacklistedModels:  key.BlacklistedModels,
 		Weight:             &key.Weight,
 		Enabled:            key.Enabled,
 		UseForBatchAPI:     key.UseForBatchAPI,
@@ -1827,15 +1828,27 @@ func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []strin
 	return virtualKeys, nil
 }
 
-// GetVirtualKeys retrieves all virtual keys from the database.
-func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
-	var virtualKeys []tables.TableVirtualKey
+func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
+	relation := func(name string) string {
+		if prefix == "" {
+			return name
+		}
+		return prefix + name
+	}
 
-	// Preload all relationships for complete information
-	if err := s.db.WithContext(ctx).
-		Preload("Team").
-		Preload("Team.Customer").
-		Preload("Customer").
+	return db.
+		Preload(relation("Teams")).
+		Preload(relation("Budget")).
+		Preload(relation("RateLimit")).
+		Preload(relation("VirtualKeys"))
+}
+
+func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
+	db = db.Preload("Team").Preload("Team.Customer")
+
+	db = db.Preload("Customer")
+
+	return db.
 		Preload("Budget").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
@@ -1845,7 +1858,19 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 			return db.Select("id, name, key_id, models_json, provider")
 		}).
 		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient").
+		Preload("MCPConfigs.MCPClient")
+}
+
+func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
+	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
+}
+
+// GetVirtualKeys retrieves all virtual keys from the database.
+func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error) {
+	var virtualKeys []tables.TableVirtualKey
+
+	// Preload all relationships for complete information
+	if err := preloadVirtualKeyBaseRelations(s.db.WithContext(ctx)).
 		Order("created_at ASC").
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
@@ -1894,20 +1919,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 
 	// Fetch with preloads and pagination
 	var virtualKeys []tables.TableVirtualKey
-	if err := baseQuery.
-		Preload("Team").
-		Preload("Team.Customer").
-		Preload("Customer").
-		Preload("Budget").
-		Preload("RateLimit").
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
-		Preload("ProviderConfigs.RateLimit").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient").
+	if err := preloadVirtualKeyBaseRelations(baseQuery).
 		Order("created_at ASC, id ASC").
 		Offset(offset).
 		Limit(limit).
@@ -1920,20 +1932,7 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 // GetVirtualKey retrieves a virtual key from the database.
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := s.db.WithContext(ctx).
-		Preload("Team").
-		Preload("Team.Customer").
-		Preload("Customer").
-		Preload("Budget").
-		Preload("RateLimit").
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
-		Preload("ProviderConfigs.RateLimit").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient").
+	if err := preloadVirtualKeyDetailRelations(s.db.WithContext(ctx)).
 		First(&virtualKey, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -1947,20 +1946,7 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	query := s.db.WithContext(ctx).
-		Preload("Team").
-		Preload("Team.Customer").
-		Preload("Customer").
-		Preload("Budget").
-		Preload("RateLimit").
-		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
-		Preload("ProviderConfigs.RateLimit").
-		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
-			return db.Select("id, name, key_id, models_json, provider")
-		}).
-		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient")
+	query := preloadVirtualKeyBaseRelations(s.db.WithContext(ctx))
 
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
@@ -2585,7 +2571,9 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 // GetCustomers retrieves all customers from the database.
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
-	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Preload("RateLimit").Order("created_at ASC").Find(&customers).Error; err != nil {
+	if err := preloadCustomerRelations(s.db.WithContext(ctx), "").
+		Order("created_at ASC").
+		Find(&customers).Error; err != nil {
 		return nil, err
 	}
 	return customers, nil
@@ -2613,8 +2601,7 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := baseQuery.
-		Preload("Teams").Preload("Budget").Preload("RateLimit").
+	if err := preloadCustomerRelations(baseQuery, "").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
@@ -2626,7 +2613,8 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 // GetCustomer retrieves a specific customer from the database.
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
+	if err := preloadCustomerRelations(s.db.WithContext(ctx), "").
+		First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}

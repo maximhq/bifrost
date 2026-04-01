@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -112,11 +111,11 @@ type MCPClientConfig struct {
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
 func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
 	var config MCPClientConfig
-	data, err := sonic.Marshal(configMap)
+	data, err := MarshalSorted(configMap)
 	if err != nil {
 		return nil
 	}
-	if err := sonic.Unmarshal(data, &config); err != nil {
+	if err := Unmarshal(data, &config); err != nil {
 		return nil
 	}
 	return &config

@@ -262,7 +262,7 @@ Validate if a model is allowed for a specific provider based on an allowed model
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{"*"}, // wildcard = check catalog
+    schemas.WhiteList{"*"}, // wildcard = check catalog
 )
 // Returns: true (catalog knows OpenRouter supports openai/gpt-4o)
 
@@ -270,7 +270,7 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenRouter,
     "gpt-4o",
-    []string{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
+    schemas.WhiteList{"openai/gpt-4o", "anthropic/claude-3-5-sonnet"},
 )
 // Returns: true (strips "openai/" prefix and matches "gpt-4o")
 
@@ -278,7 +278,7 @@ isAllowed := modelCatalog.IsModelAllowedForProvider(
 isAllowed := modelCatalog.IsModelAllowedForProvider(
     schemas.OpenAI,
     "gpt-4o",
-    []string{"gpt-4o", "gpt-4o-mini"},
+    schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
 )
 // Returns: true (direct match)
 ```

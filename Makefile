@@ -63,7 +63,7 @@ install-ui: cleanup-enterprise
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
 	@echo "$(GREEN)Node.js and npm are installed$(NC)"
-	@cd ui && npm install
+	@cd ui && npm ci
 	@which next > /dev/null || (echo "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
 	@echo "$(GREEN)UI deps are in sync$(NC)"
 
@@ -265,15 +265,25 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
-docker-image: build-ui ## Build Docker image
+docker-image: build-ui ## Build Docker image (LOCAL=1 to use Dockerfile.local)
 	@echo "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))
-	@docker build -f transports/Dockerfile -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
-	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest$(NC)"
+	$(eval DOCKERFILE=$(if $(LOCAL),transports/Dockerfile.local,transports/Dockerfile))
+	@docker build -f $(DOCKERFILE) -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
+	@echo "$(GREEN)Docker image built: bifrost, bifrost:$(GIT_SHA), bifrost:latest (using $(DOCKERFILE))$(NC)"
 
-docker-run: ## Run Docker container
+docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/config.json or path/to/dir/])
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	@docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data  bifrost
+	@CONFIG_PATH="$(abspath $(CONFIG))"; \
+	if [ -n "$(CONFIG)" ]; then \
+		if [ -d "$$CONFIG_PATH" ]; then \
+			CONFIG_PATH="$$CONFIG_PATH/config.json"; \
+		fi; \
+		CONFIG_MOUNT="-v $$CONFIG_PATH:/app/data/config.json"; \
+	else \
+		CONFIG_MOUNT=""; \
+	fi; \
+	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
@@ -1247,7 +1257,7 @@ install-playwright: ## Install Playwright test dependencies
 	@echo "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@cd tests/e2e && npm install
+	@cd tests/e2e && npm ci
 	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
 		echo "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
 	else \

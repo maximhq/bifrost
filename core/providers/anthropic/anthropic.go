@@ -198,6 +198,12 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Anthropic, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(AnthropicBetaHeader)
+	}
+
 	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonData)
 
 	requestClient := provider.client
@@ -550,6 +556,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -573,6 +580,7 @@ func HandleAnthropicChatCompletionStreaming(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	betaHeaderOverrides map[string]bool,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -589,7 +597,14 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetMethod(http.MethodPost)
 	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
-	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(extraHeaders, ctx), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(AnthropicBetaHeader)
+	}
 
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -619,7 +634,7 @@ func HandleAnthropicChatCompletionStreaming(
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -895,7 +910,7 @@ func HandleAnthropicChatCompletionStreaming(
 			usage.PromptTokens = usage.PromptTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 			usage.TotalTokens = usage.TotalTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 		}
-		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, modelName)
+		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, modelName, 0)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {
@@ -1025,6 +1040,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		jsonBody,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.BetaHeaderOverrides,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1048,6 +1064,7 @@ func HandleAnthropicResponsesStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	betaHeaderOverrides map[string]bool,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -1064,9 +1081,16 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetMethod(http.MethodPost)
 	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
-	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
-	// Set headers, merging anthropic-beta with any user-supplied values
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+
+	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(extraHeaders, ctx), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
+		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+	} else {
+		req.Header.Del(AnthropicBetaHeader)
+	}
+
+	// Set auth/static headers, applied after extra headers so they always win
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
@@ -1096,7 +1120,7 @@ func HandleAnthropicResponsesStream(
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -1256,6 +1280,11 @@ func HandleAnthropicResponsesStream(
 			}
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
+			// Propagate message_delta emission flag to context so the output converter
+			// (ToAnthropicResponsesStreamResponse) can skip synthesizing a duplicate.
+			if streamState.HasEmittedMessageDelta {
+				ctx.SetValue(schemas.BifrostContextKeyHasEmittedMessageDelta, true)
+			}
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 					RequestType:    schemas.ResponsesStreamRequest,
@@ -1391,7 +1420,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 		}
 	}
 
-	jsonData, err := sonic.Marshal(anthropicReq)
+	jsonData, err := providerUtils.MarshalSorted(anthropicReq)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
@@ -2673,7 +2702,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 			}
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
 	}

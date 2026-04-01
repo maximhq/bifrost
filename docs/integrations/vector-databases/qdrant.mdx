@@ -1,0 +1,94 @@
+---
+title: "Qdrant"
+description: "Qdrant vector database integration for semantic caching in Bifrost."
+icon: "database"
+---
+
+## Qdrant
+
+[Qdrant](https://qdrant.tech/) is a high-performance vector search engine built in Rust.
+
+### Setup & Installation
+
+**Local Qdrant:**
+```bash
+# Using Docker
+docker run -d \
+  --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  -v $(pwd)/qdrant_storage:/qdrant/storage \
+  qdrant/qdrant:latest
+```
+
+**Qdrant Cloud:**
+Sign up at [cloud.qdrant.io](https://cloud.qdrant.io)
+
+### Configuration Options
+
+<Tabs group="qdrant-config">
+
+<Tab title="Go SDK">
+
+```go
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeQdrant,
+    Config: vectorstore.QdrantConfig{
+        Host:   "localhost",
+        Port:   6334,
+        APIKey: "",
+        UseTLS: false,
+    },
+}
+
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+**Local Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "qdrant",
+    "config": {
+      "host": "localhost",
+      "port": 6334
+    }
+  }
+}
+```
+
+**Cloud Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "qdrant",
+    "config": {
+      "host": "your-qdrant-cluster.cloud.qdrant.io",
+      "port": 6334,
+      "api_key": "your-qdrant-api-key",
+      "use_tls": true
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+Qdrant uses port 6334 for gRPC and port 6333 for REST. Bifrost uses the gRPC port.
+</Note>
+
+<Warning>
+Qdrant requires all IDs to be valid UUIDs. Use `uuid.New().String()` to generate IDs.
+</Warning>
+
+For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).

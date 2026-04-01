@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -272,7 +273,7 @@ func (provider *OpenAIProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 		}
 	}
 
-	return json.Marshal(out)
+	return providerUtils.MarshalSorted(out)
 }
 
 func isRealtimeDeltaEvent(eventType string) bool {

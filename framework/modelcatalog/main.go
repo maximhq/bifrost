@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -64,6 +67,12 @@ type PricingEntry struct {
 	BaseModel string `json:"base_model,omitempty"`
 	Provider  string `json:"provider"`
 	Mode      string `json:"mode"`
+
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
 	PricingOptions
 }
 
@@ -210,6 +219,23 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
+		// Register a cache miss handler so that on first request for a model,
+		// the cache lazily loads its parameters from the database.
+		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
+			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			params, err := configStore.GetModelParameters(missCtx, model)
+			if err != nil || params == nil {
+				return nil
+			}
+			var p struct {
+				MaxOutputTokens *int `json:"max_output_tokens"`
+			}
+			if err := json.Unmarshal([]byte(params.Data), &p); err != nil || p.MaxOutputTokens == nil {
+				return nil
+			}
+			return &providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		})
 		if mc.distributedLockManager == nil {
 			if err := mc.loadPricingFromDatabase(ctx); err != nil {
 				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
@@ -381,6 +407,107 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		}
 	}
 	return nil
+}
+
+// GetModelCapabilityEntryForModel returns capability metadata for a model/provider pair.
+// It prefers chat, then responses, then text-completion entries; if none exist,
+// it falls back to the lexicographically first available mode for deterministic behavior.
+func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	if entry := mc.getCapabilityEntryForExactModelUnsafe(model, provider); entry != nil {
+		return entry
+	}
+
+	baseModel := mc.getBaseModelNameUnsafe(model)
+	if baseModel != model {
+		if entry := mc.getCapabilityEntryForExactModelUnsafe(baseModel, provider); entry != nil {
+			return entry
+		}
+	}
+
+	if entry := mc.getCapabilityEntryForModelFamilyUnsafe(baseModel, provider); entry != nil {
+		return entry
+	}
+
+	return nil
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForExactModelUnsafe(model string, provider schemas.ModelProvider) *PricingEntry {
+	preferredModes := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+
+	for _, mode := range preferredModes {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+
+	prefix := model + "|" + string(provider) + "|"
+	matchingKeys := make([]string, 0)
+	for key := range mc.pricingData {
+		if strings.HasPrefix(key, prefix) {
+			matchingKeys = append(matchingKeys, key)
+		}
+	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) getCapabilityEntryForModelFamilyUnsafe(baseModel string, provider schemas.ModelProvider) *PricingEntry {
+	if baseModel == "" {
+		return nil
+	}
+
+	matchingKeys := make([]string, 0)
+	for key, pricing := range mc.pricingData {
+		if normalizeProvider(pricing.Provider) != string(provider) {
+			continue
+		}
+		if mc.getBaseModelNameUnsafe(pricing.Model) != baseModel {
+			continue
+		}
+		matchingKeys = append(matchingKeys, key)
+	}
+	return mc.selectCapabilityEntryFromKeysUnsafe(matchingKeys)
+}
+
+func (mc *ModelCatalog) selectCapabilityEntryFromKeysUnsafe(matchingKeys []string) *PricingEntry {
+	if len(matchingKeys) == 0 {
+		return nil
+	}
+
+	preferredModes := []string{
+		normalizeRequestType(schemas.ChatCompletionRequest),
+		normalizeRequestType(schemas.ResponsesRequest),
+		normalizeRequestType(schemas.TextCompletionRequest),
+	}
+
+	for _, mode := range preferredModes {
+		modeMatches := make([]string, 0)
+		for _, key := range matchingKeys {
+			parts := strings.SplitN(key, "|", 3)
+			if len(parts) != 3 || parts[2] != mode {
+				continue
+			}
+			modeMatches = append(modeMatches, key)
+		}
+		if len(modeMatches) == 0 {
+			continue
+		}
+		slices.Sort(modeMatches)
+		pricing := mc.pricingData[modeMatches[0]]
+		return convertTableModelPricingToPricingData(&pricing)
+	}
+
+	slices.Sort(matchingKeys)
+	pricing := mc.pricingData[matchingKeys[0]]
+	return convertTableModelPricingToPricingData(&pricing)
 }
 
 // GetModelsForProvider returns all available models for a given provider (thread-safe)

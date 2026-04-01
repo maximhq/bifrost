@@ -32,6 +32,32 @@ Anthropic has significant structural differences from OpenAI's format. Bifrost p
 **Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, and Image Generation are not supported by the upstream Anthropic API. These return `UnsupportedOperationError`.
 </Note>
 
+## Beta Headers
+
+Bifrost automatically manages Anthropic beta headers — detecting required headers from request features and injecting them. Headers are validated per provider to prevent unsupported headers from reaching the upstream API.
+
+| Beta Header | Anthropic | Azure | Vertex | Bedrock | Auto-Injected |
+|---|---|---|---|---|---|
+| `computer-use-2025-01-24` / `computer-use-2025-11-24` | ✅ | ✅ | ✅ | ✅ | ✅ (tool type detection) |
+| `structured-outputs-2025-11-13` | ✅ | ✅ | ❌ | ✅ | ✅ (strict/output_format) |
+| `advanced-tool-use-2025-11-20` | ✅ | ✅ | ❌ | ❌ | ✅ (defer_loading/input_examples/allowed_callers) |
+| `mcp-client-2025-11-20` | ✅ | ✅ | ❌ | ❌ | ✅ (mcp_servers detection) |
+| `prompt-caching-scope-2026-01-05` | ✅ | ✅ | ❌ | ❌ | ✅ (cache_control.scope) |
+| `compact-2026-01-12` | ✅ | ✅ | ✅ | ✅ | ✅ (compaction edit) |
+| `context-management-2025-06-27` | ✅ | ✅ | ✅ | ✅ | ✅ (clear edits) |
+| `files-api-2025-04-14` | ✅ | ✅ | ❌ | ❌ | ✅ (files endpoint) |
+| `interleaved-thinking-2025-05-14` | ✅ | ✅ | ✅ | ✅ | ✅ (thinking enabled/adaptive) |
+| `skills-2025-10-02` | ✅ | ✅ | ❌ | ❌ | Passthrough |
+| `context-1m-2025-08-07` | ✅ | ✅ | ✅ | ✅ | Passthrough |
+| `fast-mode-2026-02-01` | ✅ | ❌ | ❌ | ❌ | ✅ (speed=fast) |
+| `redact-thinking-2026-02-12` | ✅ | ✅ | ❌ | ❌ | Passthrough |
+
+<Note>
+**Passthrough headers** are not auto-injected but are validated and forwarded when set manually via the `anthropic-beta` request header. Unknown headers are forwarded to Anthropic only; for other providers (Vertex, Bedrock, Azure), unknown headers are silently dropped by default to prevent upstream errors.
+
+**Beta header overrides**: You can override the default support per provider via the Beta Headers tab in provider configuration, or by setting `beta_header_overrides` in the provider's `network_config`. See [Beta Header Overrides](/quickstart/gateway/provider-configuration#beta-header-overrides) for details.
+</Note>
+
 ---
 
 # 1. Chat Completions

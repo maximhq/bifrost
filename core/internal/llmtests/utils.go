@@ -587,8 +587,8 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 	return []ToolCallInfo{}
 }
 
-// getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
-func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
+// getEmbeddingVector extracts the float64 vector from a BifrostEmbeddingResponse.
+func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float64, error) {
 	if embedding.Embedding.EmbeddingArray != nil {
 		return embedding.Embedding.EmbeddingArray, nil
 	}

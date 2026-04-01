@@ -19,9 +19,10 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { MoreVertical, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { useState, type ReactNode } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 
 interface MCPLogDetailSheetProps {
@@ -29,6 +30,9 @@ interface MCPLogDetailSheetProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>;
+	onNavigate?: (direction: "prev" | "next") => void;
+	hasPrev?: boolean;
+	hasNext?: boolean;
 }
 
 const LogEntryDetailsView = ({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) => (
@@ -57,8 +61,12 @@ const getValidatedStatus = (status: string): Status => {
 	return "processing";
 };
 
-export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCPLogDetailSheetProps) {
+export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: MCPLogDetailSheetProps) {
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+	// Keyboard navigation: arrow up/down to navigate between logs
+	useHotkeys("up", () => onNavigate?.("prev"), { enabled: open && hasPrev, preventDefault: true });
+	useHotkeys("down", () => onNavigate?.("next"), { enabled: open && hasNext, preventDefault: true });
 
 	if (!log) return null;
 
@@ -74,10 +82,18 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							</Badge>
 						</SheetTitle>
 					</div>
+					<div className="flex items-center">
+						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="mcp-log-nav-prev" type="button">
+							<ChevronUp className="size-4" />
+						</Button>
+						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="mcp-log-nav-next" type="button">
+							<ChevronDown className="size-4" />
+						</Button>
+					</div>
 					<AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="ghost" size="icon">
+								<Button variant="ghost" className="size-8" type="button">
 									<MoreVertical className="h-3 w-3" />
 								</Button>
 							</DropdownMenuTrigger>

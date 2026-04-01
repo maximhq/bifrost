@@ -303,7 +303,7 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *
 
 // buildSingleResponseFromResult constructs a single response from cached data
 func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, responseData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
-	provider, _, _ := req.GetRequestFields()
+	requestedProvider, requestedModel, _ := req.GetRequestFields()
 
 	responseStr, ok := responseData.(string)
 	if !ok {
@@ -324,6 +324,8 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 	extraFields.CacheDebug.CacheHit = true
 	extraFields.CacheDebug.HitType = bifrost.Ptr(string(cacheType))
 	extraFields.CacheDebug.CacheID = bifrost.Ptr(result.ID)
+	extraFields.CacheDebug.RequestedProvider = bifrost.Ptr(string(requestedProvider))
+	extraFields.CacheDebug.RequestedModel = bifrost.Ptr(requestedModel)
 	if cacheType == CacheTypeSemantic {
 		extraFields.CacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
 		extraFields.CacheDebug.ModelUsed = bifrost.Ptr(plugin.config.EmbeddingModel)
@@ -338,8 +340,6 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 		extraFields.CacheDebug.InputTokens = nil
 	}
 
-	extraFields.Provider = provider
-
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
 
@@ -350,7 +350,7 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 
 // buildStreamingResponseFromResult constructs a streaming response from cached data
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
-	provider, _, _ := req.GetRequestFields()
+	requestedProvider, requestedModel, _ := req.GetRequestFields()
 
 	// Parse stream_chunks
 	streamArray, err := plugin.parseStreamChunks(streamData)
@@ -387,15 +387,16 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				continue
 			}
 
-			extraFields := cachedResponse.GetExtraFields()
-
 			// Add cache debug to only the last chunk and set stream end indicator
 			if i == len(streamArray)-1 {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				extraFields := cachedResponse.GetExtraFields()
 				cacheDebug := schemas.BifrostCacheDebug{
-					CacheHit: true,
-					HitType:  bifrost.Ptr(string(cacheType)),
-					CacheID:  bifrost.Ptr(result.ID),
+					CacheHit:          true,
+					HitType:           bifrost.Ptr(string(cacheType)),
+					CacheID:           bifrost.Ptr(result.ID),
+					RequestedProvider: bifrost.Ptr(string(requestedProvider)),
+					RequestedModel:    bifrost.Ptr(requestedModel),
 				}
 				if cacheType == CacheTypeSemantic {
 					cacheDebug.ProviderUsed = bifrost.Ptr(string(plugin.config.Provider))
@@ -412,9 +413,6 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 				}
 				extraFields.CacheDebug = &cacheDebug
 			}
-
-			// extraField is a pointer so it'll automatically reflect on the parent struct
-			extraFields.Provider = provider
 
 			// Send chunk to stream
 			streamChan <- &schemas.BifrostStreamChunk{

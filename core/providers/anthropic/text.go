@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/maximhq/bifrost/core/providers/utils"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -24,7 +24,7 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 	anthropicReq := &AnthropicTextRequest{
 		Model:             bifrostReq.Model,
 		Prompt:            fmt.Sprintf("\n\nHuman: %s\n\nAssistant:", prompt),
-		MaxTokensToSample: AnthropicDefaultMaxTokens, // Default value
+		MaxTokensToSample: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// Convert parameters
@@ -54,7 +54,7 @@ func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bif
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
+	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,

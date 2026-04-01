@@ -207,6 +207,44 @@ func TestSemanticSearch(t *testing.T) {
 	t.Log("✅ Semantic search test completed successfully!")
 }
 
+func TestToFloat32Embedding(t *testing.T) {
+	input := []float64{0.12345678901234568, -0.875, 1.5}
+
+	got := toFloat32Embedding(input)
+
+	if len(got) != len(input) {
+		t.Fatalf("expected %d elements, got %d", len(input), len(got))
+	}
+
+	for i, want := range input {
+		if got[i] != float32(want) {
+			t.Fatalf("expected element %d to be %v, got %v", i, float32(want), got[i])
+		}
+	}
+}
+
+func TestFlattenToFloat32Embedding(t *testing.T) {
+	input := [][]float64{
+		{0.25, 0.5},
+		{-0.75},
+		{},
+		{1.25, 2.5},
+	}
+
+	got := flattenToFloat32Embedding(input)
+	want := []float32{0.25, 0.5, -0.75, 1.25, 2.5}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d elements, got %d", len(want), len(got))
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected element %d to be %v, got %v", i, want[i], got[i])
+		}
+	}
+}
+
 // TestDirectVsSemanticSearch tests the difference between direct hash matching and semantic search
 func TestDirectVsSemanticSearch(t *testing.T) {
 	setup := NewTestSetup(t)
