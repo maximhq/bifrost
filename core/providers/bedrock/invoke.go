@@ -644,24 +644,26 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	}
 
 	// For Anthropic models (and default): serialize as Anthropic Messages API SSE events,
-	// then wrap in InvokeModelRawChunk
-	rawBytes, err := toAnthropicInvokeStreamBytes(resp)
+	// then wrap in InvokeModelRawChunks
+	rawChunks, err := toAnthropicInvokeStreamBytes(resp)
 	if err != nil {
 		return "", nil, err
 	}
-	if rawBytes == nil {
+	if len(rawChunks) == 0 {
 		return "", nil, nil
 	}
 
 	bedrockEvent := &BedrockStreamEvent{
-		InvokeModelRawChunk: rawBytes,
+		InvokeModelRawChunks: rawChunks,
 	}
 	return "", bedrockEvent, nil
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
-// the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunk.
-func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) ([]byte, error) {
+// the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
+// Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
+// (e.g., Completed → message_delta + message_stop).
+func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) ([][]byte, error) {
 	var event interface{}
 
 	switch resp.Type {
@@ -830,13 +832,13 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
-		// Emit message_delta + message_stop
+		// Emit message_delta + message_stop as two separate chunks
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
 			stopReason = resp.Response.IncompleteDetails.Reason
 		}
 
-		// Build combined payload: message_delta data
+		// Build message_delta event
 		messageDelta := map[string]interface{}{
 			"type": "message_delta",
 			"delta": map[string]interface{}{
@@ -849,7 +851,22 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"output_tokens": resp.Response.Usage.OutputTokens,
 			}
 		}
-		event = messageDelta
+
+		deltaBytes, err := providerUtils.MarshalSorted(messageDelta)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message_delta event: %w", err)
+		}
+
+		// Build message_stop event
+		messageStop := map[string]interface{}{
+			"type": "message_stop",
+		}
+		stopBytes, err := providerUtils.MarshalSorted(messageStop)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message_stop event: %w", err)
+		}
+
+		return [][]byte{deltaBytes, stopBytes}, nil
 
 	default:
 		return nil, nil
@@ -863,5 +880,5 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal invoke stream event: %w", err)
 	}
-	return bytes, nil
+	return [][]byte{bytes}, nil
 }

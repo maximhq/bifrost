@@ -3647,7 +3647,7 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 	}
 
 	type bedrockChunk struct {
-		InvokeModelRawChunk []byte `json:"invokeModelRawChunk"`
+		InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks"`
 	}
 
 	var stopCount int
@@ -3661,9 +3661,10 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 		require.NoError(t, err)
 		var chunk bedrockChunk
 		require.NoError(t, json.Unmarshal(raw, &chunk))
-		if len(chunk.InvokeModelRawChunk) > 0 &&
-			strings.Contains(string(chunk.InvokeModelRawChunk), "content_block_stop") {
-			stopCount++
+		for _, rawChunk := range chunk.InvokeModelRawChunks {
+			if strings.Contains(string(rawChunk), "content_block_stop") {
+				stopCount++
+			}
 		}
 	}
 
