@@ -1837,7 +1837,13 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		if bifrostReq.Params.Text != nil {
 			if bifrostReq.Params.Text.Format != nil {
-				responseFormatTool := convertTextFormatToTool(ctx, bifrostReq.Params.Text)
+				responseFormatTool, anthropicOutputFormat := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
+				if anthropicOutputFormat != nil {
+					if bedrockReq.AdditionalModelRequestFields == nil {
+						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+					}
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
+				}
 				// append to bedrockTools
 				if responseFormatTool != nil {
 					if bedrockReq.ToolConfig == nil {
