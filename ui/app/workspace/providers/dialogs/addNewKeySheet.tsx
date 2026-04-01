@@ -16,7 +16,8 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 	const isEditing = keyId !== null;
 	const resolvedProviderName = (providerName ?? provider.name).toLowerCase();
 	const isVLLM = resolvedProviderName === "vllm";
-	const entityLabel = isVLLM ? "model" : "key";
+	const isOllamaOrSGL = resolvedProviderName === "ollama" || resolvedProviderName === "sgl";
+	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const dialogTitle = isEditing ? `Edit ${entityLabel}` : `Add new ${entityLabel}`;
 	const successMessage = isEditing ? `${EntityLabel} updated successfully` : `${EntityLabel} added successfully`;

@@ -50,6 +50,8 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 		ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 		VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+		OllamaKeyConfig:    dbKey.OllamaKeyConfig,
+		SGLKeyConfig:       dbKey.SGLKeyConfig,
 		ConfigHash:         dbKey.ConfigHash,
 		Status:             schemas.KeyStatusType(dbKey.Status),
 		Description:        dbKey.Description,
@@ -73,6 +75,8 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		BedrockKeyConfig:   key.BedrockKeyConfig,
 		ReplicateKeyConfig: key.ReplicateKeyConfig,
 		VLLMKeyConfig:      key.VLLMKeyConfig,
+		OllamaKeyConfig:    key.OllamaKeyConfig,
+		SGLKeyConfig:       key.SGLKeyConfig,
 		ConfigHash:         key.ConfigHash,
 		Status:             string(key.Status),
 		Description:        key.Description,
@@ -375,6 +379,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				BedrockKeyConfig:   key.BedrockKeyConfig,
 				ReplicateKeyConfig: key.ReplicateKeyConfig,
 				VLLMKeyConfig:      key.VLLMKeyConfig,
+				OllamaKeyConfig:    key.OllamaKeyConfig,
+				SGLKeyConfig:       key.SGLKeyConfig,
 				ConfigHash:         keyHash,
 				Status:             string(key.Status),
 				Description:        key.Description,
@@ -546,6 +552,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			OllamaKeyConfig:    key.OllamaKeyConfig,
+			SGLKeyConfig:       key.SGLKeyConfig,
 			ConfigHash:         keyHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -669,6 +677,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			OllamaKeyConfig:    key.OllamaKeyConfig,
+			SGLKeyConfig:       key.SGLKeyConfig,
 			ConfigHash:         key.ConfigHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -1390,7 +1400,7 @@ func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *ve
 		if err != nil {
 			return err
 		}
-		var record = &tables.TableVectorStoreConfig{
+		record := &tables.TableVectorStoreConfig{
 			Type:    string(config.Type),
 			Enabled: config.Enabled,
 			Config:  jsonConfig,
@@ -1429,7 +1439,7 @@ func (s *RDBConfigStore) UpdateLogsStoreConfig(ctx context.Context, config *logs
 		if err != nil {
 			return err
 		}
-		var record = &tables.TableLogStoreConfig{
+		record := &tables.TableLogStoreConfig{
 			Enabled: config.Enabled,
 			Type:    string(config.Type),
 			Config:  jsonConfig,
@@ -3416,7 +3426,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
-
 	}
 	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigIsAuthEnabledKey).Select("value").Scan(&isEnabled).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {

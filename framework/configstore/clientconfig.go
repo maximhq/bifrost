@@ -408,6 +408,18 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		if key.OllamaKeyConfig != nil {
+			ollamaConfig := &schemas.OllamaKeyConfig{}
+			ollamaConfig.URL = *key.OllamaKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
+		}
+
+		if key.SGLKeyConfig != nil {
+			sglConfig := &schemas.SGLKeyConfig{}
+			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -561,6 +573,22 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OllamaKeyConfig
+	if key.OllamaKeyConfig != nil {
+		data, err := sonic.Marshal(key.OllamaKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash SGLKeyConfig
+	if key.SGLKeyConfig != nil {
+		data, err := sonic.Marshal(key.SGLKeyConfig)
 		if err != nil {
 			return "", err
 		}

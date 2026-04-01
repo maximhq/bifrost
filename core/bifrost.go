@@ -4966,7 +4966,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		key := schemas.Key{}
 		var keys []schemas.Key
-		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
 			// and report per-key statuses (KeyStatuses).
 			if req.RequestType == schemas.ListModelsRequest {

@@ -117,6 +117,9 @@ func (e *EnvVar) Equals(other *EnvVar) bool {
 
 // Redacted returns a new SecretKey with the value redacted.
 func (e *EnvVar) Redacted() *EnvVar {
+	if e == nil {
+		return nil
+	}
 	if e.Val == "" {
 		return &EnvVar{
 			Val:     "",
@@ -297,4 +300,15 @@ func (e *EnvVar) CoerceBool(defaultValue bool) bool {
 		return defaultValue
 	}
 	return val
+}
+
+// IsDefined returns true if the EnvVar has a source (static value or env key)
+func (e *EnvVar) IsDefined() bool {
+	if e == nil {
+		return false
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar != ""
+	}
+	return e.Val != ""
 }

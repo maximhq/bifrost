@@ -217,7 +217,7 @@
           "$ref": "#/$defs/provider"
         },
         "ollama": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_ollama_config"
         },
         "groq": {
           "$ref": "#/$defs/provider"
@@ -229,7 +229,7 @@
           "$ref": "#/$defs/provider"
         },
         "sgl": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_sgl_config"
         },
         "parasail": {
           "$ref": "#/$defs/provider"
@@ -1728,6 +1728,66 @@
       },
       "additionalProperties": false
     },
+    "network_config_without_base_url": {
+      "type": "object",
+      "properties": {
+        "extra_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Additional headers to send with requests"
+        },
+        "default_request_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default request timeout in seconds"
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of retries"
+        },
+        "retry_backoff_initial_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Initial retry backoff in milliseconds"
+        },
+        "retry_backoff_max_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum retry backoff in milliseconds"
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+        },
+        "stream_idle_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600,
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+        },
+        "max_conns_per_host": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "beta_header_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        }
+      },
+      "additionalProperties": false
+    },
     "concurrency_config": {
       "type": "object",
       "properties": {
@@ -1864,6 +1924,64 @@
           },
           "required": [
             "vllm_key_config"
+          ]
+        }
+      ]
+    },
+    "ollama_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ollama_key_config": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Ollama server base URL (can use env. prefix)"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "ollama_key_config"
+          ]
+        }
+      ]
+    },
+    "sgl_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sgl_key_config": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "SGLang server base URL (can use env. prefix)"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "sgl_key_config"
           ]
         }
       ]
@@ -2050,7 +2168,7 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config"
+          "$ref": "#/$defs/network_config_without_base_url"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_config"
@@ -2133,6 +2251,88 @@
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_ollama_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ollama_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config_without_base_url"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_sgl_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sgl_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config_without_base_url"
         },
         "concurrency_and_buffer_size": {
           "$ref": "#/$defs/concurrency_config"

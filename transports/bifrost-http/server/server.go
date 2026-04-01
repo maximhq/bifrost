@@ -507,7 +507,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 
 	// Read current key count from in-memory store (providerInfo.Keys is not preloaded from DB)
 	inMemoryKeys, _ := s.Config.GetProviderKeysRaw(provider)
-	isKeylessProvider := bifrost.IsKeylessProvider(provider) || (providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess)
+	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
 	// Getting allowed models from all provider keys (needed before model listing)

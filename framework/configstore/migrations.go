@@ -281,7 +281,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
-
 		return err
 	}
 	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
@@ -348,6 +347,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOllamaSGLConfigColumns(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -5089,6 +5091,8 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 					BedrockKeyConfig:   key.BedrockKeyConfig,
 					ReplicateKeyConfig: key.ReplicateKeyConfig,
 					VLLMKeyConfig:      key.VLLMKeyConfig,
+					OllamaKeyConfig:    key.OllamaKeyConfig,
+					SGLKeyConfig:       key.SGLKeyConfig,
 					Enabled:            key.Enabled,
 					UseForBatchAPI:     key.UseForBatchAPI,
 				}
@@ -5388,6 +5392,101 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_model_capability_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOllamaSGLConfigColumns adds ollama_url and sgl_url columns to the key table
+func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_ollama_sgl_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+
+			// Backfill: for each ollama/sgl provider with a base_url, create a key
+			// with that URL and clear base_url from network_config.
+			var providers []tables.TableProvider
+			if err := tx.Where("name IN ?", []string{"ollama", "sgl"}).Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to fetch ollama/sgl providers for URL backfill: %w", err)
+			}
+			for _, p := range providers {
+				if p.NetworkConfigJSON == "" {
+					continue
+				}
+				var nc schemas.NetworkConfig
+				if err := json.Unmarshal([]byte(p.NetworkConfigJSON), &nc); err != nil {
+					log.Printf("[Migration] Failed to parse network_config for provider %s (id=%d), skipping: %v", p.Name, p.ID, err)
+					continue
+				}
+				if nc.BaseURL == "" {
+					continue
+				}
+
+				// Create a new key with the provider's base_url
+				urlEnvVar := schemas.EnvVar{Val: nc.BaseURL}
+				enabled := true
+				weight := 1.0
+				newKey := tables.TableKey{
+					Provider:   p.Name,
+					ProviderID: p.ID,
+					KeyID:      uuid.NewString(),
+					Weight:     &weight,
+					Enabled:    &enabled,
+					Models:     schemas.WhiteList{"*"},
+				}
+				if strings.ToLower(p.Name) == "ollama" {
+					newKey.Name = "Default Ollama Key"
+					newKey.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: urlEnvVar}
+				}
+				if strings.ToLower(p.Name) == "sgl" {
+					newKey.Name = "Default SGL Key"
+					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlEnvVar}
+				}
+
+				schemaKey := schemaKeyFromTableKey(newKey)
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
+				}
+				newKey.ConfigHash = hash
+				if err := tx.Create(&newKey).Error; err != nil {
+					return fmt.Errorf("failed to create key for provider %s: %w", p.Name, err)
+				}
+
+				log.Printf("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "ollama_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "ollama_url"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableKey{}, "sgl_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "sgl_url"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running ollama sgl key config columns migration: %s", err.Error())
 	}
 	return nil
 }

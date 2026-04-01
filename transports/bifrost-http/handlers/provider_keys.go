@@ -88,13 +88,23 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot add keys to a keyless provider")
 		return
 	}
 
-	if key.Value.GetValue() == "" {
+	baseProvider := provider
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
+		return
+	}
+
+	if err := validateProviderKeyURL(provider, key); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -166,7 +176,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot update keys on a keyless provider")
 		return
 	}
@@ -194,8 +204,23 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	updateKey.ID = keyID
 	mergedKey := h.mergeUpdatedKey(*oldRawKey, *oldRedactedKey, updateKey)
 
+	baseProvider := provider
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
+		return
+	}
+
 	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
+		return
+	}
+
+	if err := validateProviderKeyURL(provider, mergedKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -245,7 +270,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if bifrost.IsKeylessProvider(provider) || (providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess) {
+	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot delete keys on a keyless provider")
 		return
 	}
@@ -400,6 +425,20 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 		}
 	}
 
+	if updateKey.OllamaKeyConfig != nil && oldRedactedKey.OllamaKeyConfig != nil && oldRawKey.OllamaKeyConfig != nil {
+		if updateKey.OllamaKeyConfig.URL.IsRedacted() &&
+			updateKey.OllamaKeyConfig.URL.Equals(&oldRedactedKey.OllamaKeyConfig.URL) {
+			mergedKey.OllamaKeyConfig.URL = oldRawKey.OllamaKeyConfig.URL
+		}
+	}
+
+	if updateKey.SGLKeyConfig != nil && oldRedactedKey.SGLKeyConfig != nil && oldRawKey.SGLKeyConfig != nil {
+		if updateKey.SGLKeyConfig.URL.IsRedacted() &&
+			updateKey.SGLKeyConfig.URL.Equals(&oldRedactedKey.SGLKeyConfig.URL) {
+			mergedKey.SGLKeyConfig.URL = oldRawKey.SGLKeyConfig.URL
+		}
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
@@ -423,4 +462,19 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	}
 
 	return decoded, nil
+}
+
+// validateProviderKeyURL checks that Ollama/SGL keys have a server URL configured.
+func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
+	switch provider {
+	case schemas.Ollama:
+		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsDefined() {
+			return fmt.Errorf("ollama_key_config.url is required for Ollama keys")
+		}
+	case schemas.SGL:
+		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsDefined() {
+			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
+		}
+	}
+	return nil
 }

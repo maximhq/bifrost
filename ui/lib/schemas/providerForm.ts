@@ -226,7 +226,7 @@ export const ProviderFormSchema = z
 		}
 
 		// Base URL validation for specific providers
-		const baseURLRequired = data.selectedProvider === "ollama" || data.selectedProvider === "sgl" || isCustomProvider;
+		const baseURLRequired = isCustomProvider;
 		if (baseURLRequired) {
 			if (!data.networkConfig?.base_url) {
 				ctx.addIssue({
