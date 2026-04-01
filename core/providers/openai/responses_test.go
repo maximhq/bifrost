@@ -1500,6 +1500,48 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+func TestToOpenAIResponsesRequest_PreservesExplicitEmptyToolParameters(t *testing.T) {
+	var tool schemas.ResponsesTool
+	err := json.Unmarshal([]byte(`{"type":"function","name":"empty_schema","parameters":{},"strict":false}`), &tool)
+	if err != nil {
+		t.Fatalf("failed to unmarshal tool: %v", err)
+	}
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{tool},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	params := result.Tools[0].ResponsesToolFunction.Parameters
+	if params == nil {
+		t.Fatal("expected tool parameters to be preserved")
+	}
+
+	marshaled, err := schemas.Marshal(params)
+	if err != nil {
+		t.Fatalf("failed to marshal parameters: %v", err)
+	}
+	if string(marshaled) != `{}` {
+		t.Fatalf("expected parameters to remain {}, got %s", marshaled)
+	}
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================

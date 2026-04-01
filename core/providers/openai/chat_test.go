@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -107,6 +108,43 @@ func TestToOpenAIChatRequest_PreservesPropertyOrder(t *testing.T) {
 	keys := normalizedParams.Properties.Keys()
 	if len(keys) != 3 || keys[0] != "reasoning" || keys[1] != "answer" || keys[2] != "confidence" {
 		t.Errorf("expected property order [reasoning, answer, confidence], got %v", keys)
+	}
+}
+
+func TestToOpenAIChatRequest_PreservesExplicitEmptyToolParameters(t *testing.T) {
+	var tool schemas.ChatTool
+	err := json.Unmarshal([]byte(`{"type":"function","function":{"name":"empty_schema","parameters":{},"strict":false}}`), &tool)
+	if err != nil {
+		t.Fatalf("failed to unmarshal tool: %v", err)
+	}
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{tool},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	params := result.ChatParameters.Tools[0].Function.Parameters
+	if params == nil {
+		t.Fatal("expected tool parameters to be preserved")
+	}
+
+	marshaled, err := schemas.Marshal(params)
+	if err != nil {
+		t.Fatalf("failed to marshal parameters: %v", err)
+	}
+	if string(marshaled) != `{}` {
+		t.Fatalf("expected parameters to remain {}, got %s", marshaled)
 	}
 }
 
