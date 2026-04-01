@@ -410,14 +410,11 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	}
 
 	trimmed := bytes.TrimSpace(data)
-	t.explicitEmptyObject = len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}'
-	if t.explicitEmptyObject {
-		for _, b := range trimmed[1 : len(trimmed)-1] {
-			if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
-				t.explicitEmptyObject = false
-				break
-			}
-		}
+	if len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}' {
+		inner := bytes.TrimSpace(trimmed[1 : len(trimmed)-1])
+		t.explicitEmptyObject = len(inner) == 0
+	} else {
+		t.explicitEmptyObject = false
 	}
 	t.keyOrder.Capture(data)
 	return nil
