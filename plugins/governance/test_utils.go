@@ -15,7 +15,6 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // MockLogger implements schemas.Logger for testing
@@ -244,15 +243,6 @@ func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
 	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
 }
 
-func requireNoError(t *testing.T, err error, msg string) {
-	t.Helper()
-	require.NoError(t, err, msg)
-}
-
-func requireError(t *testing.T, err error, msg string) {
-	t.Helper()
-	require.Error(t, err, msg)
-}
 
 func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
 	mc := &configstoreTables.TableModelConfig{

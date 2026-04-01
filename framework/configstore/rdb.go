@@ -35,6 +35,7 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
 		ID:                 dbKey.KeyID,
@@ -59,6 +60,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	}
 }
 
+// tableKeyFromSchemaKey converts a schema key to a database key.
 func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
 	dbKey := tables.TableKey{
 		Provider:           provider.Name,
@@ -175,13 +177,10 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 	if err == nil {
 		return nil
 	}
-
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound
 	}
-
 	errMsg := err.Error()
-
 	// Check for unique constraint violations
 	// SQLite format: "UNIQUE constraint failed: table_name.column_name"
 	// PostgreSQL format: "ERROR: duplicate key value violates unique constraint"
@@ -914,7 +913,6 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 	} else {
 		txDB = s.db
 	}
-
 	var dbProvider tables.TableProvider
 	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -922,16 +920,13 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 		}
 		return err
 	}
-
 	dbKey, err := tableKeyFromSchemaKey(dbProvider, key)
 	if err != nil {
 		return err
 	}
-
 	if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
-
 	return nil
 }
 
@@ -1859,10 +1854,11 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
 func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
-	db = db.Preload("Team").Preload("Team.Customer")
-	db = db.Preload("Customer")
 	return db.
-		Preload("Budget").
+		Preload("Team").
+		Preload("Team.Customer").
+		Preload("Customer").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
 		Preload("ProviderConfigs.Budgets").
@@ -3163,6 +3159,7 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 	return modelConfigs, nil
 }
 
+// GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
 	baseQuery := s.db.WithContext(ctx).Model(&tables.TableModelConfig{})
 
