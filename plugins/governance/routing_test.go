@@ -1568,6 +1568,21 @@ func TestExtractRoutingVariables_NilMaps(t *testing.T) {
 	assert.Equal(t, 0.0, variables["request"])
 }
 
+func TestExtractRoutingVariables_ComplexityUnavailableUsesPlaceholder(t *testing.T) {
+	ctx := &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	}
+
+	variables, err := extractRoutingVariables(ctx)
+	require.NoError(t, err)
+
+	// This is only the raw variable-map placeholder. EvaluateRoutingRules marks
+	// complexity_tier as CEL unknown when analysis is unavailable, so routing
+	// predicates do not observe this as a user-facing empty-string tier.
+	assert.Equal(t, "", variables["complexity_tier"])
+}
+
 // TestExtractRoutingVariables_MultipleProviders tests with multiple rate limits
 func TestExtractRoutingVariables_MultipleProviders(t *testing.T) {
 	ctx := &RoutingContext{

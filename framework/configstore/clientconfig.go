@@ -1369,14 +1369,15 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
-	Teams            []tables.TableTeam            `json:"teams"`
-	Customers        []tables.TableCustomer        `json:"customers"`
-	Budgets          []tables.TableBudget          `json:"budgets"`
-	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
-	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
-	Providers        []tables.TableProvider        `json:"providers"`
-	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
-	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
-	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	VirtualKeys              []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams                    []tables.TableTeam            `json:"teams"`
+	Customers                []tables.TableCustomer        `json:"customers"`
+	Budgets                  []tables.TableBudget          `json:"budgets"`
+	RateLimits               []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs             []tables.TableModelConfig     `json:"model_configs"`
+	Providers                []tables.TableProvider        `json:"providers"`
+	RoutingRules             []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
+	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
+	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }

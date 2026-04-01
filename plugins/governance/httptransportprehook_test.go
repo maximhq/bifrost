@@ -3,6 +3,8 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -10,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -366,4 +369,372 @@ func TestHTTPTransportPreHook_BedrockNoRoutingRuleStillLoadBalances(t *testing.T
 	ctxModelID, ok := bfCtx.Value("modelId").(string)
 	require.True(t, ok, "context modelId should be set by governance LB")
 	require.Equal(t, "repro-openai-b/probe-bedrock-model", ctxModelID)
+}
+
+func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	model := "gpt-4o-mini"
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "rule-1",
+					Name:          "Complexity Available",
+					CelExpression: `complexity_tier != ""`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &model, Weight: 1.0},
+					},
+					Enabled:  true,
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/v1/chat/completions"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What is a vector database?"}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ChatCompletionRequest)
+
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	engines, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
+	require.True(t, ok, "routing engines used should be tracked")
+	require.Contains(t, engines, schemas.RoutingEngineRoutingRule)
+
+	var payload struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(req.Body, &payload))
+	require.Equal(t, "openai/gpt-4o-mini", payload.Model)
+}
+
+func TestResolveAnalyzerConfigFromStoreOrArg_PrefersConfiguredArgOverStoredConfig(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{
+			Path: filepath.Join(t.TempDir(), "governance-config.db"),
+		},
+	}, logger)
+	require.NoError(t, err)
+
+	storedCfg := complexity.DefaultAnalyzerConfig()
+	storedCfg.TierBoundaries.SimpleMedium = 0.22
+	storedRaw, err := json.Marshal(storedCfg)
+	require.NoError(t, err)
+	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+
+	argCfg := complexity.DefaultAnalyzerConfig()
+	argCfg.TierBoundaries.SimpleMedium = 0.11
+
+	resolved := resolveAnalyzerConfigFromStoreOrArg(ctx, logger, store, &configstore.GovernanceConfig{
+		ComplexityAnalyzerConfig: &argCfg,
+	})
+	require.NotNil(t, resolved)
+	require.Equal(t, 0.11, resolved.TierBoundaries.SimpleMedium)
+}
+
+func TestResolveAnalyzerConfigFromStoreOrArg_InvalidConfiguredArgFallsBackToStoredConfig(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{
+			Path: filepath.Join(t.TempDir(), "governance-config.db"),
+		},
+	}, logger)
+	require.NoError(t, err)
+
+	storedCfg := complexity.DefaultAnalyzerConfig()
+	storedCfg.TierBoundaries.SimpleMedium = 0.22
+	storedRaw, err := json.Marshal(storedCfg)
+	require.NoError(t, err)
+	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+
+	// Invalid config: SimpleMedium > MediumComplex violates ordering constraint
+	argCfg := complexity.DefaultAnalyzerConfig()
+	argCfg.TierBoundaries.SimpleMedium = 0.70
+
+	resolved := resolveAnalyzerConfigFromStoreOrArg(ctx, logger, store, &configstore.GovernanceConfig{
+		ComplexityAnalyzerConfig: &argCfg,
+	})
+	require.NotNil(t, resolved)
+	require.Equal(t, 0.22, resolved.TierBoundaries.SimpleMedium)
+}
+
+func TestResolveAnalyzerConfigFromStoreOrArg_FallsBackToStoredConfigWhenArgMissing(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{
+			Path: filepath.Join(t.TempDir(), "governance-config.db"),
+		},
+	}, logger)
+	require.NoError(t, err)
+
+	storedCfg := complexity.DefaultAnalyzerConfig()
+	storedCfg.TierBoundaries.SimpleMedium = 0.22
+	storedRaw, err := json.Marshal(storedCfg)
+	require.NoError(t, err)
+	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, store, storedRaw))
+
+	resolved := resolveAnalyzerConfigFromStoreOrArg(ctx, logger, store, &configstore.GovernanceConfig{})
+	require.NotNil(t, resolved)
+	require.Equal(t, 0.22, resolved.TierBoundaries.SimpleMedium)
+}
+
+func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable_ForGenAIContents(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	model := "gpt-4o-mini"
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "rule-genai-complexity",
+					Name:          "Complexity Available GenAI",
+					CelExpression: `complexity_tier != ""`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &model, Weight: 1.0},
+					},
+					Enabled:  true,
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/genai/v1beta/models/gemini-2.0-flash:generateContent"
+	req.PathParams["model"] = "gemini-2.0-flash:generateContent"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"contents":[{"role":"user","parts":[{"text":"Explain vector databases"}]}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	ctxModel, ok := bfCtx.Value("model").(string)
+	require.True(t, ok, "context model should be set")
+	require.Equal(t, "openai/gpt-4o-mini:generateContent", ctxModel)
+}
+
+func TestHTTPTransportPreHook_ComplexityAnalyzerFeedsCELVariable_ForBedrockTextBlocks(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	model := "gpt-4o-mini"
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "rule-bedrock-complexity",
+					Name:          "Complexity Available Bedrock",
+					CelExpression: `complexity_tier != ""`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &model, Weight: 1.0},
+					},
+					Enabled:  true,
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/bedrock/model/us.anthropic.claude-3-5-sonnet/converse"
+	req.PathParams["modelId"] = "us.anthropic.claude-3-5-sonnet"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"messages":[{"role":"user","content":[{"text":"Explain the retry policy"}]}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	ctxModelID, ok := bfCtx.Value("modelId").(string)
+	require.True(t, ok, "context modelId should be set")
+	require.Equal(t, "openai/gpt-4o-mini", ctxModelID)
+}
+
+func TestHTTPTransportPreHook_InvalidComplexityConfigFallsBackToDefaults(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	model := "gpt-4o-mini"
+
+	invalidConfig := complexity.DefaultAnalyzerConfig()
+	invalidConfig.TierBoundaries = complexity.TierBoundaries{}
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: &invalidConfig,
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "rule-invalid-config-fallback",
+					Name:          "Simple Fallback Rule",
+					CelExpression: `complexity_tier == "SIMPLE"`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &model, Weight: 1.0},
+					},
+					Enabled:  true,
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/v1/chat/completions"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"What is 2+2?"}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ChatCompletionRequest)
+
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	var payload struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(req.Body, &payload))
+	require.Equal(t, "openai/gpt-4o-mini", payload.Model)
+	require.NotEmpty(t, logger.warnings)
+}
+
+func TestHTTPTransportPreHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	model := "gpt-4o-mini"
+
+	// Routing rule that does NOT reference complexity — analyzer should not run
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "rule-1",
+					Name:          "Always match",
+					CelExpression: "true",
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &model, Weight: 1.0},
+					},
+					Enabled:  true,
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "POST"
+	req.Path = "/v1/chat/completions"
+	req.Headers["Content-Type"] = "application/json"
+	req.Body = []byte(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ChatCompletionRequest)
+
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	// Verify no complexity logs were generated (analyzer was skipped)
+	logs := bfCtx.GetRoutingEngineLogs()
+	for _, entry := range logs {
+		if entry.Engine == schemas.RoutingEngineRoutingRule && strings.Contains(entry.Message, "Complexity analysis") {
+			t.Fatalf("expected no complexity logs when no rules reference complexity, got: %s", entry.Message)
+		}
+	}
 }

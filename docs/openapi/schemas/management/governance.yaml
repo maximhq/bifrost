@@ -1312,3 +1312,77 @@ ListPricingOverridesResponse:
     count:
       type: integer
       description: Total number of overrides returned
+
+# Complexity Tier Boundaries
+
+ComplexityTierBoundaries:
+  type: object
+  description: Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+  additionalProperties: false
+  required:
+    - simple_medium
+    - medium_complex
+    - complex_reasoning
+  properties:
+    simple_medium:
+      type: number
+      description: Score boundary between SIMPLE and MEDIUM tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    medium_complex:
+      type: number
+      description: Score boundary between MEDIUM and COMPLEX tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+    complex_reasoning:
+      type: number
+      description: Score boundary between COMPLEX and REASONING tiers
+      exclusiveMinimum: 0
+      exclusiveMaximum: 1
+
+ComplexityKeywordConfig:
+  type: object
+  description: |
+    Editable keyword lists used by the complexity analyzer. Only the four user-facing
+    dimensions are exposed; `reasoning_keywords` entries drive the reasoning tier
+    override. Matching is normalized to lowercase and duplicates are removed on save.
+  additionalProperties: false
+  required:
+    - code_keywords
+    - reasoning_keywords
+    - technical_keywords
+    - simple_keywords
+  properties:
+    code_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    reasoning_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    technical_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    simple_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+
+ComplexityAnalyzerConfig:
+  type: object
+  description: Full runtime configuration for complexity routing analysis.
+  additionalProperties: false
+  required:
+    - tier_boundaries
+    - keywords
+  properties:
+    tier_boundaries:
+      $ref: '#/ComplexityTierBoundaries'
+    keywords:
+      $ref: '#/ComplexityKeywordConfig'

@@ -13,6 +13,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -20,7 +21,7 @@ import (
 
 type pricingOverrideTestGovernanceManager struct{}
 
-func (pricingOverrideTestGovernanceManager) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
+func (pricingOverrideTestGovernanceManager) GetGovernanceData(context.Context) *governance.GovernanceData {
 	return nil
 }
 func (pricingOverrideTestGovernanceManager) ReloadVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
@@ -63,6 +64,9 @@ func (pricingOverrideTestGovernanceManager) UpsertPricingOverride(context.Contex
 	return nil
 }
 func (pricingOverrideTestGovernanceManager) DeletePricingOverride(context.Context, string) error {
+	return nil
+}
+func (pricingOverrideTestGovernanceManager) ReloadComplexityAnalyzerConfig(context.Context, *complexity.AnalyzerConfig) error {
 	return nil
 }
 

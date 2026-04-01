@@ -854,6 +854,10 @@ paths:
   /api/governance/pricing-overrides/{id}:
     $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
 
+  # Governance - Complexity Analyzer Config
+  /api/governance/complexity:
+    $ref: './paths/management/governance.yaml#/complexity'
+
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
@@ -997,6 +1001,12 @@ components:
             $ref: './schemas/inference/common.yaml#/BifrostError'
     InternalError:
       description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    ConfigStoreUnavailable:
+      description: Config store not available
       content:
         application/json:
           schema:

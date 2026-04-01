@@ -27,12 +27,16 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableKey{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
+		&tables.TableModelConfig{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
+		&tables.TableRoutingRule{},
+		&tables.TablePricingOverride{},
 		&tables.TableClientConfig{},
+		&tables.TableGovernanceConfig{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableVirtualKeyMCPConfig{},
@@ -58,6 +62,42 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	}
 	s.refreshPoolFn = func(ctx context.Context) error { return nil }
 	return s
+}
+
+func TestComplexityAnalyzerConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	raw := json.RawMessage(`{"tier_boundaries":{"simple_medium":0.18,"medium_complex":0.35,"complex_reasoning":0.60},"keywords":{"code_keywords":["function","router","endpoint"],"reasoning_keywords":["step by step"],"technical_keywords":["architecture"],"simple_keywords":["hello"]}}`)
+
+	err := UpdateComplexityAnalyzerConfigRaw(ctx, store, raw)
+	require.NoError(t, err)
+
+	loaded, err := GetComplexityAnalyzerConfigRaw(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(loaded, &parsed))
+	tb := parsed["tier_boundaries"].(map[string]interface{})
+	assert.Equal(t, 0.18, tb["simple_medium"])
+}
+
+func TestGetGovernanceConfig_IncludesComplexityAnalyzerConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	raw := json.RawMessage(`{"tier_boundaries":{"simple_medium":0.15,"medium_complex":0.35,"complex_reasoning":0.72},"keywords":{"code_keywords":["function"],"reasoning_keywords":["step by step"],"technical_keywords":["kubernetes","latency"],"simple_keywords":["hello"]}}`)
+
+	err := UpdateComplexityAnalyzerConfigRaw(ctx, store, raw)
+	require.NoError(t, err)
+
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, governanceConfig)
+	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
+	assert.Equal(t, 0.72, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+	assert.Equal(t, []string{"kubernetes", "latency"}, governanceConfig.ComplexityAnalyzerConfig.Keywords.TechnicalKeywords)
 }
 
 // =============================================================================

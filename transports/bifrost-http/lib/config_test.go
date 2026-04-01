@@ -374,11 +374,20 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func mustMarshalComplexityAnalyzerConfig(t *testing.T, cfg complexity.AnalyzerConfig) json.RawMessage {
+	t.Helper()
+
+	raw, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return raw
+}
 
 // MockConfigStore implements the ConfigStore interface for testing
 type MockConfigStore struct {
@@ -11794,13 +11803,13 @@ func TestGenerateTeamHash(t *testing.T) {
 		t.Error("Different CustomerID should produce different hash")
 	}
 
-	// Different BudgetID should produce different hash
+	// Different Budget IDs should produce different hash
 	newBudgetID := "budget-2"
 	team5 := team1
 	team5.Budgets = []tables.TableBudget{{ID: newBudgetID}}
 	hash5, _ := configstore.GenerateTeamHash(team5)
 	if hash1 == hash5 {
-		t.Error("Different BudgetID should produce different hash")
+		t.Error("Different budget IDs should produce different hash")
 	}
 
 	// Different ParsedProfile should produce different hash
@@ -12574,6 +12583,129 @@ func TestGenerateClientConfigHash(t *testing.T) {
 // ===================================================================================
 // COMBINED GOVERNANCE RECONCILIATION TEST
 // ===================================================================================
+
+func TestSQLite_ComplexityAnalyzerConfig_FileSeeded(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	analyzerConfig := complexity.DefaultAnalyzerConfig()
+	analyzerConfig.TierBoundaries.SimpleMedium = 0.18
+	analyzerConfig.TierBoundaries.MediumComplex = 0.42
+	analyzerConfig.TierBoundaries.ComplexReasoning = 0.73
+	analyzerConfig.Keywords.TechnicalKeywords = []string{"Kubernetes", "latency", "latency"}
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		ComplexityAnalyzerConfig: &analyzerConfig,
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	require.NotNil(t, config.GovernanceConfig)
+	require.NotNil(t, config.GovernanceConfig.ComplexityAnalyzerConfig)
+	loadedConfig := config.GovernanceConfig.ComplexityAnalyzerConfig
+	require.Equal(t, 0.18, loadedConfig.TierBoundaries.SimpleMedium)
+	require.Equal(t, []string{"kubernetes", "latency"}, loadedConfig.Keywords.TechnicalKeywords)
+
+	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config.ConfigStore)
+	require.NoError(t, err)
+	stored, err := complexity.DecodeAndValidate(storedRaw)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.73, stored.TierBoundaries.ComplexReasoning)
+	require.Equal(t, []string{"kubernetes", "latency"}, stored.Keywords.TechnicalKeywords)
+}
+
+func TestSQLite_ComplexityAnalyzerConfig_UpdatePersists(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	// No analyzer config in the file — API-only update path
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.TierBoundaries.SimpleMedium = 0.20
+	cfg.TierBoundaries.MediumComplex = 0.40
+	cfg.TierBoundaries.ComplexReasoning = 0.70
+	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore, mustMarshalComplexityAnalyzerConfig(t, cfg)))
+	config1.Close(ctx)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config2.ConfigStore)
+	require.NoError(t, err)
+	stored, err := complexity.DecodeAndValidate(storedRaw)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, 0.20, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.40, stored.TierBoundaries.MediumComplex)
+	require.Equal(t, 0.70, stored.TierBoundaries.ComplexReasoning)
+}
+
+func TestSQLite_ComplexityAnalyzerConfig_FileWinsOnRestartWhenPresent(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	// Step 1: Boot with analyzer config from file — seeds DB
+	seedCfg := complexity.DefaultAnalyzerConfig()
+	seedCfg.TierBoundaries.SimpleMedium = 0.15
+	seedCfg.TierBoundaries.MediumComplex = 0.35
+	seedCfg.TierBoundaries.ComplexReasoning = 0.60
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		ComplexityAnalyzerConfig: &seedCfg,
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	storedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore)
+	require.NoError(t, err)
+	stored, err := complexity.DecodeAndValidate(storedRaw)
+	require.NoError(t, err)
+	require.NotNil(t, stored, "DB should be seeded from file")
+	require.Equal(t, 0.15, stored.TierBoundaries.SimpleMedium)
+
+	// Step 2: Edit via API (simulates PUT endpoint)
+	edited := complexity.DefaultAnalyzerConfig()
+	edited.TierBoundaries.SimpleMedium = 0.20
+	edited.TierBoundaries.MediumComplex = 0.45
+	edited.TierBoundaries.ComplexReasoning = 0.75
+	require.NoError(t, configstore.UpdateComplexityAnalyzerConfigRaw(ctx, config1.ConfigStore, mustMarshalComplexityAnalyzerConfig(t, edited)))
+	config1.Close(ctx)
+
+	// Step 3: Restart with same file still present — file should win
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	require.NotNil(t, config2.GovernanceConfig)
+	require.NotNil(t, config2.GovernanceConfig.ComplexityAnalyzerConfig)
+	reloadedConfig := config2.GovernanceConfig.ComplexityAnalyzerConfig
+	require.Equal(t, 0.15, reloadedConfig.TierBoundaries.SimpleMedium, "file config should be reapplied on restart")
+	require.Equal(t, 0.35, reloadedConfig.TierBoundaries.MediumComplex)
+	require.Equal(t, 0.60, reloadedConfig.TierBoundaries.ComplexReasoning)
+
+	reloadedRaw, err := configstore.GetComplexityAnalyzerConfigRaw(ctx, config2.ConfigStore)
+	require.NoError(t, err)
+	reloaded, err := complexity.DecodeAndValidate(reloadedRaw)
+	require.NoError(t, err)
+	require.Equal(t, 0.15, reloaded.TierBoundaries.SimpleMedium, "DB should be resynced from file when file config is present")
+}
 
 // TestSQLite_Governance_FullReconciliation tests full governance reconciliation
 func TestSQLite_Governance_FullReconciliation(t *testing.T) {
@@ -15684,6 +15816,7 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
 		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
 		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
+		{"governance.complexity_analyzer_config", reflect.TypeOf(configstore.ComplexityAnalyzerConfig{}), false},
 
 		// Plugins
 		{"plugins", reflect.TypeOf(schemas.PluginConfig{}), true},
@@ -15798,16 +15931,17 @@ var excludedGoFields = map[string]map[string]bool{
 	"schemas.MCPToolManagerConfig": {
 		"code_mode_binding_level": true, // Internal
 	},
-	"schemas.PluginConfig":            {},
-	"framework.FrameworkConfig":       {},
-	"modelcatalog.Config":             {},
-	"tables.GlobalHeaderFilterConfig": {},
-	"configstore.AuthConfig":          {},
-	"schemas.MCPStdioConfig":          {},
-	"lib.ConfigData":                  {},
-	"vectorstore.Config":              {},
-	"configstore.Config":              {},
-	"logstore.Config":                 {},
+	"schemas.PluginConfig":                 {},
+	"framework.FrameworkConfig":            {},
+	"modelcatalog.Config":                  {},
+	"tables.GlobalHeaderFilterConfig":      {},
+	"configstore.AuthConfig":               {},
+	"configstore.ComplexityAnalyzerConfig": {},
+	"schemas.MCPStdioConfig":               {},
+	"lib.ConfigData":                       {},
+	"vectorstore.Config":                   {},
+	"configstore.Config":                   {},
+	"logstore.Config":                      {},
 }
 
 // excludedSchemaFields are schema fields that don't exist in Go structs (schema-only documentation)

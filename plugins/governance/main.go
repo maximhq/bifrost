@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -22,6 +23,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // PluginName is the name of the governance plugin
@@ -58,6 +60,7 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
+	ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig)
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -88,6 +91,9 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	// Complexity analyzer is published atomically so boundary reloads are lock-free.
+	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -230,6 +236,7 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 	}
+	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
 	return plugin, nil
 }
 
@@ -267,6 +274,7 @@ func InitFromStore(
 	if governanceStore == nil {
 		return nil, fmt.Errorf("governance store is nil")
 	}
+
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
@@ -324,12 +332,59 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 	}
+	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	return plugin, nil
 }
 
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// ReloadComplexityAnalyzerConfig swaps the analyzer with the provided full config.
+func (p *GovernancePlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+	p.storeComplexityAnalyzerConfig(config)
+}
+
+func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+	resolved, err := complexity.ValidateAndNormalize(config)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("invalid complexity analyzer config, using defaults: %v", err)
+		}
+		defaults := complexity.DefaultAnalyzerConfig()
+		resolved = &defaults
+	}
+	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+}
+
+func resolveAnalyzerConfigFromStoreOrArg(
+	ctx context.Context,
+	logger schemas.Logger,
+	configStore configstore.ConfigStore,
+	governanceConfig *configstore.GovernanceConfig,
+) *complexity.AnalyzerConfig {
+	if governanceConfig != nil && governanceConfig.ComplexityAnalyzerConfig != nil {
+		cfg, err := complexity.ValidateAndNormalize(governanceConfig.ComplexityAnalyzerConfig)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("invalid complexity analyzer config from provided governance config: %v", err)
+			}
+		} else if cfg != nil {
+			return cfg
+		}
+	}
+	if configStore != nil {
+		cfg, err := configstore.GetComplexityAnalyzerConfig(ctx, configStore)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("failed to load complexity analyzer config from store, falling back to configured/default values: %v", err)
+			}
+		} else if cfg != nil {
+			return cfg
+		}
+	}
+	return nil
 }
 
 // UpdateEnforceAuthOnInference updates the enforce auth on inference config
@@ -431,7 +486,7 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		}
 	}
 
-	//1. Apply routing rules only if we have rules or matched decision
+	// 1. Apply routing logic when CEL rules are configured.
 	var routingDecision *RoutingDecision
 	if hasRoutingRules {
 		var err error
@@ -492,7 +547,7 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // The request body is streaming and cannot be modified, so we build a synthetic payload
 // from pre-extracted metadata and run VK validation, routing rules, and load balancing.
 // Any model changes are propagated via the metadata in context (not body rewriting).
-func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, hasRoutingRules bool) (*schemas.HTTPResponse, error) {
+func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, virtualKeyValue *string, shouldEvaluateRouting bool) (*schemas.HTTPResponse, error) {
 	metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
 	if metadata == nil || metadata.Model == "" {
 		return nil, nil
@@ -531,7 +586,7 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	}
 
 	// Apply routing rules (read-only: decisions still affect downstream evaluation)
-	if hasRoutingRules {
+	if shouldEvaluateRouting {
 		var err error
 		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
 		if err != nil {
@@ -995,6 +1050,22 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	// Set up lazy complexity computation — only runs if a rule actually references "complexity_tier"
+	var computeComplexity func() *complexity.ComplexityResult
+	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
+		computeComplexity = func() *complexity.ComplexityResult {
+			if input, ok := buildComplexityInput(ctx, body); ok {
+				result := analyzer.Analyze(input)
+				p.logger.Debug("[Governance] Complexity analysis details: %s", complexity.FormatDebug(result))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, complexity.FormatLog(result))
+				return result
+			}
+			p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, "Complexity analysis skipped: no supported text-bearing input detected")
+			return nil
+		}
+	}
+
 	// Build routing context
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
@@ -1004,6 +1075,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		Headers:                  req.Headers,
 		QueryParams:              req.Query,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		computeComplexity:        computeComplexity,
 	}
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
@@ -1017,7 +1089,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		return body, nil, nil
 	}
 
-	// If a routing rule matched, apply the decision
+	// If a routing decision matched, apply it
 	if decision != nil {
 		p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
 

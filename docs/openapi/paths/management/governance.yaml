@@ -1062,3 +1062,50 @@ pricing-overrides-by-id:
               $ref: '../../schemas/management/common.yaml#/MessageResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Complexity Analyzer Config
+
+complexity:
+  get:
+    operationId: getComplexityAnalyzerConfig
+    summary: Get complexity analyzer config
+    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Complexity analyzer config retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+  put:
+    operationId: updateComplexityAnalyzerConfig
+    summary: Update complexity analyzer config
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+    responses:
+      '200':
+        description: Complexity analyzer config updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

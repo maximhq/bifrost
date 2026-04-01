@@ -39,6 +39,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -1988,6 +1989,25 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
 	}
+
+	// Merge complexity analyzer config — file config stays authoritative when present.
+	if configData.Governance.ComplexityAnalyzerConfig != nil {
+		normalized, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
+		if err != nil {
+			logger.Error("invalid complexity analyzer config in config file: %v — using defaults", err)
+		} else if normalized != nil {
+			current := config.GovernanceConfig.ComplexityAnalyzerConfig
+			config.GovernanceConfig.ComplexityAnalyzerConfig = normalized
+			if current == nil || !reflect.DeepEqual(current, normalized) {
+				if config.ConfigStore != nil {
+					if err := configstore.UpdateComplexityAnalyzerConfig(ctx, config.ConfigStore, normalized); err != nil {
+						logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
+					}
+				}
+			}
+		}
+	}
+
 	// Sync pricing overrides into the model catalog in one batch to avoid
 	// rebuilding the lookup map on every iteration.
 	if config.ModelCatalog != nil {

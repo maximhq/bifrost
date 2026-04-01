@@ -24,14 +24,15 @@ type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
-	virtualKeys  sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
-	teams        sync.Map // string -> *Team (Team ID -> Team)
-	customers    sync.Map // string -> *Customer (Customer ID -> Customer)
-	budgets      sync.Map // string -> *Budget (Budget ID -> Budget)
-	rateLimits   sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
-	modelConfigs sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
-	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
-	routingRules sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	virtualKeys        sync.Map    // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
+	teams              sync.Map    // string -> *Team (Team ID -> Team)
+	customers          sync.Map    // string -> *Customer (Customer ID -> Customer)
+	budgets            sync.Map    // string -> *Budget (Budget ID -> Budget)
+	rateLimits         sync.Map    // string -> *RateLimit (RateLimit ID -> RateLimit)
+	modelConfigs       sync.Map    // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
+	providers          sync.Map    // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	routingRules       sync.Map    // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	users              sync.Map    // string -> *UserGovernance (User ID -> UserGovernance, enterprise-only)
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -1913,6 +1914,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.modelConfigs = sync.Map{}
 	gs.providers = sync.Map{}
 	gs.routingRules = sync.Map{}
+	gs.compiledRoutingPrograms = sync.Map{}
 
 	// Build customers map
 	for i := range customers {
@@ -3254,8 +3256,16 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(ctx context.Context, rule *con
 		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
 	}
 
-	// Create program
-	program, err := gs.routingCELEnv.Program(ast)
+	// Create program. Partial evaluation is only needed for complexity rules,
+	// where routing treats unavailable complexity_tier as unknown instead of
+	// leaking an empty-string sentinel.
+	var program cel.Program
+	var err error
+	if routing.CELAstReferencesIdentifier(ast, "complexity_tier") {
+		program, err = gs.routingCELEnv.Program(ast, cel.EvalOptions(cel.OptPartialEval))
+	} else {
+		program, err = gs.routingCELEnv.Program(ast)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("CEL program creation error: %w", err)
 	}

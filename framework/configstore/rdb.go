@@ -4215,18 +4215,65 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 			}
 		}
 	}
+	complexityAnalyzerConfig, err := GetComplexityAnalyzerConfig(ctx, s)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("failed to load complexity analyzer config from governance_config: %v", err)
+		}
+		complexityAnalyzerConfig = nil
+	}
 	return &GovernanceConfig{
-		VirtualKeys:      virtualKeys,
-		Teams:            teams,
-		Customers:        customers,
-		Budgets:          budgets,
-		RateLimits:       rateLimits,
-		ModelConfigs:     modelConfigs,
-		Providers:        providers,
-		RoutingRules:     routingRules,
-		PricingOverrides: pricingOverrides,
-		AuthConfig:       authConfig,
+		VirtualKeys:              virtualKeys,
+		Teams:                    teams,
+		Customers:                customers,
+		Budgets:                  budgets,
+		RateLimits:               rateLimits,
+		ModelConfigs:             modelConfigs,
+		Providers:                providers,
+		RoutingRules:             routingRules,
+		PricingOverrides:         pricingOverrides,
+		AuthConfig:               authConfig,
+		ComplexityAnalyzerConfig: complexityAnalyzerConfig,
 	}, nil
+}
+
+// GetComplexityAnalyzerConfigRaw retrieves the raw JSON bytes for the complexity
+// analyzer config from governance_config. Returns nil with no error when the key
+// is absent or empty. Callers are responsible for decoding and validating.
+func GetComplexityAnalyzerConfigRaw(ctx context.Context, store ConfigStore) (json.RawMessage, error) {
+	if store == nil {
+		return nil, fmt.Errorf("config store is nil")
+	}
+
+	configEntry, err := store.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry == nil || configEntry.Value == "" {
+		return nil, nil
+	}
+
+	return json.RawMessage(configEntry.Value), nil
+}
+
+// UpdateComplexityAnalyzerConfigRaw upserts raw JSON bytes for the complexity
+// analyzer config into the governance config store. Callers are responsible for
+// normalizing and validating before calling this.
+func UpdateComplexityAnalyzerConfigRaw(ctx context.Context, store ConfigStore, raw json.RawMessage) error {
+	if store == nil {
+		return fmt.Errorf("config store is nil")
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("complexity analyzer config data is empty")
+	}
+
+	return store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: string(raw),
+	})
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
