@@ -177,6 +177,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 											<Button
 												variant="ghost"
 												size="sm"
+												className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
 												onClick={() => setDeleteRuleId(rule.id)}
 												aria-label="Delete routing rule"
 											>
