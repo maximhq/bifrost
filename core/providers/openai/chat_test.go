@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -173,6 +174,7 @@ func TestToOpenAIChatRequest_CachingDeterminism(t *testing.T) {
 }
 
 func TestApplyXAICompatibility(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	tests := []struct {
 		name     string
 		model    string
@@ -474,7 +476,7 @@ func TestApplyXAICompatibility(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Apply the compatibility function
-			tt.request.applyXAICompatibility(tt.model)
+			tt.request.applyXAICompatibility(ctx, tt.model)
 
 			// Validate the results
 			tt.validate(t, tt.request)
