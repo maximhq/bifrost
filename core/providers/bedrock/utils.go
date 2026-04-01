@@ -1017,15 +1017,16 @@ func convertResponseFormatToTool(
 	}, nil
 }
 
-// convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
-func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) *BedrockTool {
+// convertTextFormatToTool converts a Responses text.format config to either a
+// synthetic Bedrock tool or an Anthropic-native output_config.format value.
+func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConfig *schemas.ResponsesTextConfig) (*BedrockTool, any) {
 	if textConfig == nil || textConfig.Format == nil {
-		return nil
+		return nil, nil
 	}
 
 	format := textConfig.Format
 	if format.Type != "json_schema" {
-		return nil
+		return nil, nil
 	}
 
 	toolName := "json_response"
@@ -1041,16 +1042,18 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.Re
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
-	var schemaObj any
-	if format.JSONSchema != nil {
-		schemaObj = *format.JSONSchema
-	} else {
-		return nil // Schema is required for Bedrock tooling
+	if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
+		return nil, nil // Schema is required for structured output
+	}
+	schemaObj := *format.JSONSchema.Schema
+
+	if schemas.IsAnthropicModel(model) {
+		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
 
 	schemaObjBytes2, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
@@ -1060,7 +1063,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.Re
 				JSON: json.RawMessage(schemaObjBytes2),
 			},
 		},
-	}
+	}, nil
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config

@@ -2222,6 +2222,106 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
 
+func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
+
+	outputConfig, ok := schemas.SafeExtractOrderedMap(outputConfigRaw)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format")
+
+	formatMap, ok := schemas.SafeExtractOrderedMap(formatRaw)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+
+	formatType, ok := formatMap.Get("type")
+	require.True(t, ok, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+
+	schemaRaw, ok := formatMap.Get("schema")
+	require.True(t, ok, "expected output_config.format.schema")
+	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
+	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+	require.NotNil(t, schemaMap)
+
+	if bedrockReq.ToolConfig != nil {
+		assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic responses structured output")
+		assert.Empty(t, bedrockReq.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic responses structured output")
+	}
+}
+
+func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/amazon.nova-pro-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic responses structured output")
+
+	require.NotNil(t, bedrockReq.ToolConfig, "expected tool_config for non-anthropic responses structured output")
+	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected synthetic structured output tool to be added")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool choice to target the synthetic structured output tool")
+}
+
 // TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
 // Tests only Responses API.
 func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
