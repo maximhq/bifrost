@@ -3641,7 +3641,7 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 	}
 
 	type bedrockChunk struct {
-		InvokeModelRawChunk []byte `json:"invokeModelRawChunk"`
+		InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks"`
 	}
 
 	var stopCount int
@@ -3655,11 +3655,46 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 		require.NoError(t, err)
 		var chunk bedrockChunk
 		require.NoError(t, json.Unmarshal(raw, &chunk))
-		if len(chunk.InvokeModelRawChunk) > 0 &&
-			strings.Contains(string(chunk.InvokeModelRawChunk), "content_block_stop") {
-			stopCount++
+		for _, rawChunk := range chunk.InvokeModelRawChunks {
+			if strings.Contains(string(rawChunk), "content_block_stop") {
+				stopCount++
+			}
 		}
 	}
 
 	assert.Equal(t, 1, stopCount, "expected exactly one content_block_stop event, got %d", stopCount)
+}
+
+// TestToBedrockInvokeMessagesStreamResponse_MessageStopEmitted verifies that
+// the Completed event emits both message_delta and message_stop events.
+func TestToBedrockInvokeMessagesStreamResponse_MessageStopEmitted(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	model := "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+	// Create a Completed event
+	completedEvent := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			Model: model,
+			Usage: &schemas.ResponsesResponseUsage{
+				OutputTokens: 100,
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{ModelRequested: model},
+	}
+
+	_, result, err := bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, completedEvent)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	bedrockEvent, ok := result.(*bedrock.BedrockStreamEvent)
+	require.True(t, ok, "expected BedrockStreamEvent")
+	require.Len(t, bedrockEvent.InvokeModelRawChunks, 2, "expected two chunks: message_delta and message_stop")
+
+	// First chunk should be message_delta
+	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[0]), "message_delta")
+	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[0]), "stop_reason")
+
+	// Second chunk should be message_stop
+	assert.Contains(t, string(bedrockEvent.InvokeModelRawChunks[1]), "message_stop")
 }

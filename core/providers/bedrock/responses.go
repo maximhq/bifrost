@@ -1302,11 +1302,11 @@ type BedrockInvokeStreamChunkEvent struct {
 func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 	var events []BedrockEncodedEvent
 
-	if event.InvokeModelRawChunk != nil {
+	for _, rawChunk := range event.InvokeModelRawChunks {
 		events = append(events, BedrockEncodedEvent{
 			EventType: "chunk",
 			Payload: BedrockInvokeStreamChunkEvent{
-				Bytes: event.InvokeModelRawChunk,
+				Bytes: rawChunk,
 			},
 		})
 	}
