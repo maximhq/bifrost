@@ -2252,6 +2252,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.AdditionalModelRequestFields, "expected additional model request fields for anthropic responses structured output")
 
 	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
 	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
@@ -2312,8 +2313,10 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
-	_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-	assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic responses structured output")
+	if bedrockReq.AdditionalModelRequestFields != nil {
+		_, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+		assert.False(t, hasOutputConfig, "expected no output_config for non-anthropic responses structured output")
+	}
 
 	require.NotNil(t, bedrockReq.ToolConfig, "expected tool_config for non-anthropic responses structured output")
 	require.NotEmpty(t, bedrockReq.ToolConfig.Tools, "expected synthetic structured output tool to be added")
