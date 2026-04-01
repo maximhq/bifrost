@@ -1,9 +1,0 @@
-- refactor: standardize empty array conventions for VK Provider & MCP Configs, and makes Provider Config weight optional for routing
-- feat: VK MCP config now works as an AllowList
-- refactor: standardize empty array conventions for VK Provider Config Allowed Keys
-- refactor: standardize empty array conventions for allowed models
-- refactor: replace string slices with WhiteList for allowlist fields
-- feat: implement scoped pricing override
-- refactor: custom pricing refactor
-- feat: adds option to allow MCP clients to run on all virtual keys
-- refactor: blacklist models on new convention

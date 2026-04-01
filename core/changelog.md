@@ -1,7 +1,0 @@
-- feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
-- feat: add BifrostContextKeyMCPAddedTools to context to track MCP tools added to the request
-- refactor: standardize empty array conventions in bifrost. Empty array means deny all, ["*"] means allow all for models/tools/keys.
-- feat: add support for request-level extra headers in MCP tool execution using BifrostContextKeyMCPExtraHeaders key in context.
-- fix: send back accumulated usage in MCP agent mode.
-- feat: add StabilityAI provider support to Bedrock.
-- fix: handle text, vtt, srt response formats in OpenAI transcription response.
