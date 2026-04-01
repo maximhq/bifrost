@@ -152,6 +152,9 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
 
+// VK-level budgets don't include calendar_aligned (it's a VK-level field, not per-budget)
+export type VirtualKeyBudgetRequest = Omit<CreateBudgetRequest, "calendar_aligned">;
+
 // Request types for API calls
 export interface CreateVirtualKeyRequest {
 	name: string;
@@ -160,7 +163,7 @@ export interface CreateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budgets?: CreateBudgetRequest[];
+	budgets?: VirtualKeyBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
@@ -173,7 +176,7 @@ export interface UpdateVirtualKeyRequest {
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	team_id?: string;
 	customer_id?: string;
-	budgets?: CreateBudgetRequest[];
+	budgets?: VirtualKeyBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;

@@ -197,18 +197,17 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		}
 		// Cross-reference live budget/rate limit from standalone maps
 		// (usage updates clone into budgets/rateLimits maps, so embedded pointers go stale)
-		clone := *vk
 		// Hydrate multi-budgets from live sync.Map
-		if len(clone.Budgets) > 0 {
-			liveBudgets := make([]configstoreTables.TableBudget, 0, len(clone.Budgets))
-			for _, b := range clone.Budgets {
+		if len(vk.Budgets) > 0 {
+			liveBudgets := make([]configstoreTables.TableBudget, 0, len(vk.Budgets))
+			for _, b := range vk.Budgets {
 				if lb, exists := gs.budgets.Load(b.ID); exists && lb != nil {
 					if budget, ok := lb.(*configstoreTables.TableBudget); ok {
 						liveBudgets = append(liveBudgets, *budget)
 					}
 				}
 			}
-			clone.Budgets = liveBudgets
+			vk.Budgets = liveBudgets
 		}
 		if vk.RateLimitID != nil {
 			if liveRL, exists := gs.rateLimits.Load(*vk.RateLimitID); exists && liveRL != nil {

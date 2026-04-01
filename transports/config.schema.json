@@ -1555,10 +1555,7 @@
           "default": "global"
         },
         "scope_id": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": "string",
           "description": "Entity ID for non-global scopes (required for non-global scope)"
         },
         "priority": {
@@ -1577,7 +1574,32 @@
         "name",
         "targets"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "scope": {
+            "enum": [
+              "team",
+              "customer",
+              "virtual_key"
+            ]
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "required": [
+          "scope_id"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     },
     "virtual_key_provider_config": {
       "type": "object",

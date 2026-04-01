@@ -208,7 +208,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 		}
 	}
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail when VK budget exceeds limit")
+	require.Error(t, err, "Should fail when VK budget exceeds limit")
 }
 
 // TestGovernanceStore_MultiBudget_AllUnderLimit tests that requests pass when all budgets are under their limits
@@ -259,7 +259,7 @@ func TestGovernanceStore_MultiBudget_SmallBudgetExceeded(t *testing.T) {
 
 	vk, _ = store.GetVirtualKey("sk-bf-test")
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail when hourly budget is exceeded even though daily is fine")
+	require.Error(t, err, "Should fail when hourly budget is exceeded even though daily is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
@@ -285,7 +285,7 @@ func TestGovernanceStore_MultiBudget_LargeBudgetExceeded(t *testing.T) {
 
 	vk, _ = store.GetVirtualKey("sk-bf-test")
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail when daily budget is exceeded even though hourly is fine")
+	require.Error(t, err, "Should fail when daily budget is exceeded even though hourly is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
@@ -335,7 +335,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 
 	// Now CheckBudget should fail (hourly exceeded)
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail after usage exceeds hourly budget")
+	require.Error(t, err, "Should fail after usage exceeds hourly budget")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
@@ -361,7 +361,7 @@ func TestGovernanceStore_MultiBudget_ProviderConfigBudgets(t *testing.T) {
 
 	vk, _ = store.GetVirtualKey("sk-bf-test")
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail when provider config hourly budget is exceeded")
+	require.Error(t, err, "Should fail when provider config hourly budget is exceeded")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
@@ -392,7 +392,7 @@ func TestGovernanceStore_MultiBudget_VKAndProviderConfigCombined(t *testing.T) {
 
 	// Provider config budget exceeded → should block even though VK budget is fine
 	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
-	assert.Error(t, err, "Should fail: provider config budget exceeded even though VK budget is fine")
+	require.Error(t, err, "Should fail: provider config budget exceeded even though VK budget is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 

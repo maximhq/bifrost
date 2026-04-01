@@ -207,9 +207,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
+								token_max_limit:
+									config.rate_limit.token_max_limit === undefined || config.rate_limit.token_max_limit === null
+										? undefined
+										: String(config.rate_limit.token_max_limit),
 								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
+								request_max_limit:
+									config.rate_limit.request_max_limit === undefined || config.rate_limit.request_max_limit === null
+										? undefined
+										: String(config.rate_limit.request_max_limit),
 								request_reset_duration: config.rate_limit.request_reset_duration,
 							}
 						: undefined,
@@ -915,25 +921,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		: []
 																}
 																onChange={(lines) => {
-																	if (lines.length === 0) {
-																		handleUpdateProviderConfig(index, "budget", undefined);
-																		handleUpdateProviderConfig(index, "budgets", []);
-																	} else {
-																		// Legacy single budget field = first line
-																		handleUpdateProviderConfig(index, "budget", {
-																			max_limit: lines[0].max_limit,
-																			reset_duration: lines[0].reset_duration,
-																		});
-																		// All lines in budgets array
-																		handleUpdateProviderConfig(
-																			index,
-																			"budgets",
-																			lines.map((l) => ({
-																				max_limit: l.max_limit,
-																				reset_duration: l.reset_duration,
-																			})),
-																		);
-																	}
+																	const updatedConfigs = [...providerConfigs];
+																	updatedConfigs[index] = {
+																		...updatedConfigs[index],
+																		budgets: lines.map((l) => ({
+																			max_limit: l.max_limit,
+																			reset_duration: l.reset_duration,
+																		})),
+																	};
+																	form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
 																}}
 															/>
 
@@ -1200,7 +1196,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 							<div className="space-y-4">
 								<MultiBudgetLines
 									id="vkBudget"
-									data-testid="vk-budget"
+									data-testid="vk-budget-lines"
 									label="Budget Configuration"
 									lines={form.watch("budgets") ?? []}
 									onChange={(lines) => {

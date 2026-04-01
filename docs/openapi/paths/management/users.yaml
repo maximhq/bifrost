@@ -11,12 +11,15 @@ users:
         description: Page number (1-based)
         schema:
           type: integer
+          minimum: 1
           default: 1
       - name: limit
         in: query
         description: Number of users per page (max 100)
         schema:
           type: integer
+          minimum: 1
+          maximum: 100
           default: 20
       - name: search
         in: query
