@@ -71,6 +71,11 @@ type BifrostImageGenerationResponse struct {
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
 
+	// Backfill Model if not returned by the provider
+	if r.Model == "" {
+		r.Model = getModelFromRequest(req)
+	}
+
 	// Backfill NumInputImages
 	if numInputImages > 0 {
 		if r.Usage == nil {
@@ -94,6 +99,22 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.Quality = quality
 	}
+}
+
+// getModelFromRequest extracts the model from any image-related request.
+func getModelFromRequest(req *BifrostRequest) string {
+	if req == nil {
+		return ""
+	}
+	switch {
+	case req.ImageGenerationRequest != nil:
+		return req.ImageGenerationRequest.Model
+	case req.ImageEditRequest != nil:
+		return req.ImageEditRequest.Model
+	case req.ImageVariationRequest != nil:
+		return req.ImageVariationRequest.Model
+	}
+	return ""
 }
 
 // getNumInputImagesSizeAndQualityFromRequest extracts request params for cost calculation.

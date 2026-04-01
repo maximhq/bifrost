@@ -221,10 +221,16 @@ type CreateVirtualKeyRequest struct {
 type ProviderConfigRequest struct {
 	ID            *uint                   `json:"id,omitempty"`
 	Provider      string                  `json:"provider"`
-	Weight        float64                 `json:"weight,omitempty"`
+	Weight        *float64                `json:"weight,omitempty"`
 	AllowedModels []string                `json:"allowed_models,omitempty"`
+	KeyIDs        []string                `json:"key_ids,omitempty"`
 	Budget        *BudgetRequest          `json:"budget,omitempty"`
 	RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// float64Ptr returns a pointer to a float64 value
+func float64Ptr(v float64) *float64 {
+	return &v
 }
 
 // BudgetRequest represents a budget request

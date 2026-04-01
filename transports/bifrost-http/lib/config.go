@@ -3673,7 +3673,7 @@ func (c *Config) autoDetectProviders(ctx context.Context) {
 							ID:     keyID,
 							Name:   fmt.Sprintf("%s_auto_detected", envVar),
 							Value:  *schemas.NewEnvVar(apiKey),
-							Models: []string{}, // Empty means all supported models
+							Models: schemas.WhiteList{"*"},
 							Weight: 1.0,
 						},
 					},
