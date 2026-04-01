@@ -219,10 +219,10 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig_Passthrough(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Should return BedrockStreamEvent with InvokeModelRawChunk containing the raw JSON
+	// Should return BedrockStreamEvent with InvokeModelRawChunks containing the raw JSON
 	bedrockEvent, ok := result.(*bedrock.BedrockStreamEvent)
 	require.True(t, ok, "Expected *bedrock.BedrockStreamEvent, got %T", result)
-	assert.Equal(t, []byte(rawJSON), bedrockEvent.InvokeModelRawChunk)
+	assert.Equal(t, [][]byte{[]byte(rawJSON)}, bedrockEvent.InvokeModelRawChunks)
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig_FallbackConversion(t *testing.T) {

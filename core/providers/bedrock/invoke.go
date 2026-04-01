@@ -612,7 +612,7 @@ func toBedrockInvokeAI21Response(resp *schemas.BifrostResponsesResponse) *Bedroc
 }
 
 // ToBedrockInvokeMessagesStreamResponse converts a Bifrost Responses stream event to
-// a BedrockStreamEvent with InvokeModelRawChunk for the invoke-with-response-stream endpoint.
+// a BedrockStreamEvent with InvokeModelRawChunks for the invoke-with-response-stream endpoint.
 func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 	if resp == nil {
 		return "", nil, fmt.Errorf("bifrost stream response is nil")
