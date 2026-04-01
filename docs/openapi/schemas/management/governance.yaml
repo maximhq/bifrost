@@ -405,6 +405,16 @@ ListTeamsResponse:
         $ref: '#/Team'
     count:
       type: integer
+      description: Number of teams returned in this response
+    total_count:
+      type: integer
+      description: Total number of teams matching the active filters
+    limit:
+      type: integer
+      description: Applied page size
+    offset:
+      type: integer
+      description: Applied page offset
 
 TeamResponse:
   type: object
@@ -474,6 +484,16 @@ ListCustomersResponse:
         $ref: '#/Customer'
     count:
       type: integer
+      description: Number of customers returned in this response
+    total_count:
+      type: integer
+      description: Total number of customers matching the active filters
+    limit:
+      type: integer
+      description: Applied page size
+    offset:
+      type: integer
+      description: Applied page offset
 
 ListBudgetsResponse:
   type: object
@@ -809,7 +829,16 @@ ListRoutingRulesResponse:
         $ref: '#/RoutingRule'
     count:
       type: integer
-      description: Number of routing rules returned
+      description: Number of routing rules returned in this response
+    total_count:
+      type: integer
+      description: Total number of routing rules matching the active filters
+    limit:
+      type: integer
+      description: Applied page size
+    offset:
+      type: integer
+      description: Applied page offset
 
 # Model Configs
 
@@ -860,7 +889,16 @@ ListModelConfigsResponse:
         $ref: '#/ModelConfig'
     count:
       type: integer
-      description: Number of model configs returned
+      description: Number of model configs returned in this response
+    total_count:
+      type: integer
+      description: Total number of model configs matching the active filters
+    limit:
+      type: integer
+      description: Applied page size
+    offset:
+      type: integer
+      description: Applied page offset
 
 CreateModelConfigRequest:
   type: object

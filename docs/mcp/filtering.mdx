@@ -461,20 +461,29 @@ Client Config Tools ∩ Request Filters ∩ VK Filters = Available Tools
 **Gateway API:**
 ```bash
 curl http://localhost:8080/api/mcp/clients
+
+# Search by client name with pagination
+curl "http://localhost:8080/api/mcp/clients?search=file&limit=25&offset=0"
 ```
 
 **Response shows tools per client:**
 ```json
-[
-  {
-    "config": { "name": "filesystem", "tools_to_execute": ["read_file", "write_file"] },
-    "tools": [
-      { "name": "read_file", "description": "Read file contents" },
-      { "name": "write_file", "description": "Write to file" }
-    ],
-    "state": "connected"
-  }
-]
+{
+  "clients": [
+    {
+      "config": { "name": "filesystem", "tools_to_execute": ["read_file", "write_file"] },
+      "tools": [
+        { "name": "read_file", "description": "Read file contents" },
+        { "name": "write_file", "description": "Write to file" }
+      ],
+      "state": "connected"
+    }
+  ],
+  "count": 1,
+  "total_count": 2,
+  "limit": 25,
+  "offset": 0
+}
 ```
 
 ### Check What LLM Receives
