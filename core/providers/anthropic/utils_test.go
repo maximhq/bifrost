@@ -1,9 +1,12 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -890,6 +893,46 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 		betaHeaders := extraHeaders[AnthropicBetaHeader]
 		if len(betaHeaders) != 1 || betaHeaders[0] != AnthropicMCPClientBetaHeader {
 			t.Errorf("expected [%q], got %v", AnthropicMCPClientBetaHeader, betaHeaders)
+		}
+	})
+}
+
+func TestMergeBetaHeaders(t *testing.T) {
+	t.Run("context_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"Anthropic-Beta": {"structured-outputs-2025-11-13"},
+		})
+		got := MergeBetaHeaders(nil, ctx)
+		want := []string{"structured-outputs-2025-11-13"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		got := MergeBetaHeaders(map[string]string{
+			"Anthropic-Beta": "mcp-client-2025-04-04",
+		}, ctx)
+		want := []string{"mcp-client-2025-04-04"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("merges_provider_then_context_deduping_tokens", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
+		})
+		got := MergeBetaHeaders(map[string]string{
+			"anthropic-beta": "foo",
+		}, ctx)
+		sort.Strings(got)
+		wantSorted := []string{"bar", "baz", "foo"}
+		if !slices.Equal(got, wantSorted) {
+			t.Fatalf("got %v, want %v", got, wantSorted)
 		}
 	})
 }
