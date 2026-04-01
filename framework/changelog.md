@@ -1,0 +1,9 @@
+- feat: add provider keys CRUD to configstore and in-memory store
+- feat: add virtual key access management for MCP clients
+- feat: adds option to allow MCP clients to run on all virtual keys
+- feat: add image edit input view on logs
+- refactor: replace string slice with WhiteList type for model restrictions
+- refactor: blacklist models on new convention
+- fix: add blacklisted model field in tableKeyFromSchemaKey
+- feat: logging in plugins
+- chore: adds migration guide for 1.5 and test fixes

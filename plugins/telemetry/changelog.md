@@ -1,0 +1,2 @@
+- feat: implement scoped pricing override
+- refactor: custom pricing refactor
