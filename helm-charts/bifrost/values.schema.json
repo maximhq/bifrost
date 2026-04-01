@@ -376,6 +376,10 @@
             "hideDeletedVirtualKeysInFilters": {
               "type": "boolean",
               "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data"
+            },
+            "mcpDisableAutoToolInject": {
+              "type": "boolean",
+              "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers."
             }
           },
           "additionalProperties": false
@@ -449,6 +453,11 @@
                   "type": "string",
                   "enum": ["server", "tool"],
                   "description": "How tools are exposed in VFS for code execution"
+                },
+                "disableAutoToolInject": {
+                  "type": "boolean",
+                  "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified.",
+                  "default": false
                 }
               }
             },
@@ -910,6 +919,11 @@
                   "last_reset": {
                     "type": "string",
                     "format": "date-time"
+                  },
+                  "calendar_aligned": {
+                    "type": "boolean",
+                    "description": "Snap resets to calendar boundaries (day/week/month/year start)",
+                    "default": false
                   }
                 },
                 "required": [
@@ -1212,6 +1226,40 @@
                   "store_raw_request_response": { "type": "boolean" }
                 },
                 "required": ["name"]
+              }
+            },
+            "pricingOverrides": {
+              "type": "array",
+              "description": "Scoped pricing overrides applied at runtime by the model catalog",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "description": "Unique pricing override ID" },
+                  "name": { "type": "string", "description": "Human-readable name for this override" },
+                  "scope_kind": {
+                    "type": "string",
+                    "enum": ["global", "provider", "provider_key", "virtual_key", "virtual_key_provider", "virtual_key_provider_key"],
+                    "description": "Scope level for this override"
+                  },
+                  "virtual_key_id": { "type": "string", "description": "Virtual key ID (required for virtual_key* scopes)" },
+                  "provider_id": { "type": "string", "description": "Provider ID (required for provider* scopes)" },
+                  "provider_key_id": { "type": "string", "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)" },
+                  "match_type": {
+                    "type": "string",
+                    "enum": ["exact", "wildcard"],
+                    "description": "How the pattern is matched against model names"
+                  },
+                  "pattern": { "type": "string", "description": "Model name pattern to match" },
+                  "request_types": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" },
+                    "description": "Request types this override applies to"
+                  },
+                  "pricing_patch": { "type": "string", "description": "JSON-encoded pricing fields to override" },
+                  "config_hash": { "type": "string", "description": "Internal hash for change detection (auto-managed)" }
+                },
+                "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
             }
           },
@@ -1597,6 +1645,54 @@
             },
             "hmacKey": {
               "type": "string"
+            }
+          }
+        },
+        "websocket": {
+          "type": "object",
+          "description": "Optional tuning for the WebSocket gateway (Responses API WebSocket Mode, Realtime API)",
+          "properties": {
+            "maxConnectionsPerUser": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum concurrent WebSocket connections per user",
+              "default": 100
+            },
+            "transcriptBufferSize": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of transcript entries to buffer for Realtime API mid-session fallback",
+              "default": 100
+            },
+            "pool": {
+              "type": "object",
+              "description": "Upstream WebSocket connection pool configuration",
+              "properties": {
+                "maxIdlePerKey": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum idle connections per provider/key combination",
+                  "default": 50
+                },
+                "maxTotalConnections": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum total idle connections across all providers",
+                  "default": 1000
+                },
+                "idleTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Seconds before an idle connection is evicted",
+                  "default": 600
+                },
+                "maxConnectionLifetimeSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum lifetime of a connection in seconds",
+                  "default": 7200
+                }
+              }
             }
           }
         }
@@ -2513,6 +2609,11 @@
           "minimum": 1,
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "beta_header_overrides": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes, values are true (supported) or false (unsupported)."
         }
       }
     },
@@ -2676,6 +2777,16 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "allowedExtraHeaders": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Allowlist of request-level headers that callers may forward to this MCP server. Use ['*'] to allow all headers."
+        },
+        "allowOnAllVirtualKeys": {
+          "type": "boolean",
+          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",
+          "default": false
         }
       },
       "required": [
@@ -2831,7 +2942,6 @@
                     "description": "Azure API version"
                   }
                 },
-                "required": ["endpoint"],
                 "additionalProperties": false
               },
               "vertex_key_config": {
@@ -2861,7 +2971,6 @@
                     "description": "Model to deployment mappings"
                   }
                 },
-                "required": ["project_id", "region"],
                 "additionalProperties": false
               },
               "bedrock_key_config": {
@@ -2909,10 +3018,6 @@
                     "description": "Exact model name served on this VLLM instance"
                   }
                 },
-                "required": [
-                  "url",
-                  "model_name"
-                ],
                 "additionalProperties": false
               }
             },
@@ -2967,8 +3072,7 @@
                   ]
                 }
               }
-            ],
-            "required": ["key_id", "name", "value"]
+            ]
           }
         }
       },

@@ -281,6 +281,9 @@ false
 {{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
 {{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
+{{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Framework */ -}}
@@ -354,6 +357,9 @@ false
 {{- if .Values.bifrost.governance.providers }}
 {{- $_ := set $governance "providers" .Values.bifrost.governance.providers }}
 {{- end }}
+{{- if .Values.bifrost.governance.pricingOverrides }}
+{{- $_ := set $governance "pricing_overrides" .Values.bifrost.governance.pricingOverrides }}
+{{- end }}
 {{- if .Values.bifrost.governance.authConfig }}
 {{- $authConfig := dict }}
 {{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.usernameKey }}
@@ -376,7 +382,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.pricing_overrides $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -667,6 +673,10 @@ false
 {{- if and (eq $client.connectionType "websocket") $client.websocketConfig }}
 {{- $_ := set $cc "connection_string" $client.websocketConfig.url }}
 {{- end }}
+{{- /* Map connectionString for SSE connections */ -}}
+{{- if and (eq $client.connectionType "sse") $client.connectionString }}
+{{- $_ := set $cc "connection_string" $client.connectionString }}
+{{- end }}
 {{- /* Map stdioConfig -> stdio_config */ -}}
 {{- if $client.stdioConfig }}
 {{- $stdio := dict "command" $client.stdioConfig.command }}
@@ -709,6 +719,12 @@ false
 {{- if $client.toolPricing }}
 {{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
+{{- if $client.allowedExtraHeaders }}
+{{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
+{{- end }}
+{{- if hasKey $client "allowOnAllVirtualKeys" }}
+{{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
+{{- end }}
 {{- $clientConfigs = append $clientConfigs $cc }}
 {{- end }}
 {{- $mcpConfig := dict "client_configs" $clientConfigs }}
@@ -722,6 +738,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
 {{- $_ := set $tmConfig "code_mode_binding_level" .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "disableAutoToolInject" }}
+{{- $_ := set $tmConfig "disable_auto_tool_inject" .Values.bifrost.mcp.toolManagerConfig.disableAutoToolInject }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
@@ -898,6 +917,37 @@ false
 {{- end }}
 {{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key }}
 {{- $_ := set $config "audit_logs" $auditLogs }}
+{{- end }}
+{{- end }}
+{{- /* WebSocket Config */ -}}
+{{- if .Values.bifrost.websocket }}
+{{- $ws := dict }}
+{{- if .Values.bifrost.websocket.maxConnectionsPerUser }}
+{{- $_ := set $ws "max_connections_per_user" .Values.bifrost.websocket.maxConnectionsPerUser }}
+{{- end }}
+{{- if .Values.bifrost.websocket.transcriptBufferSize }}
+{{- $_ := set $ws "transcript_buffer_size" .Values.bifrost.websocket.transcriptBufferSize }}
+{{- end }}
+{{- if .Values.bifrost.websocket.pool }}
+{{- $pool := dict }}
+{{- if .Values.bifrost.websocket.pool.maxIdlePerKey }}
+{{- $_ := set $pool "max_idle_per_key" .Values.bifrost.websocket.pool.maxIdlePerKey }}
+{{- end }}
+{{- if .Values.bifrost.websocket.pool.maxTotalConnections }}
+{{- $_ := set $pool "max_total_connections" .Values.bifrost.websocket.pool.maxTotalConnections }}
+{{- end }}
+{{- if .Values.bifrost.websocket.pool.idleTimeoutSeconds }}
+{{- $_ := set $pool "idle_timeout_seconds" .Values.bifrost.websocket.pool.idleTimeoutSeconds }}
+{{- end }}
+{{- if .Values.bifrost.websocket.pool.maxConnectionLifetimeSeconds }}
+{{- $_ := set $pool "max_connection_lifetime_seconds" .Values.bifrost.websocket.pool.maxConnectionLifetimeSeconds }}
+{{- end }}
+{{- if $pool }}
+{{- $_ := set $ws "pool" $pool }}
+{{- end }}
+{{- end }}
+{{- if $ws }}
+{{- $_ := set $config "websocket" $ws }}
 {{- end }}
 {{- end }}
 {{- $config | toJson }}
