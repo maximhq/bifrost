@@ -395,8 +395,6 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	if err := Unmarshal(data, &jsonStr); err == nil {
 		data = []byte(jsonStr)
 	}
-	trimmed := bytes.TrimSpace(data)
-
 	type Alias ToolFunctionParameters
 	var temp Alias
 	if err := Unmarshal(data, &temp); err != nil {
@@ -411,7 +409,8 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 		t.AdditionalProperties = nil
 	}
 
-	t.explicitEmptyObject = bytes.Equal(trimmed, []byte("{}"))
+	var rawObject map[string]interface{}
+	t.explicitEmptyObject = Unmarshal(data, &rawObject) == nil && len(rawObject) == 0
 	t.keyOrder.Capture(data)
 	return nil
 }

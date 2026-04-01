@@ -795,6 +795,20 @@ func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
 	assert.Equal(t, `{}`, string(normalized))
 }
 
+func TestToolFunctionParameters_ExplicitEmptyObjectWhitespacePreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(` { } `), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(normalized))
+}
+
 func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	var params ToolFunctionParameters
 	err := Unmarshal([]byte(`{"type":"object","properties":{}}`), &params)
