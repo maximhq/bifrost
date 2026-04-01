@@ -1500,13 +1500,13 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
 							summary = summaryValue
 						}
+						var (
+							effortStr string
+							found     bool
+						)
 						// Check for native output_config.effort first.
 						// output_config may be preserved as OrderedMap by the merge path.
 						if outputConfig, ok := request.AdditionalModelRequestFields.Get("output_config"); ok {
-							var (
-								effortStr string
-								found     bool
-							)
 							if outputConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(outputConfig); ok && outputConfigOrderedMap != nil {
 								if effortValue, exists := outputConfigOrderedMap.Get("effort"); exists {
 									effortStr, found = schemas.SafeExtractString(effortValue)
@@ -1514,16 +1514,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
 								effortStr, found = schemas.SafeExtractString(outputConfigMap["effort"])
 							}
-							if found {
-								var maxTokens *int
-								if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
-									maxTokens = schemas.Ptr(budgetTokens)
-								}
-								bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
-									Effort:    schemas.Ptr(effortStr),
-									MaxTokens: maxTokens,
-									Summary:   summary,
-								}
+						}
+						if found {
+							var maxTokens *int
+							if budgetTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
+								maxTokens = schemas.Ptr(budgetTokens)
+							}
+							bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+								Effort:    schemas.Ptr(effortStr),
+								MaxTokens: maxTokens,
+								Summary:   summary,
 							}
 						} else if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
 							// Fallback: convert budget_tokens to effort
@@ -1682,6 +1682,8 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 	}
+
+	var responsesStructuredOutputTool *BedrockTool
 
 	// Map basic parameters to inference config
 	if bifrostReq.Params != nil {
@@ -1844,18 +1846,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
 				}
-				// append to bedrockTools
+				// Defer synthetic tool injection until after normal tool/tool_choice conversion
+				// so the structured-output tool is not overwritten by the later pass.
 				if responseFormatTool != nil {
-					if bedrockReq.ToolConfig == nil {
-						bedrockReq.ToolConfig = &BedrockToolConfig{}
-					}
-					bedrockReq.ToolConfig.Tools = append(bedrockReq.ToolConfig.Tools, *responseFormatTool)
-					// Force the model to use this specific tool (same as ChatCompletion)
-					bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-						Tool: &BedrockToolChoiceTool{
-							Name: responseFormatTool.ToolSpec.Name,
-						},
-					}
+					responsesStructuredOutputTool = responseFormatTool
 				}
 			}
 		}
@@ -1973,6 +1967,20 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				bedrockReq.ToolConfig = &BedrockToolConfig{}
 			}
 			bedrockReq.ToolConfig.ToolChoice = bedrockToolChoice
+		}
+	}
+
+	// If text.format was converted to a synthetic tool, inject it after the normal
+	// tool/tool_choice pass so it is not overwritten by the above conversion.
+	if responsesStructuredOutputTool != nil {
+		if bedrockReq.ToolConfig == nil {
+			bedrockReq.ToolConfig = &BedrockToolConfig{}
+		}
+		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responsesStructuredOutputTool}, bedrockReq.ToolConfig.Tools...)
+		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+			Tool: &BedrockToolChoiceTool{
+				Name: responsesStructuredOutputTool.ToolSpec.Name,
+			},
 		}
 	}
 

@@ -2325,6 +2325,70 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 	assert.Contains(t, bedrockReq.ToolConfig.ToolChoice.Tool.Name, "bf_so_", "expected forced tool choice to target the synthetic structured output tool")
 }
 
+func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
+	schemaObj := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		)),
+		schemas.KV("required", []string{"topic"}),
+	))
+
+	toolParams := schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "string"),
+			)),
+		),
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/amazon.nova-pro-v1:0",
+		Params: &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: schemas.Ptr("classification"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Schema: &schemaObj,
+					},
+				},
+			},
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:        schemas.ResponsesToolTypeFunction,
+					Name:        schemas.Ptr("get_weather"),
+					Description: schemas.Ptr("Get weather information"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &toolParams,
+					},
+				},
+			},
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+	require.NotNil(t, bedrockReq.ToolConfig, "expected tool_config to be initialized")
+	require.Len(t, bedrockReq.ToolConfig.Tools, 2, "expected synthetic structured output tool plus user tool")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice, "expected structured output tool choice to be forced")
+	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected structured output tool choice to target the synthetic tool")
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	assert.Equal(t, "bf_so_classification", bedrockReq.ToolConfig.Tools[0].ToolSpec.Name)
+	assert.Equal(t, "get_weather", bedrockReq.ToolConfig.Tools[1].ToolSpec.Name)
+}
+
 // TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
 // Tests only Responses API.
 func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
@@ -3031,6 +3095,52 @@ func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
 	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
 }
 
+func TestAnthropicOutputConfigFormatStillFallsBackToBudgetTokensForReasoning(t *testing.T) {
+	request := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-opus-4-6-v1",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+		AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+			schemas.KV("thinking", map[string]any{
+				"type":          "adaptive",
+				"budget_tokens": 2048,
+			}),
+			schemas.KV("output_config", schemas.NewOrderedMapFromPairs(
+				schemas.KV("format", schemas.NewOrderedMapFromPairs(
+					schemas.KV("type", "json_schema"),
+					schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "object"),
+					)),
+				)),
+			)),
+		),
+		ExtraParams: map[string]any{
+			"reasoning_summary": "auto",
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := request.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.Reasoning)
+	require.NotNil(t, result.Params.Reasoning.Effort)
+	assert.Equal(t, "medium", *result.Params.Reasoning.Effort)
+	require.NotNil(t, result.Params.Reasoning.MaxTokens)
+	assert.Equal(t, 2048, *result.Params.Reasoning.MaxTokens)
+	require.NotNil(t, result.Params.Reasoning.Summary)
+	assert.Equal(t, "auto", *result.Params.Reasoning.Summary)
+}
+
 // TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice ensures
 // Anthropic Bedrock structured output uses native output_config.format and does
 // not synthesize a forced tool choice, while keeping reasoning (thinking) active.
@@ -3102,6 +3212,7 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	// structured output should NOT force tool choice on Bedrock anthropic
 	if result.ToolConfig != nil {
 		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
+		assert.Empty(t, result.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic structured output")
 	}
 }
 
