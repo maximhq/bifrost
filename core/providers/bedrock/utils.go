@@ -1039,9 +1039,6 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 		description = *format.JSONSchema.Description
 	}
 
-	toolName = fmt.Sprintf("bf_so_%s", toolName)
-	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
-
 	if format.JSONSchema == nil || format.JSONSchema.Schema == nil {
 		return nil, nil // Schema is required for structured output
 	}
@@ -1050,6 +1047,9 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	if schemas.IsAnthropicModel(model) {
 		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
+
+	toolName = fmt.Sprintf("bf_so_%s", toolName)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
 	schemaObjBytes2, err := providerUtils.MarshalSorted(schemaObj)
 	if err != nil {
