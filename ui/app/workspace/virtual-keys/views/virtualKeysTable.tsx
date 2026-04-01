@@ -336,6 +336,7 @@ export default function VirtualKeysTable({
 															<Button
 																variant="ghost"
 																size="sm"
+																className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
 																onClick={(e) => e.stopPropagation()}
 																disabled={!hasDeleteAccess}
 																data-testid={`vk-delete-btn-${vk.name}`}
@@ -353,7 +354,7 @@ export default function VirtualKeysTable({
 															</AlertDialogHeader>
 															<AlertDialogFooter>
 																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting}>
+																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
 																	{isDeleting ? "Deleting..." : "Delete"}
 																</AlertDialogAction>
 															</AlertDialogFooter>

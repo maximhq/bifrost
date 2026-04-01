@@ -247,6 +247,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															Edit
 														</DropdownMenuItem>
 														<DropdownMenuItem
+															variant="destructive"
 															onClick={() => {
 																setShowDeleteKeyDialog({ show: true, keyId: key.id });
 															}}
