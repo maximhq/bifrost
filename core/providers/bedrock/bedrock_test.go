@@ -15,7 +15,10 @@ import (
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("mustMarshalJSON: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -40,7 +43,10 @@ func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...int
 // mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
 // matching the conversion code path for deterministic output.
 func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
-	b, _ := json.Marshal(params)
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic("mustMarshalToolParams: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 

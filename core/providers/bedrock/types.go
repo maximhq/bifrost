@@ -597,7 +597,10 @@ type BedrockStreamEvent struct {
 	AdditionalModelResponseFields interface{} `json:"additionalModelResponseFields,omitempty"`
 
 	// For InvokeModelWithResponseStream (Legacy API)
-	InvokeModelRawChunk []byte `json:"invokeModelRawChunk,omitempty"` // Raw bytes for legacy invoke stream
+	// InvokeModelRawChunks holds one or more raw byte payloads for legacy invoke stream.
+	// Multiple chunks are needed when a single Bifrost event maps to multiple Anthropic SSE events
+	// (e.g., Completed → message_delta + message_stop).
+	InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks,omitempty"`
 }
 
 // BedrockMessageStartEvent indicates the start of a message
