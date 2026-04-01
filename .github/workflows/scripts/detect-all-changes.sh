@@ -47,8 +47,8 @@ else
   else
     if [[ "$CORE_VERSION" == *"-"* ]]; then
       # current_version has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V)      
-      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')      
+      ALL_TAGS=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V)
+      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
       PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
       if [ -n "$STABLE_TAGS" ]; then
         # Get the highest stable version
@@ -61,7 +61,7 @@ else
       fi
     else
       # VERSION has no prerelease, so only consider stable releases in same track
-      LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1)
+      LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1 || true)
       echo "latest core tag (stable only): $LATEST_CORE_TAG"
     fi
     PREVIOUS_CORE_VERSION=${LATEST_CORE_TAG#core/v}
@@ -89,7 +89,7 @@ else
   echo "   🔍 Checking track: ${FRAMEWORK_MAJOR_MINOR}.x"
   
   ALL_TAGS=$(git tag -l "framework/v${FRAMEWORK_MAJOR_MINOR}.*" | sort -V)
-  STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')
+  STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
   PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
   LATEST_FRAMEWORK_TAG=""
   if [ -n "$STABLE_TAGS" ]; then

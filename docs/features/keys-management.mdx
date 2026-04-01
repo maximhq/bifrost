@@ -29,25 +29,28 @@ This ensures optimal key usage while respecting your configuration constraints.
 <Tab title="Gateway">
 
 ```bash
-# Configure multiple keys with weights via API
+# 1. Create or ensure the provider exists
 curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
+  -d '{ "provider": "openai" }'
+
+# 2. Add keys individually via the dedicated keys API
+curl -X POST http://localhost:8080/api/providers/openai/keys \
+  -H "Content-Type: application/json" \
   -d '{
-    "provider": "openai",
-    "keys": [
-      {
-        "name": "openai-key-1",
-        "value": "env.OPENAI_API_KEY_1",
-        "models": ["gpt-4o", "gpt-4o-mini"],
-        "weight": 0.7
-      },
-      {
-        "name": "openai-key-2",
-        "value": "env.OPENAI_API_KEY_2", 
-        "models": ["*"],
-        "weight": 0.3
-      }
-    ]
+    "name": "openai-key-1",
+    "value": "env.OPENAI_API_KEY_1",
+    "models": ["gpt-4o", "gpt-4o-mini"],
+    "weight": 0.7
+  }'
+
+curl -X POST http://localhost:8080/api/providers/openai/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "openai-key-2",
+    "value": "env.OPENAI_API_KEY_2",
+    "models": ["*"],
+    "weight": 0.3
   }'
 
 # Regular request (uses weighted key selection)
@@ -174,29 +177,33 @@ Keys can be restricted to specific models for access control and cost management
 - **Denylist**: Block specific models on a key
 
 **Example Model Restrictions:**
+
+Each key is created individually via `POST /api/providers/{provider}/keys`:
+
 ```json
+// Premium-only key
 {
-  "keys": [
-    {
-      "name": "openai-pre-key-1",
-      "value": "premium-key",
-      "models": ["gpt-4o", "o1-preview"],  // Only premium models
-      "weight": 1.0
-    },
-    {
-      "name": "openai-std-key-1",
-      "value": "standard-key", 
-      "models": ["gpt-4o-mini", "gpt-3.5-turbo"], // Only standard models
-      "weight": 1.0
-    },
-    {
-      "name": "openai-shared-key",
-      "value": "env.OPENAI_API_KEY",
-      "models": ["gpt-4o", "gpt-4o-mini"],
-      "blacklisted_models": ["gpt-5"],
-      "weight": 1.0
-    }
-  ]
+  "name": "openai-pre-key-1",
+  "value": "premium-key",
+  "models": ["gpt-4o", "o1-preview"],
+  "weight": 1.0
+}
+
+// Standard-only key
+{
+  "name": "openai-std-key-1",
+  "value": "standard-key",
+  "models": ["gpt-4o-mini", "gpt-3.5-turbo"],
+  "weight": 1.0
+}
+
+// Shared key with denylist
+{
+  "name": "openai-shared-key",
+  "value": "env.OPENAI_API_KEY",
+  "models": ["gpt-4o", "gpt-4o-mini"],
+  "blacklisted_models": ["gpt-5"],
+  "weight": 1.0
 }
 ```
 
