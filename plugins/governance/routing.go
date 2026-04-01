@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/maximhq/bifrost/core/complexity"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -54,6 +55,7 @@ type RoutingContext struct {
 	Headers                  map[string]string                  // Request headers for dynamic routing
 	QueryParams              map[string]string                  // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
+	Complexity               *complexity.ComplexityResult       // Complexity analysis result (nil if disabled or unsupported request type)
 }
 
 type RoutingEngine struct {
@@ -466,6 +468,34 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["request"] = 0.0
 	}
 
+	// Populate complexity analysis scores
+	if ctx.Complexity != nil {
+		variables["complexity"] = map[string]interface{}{
+			"available":         true,
+			"score":             ctx.Complexity.Score,
+			"tier":              ctx.Complexity.Tier,
+			"code_presence":     ctx.Complexity.CodePresence,
+			"reasoning_markers": ctx.Complexity.ReasoningMarkers,
+			"technical_terms":   ctx.Complexity.TechnicalTerms,
+			"simple_indicators": ctx.Complexity.SimpleIndicators,
+			"token_count":       ctx.Complexity.TokenCount,
+			"conversation_ctx":  ctx.Complexity.ConversationCtx,
+			"system_prompt":     ctx.Complexity.SystemPromptSignal,
+			"output_complexity": ctx.Complexity.OutputComplexity,
+		}
+	} else {
+		// Provide a stable map so CEL expressions referencing complexity don't error.
+		// Use an empty tier and available=false so unsupported payloads don't masquerade as SIMPLE.
+		variables["complexity"] = map[string]interface{}{
+			"available": false,
+			"score":     0.0, "tier": "",
+			"code_presence": 0.0, "reasoning_markers": 0.0,
+			"technical_terms": 0.0, "simple_indicators": 0.0,
+			"token_count": 0.0, "conversation_ctx": 0.0,
+			"system_prompt": 0.0, "output_complexity": 0.0,
+		}
+	}
+
 	return variables, nil
 }
 
@@ -552,5 +582,8 @@ func createCELEnvironment() (*cel.Env, error) {
 		cel.Variable("tokens_used", cel.DoubleType),
 		cel.Variable("request", cel.DoubleType),
 		cel.Variable("budget_used", cel.DoubleType),
+
+		// Complexity analysis scores (map with string keys, mixed value types)
+		cel.Variable("complexity", cel.MapType(cel.StringType, cel.AnyType)),
 	)
 }

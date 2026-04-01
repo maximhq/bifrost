@@ -44,6 +44,10 @@ type LocalGovernanceStore struct {
 
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
+	// Complexity-router config is kept as a small sidecar so InitFromStore and
+	// hot-reload can preserve the same runtime semantics as Init.
+	complexityRouterMu sync.RWMutex
+	complexityRouter   *configstore.ComplexityRouterConfig
 
 	// Model catalog for cross-provider model matching (optional)
 	modelCatalog *modelcatalog.ModelCatalog
@@ -481,6 +485,21 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		ModelConfigs: modelConfigsList,
 		Providers:    providersList,
 	}
+}
+
+// GetComplexityRouterConfig returns a deep copy of the currently cached
+// complexity-router config.
+func (gs *LocalGovernanceStore) GetComplexityRouterConfig() *configstore.ComplexityRouterConfig {
+	gs.complexityRouterMu.RLock()
+	defer gs.complexityRouterMu.RUnlock()
+	return configstore.CloneComplexityRouterConfig(gs.complexityRouter)
+}
+
+// SetComplexityRouterConfig updates the cached complexity-router config.
+func (gs *LocalGovernanceStore) SetComplexityRouterConfig(cfg *configstore.ComplexityRouterConfig) {
+	gs.complexityRouterMu.Lock()
+	defer gs.complexityRouterMu.Unlock()
+	gs.complexityRouter = configstore.CloneComplexityRouterConfig(cfg)
 }
 
 // GetVirtualKey retrieves a virtual key by its value (lock-free) with all relationships preloaded
@@ -1996,6 +2015,13 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 		return fmt.Errorf("failed to load routing rules: %w", err)
 	}
 
+	persistedComplexityRouter, err := gs.configStore.GetComplexityRouterConfig(ctx)
+	if err != nil {
+		gs.logger.Warn("failed to load complexity router config: %v", err)
+	} else {
+		gs.SetComplexityRouterConfig(configstore.ComplexityRouterConfigFromPersisted(persistedComplexityRouter))
+	}
+
 	// Rebuild in-memory structures (lock-free)
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
 
@@ -2007,6 +2033,8 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	if config == nil {
 		return fmt.Errorf("governance config is nil")
 	}
+
+	gs.SetComplexityRouterConfig(config.ComplexityRouter)
 
 	// Load customers with their budgets
 	customers := config.Customers

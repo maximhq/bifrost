@@ -269,7 +269,7 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 
 										<AlertDialog>
 											<AlertDialogTrigger asChild>
-												<Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" disabled={!hasDeleteMCPClientAccess}>
+												<Button variant="ghost" size="icon" disabled={!hasDeleteMCPClientAccess}>
 													<Trash2 className="h-4 w-4" />
 												</Button>
 											</AlertDialogTrigger>
@@ -283,7 +283,7 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 												</AlertDialogHeader>
 												<AlertDialogFooter>
 													<AlertDialogCancel>Cancel</AlertDialogCancel>
-													<AlertDialogAction onClick={() => handleDelete(c)} className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction>
+													<AlertDialogAction onClick={() => handleDelete(c)}>Delete</AlertDialogAction>
 												</AlertDialogFooter>
 											</AlertDialogContent>
 										</AlertDialog>

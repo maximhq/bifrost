@@ -130,6 +130,8 @@ type ConfigStore interface {
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)
 	UpdateConfig(ctx context.Context, config *tables.TableGovernanceConfig, tx ...*gorm.DB) error
+	GetComplexityRouterConfig(ctx context.Context) (*PersistedComplexityRouterConfig, error)
+	UpdateComplexityRouterConfig(ctx context.Context, config *PersistedComplexityRouterConfig) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)

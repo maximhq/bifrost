@@ -10,6 +10,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/complexity"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -1202,14 +1203,174 @@ type ConfigMap map[schemas.ModelProvider]ProviderConfig
 // GovernanceConfig contains governance entities loaded from the config store or
 // reconciled from config.json.
 type GovernanceConfig struct {
-	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
-	Teams            []tables.TableTeam            `json:"teams"`
-	Customers        []tables.TableCustomer        `json:"customers"`
-	Budgets          []tables.TableBudget          `json:"budgets"`
-	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
-	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
-	Providers        []tables.TableProvider        `json:"providers"`
-	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
+	VirtualKeys          []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams                []tables.TableTeam            `json:"teams"`
+	Customers            []tables.TableCustomer        `json:"customers"`
+	Budgets              []tables.TableBudget          `json:"budgets"`
+	RateLimits           []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs         []tables.TableModelConfig     `json:"model_configs"`
+	Providers            []tables.TableProvider        `json:"providers"`
+	RoutingRules         []tables.TableRoutingRule     `json:"routing_rules"`
 	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
-	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
+	AuthConfig           *AuthConfig                   `json:"auth_config,omitempty"`
+	ComplexityRouter *ComplexityRouterConfig   `json:"complexity_router,omitempty"`
+}
+
+// ComplexityRouterConfig controls automatic complexity-based model routing.
+// When enabled and no explicit CEL routing rule matches, requests are routed
+// to models based on their computed complexity tier.
+type ComplexityRouterConfig struct {
+	Enabled        bool                      `json:"enabled"`
+	TierBoundaries *ComplexityTierBoundaries `json:"tier_boundaries,omitempty"`
+	Models         map[string]string         `json:"models"` // tier name → "provider/model"
+}
+
+// ComplexityTierBoundaries defines the score thresholds for tier classification.
+type ComplexityTierBoundaries struct {
+	SimpleMedium     float64 `json:"simple_medium"`
+	MediumComplex    float64 `json:"medium_complex"`
+	ComplexReasoning float64 `json:"complex_reasoning"`
+}
+
+// PersistedComplexityRouterConfig is the DB-backed representation of the
+// complexity-router config. ConfigHash is stored for file-vs-DB reconciliation
+// and must not be exposed through the public API.
+type PersistedComplexityRouterConfig struct {
+	Enabled        bool                      `json:"enabled"`
+	TierBoundaries *ComplexityTierBoundaries `json:"tier_boundaries,omitempty"`
+	Models         map[string]string         `json:"models,omitempty"`
+	ConfigHash     string                    `json:"config_hash,omitempty"`
+}
+
+// CloneComplexityRouterConfig returns a deep copy of the public/runtime
+// complexity-router config.
+func CloneComplexityRouterConfig(cfg *ComplexityRouterConfig) *ComplexityRouterConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	cloned := &ComplexityRouterConfig{
+		Enabled: cfg.Enabled,
+	}
+
+	if cfg.TierBoundaries != nil {
+		boundaries := *cfg.TierBoundaries
+		cloned.TierBoundaries = &boundaries
+	}
+
+	if len(cfg.Models) > 0 {
+		cloned.Models = make(map[string]string, len(cfg.Models))
+		for tier, model := range cfg.Models {
+			cloned.Models[tier] = model
+		}
+	}
+
+	return cloned
+}
+
+// ClonePersistedComplexityRouterConfig returns a deep copy of the persisted
+// complexity-router config, including the internal config hash.
+func ClonePersistedComplexityRouterConfig(cfg *PersistedComplexityRouterConfig) *PersistedComplexityRouterConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	cloned := &PersistedComplexityRouterConfig{
+		ConfigHash: cfg.ConfigHash,
+	}
+
+	if publicCfg := ComplexityRouterConfigFromPersisted(cfg); publicCfg != nil {
+		cloned.Enabled = publicCfg.Enabled
+		cloned.TierBoundaries = publicCfg.TierBoundaries
+		cloned.Models = publicCfg.Models
+	}
+
+	return cloned
+}
+
+// ComplexityRouterConfigFromPersisted strips internal persistence metadata and
+// returns the public/runtime config shape.
+func ComplexityRouterConfigFromPersisted(cfg *PersistedComplexityRouterConfig) *ComplexityRouterConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	return CloneComplexityRouterConfig(&ComplexityRouterConfig{
+		Enabled:        cfg.Enabled,
+		TierBoundaries: cfg.TierBoundaries,
+		Models:         cfg.Models,
+	})
+}
+
+// PersistedComplexityRouterConfigFromPublic converts the public/runtime config
+// into the persisted representation while attaching the provided config hash.
+func PersistedComplexityRouterConfigFromPublic(cfg *ComplexityRouterConfig, configHash string) *PersistedComplexityRouterConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	cloned := CloneComplexityRouterConfig(cfg)
+	return &PersistedComplexityRouterConfig{
+		Enabled:        cloned.Enabled,
+		TierBoundaries: cloned.TierBoundaries,
+		Models:         cloned.Models,
+		ConfigHash:     configHash,
+	}
+}
+
+// GenerateComplexityRouterConfigHash generates a deterministic SHA256 hash for
+// the public complexity-router config. Nil boundaries are canonicalized to the
+// analyzer defaults, and nil models are treated the same as an empty map.
+func GenerateComplexityRouterConfigHash(cfg *ComplexityRouterConfig) (string, error) {
+	hash := sha256.New()
+
+	if cfg != nil && cfg.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+
+	boundaries := defaultComplexityTierBoundaries()
+	if cfg != nil && cfg.TierBoundaries != nil {
+		boundaries = *cfg.TierBoundaries
+	}
+
+	values := []float64{
+		boundaries.SimpleMedium,
+		boundaries.MediumComplex,
+		boundaries.ComplexReasoning,
+	}
+	for _, value := range values {
+		data, err := sonic.Marshal(value)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	if cfg != nil && len(cfg.Models) > 0 {
+		keys := make([]string, 0, len(cfg.Models))
+		for tier := range cfg.Models {
+			keys = append(keys, tier)
+		}
+		sort.Strings(keys)
+
+		for _, tier := range keys {
+			hash.Write([]byte("model:"))
+			hash.Write([]byte(tier))
+			hash.Write([]byte("="))
+			hash.Write([]byte(cfg.Models[tier]))
+		}
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func defaultComplexityTierBoundaries() ComplexityTierBoundaries {
+	boundaries := complexity.DefaultTierBoundaries()
+	return ComplexityTierBoundaries{
+		SimpleMedium:     boundaries.SimpleMedium,
+		MediumComplex:    boundaries.MediumComplex,
+		ComplexReasoning: boundaries.ComplexReasoning,
+	}
 }

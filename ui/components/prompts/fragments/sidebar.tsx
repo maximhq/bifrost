@@ -445,7 +445,7 @@ function DroppableFolder({
 							)}
 							{canDelete && (
 								<DropdownMenuItem
-									variant="destructive"
+									className="text-destructive"
 									data-testid="folder-action-delete"
 									onClick={(e) => {
 										e.stopPropagation();
@@ -559,15 +559,14 @@ function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, c
 						)}
 						{canDelete && (
 							<DropdownMenuItem
-								variant="destructive"
-								className="cursor-pointer"
+								className="text-destructive hover:text-destructive cursor-pointer"
 								data-testid="prompt-action-delete"
 								onClick={(e) => {
 									e.stopPropagation();
 									onDelete();
 								}}
 							>
-								<Trash2 className="h-4 w-4" />
+								<Trash2 className="text-destructive h-4 w-4" />
 								Delete
 							</DropdownMenuItem>
 						)}

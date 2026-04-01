@@ -8,6 +8,7 @@ const (
 	ConfigIsAuthEnabledKey          = "is_auth_enabled"
 	ConfigDisableAuthOnInferenceKey = "disable_auth_on_inference"
 	ConfigProxyKey                  = "proxy_config"
+	ConfigComplexityRouterKey       = "complexity_router_config"
 	ConfigRestartRequiredKey        = "restart_required"
 	ConfigHeaderFilterKey           = "header_filter_config"
 )

@@ -27,12 +27,15 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableKey{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
+		&tables.TableModelConfig{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
+		&tables.TableRoutingRule{},
 		&tables.TableClientConfig{},
+		&tables.TableGovernanceConfig{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableVirtualKeyMCPConfig{},
@@ -53,6 +56,93 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		db:     db,
 		logger: nil,
 	}
+}
+
+func TestGenerateComplexityRouterConfigHash_CanonicalizesNilDefaults(t *testing.T) {
+	cfgWithNil := &ComplexityRouterConfig{
+		Enabled: true,
+		Models: map[string]string{
+			"SIMPLE":    "openai/gpt-5.4-nano",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"COMPLEX":   "openai/gpt-5.2",
+			"REASONING": "openai/gpt-5.4",
+		},
+	}
+	cfgWithDefaults := &ComplexityRouterConfig{
+		Enabled: true,
+		TierBoundaries: &ComplexityTierBoundaries{
+			SimpleMedium:     0.15,
+			MediumComplex:    0.35,
+			ComplexReasoning: 0.60,
+		},
+		Models: map[string]string{
+			"REASONING": "openai/gpt-5.4",
+			"COMPLEX":   "openai/gpt-5.2",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"SIMPLE":    "openai/gpt-5.4-nano",
+		},
+	}
+
+	hashWithNil, err := GenerateComplexityRouterConfigHash(cfgWithNil)
+	require.NoError(t, err)
+
+	hashWithDefaults, err := GenerateComplexityRouterConfigHash(cfgWithDefaults)
+	require.NoError(t, err)
+
+	assert.Equal(t, hashWithDefaults, hashWithNil)
+}
+
+func TestComplexityRouterConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	original := &PersistedComplexityRouterConfig{
+		Enabled: true,
+		TierBoundaries: &ComplexityTierBoundaries{
+			SimpleMedium:     0.20,
+			MediumComplex:    0.40,
+			ComplexReasoning: 0.70,
+		},
+		Models: map[string]string{
+			"SIMPLE":    "openai/gpt-5.4-nano",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"COMPLEX":   "openai/gpt-5.2",
+			"REASONING": "openai/gpt-5.4",
+		},
+		ConfigHash: "hash-from-file",
+	}
+
+	err := store.UpdateComplexityRouterConfig(ctx, original)
+	require.NoError(t, err)
+
+	loaded, err := store.GetComplexityRouterConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, original, loaded)
+}
+
+func TestGetGovernanceConfig_IncludesComplexityRouterConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateComplexityRouterConfig(ctx, &PersistedComplexityRouterConfig{
+		Enabled: false,
+		Models: map[string]string{
+			"SIMPLE":    "openai/gpt-5.4-nano",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"COMPLEX":   "openai/gpt-5.2",
+			"REASONING": "openai/gpt-5.4",
+		},
+		ConfigHash: "hash-from-file",
+	})
+	require.NoError(t, err)
+
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, governanceConfig)
+	require.NotNil(t, governanceConfig.ComplexityRouter)
+	assert.False(t, governanceConfig.ComplexityRouter.Enabled)
+	assert.Equal(t, "openai/gpt-5.4-mini", governanceConfig.ComplexityRouter.Models["MEDIUM"])
 }
 
 // =============================================================================
