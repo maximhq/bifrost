@@ -3,3 +3,4 @@
 - refactor: standardize empty array conventions in bifrost. Empty array means deny all, ["*"] means allow all for models/tools/keys.
 - feat: add support for request-level extra headers in MCP tool execution using BifrostContextKeyMCPExtraHeaders key in context.
 - fix: send back accumulated usage in MCP agent mode.
+- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`

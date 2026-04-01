@@ -9,6 +9,7 @@
 - feat: MCP edit UI now supports assigning virtual keys with per-tool access control directly from the MCP server edit sheet.
 - feat: adds option to allow MCP clients to run on all virtual keys without explicit assignment.
 - feat: add support for pricing overrides.
+- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
 
 <Warning>
 **v1.5.0 contains multiple breaking changes** to how Bifrost interprets empty arrays and wildcard values across Virtual Keys, provider keys, and MCP configurations. Existing deployments are protected by automatic database migrations — but any **new** configuration created after upgrading must follow the new semantics described below.
