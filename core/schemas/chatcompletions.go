@@ -409,8 +409,16 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 		t.AdditionalProperties = nil
 	}
 
-	var rawObject map[string]interface{}
-	t.explicitEmptyObject = Unmarshal(data, &rawObject) == nil && len(rawObject) == 0
+	trimmed := bytes.TrimSpace(data)
+	t.explicitEmptyObject = len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}'
+	if t.explicitEmptyObject {
+		for _, b := range trimmed[1 : len(trimmed)-1] {
+			if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+				t.explicitEmptyObject = false
+				break
+			}
+		}
+	}
 	t.keyOrder.Capture(data)
 	return nil
 }
