@@ -40,24 +40,27 @@
                 "name": "prod-assistant-us-key-01-configurations",
                 "provider_configs": [
                     {
-                        "allowed_keys": [
-                            "azure-us-key-1-prod"
+                        "key_ids": [
+                            "key-azure-us-1-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "azure",
                         "weight": 0.5
                     },
                     {
-                        "allowed_keys": [
-                            "vertex-us-east1-prod",
-                            "vertex-global-prod"
+                        "key_ids": [
+                            "key-vertex-us-east1-prod",
+                            "key-vertex-global-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "vertex",
                         "weight": 0.5
                     },
                     {
-                        "allowed_keys": [
-                            "openai-us-key-1-prod"
+                        "key_ids": [
+                            "key-openai-us-1-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "openai",
                         "weight": 0.5
                     }
@@ -70,24 +73,27 @@
                 "name": "prod-assistant-eu-key-01-configurations",
                 "provider_configs": [
                     {
-                        "allowed_keys": [
-                            "azure-eu-key-1-prod"
+                        "key_ids": [
+                            "key-azure-eu-1-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "azure",
                         "weight": 0.5
                     },
                     {
-                        "allowed_keys": [
-                            "vertex-europe-west1-prod",
-                            "vertex-global-prod"
+                        "key_ids": [
+                            "key-vertex-eu-west1-prod",
+                            "key-vertex-global-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "vertex",
                         "weight": 0.5
                     },
                     {
-                        "allowed_keys": [
-                            "bedrock-eu-central-1-prod"
+                        "key_ids": [
+                            "key-bedrock-eu-central-1-prod"
                         ],
+                        "allowed_models": ["*"],
                         "provider": "bedrock",
                         "weight": 0.5
                     }
@@ -116,6 +122,7 @@
         "azure": {
             "keys": [
                 {
+                    "id": "key-azure-us-1-prod",
                     "azure_key_config": {
                         "api_version": "2025-03-01-preview",
                         "deployments": {
@@ -143,6 +150,7 @@
                     "weight": 1
                 },
                 {
+                    "id": "key-azure-us-2-prod",
                     "azure_key_config": {
                         "api_version": "2025-03-01-preview",
                         "deployments": {
@@ -170,6 +178,7 @@
                     "weight": 1
                 },
                 {
+                    "id": "key-azure-eu-1-prod",
                     "azure_key_config": {
                         "api_version": "2025-03-01-preview",
                         "deployments": {
@@ -201,32 +210,35 @@
         "bedrock": {
             "keys": [
                 {
+                    "id": "key-bedrock-us-east-1-prod",
                     "bedrock_key_config": {
                         "access_key": "env.AWS_ACCESS_KEY_ID_US_EAST_1",
                         "region": "us-east-1",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY_US_EAST_1"
                     },
-                    "models": [],
+                    "models": ["*"],
                     "name": "bedrock-us-east-1-prod",
                     "weight": 1
                 },
                 {
+                    "id": "key-bedrock-us-west-2-prod",
                     "bedrock_key_config": {
                         "access_key": "env.AWS_ACCESS_KEY_ID_US_WEST_2",
                         "region": "us-west-2",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY_US_WEST_2"
                     },
-                    "models": [],
+                    "models": ["*"],
                     "name": "bedrock-us-west-2-prod",
                     "weight": 1
                 },
                 {
+                    "id": "key-bedrock-eu-central-1-prod",
                     "bedrock_key_config": {
                         "access_key": "env.AWS_ACCESS_KEY_ID_EU_CENTRAL_1",
                         "region": "eu-central-1",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY_EU_CENTRAL_1"
                     },
-                    "models": [],
+                    "models": ["*"],
                     "name": "bedrock-eu-central-1-prod",
                     "weight": 1
                 }
@@ -235,6 +247,7 @@
         "vertex": {
             "keys": [
                 {
+                    "id": "key-vertex-us-east1-prod",
                     "models": [
                         "google/gemini-2.5-pro",
                         "google/gemini-2.5-flash-lite",
@@ -249,6 +262,7 @@
                     "weight": 1
                 },
                 {
+                    "id": "key-vertex-eu-west1-prod",
                     "models": [
                         "google/gemini-2.5-pro",
                         "google/gemini-2.5-flash-lite",
@@ -263,6 +277,7 @@
                     "weight": 1
                 },
                 {
+                    "id": "key-vertex-us-west1-prod",
                     "models": [
                         "google/gemini-2.5-pro",
                         "google/gemini-2.5-flash-lite",
@@ -277,6 +292,7 @@
                     "weight": 1
                 },
                 {
+                    "id": "key-vertex-global-prod",
                     "models": [
                         "google/gemini-3-pro-preview",
                         "google/gemini-3-flash-preview"
@@ -294,9 +310,11 @@
         "openai": {
             "keys": [
                 {
+                    "id": "key-openai-us-1-prod",
                     "name": "openai-us-key-1-prod",
                     "value": "env.OPENAI_API_KEY_US_EAST_1",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ]
         }

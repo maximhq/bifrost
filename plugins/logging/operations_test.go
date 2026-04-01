@@ -243,3 +243,71 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 		t.Fatalf("expected content summary to avoid overwriting with streamed responses output-only data, got %q", logEntry.ContentSummary)
 	}
 }
+
+func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
+	// Simulate fallback/retry scenario where multiple PostLLMHook calls
+	// store entries under the same traceID. All entries must be preserved.
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, 10),
+	}
+
+	traceID := "trace-retry-test"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	// Simulate 3 retry attempts storing entries under the same traceID
+	entry1 := &logstore.Log{ID: "req-attempt-1", Model: "gpt-4o"}
+	entry2 := &logstore.Log{ID: "req-attempt-2", Model: "gpt-4o"}
+	entry3 := &logstore.Log{ID: "req-attempt-3", Model: "claude-3-5-sonnet"}
+
+	plugin.storeOrEnqueueEntry(ctx, entry1, nil)
+	plugin.storeOrEnqueueEntry(ctx, entry2, nil)
+	plugin.storeOrEnqueueEntry(ctx, entry3, nil)
+
+	// Verify all 3 entries are stored
+	val, ok := plugin.pendingLogsToInject.Load(traceID)
+	if !ok {
+		t.Fatal("expected pending entries for traceID, got none")
+	}
+	pending, ok := val.(*pendingInjectEntries)
+	if !ok {
+		t.Fatal("expected *pendingInjectEntries type")
+	}
+	if len(pending.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(pending.entries))
+	}
+	if pending.entries[0].ID != "req-attempt-1" || pending.entries[1].ID != "req-attempt-2" || pending.entries[2].ID != "req-attempt-3" {
+		t.Fatalf("entries not in expected order: %v, %v, %v", pending.entries[0].ID, pending.entries[1].ID, pending.entries[2].ID)
+	}
+
+	// Now test Inject flushes all entries with plugin logs attached
+	trace := &schemas.Trace{
+		TraceID: traceID,
+		PluginLogs: []schemas.PluginLogEntry{
+			{PluginName: "hello-world", Level: schemas.LogLevelInfo, Message: "test log"},
+		},
+	}
+
+	if err := plugin.Inject(context.Background(), trace); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+
+	// Verify all 3 entries were enqueued to writeQueue
+	if len(plugin.writeQueue) != 3 {
+		t.Fatalf("expected 3 entries in writeQueue, got %d", len(plugin.writeQueue))
+	}
+
+	// Verify plugin logs were attached to each entry
+	for i := 0; i < 3; i++ {
+		qe := <-plugin.writeQueue
+		if qe.log.PluginLogs == "" {
+			t.Fatalf("entry %d: expected PluginLogs to be set", i)
+		}
+	}
+
+	// Verify pendingLogsToInject was cleaned up
+	if _, ok := plugin.pendingLogsToInject.Load(traceID); ok {
+		t.Fatal("expected pendingLogsToInject to be cleaned up after Inject")
+	}
+}

@@ -23,22 +23,29 @@ type costInput struct {
 
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache debug billing, and tiered pricing.
-func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
+// If scopes is nil, an empty PricingLookupScopes is used; global and provider-scoped
+// overrides may still apply since the provider is derived from the response.
+func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	if result == nil {
 		return 0
+	}
+
+	var s PricingLookupScopes
+	if scopes != nil {
+		s = *scopes
 	}
 
 	// Handle semantic cache billing
 	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
-		return mc.calculateCostWithCache(result, cacheDebug)
+		return mc.calculateCostWithCache(result, cacheDebug, s)
 	}
 
-	return mc.calculateBaseCost(result)
+	return mc.calculateBaseCost(result, s)
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
@@ -46,31 +53,34 @@ func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, 
 		}
 		// Semantic cache hit — only the embedding lookup cost
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			return mc.computeCacheEmbeddingCost(cacheDebug)
+			return mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 		}
 		return 0
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost
-	baseCost := mc.calculateBaseCost(result)
-	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug)
+	baseCost := mc.calculateBaseCost(result, scopes)
+	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 	return baseCost + embeddingCost
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
 		return 0
 	}
-	pricing, exists := mc.getPricing(*cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest)
-	if !exists {
+	if scopes.Provider == "" {
+		scopes.Provider = *cacheDebug.ProviderUsed
+	}
+	pricing := mc.resolvePricing(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", schemas.EmbeddingRequest, scopes)
+	if pricing == nil {
 		return 0
 	}
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens)
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float64 {
+func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scopes PricingLookupScopes) float64 {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
 		return 0
@@ -98,7 +108,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	requestType = normalizeStreamRequestType(requestType)
 
 	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, model, deployment, requestType)
+	pricing := mc.resolvePricing(provider, model, deployment, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -598,7 +608,10 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
 	}
-	return pricing.InputCostPerToken
+	if pricing.InputCostPerToken != nil {
+		return *pricing.InputCostPerToken
+	}
+	return 0
 }
 
 // tieredOutputRate returns the effective per-token output rate based on total token count.
@@ -609,7 +622,10 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
 	}
-	return pricing.OutputCostPerToken
+	if pricing.OutputCostPerToken != nil {
+		return *pricing.OutputCostPerToken
+	}
+	return 0
 }
 
 // tieredImageInputRate returns the effective rate for image tokens on the input side.
@@ -743,28 +759,60 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // ---------------------------------------------------------------------------
 
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
-func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
+func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 
-	pricing, exists := mc.getPricing(model, provider, requestType)
-	if exists {
-		return pricing
+	if scopes.Provider == "" {
+		scopes.Provider = provider
+	}
+
+	base, exists := mc.getBasePricing(model, provider, requestType)
+	if exists && base != nil {
+		result, _ := mc.applyPricingOverrides(model, requestType, *base, scopes)
+		return &result
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricing(deployment, provider, requestType)
-		if exists {
-			return pricing
+		base, exists = mc.getBasePricing(deployment, provider, requestType)
+		if exists && base != nil {
+			// Apply overrides using the requested model name, not the deployment name
+			result, _ := mc.applyPricingOverrides(model, requestType, *base, scopes)
+			return &result
 		}
 	}
 
-	mc.logger.Debug("pricing not found for model %s and provider %s, skipping cost calculation", model, provider)
+	// No base catalog entry found; still try overrides in case the user defined
+	// override-only pricing for a model not in the built-in catalog.
+	mc.logger.Debug("pricing not found for model %s and provider %s, trying override-only pricing", model, provider)
+	result, applied := mc.applyPricingOverrides(model, requestType, configstoreTables.TableModelPricing{}, scopes)
+	if applied {
+		return &result
+	}
+	mc.logger.Debug("no pricing found for model %s and provider %s, skipping cost calculation", model, provider)
 	return nil
 }
 
-// getPricing returns pricing information for a model (thread-safe)
-func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+// getBasePricing looks up catalog pricing for the given model, provider, and request type.
+// It applies a provider-specific fallback chain when an exact match is not found:
+//
+//   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
+//   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
+//   - Bedrock: prepends the "anthropic." namespace for Claude models, then falls back to chat mode for Responses requests.
+//   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
+//   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
+//
+// The method acquires a read lock for the duration of the lookup.
+//
+// Input:  model       — exact model name to look up.
+//
+//	provider    — provider identifier (e.g. "openai", "anthropic").
+//	requestType — the request type used to derive the pricing mode.
+//
+// Output: TableModelPricing — the matched pricing row (zero value when not found).
+//
+//	bool              — true when a pricing entry was found, false otherwise.
+func (mc *ModelCatalog) getBasePricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 

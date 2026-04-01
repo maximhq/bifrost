@@ -6,12 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -31,11 +31,12 @@ type PluginPipeline interface {
 
 // ToolsManager manages MCP tool execution and agent mode.
 type ToolsManager struct {
-	toolExecutionTimeout atomic.Value
-	maxAgentDepth        atomic.Int32
-	clientManager        ClientManager
-	logger               schemas.Logger
-	agentModeExecutor    *AgentModeExecutor
+	toolExecutionTimeout  atomic.Value
+	maxAgentDepth         atomic.Int32
+	disableAutoToolInject atomic.Bool
+	clientManager         ClientManager
+	logger                schemas.Logger
+	agentModeExecutor     *AgentModeExecutor
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -147,6 +148,7 @@ func NewToolsManagerWithCodeMode(
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
+	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
 	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
@@ -174,8 +176,20 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 	}
 }
 
+// SetPluginPipeline updates the plugin pipeline provider and release function
+// on both the ToolsManager and its CodeMode implementation.
+// This is used when an externally-created MCPManager is attached to a Bifrost instance
+// via SetMCPManager, so the CodeMode can route nested tool calls through Bifrost's plugin hooks.
+func (m *ToolsManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	m.pluginPipelineProvider = provider
+	m.releasePluginPipeline = release
+	if m.codeMode != nil {
+		m.codeMode.SetDependencies(m.GetCodeModeDependencies())
+	}
+}
+
 // GetAvailableTools returns the available tools for the given context.
-func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -191,14 +205,14 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 		}
 		if client.ExecutionConfig.IsCodeModeClient {
 			includeCodeModeTools = true
-		} else {
-			// Add tools from this client, checking for duplicates
-			for _, tool := range clientTools {
-				if tool.Function != nil && tool.Function.Name != "" {
-					if !seenToolNames[tool.Function.Name] {
-						availableTools = append(availableTools, tool)
-						seenToolNames[tool.Function.Name] = true
-					}
+		}
+		// Add tools from this client, checking for duplicates
+		for _, tool := range clientTools {
+			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
+				seenToolNames[tool.Function.Name] = true
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
+				if !client.ExecutionConfig.IsCodeModeClient {
+					availableTools = append(availableTools, tool)
 				}
 			}
 		}
@@ -288,10 +302,20 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 //
 // Returns:
 //   - *schemas.BifrostRequest: Bifrost request with MCP tools added
-func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	// MCP is only supported for chat and responses requests
 	if req.ChatRequest == nil && req.ResponsesRequest == nil {
 		return req
+	}
+
+	// When auto tool injection is disabled, only inject tools if the request
+	// has explicit context filters set (e.g. via x-bf-mcp-include-tools header).
+	if m.disableAutoToolInject.Load() {
+		includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
+		includeClients := ctx.Value(schemas.MCPContextKeyIncludeClients)
+		if includeTools == nil && includeClients == nil {
+			return req
+		}
 	}
 
 	availableTools := m.GetAvailableTools(ctx)
@@ -541,14 +565,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
-	}
-
-	if client.ExecutionConfig.Headers != nil {
-		headers := make(http.Header)
-		for key, value := range client.ExecutionConfig.Headers {
-			headers.Add(key, value.GetValue())
-		}
-		callRequest.Header = headers
+		Header: utils.GetHeadersForToolExecution(ctx, client),
 	}
 
 	// Create timeout context for tool execution
@@ -660,13 +677,15 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
 
-	// Update CodeMode configuration if present
-	if m.codeMode != nil && config.CodeModeBindingLevel != "" {
+	// Update CodeMode configuration — propagate whenever either field is set
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: config.ToolExecutionTimeout,
 		})
 	}
+
+	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
 }

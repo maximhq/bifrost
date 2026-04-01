@@ -34,7 +34,7 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 		return bifrost.Ptr(xAPIKey)
 	}
 	xGoogleAPIKey := string(req.Request.Header.Peek("x-goog-api-key"))
-	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {		
+	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(xGoogleAPIKey)
 	}
 	return nil
@@ -99,9 +99,9 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		return []schemas.Model{} // VK not found, return empty list
 	}
 
-	// Empty ProviderConfigs means all models are allowed
+	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return models
+		return []schemas.Model{}
 	}
 
 	// Filter models based on ProviderConfigs

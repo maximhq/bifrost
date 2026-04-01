@@ -47,8 +47,8 @@ else
   else
     if [[ "$CORE_VERSION" == *"-"* ]]; then
       # current_version has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V)      
-      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')      
+      ALL_TAGS=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V)
+      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
       PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
       if [ -n "$STABLE_TAGS" ]; then
         # Get the highest stable version
@@ -61,7 +61,7 @@ else
       fi
     else
       # VERSION has no prerelease, so only consider stable releases in same track
-      LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1)
+      LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1 || true)
       echo "latest core tag (stable only): $LATEST_CORE_TAG"
     fi
     PREVIOUS_CORE_VERSION=${LATEST_CORE_TAG#core/v}
@@ -88,17 +88,26 @@ else
   FRAMEWORK_MAJOR_MINOR=$(echo "$FRAMEWORK_BASE_VERSION" | cut -d. -f1,2)
   echo "   🔍 Checking track: ${FRAMEWORK_MAJOR_MINOR}.x"
   
-  ALL_TAGS=$(git tag -l "framework/v${FRAMEWORK_MAJOR_MINOR}.*" | sort -V)
-  STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')
-  PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
   LATEST_FRAMEWORK_TAG=""
-  if [ -n "$STABLE_TAGS" ]; then
-    LATEST_FRAMEWORK_TAG=$(echo "$STABLE_TAGS" | tail -1)
-    echo "latest framework tag (stable preferred): $LATEST_FRAMEWORK_TAG"
+  if [[ "$FRAMEWORK_VERSION" == *"-"* ]]; then
+    # current_version has prerelease, so include all versions but prefer stable
+    ALL_TAGS=$(git tag -l "framework/v${FRAMEWORK_MAJOR_MINOR}.*" | sort -V)
+    STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
+    PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
+    if [ -n "$STABLE_TAGS" ]; then
+      # Get the highest stable version
+      LATEST_FRAMEWORK_TAG=$(echo "$STABLE_TAGS" | tail -1)
+      echo "latest framework tag (stable preferred): $LATEST_FRAMEWORK_TAG"
+    else
+      # No stable versions, get highest prerelease
+      LATEST_FRAMEWORK_TAG=$(echo "$PRERELEASE_TAGS" | tail -1)
+      echo "latest framework tag (prerelease only): $LATEST_FRAMEWORK_TAG"
+    fi
   else
-    LATEST_FRAMEWORK_TAG=$(echo "$PRERELEASE_TAGS" | tail -1)
-    echo "latest framework tag (prerelease only): $LATEST_FRAMEWORK_TAG"  
-  fi      
+    # VERSION has no prerelease, so only consider stable releases in same track
+    LATEST_FRAMEWORK_TAG=$(git tag -l "framework/v${FRAMEWORK_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1 || true)
+    echo "latest framework tag (stable only): $LATEST_FRAMEWORK_TAG"
+  fi
   if [ -z "$LATEST_FRAMEWORK_TAG" ]; then
     echo "   ✅ First framework release in track ${FRAMEWORK_MAJOR_MINOR}.x: $FRAMEWORK_VERSION"
     FRAMEWORK_NEEDS_RELEASE="true"
@@ -153,20 +162,20 @@ for plugin_dir in plugins/*/; do
   echo "      🔍 Checking track: ${plugin_major_minor}.x"
 
   if [[ "$current_version" == *"-"* ]]; then
-      # current_version has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v${plugin_major_minor}.*" | sort -V)
-      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
-      PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
-      
-      if [ -n "$STABLE_TAGS" ]; then
-        # Get the highest stable version
-        LATEST_PLUGIN_TAG=$(echo "$STABLE_TAGS" | tail -1)
-        echo "latest plugin tag (stable preferred): $LATEST_PLUGIN_TAG"
-      else
-        # No stable versions, get highest prerelease
-        LATEST_PLUGIN_TAG=$(echo "$PRERELEASE_TAGS" | tail -1)
-        echo "latest plugin tag (prerelease only): $LATEST_PLUGIN_TAG"
-      fi
+    # current_version has prerelease, so include all versions but prefer stable
+    ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v${plugin_major_minor}.*" | sort -V)
+    STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
+    PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
+
+    if [ -n "$STABLE_TAGS" ]; then
+      # Get the highest stable version
+      LATEST_PLUGIN_TAG=$(echo "$STABLE_TAGS" | tail -1)
+      echo "latest plugin tag (stable preferred): $LATEST_PLUGIN_TAG"
+    else
+      # No stable versions, get highest prerelease
+      LATEST_PLUGIN_TAG=$(echo "$PRERELEASE_TAGS" | tail -1)
+      echo "latest plugin tag (prerelease only): $LATEST_PLUGIN_TAG"
+    fi
   else
     # VERSION has no prerelease, so only consider stable releases in same track
     LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v${plugin_major_minor}.*" | grep -v '\-' | sort -V | tail -1 || true)

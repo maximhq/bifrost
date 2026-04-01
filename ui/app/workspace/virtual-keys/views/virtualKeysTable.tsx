@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
 	AlertDialog,
@@ -11,26 +11,26 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
-import { Customer, Team, VirtualKey } from "@/lib/types/governance"
-import { resetDurationLabels } from "@/lib/constants/governance"
-import { cn } from "@/lib/utils"
-import { formatCurrency } from "@/lib/utils/governance"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard"
-import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
-import { toast } from "sonner"
-import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
-import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
-import VirtualKeySheet from "./virtualKeySheet"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { resetDurationLabels } from "@/lib/constants/governance";
+import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store";
+import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
+import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
+import VirtualKeySheet from "./virtualKeySheet";
 
-const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration
+const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -65,27 +65,27 @@ export default function VirtualKeysTable({
 	limit,
 	onOffsetChange,
 }: VirtualKeysTableProps) {
-  const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
-  const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
-  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
-  const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
-  const [showDetailSheet, setShowDetailSheet] = useState(false)
+	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
+	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
+	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+	const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null);
+	const [showDetailSheet, setShowDetailSheet] = useState(false);
 
-  // Derive objects from props so they stay in sync with RTK cache updates
-  const editingVirtualKey = useMemo(
-    () => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
-    [editingVirtualKeyId, virtualKeys],
-  )
-  const selectedVirtualKey = useMemo(
-    () => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
-    [selectedVirtualKeyId, virtualKeys],
-  )
+	// Derive objects from props so they stay in sync with RTK cache updates
+	const editingVirtualKey = useMemo(
+		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
+		[editingVirtualKeyId, virtualKeys],
+	);
+	const selectedVirtualKey = useMemo(
+		() => (selectedVirtualKeyId ? (virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null) : null),
+		[selectedVirtualKeyId, virtualKeys],
+	);
 
-  const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
-  const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
+	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete);
 
-  const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
+	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -188,7 +188,7 @@ export default function VirtualKeysTable({
 				{/* Toolbar: Search + Filters */}
 				<div className="flex items-center gap-3">
 					<div className="relative max-w-sm flex-1">
-						<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search virtual keys by name"
 							placeholder="Search by name..."
@@ -205,13 +205,13 @@ export default function VirtualKeysTable({
 						<SelectContent>
 							<SelectItem value="all">All Customers</SelectItem>
 							{customers.map((c) => (
-								<SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+								<SelectItem key={c.id} value={c.id}>
+									{c.name}
+								</SelectItem>
 							))}
 						</SelectContent>
 					</Select>
-					{customerFilter && teamFilter && (
-						<span className="text-muted-foreground text-xs font-medium">or</span>
-					)}
+					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
 					<Select value={teamFilter} onValueChange={(val) => onTeamFilterChange(val === "all" ? "" : val)}>
 						<SelectTrigger className="w-[180px]" data-testid="vk-team-filter">
 							<SelectValue placeholder="All Teams" />
@@ -219,7 +219,9 @@ export default function VirtualKeysTable({
 						<SelectContent>
 							<SelectItem value="all">All Teams</SelectItem>
 							{teams.map((t) => (
-								<SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+								<SelectItem key={t.id} value={t.id}>
+									{t.name}
+								</SelectItem>
 							))}
 						</SelectContent>
 					</Select>
@@ -277,7 +279,9 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
-													<code className="cursor-default px-2 py-1 font-mono text-sm" data-testid="vk-key-value">{maskKey(vk.value, isRevealed)}</code>
+													<code className="cursor-default px-2 py-1 font-mono text-sm" data-testid="vk-key-value">
+														{maskKey(vk.value, isRevealed)}
+													</code>
 													<Button
 														variant="ghost"
 														size="sm"
@@ -296,21 +300,21 @@ export default function VirtualKeysTable({
 													</Button>
 												</div>
 											</TableCell>
-										<TableCell>
-											{vk.budget ? (
-												<div className="flex flex-col gap-0.5">
-													<span className={cn("font-mono text-sm", vk.budget.current_usage >= vk.budget.max_limit && "text-red-400")}>
-														{formatCurrency(vk.budget.current_usage)} / {formatCurrency(vk.budget.max_limit)}
-													</span>
-													<span className="text-muted-foreground text-xs">
-														Resets {formatResetDuration(vk.budget.reset_duration)}
-														{vk.budget.calendar_aligned && " (calendar)"}
-													</span>
-												</div>
-											) : (
-												<span className="text-muted-foreground text-sm">-</span>
-											)}
-										</TableCell>
+											<TableCell>
+												{vk.budget ? (
+													<div className="flex flex-col gap-0.5">
+														<span className={cn("font-mono text-sm", vk.budget.current_usage >= vk.budget.max_limit && "text-red-400")}>
+															{formatCurrency(vk.budget.current_usage)} / {formatCurrency(vk.budget.max_limit)}
+														</span>
+														<span className="text-muted-foreground text-xs">
+															Resets {formatResetDuration(vk.budget.reset_duration)}
+															{vk.budget.calendar_aligned && " (calendar)"}
+														</span>
+													</div>
+												) : (
+													<span className="text-muted-foreground text-sm">-</span>
+												)}
+											</TableCell>
 											<TableCell>
 												<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
 													{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}

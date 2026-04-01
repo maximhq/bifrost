@@ -190,9 +190,13 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	deployments := key.VertexKeyConfig.Deployments
 	allowedModels := key.Models
 
+	if !request.Unfiltered && (allowedModels.IsEmpty() && len(deployments) == 0 || key.BlacklistedModels.IsBlockAll()) {
+		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
+	}
+
 	// If deployments or allowedModels are configured, return those directly without API call
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || len(allowedModels) > 0) {
+	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
 		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
@@ -322,7 +326,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(nil, key.BlacklistedModels, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests
@@ -1544,14 +1548,9 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Remove google/ prefix from deployment
 	deployment = strings.TrimPrefix(deployment, "google/")
 
-	// For custom/fine-tuned models, validate projectNumber is set
-	projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
-	if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
-		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
-	}
-
 	// Build the native Vertex embedding API endpoint
-	url := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":predict")
+	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
+		region, projectID, region, deployment)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()

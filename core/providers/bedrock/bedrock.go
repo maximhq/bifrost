@@ -744,7 +744,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Convert to Bifrost response
-	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, config.Deployments, key.BlacklistedModels, request.Unfiltered)
+	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, config.Deployments, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
 	}
@@ -1341,7 +1341,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		// Send final response
-		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model, 0)
 		response.ExtraFields.ModelDeployment = deployment
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1889,7 +1889,7 @@ func (provider *BedrockProvider) TranscriptionStream(ctx *schemas.BifrostContext
 }
 
 // ImageGeneration generates images using Amazon Bedrock.
-// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
+// Supports Titan Image Generator v1, Nova Canvas v1, Titan Image Generator v2, and Stability AI models.
 // Returns a BifrostImageGenerationResponse containing the generated images and any error that occurred.
 func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
@@ -1909,17 +1909,21 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	var path string
 	var deployment string
 
+	path, deployment = provider.getModelPath("invoke", request.Model, key)
+
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if isStabilityAIModel(deployment) {
+				return ToStabilityAIImageGenerationRequest(request)
+			}
 			return ToBedrockImageGenerationRequest(request)
 		},
 		provider.GetProviderKey())
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
-	path, deployment = provider.getModelPath("invoke", request.Model, key)
 	rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
@@ -1969,8 +1973,10 @@ func (provider *BedrockProvider) ImageGenerationStream(ctx *schemas.BifrostConte
 }
 
 // ImageEdit performs image editing using Amazon Bedrock.
-// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
-// Supports three edit types: INPAINTING, OUTPAINTING, and BACKGROUND_REMOVAL.
+// Supports Titan Image Generator v1, Nova Canvas v1, Titan Image Generator v2 (three edit types:
+// INPAINTING, OUTPAINTING, BACKGROUND_REMOVAL), and Stability AI edit models (inpaint, outpaint,
+// recolor, search-replace, erase-object, remove-bg, control-sketch, control-structure, style-guide,
+// style-transfer, upscale-creative, upscale-conservative, upscale-fast).
 // Returns a BifrostImageGenerationResponse containing the edited images and any error that occurred.
 func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
@@ -1985,17 +1991,25 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	var jsonData []byte
 	var bifrostError *schemas.BifrostError
 
+	// Resolve deployment alias before building the request body so that
+	// Stability AI routing and task-type inference use the actual model ID.
+	path, deployment := provider.getModelPath("invoke", request.Model, key)
+
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToBedrockImageEditRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if isStabilityAIModel(deployment) {
+				return ToStabilityAIImageEditRequest(request, deployment)
+			}
+			return ToBedrockImageEditRequest(request)
+		},
 		provider.GetProviderKey())
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
 
 	// Make API request (same URL as image generation)
-	path, deployment := provider.getModelPath("invoke", request.Model, key)
 	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)

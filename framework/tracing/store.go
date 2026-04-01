@@ -73,7 +73,7 @@ func NewTraceStore(ttl time.Duration, logger schemas.Logger) *TraceStore {
 // If empty, a new trace ID will be generated.
 // Note: The parent span ID (for linking to upstream spans) is handled separately
 // via context in StartSpan, not stored on the trace itself.
-func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
+func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) string {
 	trace := s.tracePool.Get().(*schemas.Trace)
 	// Reset and initialize the trace
 	if inheritedTraceID != "" {
@@ -85,6 +85,9 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string) string {
 	// Parent-child relationships are between spans, not traces.
 	// The root span's ParentID is set in StartSpan from context.
 	trace.ParentID = ""
+	if len(requestID) > 0 {
+		trace.RequestID = requestID[0]
+	}
 	trace.StartTime = time.Now()
 	trace.EndTime = time.Time{}
 	trace.RootSpan = nil
@@ -113,6 +116,15 @@ func (s *TraceStore) GetTrace(traceID string) *schemas.Trace {
 		return val.(*schemas.Trace)
 	}
 	return nil
+}
+
+// SetRequestID sets the request ID for the trace
+func (s *TraceStore) SetRequestID(traceID string, requestID string) {
+	trace := s.GetTrace(traceID)
+	if trace == nil {
+		return
+	}
+	trace.SetRequestID(requestID)
 }
 
 // CompleteTrace marks the trace as complete, removes it from store, and returns it for flushing

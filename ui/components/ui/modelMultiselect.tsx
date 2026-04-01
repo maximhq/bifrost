@@ -11,6 +11,7 @@ import { Option } from "./multiselectUtils";
 interface ModelMultiselectPropsBase {
 	provider?: string;
 	keys?: string[];
+	vks?: string[];
 	placeholder?: string;
 	disabled?: boolean;
 	className?: string;
@@ -19,10 +20,14 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
+	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
+	allowAllOption?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** test selector for the container element */
+	"data-testid"?: string;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -49,10 +54,13 @@ interface ModelOption {
 	provider?: string;
 }
 
+const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
+
 export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
 		provider,
 		keys,
+		vks,
 		value,
 		unfiltered = false,
 		onChange,
@@ -60,6 +68,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
+		allowAllOption = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
@@ -79,17 +88,17 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		? stringValue
 			? [{ label: stringValue, value: stringValue }]
 			: []
-		: arrayValue.map((model) => ({
-			label: model,
-			value: model,
-		}));
+		: arrayValue.map((model) => (
+			model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }
+		));
 
-	// Fetch initial models on mount or when provider/keys change
+	// Fetch initial models on mount or when provider/keys/vks change
 	useEffect(() => {
 		if (provider) {
 			getModels({
 				provider,
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 5,
 				unfiltered,
 			});
@@ -98,17 +107,23 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		} else if (shouldLoadOnEmpty) {
 			getModels({
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 20,
 				unfiltered,
 			});
 		}
-	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
+	}, [provider, keys, vks, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
 
 	// Load options function for AsyncMultiSelect
 	const loadOptions = useCallback(
 		(query: string, callback: (options: ModelOption[]) => void) => {
+			// Prepend "Allow All Models" when allowAllOption is enabled and query matches (or is empty)
+			const prefix: ModelOption[] = allowAllOption && (!query || "all models".includes(query.toLowerCase()))
+				? [ALL_MODELS_OPTION]
+				: [];
+
 			if (!provider && !shouldLoadOnEmpty) {
-				callback([]);
+				callback(prefix);
 				return;
 			}
 
@@ -123,16 +138,17 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model,
 							value: model,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			} else {
 				getModels({
 					query: query || undefined,
 					provider: provider || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: query ? 50 : shouldLoadOnEmpty && !provider ? 20 : 5,
 					unfiltered,
 				})
@@ -143,14 +159,14 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							value: model.name,
 							provider: model.provider,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			}
 		},
-		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels],
+		[getModels, getBaseModels, provider, keys, vks, shouldLoadOnEmpty, shouldUseBaseModels, allowAllOption],
 	);
 
 	// Handle selection change
@@ -171,6 +187,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: currentQuery || undefined,
 					provider,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
@@ -183,12 +200,13 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				getModels({
 					query: currentQuery || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
 			}
 		},
-		[onChange, provider, keys, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
+		[onChange, provider, keys, vks, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
 	);
 
 	// Handle input change - track in both state and ref
@@ -204,18 +222,19 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 
 	// Convert API data to options for default display
 	const defaultOptions: ModelOption[] = useMemo(() => {
+		const prefix = allowAllOption ? [ALL_MODELS_OPTION] : [];
 		if (shouldUseBaseModels) {
-			return baseModelsData?.models?.map((model) => ({
+			return [...prefix, ...(baseModelsData?.models?.map((model) => ({
 				label: model,
 				value: model,
-			})) || [];
+			})) || [])];
 		}
-		return modelsData?.models?.map((model) => ({
+		return [...prefix, ...(modelsData?.models?.map((model) => ({
 			label: model.name,
 			value: model.name,
 			provider: model.provider,
-		})) || [];
-	}, [modelsData, baseModelsData, shouldUseBaseModels]);
+		})) || [])];
+	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
 
@@ -225,6 +244,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			hideSelectedOptions
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
+			data-testid={props["data-testid"]}
 			value={selectedOptions}
 			onChange={handleChange}
 			reload={loadOptions}

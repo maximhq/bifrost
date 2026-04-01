@@ -271,40 +271,6 @@ export interface CustomProviderConfig {
 	request_path_overrides?: Record<string, string>;
 }
 
-export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
-
-export interface ProviderPricingOverride {
-	model_pattern: string;
-	match_type: PricingOverrideMatchType;
-	request_types?: RequestType[];
-	input_cost_per_token?: number;
-	output_cost_per_token?: number;
-	input_cost_per_video_per_second?: number;
-	input_cost_per_audio_per_second?: number;
-	input_cost_per_character?: number;
-	output_cost_per_character?: number;
-	input_cost_per_token_above_128k_tokens?: number;
-	input_cost_per_character_above_128k_tokens?: number;
-	input_cost_per_image_above_128k_tokens?: number;
-	input_cost_per_video_per_second_above_128k_tokens?: number;
-	input_cost_per_audio_per_second_above_128k_tokens?: number;
-	output_cost_per_token_above_128k_tokens?: number;
-	output_cost_per_character_above_128k_tokens?: number;
-	input_cost_per_token_above_200k_tokens?: number;
-	output_cost_per_token_above_200k_tokens?: number;
-	cache_creation_input_token_cost_above_200k_tokens?: number;
-	cache_read_input_token_cost_above_200k_tokens?: number;
-	cache_read_input_token_cost?: number;
-	cache_creation_input_token_cost?: number;
-	input_cost_per_token_batches?: number;
-	output_cost_per_token_batches?: number;
-	input_cost_per_image_token?: number;
-	output_cost_per_image_token?: number;
-	input_cost_per_image?: number;
-	output_cost_per_image?: number;
-	cache_read_input_image_token_cost?: number;
-}
-
 // OpenAIConfig holds OpenAI-specific provider configuration.
 export interface OpenAIConfig {
 	disable_store?: boolean;
@@ -312,7 +278,6 @@ export interface OpenAIConfig {
 
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -321,7 +286,6 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	pricing_overrides?: ProviderPricingOverride[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -342,7 +306,6 @@ export interface ListProvidersResponse {
 // AddProviderRequest matching Go's AddProviderRequest
 export interface AddProviderRequest {
 	provider: ModelProviderName;
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -351,21 +314,27 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	pricing_overrides?: ProviderPricingOverride[];
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
 export interface UpdateProviderRequest {
-	keys: ModelProviderKey[];
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
-	proxy_config: ProxyConfig;
+	proxy_config?: ProxyConfig;
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	pricing_overrides?: ProviderPricingOverride[];
+}
+
+export interface CreateProviderKeyRequest extends ModelProviderKey {}
+
+export interface UpdateProviderKeyRequest extends ModelProviderKey {}
+
+export interface ListProviderKeysResponse {
+	keys: ModelProviderKey[];
+	total: number;
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError
@@ -487,6 +456,7 @@ export interface CoreConfig {
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
+	mcp_disable_auto_tool_inject: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -511,6 +481,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
+	mcp_disable_auto_tool_inject: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],

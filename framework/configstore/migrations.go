@@ -274,7 +274,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
+	if err := migrationReconcilePricingOverridesTable(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
@@ -317,6 +317,27 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMakeBasePricingColumnsNullable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAllowOnAllVirtualKeysColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddOpenAIConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
@@ -355,7 +376,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					"concurrency_buffer_json",
 					"proxy_config_json",
 					"custom_provider_config_json",
-					"pricing_overrides_json",
 					"send_back_raw_request",
 					"send_back_raw_response",
 					"store_raw_request_response",
@@ -373,7 +393,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
-					PricingOverrides:         provider.PricingOverrides,
 				}
 				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
 				if provider.SendBackRawRequest || provider.SendBackRawResponse {
@@ -511,6 +530,11 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
+			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
 			if !migrator.HasTable(&tables.TablePlugin{}) {
 				if err := migrator.CreateTable(&tables.TablePlugin{}); err != nil {
 					return err
@@ -566,6 +590,9 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TablePlugin{}); err != nil {
@@ -3705,6 +3732,126 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
+// migrationBackfillEmptyVirtualKeyConfigs backfills existing virtual keys that have
+// empty ProviderConfigs or MCPConfigs with all available providers/MCP clients.
+// This preserves the previous "empty means all" behavior for existing VKs after
+// the semantic change to "empty means none" (deny-by-default).
+func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_empty_virtual_key_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Step 1: Backfill ProviderConfigs for VKs that have none
+			// Find all virtual keys
+			var allVKs []tables.TableVirtualKey
+			if err := tx.Find(&allVKs).Error; err != nil {
+				return fmt.Errorf("failed to query virtual keys: %w", err)
+			}
+
+			// Get all available providers
+			var allProviders []tables.TableProvider
+			if err := tx.Find(&allProviders).Error; err != nil {
+				return fmt.Errorf("failed to query providers: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, vk := range allVKs {
+				// Check if this VK has any provider configs
+				var providerConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&providerConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count provider configs for VK %s: %w", vk.ID, err)
+				}
+
+				if providerConfigCount == 0 && len(allProviders) > 0 {
+					// VK has no provider configs - backfill with all available providers
+					for _, provider := range allProviders {
+						providerConfig := tables.TableVirtualKeyProviderConfig{
+							VirtualKeyID:  vk.ID,
+							Provider:      provider.Name,
+							Weight:        bifrost.Ptr(1.0),
+							AllowedModels: []string{},
+							AllowAllKeys:  true,
+						}
+						if err := tx.Create(&providerConfig).Error; err != nil {
+							return fmt.Errorf("failed to create provider config for VK %s, provider %s: %w", vk.ID, provider.Name, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d provider configs", vk.Name, len(allProviders))
+				}
+			}
+
+			// Step 2: Backfill MCPConfigs for VKs that have none
+			// Get all available MCP clients
+			var allMCPClients []tables.TableMCPClient
+			if err := tx.Find(&allMCPClients).Error; err != nil {
+				return fmt.Errorf("failed to query MCP clients: %w", err)
+			}
+
+			for _, vk := range allVKs {
+				// Check if this VK has any MCP configs
+				var mcpConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyMCPConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&mcpConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count MCP configs for VK %s: %w", vk.ID, err)
+				}
+
+				if mcpConfigCount == 0 && len(allMCPClients) > 0 {
+					// VK has no MCP configs - backfill with all available MCP clients with wildcard
+					for _, mcpClient := range allMCPClients {
+						mcpConfig := tables.TableVirtualKeyMCPConfig{
+							VirtualKeyID:   vk.ID,
+							MCPClientID:    mcpClient.ID,
+							ToolsToExecute: []string{"*"},
+						}
+						if err := tx.Create(&mcpConfig).Error; err != nil {
+							return fmt.Errorf("failed to create MCP config for VK %s, client %d: %w", vk.ID, mcpClient.ID, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d MCP client configs", vk.Name, len(allMCPClients))
+				}
+			}
+
+			// Step 3: Recompute and persist config_hash for every VK that was modified.
+			// Without this, subsequent config-sync diff logic would see a stale hash and
+			// attempt to re-reconcile the VK (potentially undoing the backfill).
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed - the backfilled configs are valid data
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill empty virtual key configs migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddRequiredHeadersJSONColumn adds the required_headers_json column to the config_client table
 func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -3922,33 +4069,45 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
-func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
+func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_pricing_overrides_column",
+		ID: "reconcile_pricing_overrides_table",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
-					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+
+			if !mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to create governance_pricing_overrides table: %w", err)
+				}
+				return nil
+			}
+			if err := tx.AutoMigrate(&tables.TablePricingOverride{}); err != nil {
+				return fmt.Errorf("failed to automigrate governance_pricing_overrides table: %w", err)
+			}
+			for _, indexName := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
+				if mgr.HasIndex(&tables.TablePricingOverride{}, indexName) {
+					continue
+				}
+				if err := mgr.CreateIndex(&tables.TablePricingOverride{}, indexName); err != nil {
+					return fmt.Errorf("failed to create pricing override index %s: %w", indexName, err)
 				}
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
-					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to drop governance_pricing_overrides table: %w", err)
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+		return fmt.Errorf("error while running pricing overrides table reconcile migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4224,6 +4383,124 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowAllKeysToProviderConfig adds the allow_all_keys column to the provider config table
+// and backfills existing rows: any provider config with no keys in the join table previously meant
+// "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
+func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_all_keys_to_provider_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+
+			// Add the column if it doesn't exist
+			if !migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_all_keys column: %w", err)
+				}
+			}
+
+			// Backfill: find all provider configs that have no keys in the join table.
+			// These previously meant "allow all keys", so set allow_all_keys = true.
+			var allConfigs []tables.TableVirtualKeyProviderConfig
+			if err := tx.Find(&allConfigs).Error; err != nil {
+				return fmt.Errorf("failed to query provider configs: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash.
+			// Without this, subsequent config-sync diff logic would see a stale hash
+			// and attempt to re-reconcile the VK (potentially undoing the backfill).
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, pc := range allConfigs {
+				var keyCount int64
+				if err := tx.Table("governance_virtual_key_provider_config_keys").
+					Where("table_virtual_key_provider_config_id = ?", pc.ID).
+					Count(&keyCount).Error; err != nil {
+					return fmt.Errorf("failed to count keys for provider config %d: %w", pc.ID, err)
+				}
+
+				if keyCount == 0 {
+					if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+						Where("id = ?", pc.ID).
+						Update("allow_all_keys", true).Error; err != nil {
+						return fmt.Errorf("failed to backfill allow_all_keys for provider config %d: %w", pc.ID, err)
+					}
+					modifiedVKIDs[pc.VirtualKeyID] = struct{}{}
+				}
+			}
+
+			// Recompute and persist config_hash for every VK that was modified.
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_all_keys migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPDisableAutoToolInjectColumn adds the mcp_disable_auto_tool_inject column to the client config table.
+// When true, MCP tools are not automatically injected into requests; only explicit context filters apply.
+func migrationAddMCPDisableAutoToolInjectColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_disable_auto_tool_inject_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if !migratorInstance.HasColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject") {
+				if err := migratorInstance.AddColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if err := migratorInstance.DropColumn(&tables.TableClientConfig{}, "mcp_disable_auto_tool_inject"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp disable auto tool inject migration: %s", err.Error())
 	}
 	return nil
 }
@@ -4736,6 +5013,139 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationBackfillAllowedModelsWildcard converts empty allowed_models on
+// governance_virtual_key_provider_configs and empty models_json on keys to ["*"],
+// preserving the previous "empty = allow all" semantics for existing records.
+// After this migration the new convention applies: ["*"] = allow all, [] = deny all.
+func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_allowed_models_wildcard",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// --- Field 1: vk.provider_config.allowed_models ---
+			// Rows with '[]' previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Where("allowed_models = ? OR allowed_models IS NULL", `[]`).
+				Update("allowed_models", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill provider_config allowed_models: %w", err)
+			}
+
+			// Recompute config_hash for all VKs that have provider configs
+			// (any of them may have had their allowed_models updated above).
+			var modifiedVKIDs []string
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Distinct("virtual_key_id").
+				Pluck("virtual_key_id", &modifiedVKIDs).Error; err != nil {
+				return fmt.Errorf("failed to query VK IDs for hash recomputation: %w", err)
+			}
+
+			for _, vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					if err == gorm.ErrRecordNotFound {
+						// Orphaned provider config row — VK was deleted; skip.
+						continue
+					}
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s' after allowed_models backfill", vk.Name)
+			}
+
+			// --- Field 2: provider.key.models (models_json column) ---
+			// Rows with '[]' or empty string previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableKey{}).
+				Where("models_json = ? OR models_json = ? OR models_json IS NULL", `[]`, ``).
+				Update("models_json", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill key models_json: %w", err)
+			}
+
+			// Recompute config_hash for all keys since models_json is part of the hash input.
+			var keys []tables.TableKey
+			if err := tx.Find(&keys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
+			}
+			for _, key := range keys {
+				schemaKey := schemas.Key{
+					Name:               key.Name,
+					Value:              key.Value,
+					Models:             key.Models,
+					Weight:             getWeight(key.Weight),
+					AzureKeyConfig:     key.AzureKeyConfig,
+					VertexKeyConfig:    key.VertexKeyConfig,
+					BedrockKeyConfig:   key.BedrockKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					VLLMKeyConfig:      key.VLLMKeyConfig,
+					Enabled:            key.Enabled,
+					UseForBatchAPI:     key.UseForBatchAPI,
+				}
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: reverting ["*"] back to [] would
+			// re-introduce the ambiguous "empty = allow all" semantics on downgrade.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_allowed_models_wildcard migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
+func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_allowed_extra_headers_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_mcp_client_allowed_extra_headers_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
 func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -4776,6 +5186,64 @@ func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_plugin_order_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMakeBasePricingColumnsNullable drops the NOT NULL constraint on
+// input_cost_per_token and output_cost_per_token in governance_model_pricing,
+// allowing models that only have non-token pricing (image, audio, video) to be
+// stored without a placeholder zero value.
+func migrationMakeBasePricingColumnsNullable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "make_base_pricing_columns_nullable",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "InputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter input_cost_per_token: %w", err)
+			}
+			if err := m.AlterColumn(&tables.TableModelPricing{}, "OutputCostPerToken"); err != nil {
+				return fmt.Errorf("failed to alter output_cost_per_token: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running make_base_pricing_columns_nullable migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddAllowOnAllVirtualKeysColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_on_all_virtual_keys_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allow_on_all_virtual_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_on_all_virtual_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_allow_on_all_virtual_keys_column migration: %s", err.Error())
 	}
 	return nil
 }
