@@ -475,11 +475,11 @@ Metadata is displayed in the log detail view for both LLM and MCP logs as indivi
 
 ### Combining with Required Headers
 
-[Required headers](../governance/required-headers) and logging headers serve different purposes and can be used together:
+[Required headers](../governance/required-headers) and logging headers serve different purposes and can be used together. Required headers enforce both presence **and** optional value constraints — a request is rejected with a 400 if a header is missing or its value doesn't match the configured pattern.
 
 | Feature | Purpose | Effect on Request |
 |---------|---------|-------------------|
-| **Required Headers** | Enforce header presence | Rejects request if missing (400) |
+| **Required Headers** | Enforce header presence and value constraints | Rejects request if missing or value doesn't match the pattern (400) |
 | **Logging Headers** | Capture header values | No effect on request — only logs metadata |
 
 A common pattern is to require a header **and** log it:
@@ -487,8 +487,11 @@ A common pattern is to require a header **and** log it:
 ```json
 {
   "client": {
-    "required_headers": ["X-Tenant-ID"],
-    "logging_headers": ["X-Tenant-ID"]
+    "required_headers": {
+      "X-Tenant-ID": "*",
+      "X-Region": "us-east-1|eu-west-1"
+    },
+    "logging_headers": ["X-Tenant-ID", "X-Region"]
   }
 }
 ```

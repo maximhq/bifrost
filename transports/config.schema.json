@@ -126,11 +126,15 @@
           "minimum": 1
         },
         "required_headers": {
-          "type": "array",
-          "items": {
-            "type": "string"
+          "type": "object",
+          "propertyNames": {
+            "pattern": "\\S"
           },
-          "description": "Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching."
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime (matched literally), and any other string is treated as a regex pattern. Empty string values are not allowed. Examples: {\"X-Tenant-ID\": \"*\", \"X-Proxy-Token\": \"env.MY_SECRET\", \"X-Region\": \"us-east-1|eu-west-1\"}"
         },
         "logging_headers": {
           "type": "array",
@@ -1067,11 +1071,15 @@
                       "description": "Whether virtual key (x-bf-vk header) is mandatory for all requests"
                     },
                     "required_headers": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
+                      "type": "object",
+                      "propertyNames": {
+                        "pattern": "\\S"
                       },
-                      "description": "List of headers that must be present in requests"
+                      "additionalProperties": {
+                        "type": "string",
+                        "pattern": "\\S"
+                      },
+                      "description": "Headers that must be present on every request. Keys are header names (case-insensitive matching). Values are non-empty patterns: \"*\" means any value is accepted, \"env.VAR_NAME\" resolves an environment variable at runtime (matched literally), and any other string is treated as a regex pattern. Empty string values are not allowed."
                     },
                     "is_enterprise": {
                       "type": "boolean",

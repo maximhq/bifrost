@@ -262,6 +262,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRequiredHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationConvertRequiredHeadersToMap(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddLoggingHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
@@ -4733,6 +4736,69 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
 	}
 
+	return nil
+}
+
+// migrationConvertRequiredHeadersToMap converts legacy required_headers_json values
+// from []string format to map[string]string format with "*" wildcard values.
+func migrationConvertRequiredHeadersToMap(ctx context.Context, db *gorm.DB) error {
+	type configRow struct {
+		ID                  uint   `gorm:"column:id"`
+		RequiredHeadersJSON string `gorm:"column:required_headers_json"`
+	}
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "convert_required_headers_to_map",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var rows []configRow
+			if err := tx.Table("config_client").Select("id, required_headers_json").Find(&rows).Error; err != nil {
+				return fmt.Errorf("failed to fetch client configs: %w", err)
+			}
+
+			for _, row := range rows {
+				if row.RequiredHeadersJSON == "" || row.RequiredHeadersJSON == "{}" || row.RequiredHeadersJSON == "null" {
+					continue
+				}
+
+				var asMap map[string]string
+				if json.Unmarshal([]byte(row.RequiredHeadersJSON), &asMap) == nil {
+					continue
+				}
+
+				var arr []string
+				if err := json.Unmarshal([]byte(row.RequiredHeadersJSON), &arr); err != nil {
+					return fmt.Errorf("failed to unmarshal required_headers_json for config %d: %w", row.ID, err)
+				}
+
+				newMap := make(map[string]string, len(arr))
+				for _, h := range arr {
+					newMap[h] = "*"
+				}
+
+				data, err := json.Marshal(newMap)
+				if err != nil {
+					return fmt.Errorf("failed to marshal converted required headers for config %d: %w", row.ID, err)
+				}
+
+				if err := tx.Table("config_client").Where("id = ?", row.ID).Updates(map[string]interface{}{
+					"required_headers_json": string(data),
+					"config_hash":           "",
+				}).Error; err != nil {
+					return fmt.Errorf("failed to update required headers for config %d: %w", row.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running convert_required_headers_to_map migration: %s", err.Error())
+	}
 	return nil
 }
 
