@@ -92,6 +92,9 @@ func buildVirtualKeyWithBudget(id, value, name string, budget *configstoreTables
 	vk.Budget = budget
 	budgetID := budget.ID
 	vk.BudgetID = &budgetID
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 
@@ -100,6 +103,9 @@ func buildVirtualKeyWithRateLimit(id, value, name string, rateLimit *configstore
 	vk.RateLimit = rateLimit
 	rateLimitID := rateLimit.ID
 	vk.RateLimitID = &rateLimitID
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
 	return vk
 }
 

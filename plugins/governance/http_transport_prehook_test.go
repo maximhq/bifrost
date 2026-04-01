@@ -30,7 +30,7 @@ func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T
 		"sk-bf-test",
 		"replicate-only",
 		[]configstoreTables.TableVirtualKeyProviderConfig{
-			buildProviderConfig("replicate", nil),
+			buildProviderConfig("replicate", []string{"*"}),
 		},
 	)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{

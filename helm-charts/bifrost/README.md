@@ -4,9 +4,23 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.14
+**Latest Version:** 2.0.15
 
 ## Changelog
+
+### v2.0.15
+
+- Synced helm schema with transport `config.schema.json` — added missing properties:
+  - `client.mcpDisableAutoToolInject` — disable automatic MCP tool injection
+  - `governance.budgets[].calendar_aligned` — snap budget resets to calendar boundaries
+  - `governance.pricingOverrides` — scoped pricing overrides for the model catalog
+  - `mcp.clientConfigs[].allowedExtraHeaders` — header allowlist per MCP client
+  - `mcp.clientConfigs[].allowOnAllVirtualKeys` — make MCP server accessible to all virtual keys
+  - `mcp.toolManagerConfig.disableAutoToolInject` — disable auto tool injection at manager level
+  - `networkConfig.beta_header_overrides` — override Anthropic beta header support per provider
+  - `websocket` — full WebSocket gateway tuning (connections, pool, transcript buffer)
+- Fixed SSE `connectionString` not being rendered in `_helpers.tpl` for MCP clients
+- Added template rendering for all new properties in `_helpers.tpl`
 
 ### v2.0.14
 

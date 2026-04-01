@@ -252,8 +252,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      providerBudget,
 						ResetDuration: "1h",
@@ -1348,13 +1350,15 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "azure",
-					Weight:        azureWeight,
+					Weight:        &azureWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},
@@ -1482,13 +1486,15 @@ func TestProviderFallbackMechanism(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "anthropic",
-					Weight:        anthropicWeight,
+					Weight:        &anthropicWeight,
 					AllowedModels: []string{"claude-3-sonnet"}, // Does NOT include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"}, // DOES include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},

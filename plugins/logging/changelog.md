@@ -1,4 +1,0 @@
-- feat: add image edit input view on logs
-- feat: logging in plugins
-- feat: implement scoped pricing override
-- refactor: custom pricing refactor

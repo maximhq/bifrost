@@ -88,6 +88,8 @@
         "provider_configs": [
           {
             "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           }
         ]
@@ -109,6 +111,8 @@
         "provider_configs": [
           {
             "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
             "weight": 1.0
           }
         ]
@@ -130,7 +134,8 @@
         {
           "name": "openai-primary",
           "value": "env.OPENAI_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ]
     }

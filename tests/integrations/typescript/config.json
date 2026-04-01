@@ -7,6 +7,7 @@
                     "name": "OpenAI API Key",
                     "value": "env.OPENAI_API_KEY",
                     "weight": 1,
+                    "models": ["*"],
                     "use_for_batch_api": true
                 }
             ],
@@ -20,6 +21,7 @@
                     "name": "Anthropic API Key",
                     "value": "env.ANTHROPIC_API_KEY",
                     "weight": 1,
+                    "models": ["*"],
                     "use_for_batch_api": true
                 }
             ],
@@ -33,6 +35,7 @@
                     "name": "Gemini API Key",
                     "value": "env.GEMINI_API_KEY",
                     "weight": 1,
+                    "models": ["*"],
                     "use_for_batch_api": true
                 }
             ],
@@ -44,11 +47,12 @@
             "keys": [
                 {
                     "name": "Vertex API Key",
-                    "vertex_key_config": {                        
+                    "vertex_key_config": {
                         "project_id": "env.GOOGLE_PROJECT_ID",
                         "region": "env.GOOGLE_LOCATION"
                     },
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -60,7 +64,8 @@
                 {
                     "name": "Mistral API Key",
                     "value": "env.MISTRAL_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -72,7 +77,8 @@
                 {
                     "name": "Cohere API Key",
                     "value": "env.COHERE_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -84,7 +90,8 @@
                 {
                     "name": "Groq API Key",
                     "value": "env.GROQ_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -96,7 +103,8 @@
                 {
                     "name": "Perplexity API Key",
                     "value": "env.PERPLEXITY_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -108,7 +116,8 @@
                 {
                     "name": "Cerebras API Key",
                     "value": "env.CEREBRAS_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -120,7 +129,8 @@
                 {
                     "name": "OpenRouter API Key",
                     "value": "env.OPENROUTER_API_KEY",
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -136,7 +146,8 @@
                         "endpoint": "env.AZURE_OPENAI_ENDPOINT",
                         "api_version": "env.AZURE_OPENAI_API_VERSION"
                     },
-                    "weight": 1
+                    "weight": 1,
+                    "models": ["*"]
                 }
             ],
             "network_config": {
@@ -154,6 +165,7 @@
                         "arn": "env.AWS_ARN"
                     },
                     "weight": 1,
+                    "models": ["*"],
                     "use_for_batch_api": true
                 }
             ],
@@ -181,7 +193,21 @@
             {
                 "id": "vk-test",
                 "value": "sk-bf-test-key",
-                "is_active": true
+                "is_active": true,
+                "provider_configs": [
+                    { "provider": "openai",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "anthropic",  "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "gemini",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "vertex",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "mistral",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "cohere",     "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "groq",       "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "perplexity", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "cerebras",   "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "openrouter", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "azure",      "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+                    { "provider": "bedrock",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+                ]
             }
         ]
     },

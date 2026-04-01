@@ -8,7 +8,7 @@ export function createProviderKeyData(overrides: Partial<ProviderKeyConfig> = {}
   return {
     name: `Test Key ${timestamp}`,
     value: `sk-test-${timestamp}-${Math.random().toString(36).substring(7)}`,
-    models: [],
+    models: ['*'],
     weight: 1.0,
     ...overrides,
   }
