@@ -786,26 +786,68 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs
 func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs     []string                `json:"ids"`
+		Filters *logstore.SearchFilters `json:"filters,omitempty"`
 	}
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
-	if len(req.IDs) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
+	if len(req.IDs) == 0 && req.Filters == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs or filters provided")
 		return
 	}
 
-	if err := h.logManager.DeleteLogs(ctx, req.IDs); err != nil {
-		logger.Error("failed to delete logs: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
-		return
+	deletedCount := 0
+
+	if len(req.IDs) > 0 {
+		if err := h.logManager.DeleteLogs(ctx, req.IDs); err != nil {
+			logger.Error("failed to delete logs: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
+			return
+		}
+		deletedCount = len(req.IDs)
+	} else {
+		const batchSize = 1000
+		for {
+			result, err := h.logManager.SearchLogs(ctx, *req.Filters, logstore.PaginationOptions{
+				Limit:  batchSize,
+				Offset: 0,
+				SortBy: "timestamp",
+				Order:  "desc",
+			})
+			if err != nil {
+				logger.Error("failed to search logs for filtered delete: %v", err)
+				SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
+				return
+			}
+
+			if len(result.Logs) == 0 {
+				break
+			}
+
+			ids := make([]string, 0, len(result.Logs))
+			for _, log := range result.Logs {
+				ids = append(ids, log.ID)
+			}
+
+			if err := h.logManager.DeleteLogs(ctx, ids); err != nil {
+				logger.Error("failed to delete filtered logs: %v", err)
+				SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
+				return
+			}
+			deletedCount += len(ids)
+
+			if len(result.Logs) < batchSize {
+				break
+			}
+		}
 	}
 
 	SendJSON(ctx, map[string]interface{}{
-		"message": "Logs deleted successfully",
+		"message":       "Logs deleted successfully",
+		"deleted_count": deletedCount,
 	})
 }
 

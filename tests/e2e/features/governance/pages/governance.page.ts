@@ -127,6 +127,29 @@ export class GovernancePage extends BasePage {
     await expect.poll(() => this.teamExists(name), { timeout: 10000 }).toBe(false)
   }
 
+  async deleteTeams(names: string[]): Promise<void> {
+    if (names.length === 0) return
+
+    for (const name of names) {
+      const row = this.getTeamRow(name)
+      await row.waitFor({ state: 'visible', timeout: 10000 })
+      await row.getByTestId(`team-checkbox-${name}`).click()
+    }
+
+    const bulkDeleteBtn = this.page.getByTestId('teams-bulk-delete-btn')
+    await bulkDeleteBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await bulkDeleteBtn.click()
+
+    const confirmBtn = this.page.getByTestId('teams-confirm-bulk-delete-btn')
+    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await confirmBtn.click()
+
+    await this.waitForSuccessToast()
+    for (const name of names) {
+      await expect.poll(() => this.teamExists(name), { timeout: 10000 }).toBe(false)
+    }
+  }
+
   async closeTeamDialog(): Promise<void> {
     if (await this.teamDialog.isVisible().catch(() => false)) {
       await this.teamDialog.getByRole('button', { name: /Cancel/i }).click()
@@ -172,6 +195,29 @@ export class GovernancePage extends BasePage {
     await confirmBtn.click()
     await this.waitForSuccessToast()
     await expect.poll(() => this.customerExists(name), { timeout: 10000 }).toBe(false)
+  }
+
+  async deleteCustomers(names: string[]): Promise<void> {
+    if (names.length === 0) return
+
+    for (const name of names) {
+      const row = this.getCustomerRow(name)
+      await row.waitFor({ state: 'visible', timeout: 10000 })
+      await row.getByTestId(`customer-checkbox-${name}`).click()
+    }
+
+    const bulkDeleteBtn = this.page.getByTestId('customers-bulk-delete-btn')
+    await bulkDeleteBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await bulkDeleteBtn.click()
+
+    const confirmBtn = this.page.getByTestId('customers-confirm-bulk-delete-btn')
+    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await confirmBtn.click()
+
+    await this.waitForSuccessToast()
+    for (const name of names) {
+      await expect.poll(() => this.customerExists(name), { timeout: 10000 }).toBe(false)
+    }
   }
 
   async editTeam(name: string, updates: Partial<TeamConfig>): Promise<void> {

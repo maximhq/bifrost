@@ -27,6 +27,10 @@ type LogManager interface {
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 
+	// SearchLogs searches for log entries based on filters and pagination.
+	// Kept alongside Search for compatibility with existing handler call sites.
+	SearchLogs(ctx context.Context, filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error)
+
 	// GetStats calculates statistics for logs matching the given filters
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 
@@ -130,6 +134,10 @@ func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchF
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
 	}
 	return p.plugin.SearchLogs(ctx, *filters, *pagination)
+}
+
+func (p *PluginLogManager) SearchLogs(ctx context.Context, filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return p.plugin.SearchLogs(ctx, filters, pagination)
 }
 
 func (p *PluginLogManager) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {

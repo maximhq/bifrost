@@ -450,12 +450,12 @@ export class VirtualKeysPage extends BasePage {
     const deleteResponsePromise = this.page.waitForResponse(
       (response) => {
         const url = response.url()
-        return url.includes('/api/virtual-keys/') && response.request().method() === 'DELETE'
+        return url.includes('/api/governance/virtual-keys') && response.request().method() === 'DELETE'
       },
       { timeout: 15000 }
     )
     await confirmBtn.click()
-    const deleteResponse = await deleteResponsePromise.catch((err) => {
+    const deleteResponse = await deleteResponsePromise.catch((err: unknown) => {
       console.warn(`[deleteVirtualKey] No DELETE response captured for "${name}": ${err}`)
       return null
     })

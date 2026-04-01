@@ -384,12 +384,13 @@ func (g *GlobalTestData) AddCustomer(id string) {
 // deleteWithRetry performs a DELETE request with retry logic
 // Retries up to 5 times if the response status is not 200 or 204
 // Delete requests don't require VK headers
-func deleteWithRetry(t *testing.T, path string, resourceType string, resourceID string) bool {
+func deleteWithRetry(t *testing.T, path string, body interface{}, resourceType string, resourceID string) bool {
 	maxRetries := 5
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		resp := MakeRequest(t, APIRequest{
 			Method: "DELETE",
 			Path:   path,
+			Body:   body,
 			// Note: VKHeader is intentionally not set for DELETE requests
 		})
 
@@ -428,17 +429,17 @@ func deleteWithRetry(t *testing.T, path string, resourceType string, resourceID 
 func (g *GlobalTestData) Cleanup(t *testing.T) {
 	// Delete virtual keys
 	for _, vkID := range g.VirtualKeys {
-		deleteWithRetry(t, fmt.Sprintf("/api/governance/virtual-keys/%s", vkID), "virtual key", vkID)
+		deleteWithRetry(t, "/api/governance/virtual-keys", map[string]interface{}{"ids": []string{vkID}}, "virtual key", vkID)
 	}
 
 	// Delete teams
 	for _, teamID := range g.Teams {
-		deleteWithRetry(t, fmt.Sprintf("/api/governance/teams/%s", teamID), "team", teamID)
+		deleteWithRetry(t, fmt.Sprintf("/api/governance/teams/%s", teamID), nil, "team", teamID)
 	}
 
 	// Delete customers
 	for _, customerID := range g.Customers {
-		deleteWithRetry(t, fmt.Sprintf("/api/governance/customers/%s", customerID), "customer", customerID)
+		deleteWithRetry(t, fmt.Sprintf("/api/governance/customers/%s", customerID), nil, "customer", customerID)
 	}
 
 	t.Logf("Cleanup completed: deleted %d VKs, %d teams, %d customers",
