@@ -120,7 +120,13 @@ MCPClientCreateRequestBase:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
-
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are available to all virtual keys by default,
+        without requiring an explicit virtual key assignment.
+        An explicit virtual key config always overrides this setting for that key.
 MCPClientCreateRequestHTTP:
   allOf:
     - $ref: '#/MCPClientCreateRequestBase'
@@ -228,6 +234,41 @@ MCPClientUpdateRequest:
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
         Note: Only available when updating an existing client after tools have been fetched.
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    vk_configs:
+      type: array
+      items:
+        $ref: '#/MCPVKConfig'
+      description: |
+        When provided, replaces all virtual key assignments for this MCP client.
+        Each entry specifies a virtual key and the tools it is allowed to call.
+        To remove all VK access, provide an empty array [].
+        Omit this field to leave existing VK assignments unchanged.
+
+MCPVKConfig:
+  type: object
+  description: Per-virtual-key tool access configuration for an MCP client
+  required:
+    - virtual_key_id
+    - tools_to_execute
+  properties:
+    virtual_key_id:
+      type: string
+      description: ID of the virtual key
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Tools this virtual key is allowed to call on this MCP server.
+        ["*"] => all tools allowed
+        ["tool1", "tool2"] => only the specified tools
 
 MCPClientConfig:
   type: object
@@ -293,6 +334,13 @@ MCPClientConfig:
         Per-tool cost in USD for execution.
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
+    allow_on_all_virtual_keys:
+      type: boolean
+      default: false
+      description: |
+        When true, this MCP client's tools are accessible to all virtual keys without requiring
+        explicit per-key assignment. All tools are allowed by default. If a virtual key has an
+        explicit MCP config for this client, that config takes precedence and overrides this behaviour.
 
 ChatToolFunction:
   type: object
@@ -308,6 +356,25 @@ ChatToolFunction:
     strict:
       type: boolean
 
+MCPVKConfigResponse:
+  type: object
+  description: Per-virtual-key tool access configuration as returned in list/get responses
+  properties:
+    virtual_key_id:
+      type: string
+      description: ID of the virtual key
+    virtual_key_name:
+      type: string
+      description: Display name of the virtual key
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Tools this virtual key is allowed to call on this MCP client.
+        ["*"] => all tools allowed
+        ["tool1", "tool2"] => only the specified tools
+
 MCPClient:
   type: object
   description: Connected MCP client with its tools
@@ -320,6 +387,11 @@ MCPClient:
         $ref: '#/ChatToolFunction'
     state:
       $ref: '#/MCPConnectionState'
+    vk_configs:
+      type: array
+      items:
+        $ref: '#/MCPVKConfigResponse'
+      description: Virtual key assignments for this MCP client
 
 ExecuteToolRequest:
   oneOf:

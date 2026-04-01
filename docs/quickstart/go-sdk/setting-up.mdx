@@ -52,7 +52,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     if provider == schemas.OpenAI {
     return []schemas.Key{{
         Value:  os.Getenv("OPENAI_API_KEY"),
-            Models: []string{}, // Keep Models empty to use any model
+            Models: schemas.WhiteList{"*"}, // Keep Models ["*"] to use any model
             Weight: 1.0,
         }}, nil
     }
