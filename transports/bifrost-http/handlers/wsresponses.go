@@ -513,7 +513,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 				key := schemas.Key{
 					ID:     "header-provided",
 					Value:  *schemas.NewEnvVar(token),
-					Models: []string{},
+					Models: schemas.WhiteList{"*"},
 					Weight: 1.0,
 				}
 				ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
@@ -527,7 +527,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.apiKey),
-				Models: []string{},
+				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}
 			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
@@ -540,7 +540,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.googAPIKey),
-				Models: []string{},
+				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			}
 			ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)

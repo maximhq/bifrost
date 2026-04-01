@@ -30,6 +30,8 @@ export function createVirtualKeyWithProvider(
       {
         provider,
         weight: 1.0,
+        allowedModels: ['*'],
+        keyIds: ['*'],
       },
     ],
     ...vkOverrides,
@@ -87,6 +89,8 @@ export function createVirtualKeyWithMultipleProviders(
     providerConfigs: providers.map((provider) => ({
       provider,
       weight,
+      allowedModels: ['*'],
+      keyIds: ['*'],
     })),
     ...vkOverrides,
   }
@@ -99,6 +103,8 @@ export function createProviderConfig(overrides: Partial<ProviderConfig> = {}): P
   return {
     provider: 'openai',
     weight: 1.0,
+    allowedModels: ['*'],
+    keyIds: ['*'],
     ...overrides,
   }
 }

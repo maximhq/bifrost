@@ -1479,7 +1479,9 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key checks also pass
-	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	})
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil)

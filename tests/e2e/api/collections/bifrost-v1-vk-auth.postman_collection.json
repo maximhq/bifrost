@@ -60,7 +60,7 @@
                 "exec": [
                   "var timestamp = Date.now();",
                   "var uniqueName = 'VK Auth Test ' + timestamp;",
-                  "pm.request.body.raw = JSON.stringify({name: uniqueName});"
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
                 ]
               }
             },

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider, NetworkConfig } from "@/lib/types/config";
+import { buildProviderUpdatePayload } from "@/app/workspace/providers/views/utils";
 import { betaHeadersFormSchema, type BetaHeadersFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -112,14 +113,12 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 			}
 		}
 
-		const updatedProvider: ModelProvider = {
-			...provider,
+		updateProvider(buildProviderUpdatePayload(provider, {
 			network_config: {
 				...(provider.network_config ?? {} as NetworkConfig),
 				beta_header_overrides: Object.keys(cleanedOverrides).length > 0 ? cleanedOverrides : undefined,
 			},
-		};
-		updateProvider(updatedProvider)
+		}))
 			.unwrap()
 			.then(() => {
 				toast.success("Beta header configuration updated successfully");

@@ -421,8 +421,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &initialTokenLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -512,9 +514,11 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Body: UpdateVirtualKeyRequest{
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					ID:       &providerConfigID,
-					Provider: "openai",
-					Weight:   1.0,
+					ID:            &providerConfigID,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &newLowerLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -955,8 +959,10 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      initialBudget,
 						ResetDuration: resetDuration,
@@ -1054,9 +1060,11 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		Body: UpdateVirtualKeyRequest{
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					ID:       &providerConfigID,
-					Provider: "openai",
-					Weight:   1.0,
+					ID:            &providerConfigID,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					Budget: &BudgetRequest{
 						MaxLimit:      newLowerBudget,
 						ResetDuration: resetDuration,

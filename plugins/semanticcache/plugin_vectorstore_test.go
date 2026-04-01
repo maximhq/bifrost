@@ -58,7 +58,7 @@ func getDefaultTestConfig() *Config {
 		Keys: []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
+				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
 		},

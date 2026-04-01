@@ -122,7 +122,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-			Models: []string{}, // Empty models array means it supports ALL models
+			Models: schemas.WhiteList{"*"}, // "*" means allow all models
 			Weight: 1.0,
 		},
 	}, nil
@@ -374,7 +374,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		Keys: []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
+				Models: schemas.WhiteList{"*"},
 				Weight: 1.0,
 			},
 		},
@@ -651,7 +651,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		Keys: []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 			},
 		},
@@ -672,7 +672,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		Keys: []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 			},
 		},
@@ -694,7 +694,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		Keys: []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
+				Models: []string{"*"},
 				Weight: 1.0,
 			},
 		},
