@@ -27,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -70,6 +70,10 @@ install-ui: cleanup-enterprise
 install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || (echo "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@echo "$(GREEN)Air is ready$(NC)"
+
+install-pulse: ## Install pulse for hot reloading (if not already installed)
+	@which pulse > /dev/null || (echo "$(YELLOW)Installing pulse for hot reloading...$(NC)" && go install github.com/Pratham-Mishra04/pulse@latest)
+	@echo "$(GREEN)Pulse is ready$(NC)"
 
 install-delve: ## Install delve for debugging (if not already installed)
 	@which dlv > /dev/null || (echo "$(YELLOW)Installing delve for debugging...$(NC)" && go install github.com/go-delve/delve/cmd/dlv@latest)
@@ -145,6 +149,41 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
 			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
 	fi
+
+dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
+	@echo "$(GREEN)Starting Bifrost complete development environment (pulse)...$(NC)"
+	@echo "$(YELLOW)This will start:$(NC)"
+	@echo "  1. UI development server (localhost:3000)"
+	@echo "  2. API server with UI proxy (localhost:$(PORT))"
+	@echo "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
+	@if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
+	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		echo "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
+	fi
+	@echo ""
+	@echo "$(YELLOW)Starting UI development server...$(NC)"
+	@if [ -n "$(DISABLE_PROFILER)" ]; then \
+		echo "$(CYAN)DevProfiler disabled for testing$(NC)"; \
+		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+	else \
+		cd ui && npm run dev & \
+	fi
+	@sleep 3
+	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
+	@$(MAKE) setup-workspace >/dev/null
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
+		echo "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+	fi; \
+	HOST="$(HOST)" PORT="$(PORT)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" DEBUG="$(DEBUG)" PROMETHEUS_LABELS="$(PROMETHEUS_LABELS)" APP_DIR="$(APP_DIR)" pulse
 
 build-ui: install-ui ## Build ui
 	@echo "$(GREEN)Building ui...$(NC)"
