@@ -1430,6 +1430,9 @@
     "audit_logs": {
       "$ref": "#/$defs/audit_logs_config"
     },
+    "large_payload_optimization": {
+      "$ref": "#/$defs/large_payload_optimization"
+    },
     "websocket": {
       "$ref": "#/$defs/websocket_config"
     }
@@ -2960,6 +2963,10 @@
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
         },
+        "node_id": {
+          "type": "string",
+          "description": "Unique identifier for this cluster node"
+        },
         "region": {
           "type": "string",
           "description": "AWS region for cluster deployment (default: us-east-1)"
@@ -3035,6 +3042,21 @@
                 "mdns"
               ],
               "description": "Discovery mechanism type"
+            },
+            "service_name": {
+              "type": "string",
+              "description": "Service name used for discovery (used by consul, etcd, UDP, and mDNS)"
+            },
+            "bind_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port to bind for cluster communication"
+            },
+            "dial_timeout": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Timeout for discovery dial operations in nanoseconds"
             },
             "allowed_address_space": {
               "type": "array",
@@ -3407,6 +3429,53 @@
         "hmac_key": {
           "type": "string",
           "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of days to retain audit logs (0 means no retention limit)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "large_payload_optimization": {
+      "type": "object",
+      "description": "Large payload streaming optimization configuration. Detects large request/response payloads and streams them through without full materialization.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master toggle for large payload optimization (default: false)",
+          "default": false
+        },
+        "request_threshold_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Request body size in bytes above which streaming kicks in (default: 10MB)",
+          "default": 10485760
+        },
+        "response_threshold_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Response body size in bytes above which streaming kicks in (default: 10MB)",
+          "default": 10485760
+        },
+        "prefetch_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How much of the request to prefetch for metadata extraction in bytes (default: 64KB)",
+          "default": 65536
+        },
+        "max_payload_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum allowed payload size in bytes; reject above this (default: 500MB)",
+          "default": 524288000
+        },
+        "truncated_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many bytes to store as truncated preview in logs (default: 1MB)",
+          "default": 1048576
         }
       },
       "additionalProperties": false
