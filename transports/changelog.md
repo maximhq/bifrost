@@ -1,4 +1,6 @@
+- feat: dedicated provider keys API — keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
 - feat: VK provider config key_ids now supports ["*"] wildcard to allow all keys; empty key_ids denies all; handler resolves wildcard to AllowAllKeys flag without DB key lookups
+- feat: now plugins can start injecting logs at trace level. Just use `ctx.Log(schemas.LogLevelInfo, "Test log")`
 - feat: add option to disable automatic MCP tool injection per request
 - feat: virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
 - refactor: standardize empty array conventions in bifrost. Empty array means no tools/keys are allowed, ["*"] means all tools/keys are allowed.
@@ -54,7 +56,7 @@ The following automatic migrations run on upgrade:
 </Note>
 
 <Warning>
-**This migration is not revertible.** Although all migrations are correctly handled automatically, it is recommended to **make a backup copy of your config store database** before upgrading to v1.5.0-prerelease1. If anything goes wrong, a backup is the only way to restore your previous state. It is also to note that any database which has been successfully migrated to v1.5.0-prereleaseX can not be used to run v1.4.x.
+**This migration is not revertible.** Although all migrations are correctly handled automatically, it is recommended to **make a backup copy of your config store database** before upgrading to v1.5.0-prerelease1. If anything goes wrong, a backup is the only way to restore your previous state. It is also worth noting that any database which has been successfully migrated to v1.5.0-prereleaseX can not be used to run v1.4.x.
 </Warning>
 
 **The automatic migration only protects your existing data.** If you also define your configuration through `config.json` or manage virtual keys via the API, you must update those manually using this guide.
@@ -749,6 +751,110 @@ Support for image editing via the dedicated `/v1/images/edits` endpoint on Repli
 
 ---
 
+## Breaking Change 9: Provider Keys API Separated from Provider API
+
+**Who is affected:** Anyone who reads keys from provider API responses, or sends keys in provider create/update requests via the REST API.
+
+### What changed
+
+Provider key management has been separated into dedicated endpoints. The `keys` field has been **removed** from all provider API requests and responses.
+
+- `GET /api/providers` and `GET /api/providers/{provider}` no longer return a `keys` field.
+- `POST /api/providers` no longer accepts a `keys` field. Create the provider first, then add keys separately.
+- `PUT /api/providers/{provider}` no longer accepts a `keys` field. Existing keys are preserved as-is during provider updates.
+- The existing `GET /api/keys` endpoint (flat key list across all providers) is **unchanged**.
+
+### New endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/providers/{provider}/keys` | List all keys for a provider |
+| `GET` | `/api/providers/{provider}/keys/{key_id}` | Get a single key |
+| `POST` | `/api/providers/{provider}/keys` | Create a new key |
+| `PUT` | `/api/providers/{provider}/keys/{key_id}` | Update a key |
+| `DELETE` | `/api/providers/{provider}/keys/{key_id}` | Delete a key |
+
+**List keys** returns `{ "keys": [...], "total": N }`. All other endpoints return a single key object. Delete returns the deleted key for confirmation. Key values are always redacted in responses.
+
+**Create key notes:**
+- `id` is auto-generated if omitted
+- `enabled` defaults to `true` if omitted
+- `value` is required and must not be empty
+- Provider-specific config fields (`azure_key_config`, `vertex_key_config`, `bedrock_key_config`, `vllm_key_config`) are supported as before
+- Keyless providers (e.g., Ollama) reject key creation with `400`
+
+**Update key notes:**
+Send the full key object. Redacted values sent back unchanged are automatically preserved (same merge behavior as before).
+
+### How to update
+
+**Creating a provider with keys:**
+
+**Before (v1.4.x):**
+```bash
+curl -X POST localhost:8080/api/providers -d '{
+  "provider": "openai",
+  "keys": [{"name": "main", "value": "sk-..."}],
+  "network_config": { ... }
+}'
+```
+
+**After (v1.5.0):** Create the provider first, then add keys separately:
+```bash
+curl -X POST localhost:8080/api/providers -d '{
+  "provider": "openai",
+  "network_config": { ... }
+}'
+
+curl -X POST localhost:8080/api/providers/openai/keys -d '{
+  "name": "main", "value": "sk-..."
+}'
+```
+
+**Reading keys:**
+
+**Before (v1.4.x):**
+```bash
+curl localhost:8080/api/providers/openai | jq '.keys'
+```
+
+**After (v1.5.0):**
+```bash
+curl localhost:8080/api/providers/openai/keys | jq '.keys'
+```
+
+**Updating / deleting keys:**
+
+**Before (v1.4.x):** Bulk replace via provider update:
+```bash
+curl -X PUT localhost:8080/api/providers/openai -d '{
+  "keys": [{"id": "key-1", "name": "updated", "value": "sk-new"}],
+  "network_config": { ... }
+}'
+```
+
+**After (v1.5.0):** Individual key operations:
+```bash
+# Update one key
+curl -X PUT localhost:8080/api/providers/openai/keys/key-1 \
+  -d '{ "name": "updated", "value": "sk-new" }'
+
+# Delete a key
+curl -X DELETE localhost:8080/api/providers/openai/keys/key-2
+
+# Add a new key
+curl -X POST localhost:8080/api/providers/openai/keys \
+  -d '{ "name": "new-key", "value": "sk-..." }'
+```
+
+### Other behavioral changes
+
+- **Model discovery** is automatically triggered after key create, update, and delete operations.
+- **Provider updates** (`PUT /api/providers/{provider}`) now invalidate key status caches, so key statuses refresh after provider config changes.
+- **Existing keys are safe** — no data migration is needed. All existing keys remain intact and accessible via the new endpoints.
+
+---
+
 ## Quick Migration Checklist
 
 Use this checklist when upgrading to v1.5.0:
@@ -783,6 +889,10 @@ If you parse the Virtual Key API response in your code, update the `weight` fiel
 <Step title="Fix any invalid WhiteList values">
 Check that none of your lists mix `"*"` with other values (e.g., `["*", "gpt-4o"]`), and that none have duplicate entries. These will now be rejected with HTTP 400.
 </Step>
+
+<Step title="Migrate key management to dedicated endpoints">
+Stop sending `keys` in provider create/update payloads and stop reading `keys` from provider responses. Use the new `/api/providers/{provider}/keys` endpoints for all key CRUD operations.
+</Step>
 </Steps>
 
 ---
@@ -812,6 +922,12 @@ The most common cause is a whitelist validation failure — either `["*", "gpt-4
 A provider config with `key_ids` omitted or set to `[]` now **blocks all keys** (`allow_all_keys: false`, no specific keys configured). This is different from `allowed_models` — there is no automatic migration for `key_ids`.
 
 **Fix:** Add `"key_ids": ["*"]` to any provider config that previously had `allowed_keys: []` or no `allowed_keys` field.
+
+### Provider create/update returns errors about `keys` field
+
+The `keys` field has been removed from provider API payloads. Use the dedicated `/api/providers/{provider}/keys` endpoints to manage keys separately.
+
+**Fix:** Remove `keys` from your provider create/update requests. Create keys via `POST /api/providers/{provider}/keys` after creating the provider.
 
 ### Existing keys work fine but newly created keys are blocked
 

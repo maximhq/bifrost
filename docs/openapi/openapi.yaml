@@ -563,6 +563,10 @@ paths:
     $ref: './paths/management/providers.yaml#/providers'
   /api/providers/{provider}:
     $ref: './paths/management/providers.yaml#/providers-by-name'
+  /api/providers/{provider}/keys:
+    $ref: './paths/management/providers.yaml#/provider-keys'
+  /api/providers/{provider}/keys/{key_id}:
+    $ref: './paths/management/providers.yaml#/provider-key-by-id'
   /api/keys:
     $ref: './paths/management/providers.yaml#/keys'
   /api/models:
@@ -978,6 +982,8 @@ components:
       $ref: './schemas/management/providers.yaml#/UpdateProviderRequest'
     Key:
       $ref: './schemas/management/providers.yaml#/Key'
+    ListProviderKeysResponse:
+      $ref: './schemas/management/providers.yaml#/ListProviderKeysResponse'
     NetworkConfig:
       $ref: './schemas/management/providers.yaml#/NetworkConfig'
     ConcurrencyAndBufferSize:
