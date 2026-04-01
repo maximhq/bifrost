@@ -329,6 +329,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4920,6 +4923,41 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_model_capability_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWhitelistedRoutesJSONColumn adds the whitelisted_routes_json column to the config_client table
+func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_whitelisted_routes_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "WhitelistedRoutesJSON"); err != nil {
+					return fmt.Errorf("failed to add whitelisted_routes_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "whitelisted_routes_json") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "whitelisted_routes_json"); err != nil {
+					return fmt.Errorf("failed to drop whitelisted_routes_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running whitelisted_routes_json migration: %s", err.Error())
 	}
 	return nil
 }

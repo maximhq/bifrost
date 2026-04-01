@@ -376,6 +376,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Handle LoggingHeaders changes (no restart needed - logging plugin reads via pointer)
 	updatedConfig.LoggingHeaders = payload.ClientConfig.LoggingHeaders
 
+	// Handle WhitelistedRoutes changes (updated dynamically via AuthMiddleware)
+	updatedConfig.WhitelistedRoutes = payload.ClientConfig.WhitelistedRoutes
+
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
@@ -406,7 +409,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Update the store with the new config
 	h.store.ClientConfig = updatedConfig
 
-	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
+	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return

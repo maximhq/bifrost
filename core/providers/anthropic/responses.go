@@ -4099,7 +4099,6 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 		}
 	}
 
-
 	return &anthropicMsg
 }
 
@@ -5295,7 +5294,7 @@ func convertBifrostMCPToolToAnthropicNew(tool *schemas.ResponsesTool) (*Anthropi
 	// Convert allowed tools to per-tool configs
 	if tool.ResponsesToolMCP.AllowedTools != nil {
 		// Allowlist pattern: default disabled, specific tools enabled
-		toolset.DefaultConfig = &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)}
+		toolset.DefaultConfig = &AnthropicMCPToolsetConfig{Enabled: new(false)}
 		if len(tool.ResponsesToolMCP.AllowedTools.ToolNames) > 0 {
 			toolset.Configs = make(map[string]*AnthropicMCPToolsetConfig, len(tool.ResponsesToolMCP.AllowedTools.ToolNames))
 			for _, toolName := range tool.ResponsesToolMCP.AllowedTools.ToolNames {
