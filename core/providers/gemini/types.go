@@ -1150,6 +1150,7 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
+	Model       string                   `json:"-"`             // populated from URL path by Bifrost; not part of wire format
 	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
 	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
 }
@@ -1162,6 +1163,8 @@ func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content               `json:"content,omitempty"`
+	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
 	TaskType             *string                `json:"taskType,omitempty"`
 	Title                *string                `json:"title,omitempty"`
 	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
@@ -1263,7 +1266,9 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
 		Thought             bool                 `json:"thought,omitempty"`
 		InlineData          *Blob                `json:"inlineData,omitempty"`
+		InlineDataSnake     *Blob                `json:"inline_data,omitempty"` // Python SDK uses snake_case
 		FileData            *FileData            `json:"fileData,omitempty"`
+		FileDataSnake       *FileData            `json:"file_data,omitempty"` // Python SDK uses snake_case
 		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
 		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
 		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
@@ -1280,7 +1285,13 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.VideoMetadata = aux.VideoMetadata
 	p.Thought = aux.Thought
 	p.InlineData = aux.InlineData
+	if p.InlineData == nil {
+		p.InlineData = aux.InlineDataSnake
+	}
 	p.FileData = aux.FileData
+	if p.FileData == nil {
+		p.FileData = aux.FileDataSnake
+	}
 	p.CodeExecutionResult = aux.CodeExecutionResult
 	p.ExecutableCode = aux.ExecutableCode
 	p.FunctionCall = aux.FunctionCall
@@ -1325,9 +1336,11 @@ type Blob struct {
 // UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64
 func (b *Blob) UnmarshalJSON(data []byte) error {
 	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"` // Python SDK uses snake_case
+		Data             string `json:"data,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"` // Python SDK uses snake_case
 	}
 
 	var aux BlobAlias
@@ -1336,7 +1349,13 @@ func (b *Blob) UnmarshalJSON(data []byte) error {
 	}
 
 	b.DisplayName = aux.DisplayName
+	if b.DisplayName == "" {
+		b.DisplayName = aux.DisplayNameSnake
+	}
 	b.MIMEType = aux.MIMEType
+	if b.MIMEType == "" {
+		b.MIMEType = aux.MIMETypeSnake
+	}
 
 	if aux.Data != "" {
 		// Convert URL-safe base64 to standard base64
@@ -1456,7 +1475,8 @@ type FunctionResponse struct {
 
 // GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
-	Embeddings []GeminiEmbedding     `json:"embeddings"`
+	Embedding  *GeminiEmbedding      `json:"embedding,omitempty"`
+	Embeddings []GeminiEmbedding     `json:"embeddings,omitempty"`
 	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
 }
 

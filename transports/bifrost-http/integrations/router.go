@@ -665,6 +665,8 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		req := config.GetRequestTypeInstance(ctx)
 		var rawBody []byte
 
+		fmt.Println("raw body", string(ctx.Request.Body()))
+
 		// Execute the request through Bifrost
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 		// Centralized cleanup. The streaming branch below transfers ownership via
@@ -1081,6 +1083,24 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 		bifrostExtraFields = embeddingResponse.ExtraFields
 		// Convert Bifrost response to integration-specific format and send
+		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
+	case bifrostReq.BatchEmbeddingRequest != nil:
+		embeddingResponse, bifrostErr := g.client.BatchEmbeddingRequest(bifrostCtx, bifrostReq.BatchEmbeddingRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, embeddingResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if embeddingResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
 	case bifrostReq.RerankRequest != nil:
 		rerankResponse, bifrostErr := g.client.RerankRequest(bifrostCtx, bifrostReq.RerankRequest)

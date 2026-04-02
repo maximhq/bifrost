@@ -110,6 +110,7 @@ const (
 	ResponsesRequest             RequestType = "responses"
 	ResponsesStreamRequest       RequestType = "responses_stream"
 	EmbeddingRequest             RequestType = "embedding"
+	BatchEmbeddingRequest        RequestType = "batch_embedding"
 	SpeechRequest                RequestType = "speech"
 	SpeechStreamRequest          RequestType = "speech_stream"
 	TranscriptionRequest         RequestType = "transcription"
@@ -403,6 +404,7 @@ type BifrostRequest struct {
 	ResponsesRequest             *BifrostResponsesRequest
 	CountTokensRequest           *BifrostResponsesRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
+	BatchEmbeddingRequest        *BifrostBatchEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
 	OCRRequest                   *BifrostOCRRequest
 	SpeechRequest                *BifrostSpeechRequest
@@ -459,6 +461,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
+	case br.BatchEmbeddingRequest != nil:
+		return br.BatchEmbeddingRequest.Provider, br.BatchEmbeddingRequest.Model, br.BatchEmbeddingRequest.Fallbacks
 	case br.RerankRequest != nil:
 		return br.RerankRequest.Provider, br.RerankRequest.Model, br.RerankRequest.Fallbacks
 	case br.OCRRequest != nil:
@@ -600,6 +604,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.CountTokensRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
+	case br.BatchEmbeddingRequest != nil:
+		br.BatchEmbeddingRequest.Provider = provider
 	case br.RerankRequest != nil:
 		br.RerankRequest.Provider = provider
 	case br.OCRRequest != nil:
@@ -651,6 +657,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.CountTokensRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
+	case br.BatchEmbeddingRequest != nil:
+		br.BatchEmbeddingRequest.Model = model
 	case br.RerankRequest != nil:
 		br.RerankRequest.Model = model
 	case br.OCRRequest != nil:
@@ -704,6 +712,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.CountTokensRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
+	case br.BatchEmbeddingRequest != nil:
+		br.BatchEmbeddingRequest.Fallbacks = fallbacks
 	case br.RerankRequest != nil:
 		br.RerankRequest.Fallbacks = fallbacks
 	case br.OCRRequest != nil:
@@ -735,6 +745,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.CountTokensRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
+	case br.BatchEmbeddingRequest != nil:
+		br.BatchEmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.RerankRequest != nil:
 		br.RerankRequest.RawRequestBody = rawRequestBody
 	case br.OCRRequest != nil:

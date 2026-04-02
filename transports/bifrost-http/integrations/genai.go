@@ -25,6 +25,8 @@ import (
 
 const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
 
+const isGeminiBatchEmbedContentsRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-embed-contents-request"
+
 const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
 
 const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
@@ -48,6 +50,8 @@ func genAIModelGetter(ctx *fasthttp.RequestCtx, req interface{}) (string, error)
 	case *gemini.GeminiGenerationRequest:
 		return r.Model, nil
 	case *gemini.GeminiEmbeddingRequest:
+		return r.Model, nil
+	case *gemini.GeminiBatchEmbeddingRequest:
 		return r.Model, nil
 	case *gemini.GeminiVideoGenerationRequest:
 		return r.Model, nil
@@ -109,13 +113,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return requestType
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+			if requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
 				return &gemini.GeminiEmbeddingRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
+			if requestType == schemas.BatchEmbeddingRequest && ctx.Value(isGeminiBatchEmbedContentsRequestContextKey) != nil {
+				return &gemini.GeminiBatchEmbeddingRequest{}
+			}
+			if requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
 				return &gemini.GeminiVideoGenerationRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
+			if requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
 				return &gemini.GeminiBatchCreateRequest{}
 			}
 			return &gemini.GeminiGenerationRequest{}
@@ -161,6 +169,28 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 				return &schemas.BifrostRequest{
 					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
+				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiBatchEmbeddingRequest); ok {
+				bifrostBatchReq, err := geminiReq.ToBifrostBatchEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				// Only Gemini supports BatchEmbedding
+				if bifrostBatchReq.Provider == schemas.Gemini {
+					return &schemas.BifrostRequest{BatchEmbeddingRequest: bifrostBatchReq}, nil
+				}
+				contents := make([]schemas.EmbeddingContent, 0, len(bifrostBatchReq.Items))
+				for _, item := range bifrostBatchReq.Items {
+					contents = append(contents, item.Content)
+				}
+				return &schemas.BifrostRequest{
+					EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+						Provider:  bifrostBatchReq.Provider,
+						Model:     bifrostBatchReq.Model,
+						Input:     contents,
+						Params:    bifrostBatchReq.Params,
+						Fallbacks: bifrostBatchReq.Fallbacks,
+					},
 				}, nil
 			} else if geminiReq, ok := req.(*gemini.GeminiVideoGenerationRequest); ok {
 				// convert to bifrost video generation request
@@ -1268,6 +1298,11 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.Model = modelStr
 		}
 		return nil
+	case *gemini.GeminiBatchEmbeddingRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
 	case *gemini.GeminiVideoGenerationRequest:
 		if modelStr != "" {
 			r.Model = modelStr
@@ -1367,6 +1402,11 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 	if strings.HasSuffix(modelStr, ":embedContent") {
 		ctx.SetUserValue(isGeminiEmbedContentRequestContextKey, true)
+		return modelStr, schemas.EmbeddingRequest
+	}
+	if strings.HasSuffix(modelStr, ":batchEmbedContents") {
+		ctx.SetUserValue(isGeminiBatchEmbedContentsRequestContextKey, true)
+		return modelStr, schemas.BatchEmbeddingRequest
 	}
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest

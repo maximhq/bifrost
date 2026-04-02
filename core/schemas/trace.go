@@ -8,16 +8,16 @@ import (
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
-	RequestID  string         // Request ID for the trace
-	TraceID    string         // Unique identifier for this trace
-	ParentID   string         // Parent trace ID from incoming W3C traceparent header
-	RootSpan   *Span          // The root span of this trace
-	Spans      []*Span        // All spans in this trace
-	StartTime  time.Time      // When the trace started
-	EndTime    time.Time      // When the trace completed
-	Attributes map[string]any // Additional attributes for the trace
+	RequestID  string           // Request ID for the trace
+	TraceID    string           // Unique identifier for this trace
+	ParentID   string           // Parent trace ID from incoming W3C traceparent header
+	RootSpan   *Span            // The root span of this trace
+	Spans      []*Span          // All spans in this trace
+	StartTime  time.Time        // When the trace started
+	EndTime    time.Time        // When the trace completed
+	Attributes map[string]any   // Additional attributes for the trace
 	PluginLogs []PluginLogEntry // Plugin log entries accumulated during request processing
-	mu         sync.Mutex     // Mutex for thread-safe span operations
+	mu         sync.Mutex       // Mutex for thread-safe span operations
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -219,7 +219,7 @@ const (
 	AttrN                = "gen_ai.request.n"
 	AttrSeed             = "gen_ai.request.seed"
 	AttrSuffix           = "gen_ai.request.suffix"
-	AttrDimensions       = "gen_ai.request.dimensions"
+	AttrDimensions       = "gen_ai.embeddings.dimension.count"
 	AttrEncodingFormat   = "gen_ai.request.encoding_format"
 	AttrLanguage         = "gen_ai.request.language"
 	AttrPrompt           = "gen_ai.request.prompt"

@@ -332,6 +332,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	// serving /api/logs/filterdata from it would surface "relation does not
 	// exist" during rolling deploys. A follow-up release wires it in once
 	// this one is fully rolled out. See the function's docstring.
+	if err := migrationAddEmbeddingInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddBatchEmbeddingInputColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3099,6 +3105,145 @@ $$;`
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding bifrost_safe_jsonb function: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEmbeddingInputColumn adds the embedding_input column to the logs table.
+// For Postgres, the expensive row-by-row backfill is deferred to ensureEmbeddingInputBackfill
+// (called post-startup in a goroutine) so that large tables do not block pod startup.
+// For SQLite the backfill runs synchronously here since SQLite is used for development only.
+func migrationAddEmbeddingInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_embedding_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			gormMigrator := tx.Migrator()
+			if !gormMigrator.HasColumn(&Log{}, "embedding_input") {
+				if err := gormMigrator.AddColumn(&Log{}, "embedding_input"); err != nil {
+					return err
+				}
+			}
+			if tx.Dialector.Name() != "sqlite" {
+				return nil
+			}
+			return tx.Exec(`
+				UPDATE logs
+				SET embedding_input = (
+					SELECT json_group_array(
+						json_array(
+							json_object('type', 'text', 'text', json_extract(block.value, '$.text'))
+						)
+					)
+					FROM json_each(input_history) AS history_item,
+					     json_each(json_extract(history_item.value, '$.content')) AS block
+					WHERE json_extract(block.value, '$.type') = 'text'
+					  AND json_extract(block.value, '$.text') IS NOT NULL
+					  AND json_extract(block.value, '$.text') != ''
+				)
+				WHERE object_type = 'embedding'
+				  AND input_history IS NOT NULL
+				  AND input_history NOT IN ('', '[]', 'null')
+				  AND embedding_input IS NULL
+			`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			gormMigrator := tx.Migrator()
+			if gormMigrator.HasColumn(&Log{}, "embedding_input") {
+				if err := gormMigrator.DropColumn(&Log{}, "embedding_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding embedding_input column: %s", err.Error())
+	}
+	return nil
+}
+
+// ensureEmbeddingInputBackfill backfills historical Postgres embedding logs by
+// reconstructing EmbeddingContent entries from text blocks stored in the old
+// input_history column. Deferred from migrationAddEmbeddingInputColumn so that
+// large tables do not block pod startup. All operations are idempotent and safe
+// to re-run (only rows with embedding_input IS NULL are processed).
+func ensureEmbeddingInputBackfill(ctx context.Context, conn *sql.Conn) error {
+	// PL/pgSQL DO block processes rows individually so that rows with malformed
+	// input_history JSON are silently skipped rather than aborting the entire update.
+	_, err := conn.ExecContext(ctx, `
+		DO $$
+		DECLARE
+			r   RECORD;
+			val JSONB;
+		BEGIN
+			FOR r IN
+				SELECT id, input_history
+				FROM logs
+				WHERE object_type = 'embedding'
+				  AND input_history IS NOT NULL
+				  AND input_history NOT IN ('', '[]', 'null')
+				  AND embedding_input IS NULL
+			LOOP
+				BEGIN
+					SELECT jsonb_agg(
+						jsonb_build_array(
+							jsonb_build_object('type', 'text', 'text', block->>'text')
+						)
+					)
+					INTO val
+					FROM jsonb_array_elements(r.input_history::jsonb) AS history_item,
+					     jsonb_array_elements(history_item -> 'content') AS block
+					WHERE block->>'type' = 'text'
+					  AND (block->>'text') IS NOT NULL
+					  AND (block->>'text') != '';
+
+					UPDATE logs SET embedding_input = val::text WHERE id = r.id;
+				EXCEPTION WHEN OTHERS THEN
+					-- Skip rows with malformed input_history JSON
+				END;
+			END LOOP;
+		END $$;
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to backfill embedding_input: %w", err)
+	}
+	return nil
+}
+
+// migrationAddBatchEmbeddingInputColumn adds the batch_embedding_input column to the logs table.
+// No backfill is needed — this column captures new batch embedding requests going forward.
+func migrationAddBatchEmbeddingInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_batch_embedding_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			gormMigrator := tx.Migrator()
+			if !gormMigrator.HasColumn(&Log{}, "batch_embedding_input") {
+				if err := gormMigrator.AddColumn(&Log{}, "batch_embedding_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			gormMigrator := tx.Migrator()
+			if gormMigrator.HasColumn(&Log{}, "batch_embedding_input") {
+				if err := gormMigrator.DropColumn(&Log{}, "batch_embedding_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding batch_embedding_input column: %s", err.Error())
 	}
 	return nil
 }

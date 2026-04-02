@@ -242,6 +242,8 @@ type InitialLogData struct {
 	Object                 string
 	InputHistory           []schemas.ChatMessage
 	ResponsesInputHistory  []schemas.ResponsesMessage
+	EmbeddingInput         []schemas.EmbeddingContent
+	BatchEmbeddingInput    []schemas.BifrostEmbeddingBatchItem
 	Params                 any
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
@@ -538,6 +540,44 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			}
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
+			embContents := extractEmbeddingInput(req)
+			reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+			if reqThreshold > 0 && len(embContents) > 0 {
+				var totalDataSize int64
+				for _, content := range embContents {
+					for _, part := range content {
+						for _, media := range []*schemas.EmbeddingMediaPart{part.Image, part.Audio, part.File, part.Video} {
+							if media != nil && media.Data != nil {
+								totalDataSize += int64(len(*media.Data))
+							}
+						}
+					}
+				}
+				if totalDataSize > reqThreshold {
+					embContents = redactEmbeddingMediaData(embContents)
+				}
+			}
+			initialData.EmbeddingInput = embContents
+		case schemas.BatchEmbeddingRequest:
+			initialData.Params = req.BatchEmbeddingRequest.Params
+			items := extractBatchEmbeddingInput(req)
+			reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+			if reqThreshold > 0 && len(items) > 0 {
+				var totalDataSize int64
+				for _, item := range items {
+					for _, part := range item.Content {
+						for _, media := range []*schemas.EmbeddingMediaPart{part.Image, part.Audio, part.File, part.Video} {
+							if media != nil && media.Data != nil {
+								totalDataSize += int64(len(*media.Data))
+							}
+						}
+					}
+				}
+				if totalDataSize > reqThreshold {
+					items = redactBatchEmbeddingMediaData(items)
+				}
+			}
+			initialData.BatchEmbeddingInput = items
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
 		case schemas.OCRRequest:

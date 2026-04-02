@@ -471,17 +471,16 @@ func PopulateEmbeddingRequestAttributes(req *schemas.BifrostEmbeddingRequest, at
 
 	// Extract input
 	if req.Input != nil {
-		if req.Input.Text != nil {
-			attrs[schemas.AttrInputText] = *req.Input.Text
-		} else if req.Input.Texts != nil {
-			attrs[schemas.AttrInputText] = strings.Join(req.Input.Texts, ",")
-		} else if req.Input.Embedding != nil {
-			embedding := make([]string, len(req.Input.Embedding))
-			for i, v := range req.Input.Embedding {
-				// Use a float‑safe representation; adjust precision as needed.
-				embedding[i] = fmt.Sprintf("%v", v)
+		var texts []string
+		for _, content := range req.Input {
+			for _, part := range content {
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					texts = append(texts, *part.Text)
+				}
 			}
-			attrs[schemas.AttrInputEmbedding] = strings.Join(embedding, ",")
+		}
+		if len(texts) > 0 {
+			attrs[schemas.AttrInputText] = strings.Join(texts, ",")
 		}
 	}
 }

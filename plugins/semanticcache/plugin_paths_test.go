@@ -472,7 +472,7 @@ func TestResolveCacheTypes_EmitsPluginLogOnInvalidValue(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// generateEmbedding handles all EmbeddingStruct representations
+// generateEmbedding handles all EmbeddingsByType representations
 // -----------------------------------------------------------------------------
 
 func TestGenerateEmbedding_AcceptsInt8Array(t *testing.T) {
@@ -480,8 +480,8 @@ func TestGenerateEmbedding_AcceptsInt8Array(t *testing.T) {
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingInt8Array: []int8{-128, -1, 0, 1, 127},
+				Embedding: schemas.EmbeddingsByType{
+					Int8: []int8{-128, -1, 0, 1, 127},
 				},
 			}},
 		}, nil
@@ -503,8 +503,8 @@ func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{
 			Data: []schemas.EmbeddingData{{
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingInt32Array: []int32{0, 100000, -100000},
+				Embedding: schemas.EmbeddingsByType{
+					Uint8: []uint8{0, 255, 128},
 				},
 			}},
 		}, nil
@@ -515,7 +515,7 @@ func TestGenerateEmbedding_AcceptsInt32Array(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateEmbedding failed for int32 input: %v", err)
 	}
-	want := []float32{0, 100000, -100000}
+	want := []float32{0, 255, 128}
 	if !reflect.DeepEqual(emb, want) {
 		t.Fatalf("int32 → float32 conversion: want %v, got %v", want, emb)
 	}

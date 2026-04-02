@@ -2,9 +2,12 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -157,6 +160,39 @@ func int8ToFloat32Embedding(values []int8) []float32 {
 // int32ToFloat32Embedding promotes a uint8/ubinary-style int32 embedding to
 // float32 for the same reason as int8ToFloat32Embedding.
 func int32ToFloat32Embedding(values []int32) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	embedding := make([]float32, len(values))
+	for i, value := range values {
+		embedding[i] = float32(value)
+	}
+	return embedding
+}
+
+// decodeBase64Embedding decodes a base64-encoded embedding of raw IEEE 754 float32 bytes (little-endian).
+func decodeBase64Embedding(s string) ([]float32, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.URLEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed: %w", err)
+		}
+	}
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("base64 embedding byte length %d is not a multiple of 4", len(b))
+	}
+	vals := make([]float32, len(b)/4)
+	for i := range vals {
+		bits := binary.LittleEndian.Uint32(b[i*4 : i*4+4])
+		vals[i] = math.Float32frombits(bits)
+	}
+	return vals, nil
+}
+
+// uint8ToFloat32Embedding promotes a uint8/ubinary embedding to float32 for
+// cosine-similarity search in the semantic cache.
+func uint8ToFloat32Embedding(values []uint8) []float32 {
 	if len(values) == 0 {
 		return nil
 	}
@@ -672,25 +708,23 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return normalizeText(req.SpeechRequest.Input.Input)
 	case schemas.EmbeddingRequest:
-		input := req.EmbeddingRequest.Input
-		out := schemas.EmbeddingInput{}
-		if input.Text != nil {
-			ns := normalizeText(*input.Text)
-			out.Text = &ns
-		} else if len(input.Texts) > 0 {
-			arr := make([]string, len(input.Texts))
-			for i, t := range input.Texts {
-				arr[i] = normalizeText(t)
+		// Deep copy contents and normalize text parts; non-text parts are
+		// copied as-is so multimodal inputs participate in cache hashing.
+		src := req.EmbeddingRequest.Input
+		copiedContents := make([]schemas.EmbeddingContent, len(src))
+		for i, content := range src {
+			copiedContent := make(schemas.EmbeddingContent, len(content))
+			for j, part := range content {
+				copied := part
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					normalized := normalizeText(*part.Text)
+					copied.Text = &normalized
+				}
+				copiedContent[j] = copied
 			}
-			out.Texts = arr
-		} else if input.Embedding != nil {
-			// Numeric embeddings aren't text-normalizable but must still appear
-			// in the hash payload, so copy the slice to avoid aliasing.
-			out.Embedding = append([]int(nil), input.Embedding...)
-		} else if input.Embeddings != nil {
-			out.Embeddings = append([][]int(nil), input.Embeddings...)
+			copiedContents[i] = copiedContent
 		}
-		return out
+		return copiedContents
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:

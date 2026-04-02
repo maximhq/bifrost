@@ -51,10 +51,88 @@ func (req *OpenAITextCompletionRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
 }
 
+type OpenAIEmbeddingInput struct {
+	Text       *string
+	Texts      []string
+	Embedding  []int
+	Embeddings [][]int
+}
+
+func (e *OpenAIEmbeddingInput) MarshalJSON() ([]byte, error) {
+	// enforce one-of
+	set := 0
+	if e.Text != nil {
+		set++
+	}
+	if e.Texts != nil {
+		set++
+	}
+	if e.Embedding != nil {
+		set++
+	}
+	if e.Embeddings != nil {
+		set++
+	}
+	if set == 0 {
+		return nil, fmt.Errorf("embedding input is empty")
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("embedding input must set exactly one of: text, texts, embedding, embeddings")
+	}
+
+	if e.Text != nil {
+		return providerUtils.MarshalSorted(*e.Text)
+	}
+	if e.Texts != nil {
+		return providerUtils.MarshalSorted(e.Texts)
+	}
+	if e.Embedding != nil {
+		return providerUtils.MarshalSorted(e.Embedding)
+	}
+	if e.Embeddings != nil {
+		return providerUtils.MarshalSorted(e.Embeddings)
+	}
+
+	return nil, fmt.Errorf("invalid embedding input")
+}
+
+func (e *OpenAIEmbeddingInput) UnmarshalJSON(data []byte) error {
+	e.Text = nil
+	e.Texts = nil
+	e.Embedding = nil
+	e.Embeddings = nil
+	// Try string
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		e.Text = &s
+		return nil
+	}
+	// Try []string
+	var ss []string
+	if err := sonic.Unmarshal(data, &ss); err == nil {
+		e.Texts = ss
+		return nil
+	}
+	// Try []int
+	var i []int
+	if err := sonic.Unmarshal(data, &i); err == nil {
+		e.Embedding = i
+		return nil
+	}
+	// Try [][]int
+	var i2 [][]int
+	if err := sonic.Unmarshal(data, &i2); err == nil {
+		e.Embeddings = i2
+		return nil
+	}
+
+	return fmt.Errorf("unsupported embedding input shape")
+}
+
 // OpenAIEmbeddingRequest represents an OpenAI embedding request
 type OpenAIEmbeddingRequest struct {
-	Model string                  `json:"model"`
-	Input *schemas.EmbeddingInput `json:"input"` // Can be string or []string
+	Model string                `json:"model"`
+	Input *OpenAIEmbeddingInput `json:"input"` // Can be string or []string
 
 	schemas.EmbeddingParameters
 
@@ -1023,3 +1101,61 @@ func (r *OpenAIVideoRemixRequest) GetExtraParams() map[string]interface{} {
 
 // ErrVideoNotReady is an error that is returned when a video is not ready yet
 var ErrVideoNotReady = errors.New("video is not ready yet, use GET /v1/videos/{video_id} to check status")
+
+type OpenAIEmbeddingResponse struct {
+	Data   []EmbeddingData          `json:"data"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Model  string                   `json:"model"`
+	Object string                   `json:"object"` // "list"
+	Usage  *schemas.BifrostLLMUsage `json:"usage"`
+}
+
+type EmbeddingData struct {
+	Index     int             `json:"index"`
+	Object    string          `json:"object"`    // "embedding"
+	Embedding EmbeddingStruct `json:"embedding"` // can be string, []float64 or [][]float64
+}
+
+type EmbeddingStruct struct {
+	// Embedding responses preserve provider precision in normalized API output.
+	EmbeddingStr     *string
+	EmbeddingArray   []float64
+	Embedding2DArray [][]float64
+}
+
+func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
+	if be.EmbeddingStr != nil {
+		return providerUtils.MarshalSorted(be.EmbeddingStr)
+	}
+	if be.EmbeddingArray != nil {
+		return providerUtils.MarshalSorted(be.EmbeddingArray)
+	}
+	if be.Embedding2DArray != nil {
+		return providerUtils.MarshalSorted(be.Embedding2DArray)
+	}
+	return nil, fmt.Errorf("no embedding found")
+}
+
+func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a direct string
+	var stringContent string
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+		be.EmbeddingStr = &stringContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct array of float64
+	var arrayContent []float64
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+		be.EmbeddingArray = arrayContent
+		return nil
+	}
+
+	// Try to unmarshal as a direct 2D array of float64
+	var arrayContent2D [][]float64
+	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
+		be.Embedding2DArray = arrayContent2D
+		return nil
+	}
+
+	return fmt.Errorf("embedding field is neither a string nor an array of float64 nor a 2D array of float64")
+}

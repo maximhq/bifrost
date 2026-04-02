@@ -1364,7 +1364,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
-	case schemas.EmbeddingRequest:
+	case schemas.EmbeddingRequest, schemas.BatchEmbeddingRequest:
 		return &schemas.BifrostResponse{
 			EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
 				Usage:       usage,

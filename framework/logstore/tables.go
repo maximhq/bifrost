@@ -157,6 +157,8 @@ type Log struct {
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
 	ResponsesOutput         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
+	EmbeddingInput          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.EmbeddingContent
+	BatchEmbeddingInput     string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.BifrostEmbeddingBatchItem
 	EmbeddingOutput         string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
 	RerankOutput            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
 	OCROutput               string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostOCRResponse
@@ -213,6 +215,8 @@ type Log struct {
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingInputParsed        []schemas.EmbeddingContent              `gorm:"-" json:"embedding_input,omitempty"`
+	BatchEmbeddingInputParsed   []schemas.BifrostEmbeddingBatchItem     `gorm:"-" json:"batch_embedding_input,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
 	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
@@ -318,6 +322,22 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.ResponsesOutput = string(data)
+		}
+	}
+
+	if l.EmbeddingInputParsed != nil {
+		if data, err := sonic.Marshal(l.EmbeddingInputParsed); err != nil {
+			return err
+		} else {
+			l.EmbeddingInput = string(data)
+		}
+	}
+
+	if l.BatchEmbeddingInputParsed != nil {
+		if data, err := sonic.Marshal(l.BatchEmbeddingInputParsed); err != nil {
+			return err
+		} else {
+			l.BatchEmbeddingInput = string(data)
 		}
 	}
 
@@ -585,6 +605,18 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
+		}
+	}
+
+	if l.EmbeddingInput != "" {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingInput), &l.EmbeddingInputParsed); err != nil {
+			l.EmbeddingInputParsed = nil
+		}
+	}
+
+	if l.BatchEmbeddingInput != "" {
+		if err := sonic.Unmarshal([]byte(l.BatchEmbeddingInput), &l.BatchEmbeddingInputParsed); err != nil {
+			l.BatchEmbeddingInputParsed = nil
 		}
 	}
 
@@ -1045,6 +1077,24 @@ type MCPToolLogStats struct {
 // BuildContentSummary creates a searchable text summary
 func (l *Log) BuildContentSummary() string {
 	var parts []string
+
+	// Add embedding input text parts
+	for _, content := range l.EmbeddingInputParsed {
+		for _, part := range content {
+			if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+	}
+
+	// Add batch embedding input text parts
+	for _, item := range l.BatchEmbeddingInputParsed {
+		for _, part := range item.Content {
+			if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+	}
 
 	// Add input messages
 	for _, msg := range l.InputHistoryParsed {

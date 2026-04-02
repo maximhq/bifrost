@@ -3,6 +3,7 @@ package vertex
 import (
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
@@ -110,17 +111,56 @@ type VertexAdvancedVoiceOptions struct {
 	LowLatencyJourneySynthesis bool `json:"lowLatencyJourneySynthesis,omitempty"`
 }
 
-// VertexEmbeddingInstance represents a single embedding instance in the request
-type VertexEmbeddingInstance struct {
-	Content  string  `json:"content"`             // The text to generate embeddings for
-	TaskType *string `json:"task_type,omitempty"` // Intended downstream application (optional)
-	Title    *string `json:"title,omitempty"`     // Used to help the model produce better embeddings (optional)
+// VertexMultimodalImageInput represents an image for the multimodalembedding@001 model.
+// Exactly one of BytesBase64Encoded or GCSUri must be set.
+type VertexMultimodalImageInput struct {
+	BytesBase64Encoded *string `json:"bytesBase64Encoded,omitempty"` // Raw base64 string (no data URI prefix)
+	GCSUri             *string `json:"gcsUri,omitempty"`             // gs://bucket/object
 }
 
-// VertexEmbeddingParameters represents the parameters for the embedding request
+// VertexVideoSegmentConfig controls which portion of a video is embedded.
+type VertexVideoSegmentConfig struct {
+	StartOffsetSec *int `json:"startOffsetSec,omitempty"`
+	EndOffsetSec   *int `json:"endOffsetSec,omitempty"`
+	IntervalSec    *int `json:"intervalSec,omitempty"` // 4=Essential, 8=Standard, 16=Plus
+}
+
+// VertexMultimodalVideoInput represents a video for the multimodalembedding@001 model.
+// Exactly one of BytesBase64Encoded or GCSUri must be set.
+type VertexMultimodalVideoInput struct {
+	BytesBase64Encoded *string                   `json:"bytesBase64Encoded,omitempty"` // Raw base64 string (no data URI prefix)
+	GCSUri             *string                   `json:"gcsUri,omitempty"`             // gs://bucket/object
+	VideoSegmentConfig *VertexVideoSegmentConfig `json:"videoSegmentConfig,omitempty"`
+}
+
+// VertexVideoEmbedding is one segment's embedding returned for a video input.
+type VertexVideoEmbedding struct {
+	StartOffsetSec int       `json:"startOffsetSec"`
+	EndOffsetSec   int       `json:"endOffsetSec"`
+	Embedding      []float64 `json:"embedding"`
+}
+
+// VertexEmbeddingInstance represents a single embedding instance in the request.
+// For text embedding models (text-multilingual-embedding-*): populate Content, TaskType, Title.
+// For the native multimodal model (multimodalembedding@001): populate Text, Image, and/or Video.
+type VertexEmbeddingInstance struct {
+	// Text embedding fields
+	Content  string  `json:"content,omitempty"`   // Plain text for text-only embedding models
+	TaskType *string `json:"task_type,omitempty"` // Downstream task hint (text models only)
+	Title    *string `json:"title,omitempty"`     // Optional title (text models only)
+
+	// Native multimodal embedding fields (multimodalembedding@001)
+	Text  *string                     `json:"text,omitempty"`
+	Image *VertexMultimodalImageInput `json:"image,omitempty"`
+	Video *VertexMultimodalVideoInput `json:"video,omitempty"`
+}
+
+// VertexEmbeddingParameters represents the parameters for the embedding request.
+// Dimension applies to multimodalembedding@001; OutputDimensionality to text models.
 type VertexEmbeddingParameters struct {
-	AutoTruncate         *bool `json:"autoTruncate,omitempty"`         // When true, input text will be truncated (defaults to true)
-	OutputDimensionality *int  `json:"outputDimensionality,omitempty"` // Output embedding size (optional)
+	AutoTruncate         *bool `json:"autoTruncate,omitempty"`         // Truncate long inputs (text models)
+	OutputDimensionality *int  `json:"outputDimensionality,omitempty"` // Output dimensions (text models)
+	Dimension            *int  `json:"dimension,omitempty"`            // Output dimensions (multimodalembedding@001)
 }
 
 // VertexEmbeddingRequest represents the complete embedding request to Vertex AI
@@ -131,6 +171,21 @@ type VertexEmbeddingRequest struct {
 }
 
 func (r *VertexEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+type VertexGeminiEmbeddingRequest struct {
+	Content              *gemini.Content        `json:"content,omitempty"`
+	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
+	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
+	TaskType             *string                `json:"taskType,omitempty"`
+	Title                *string                `json:"title,omitempty"`
+	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
+	AutoTruncate         *bool                  `json:"autoTruncate,omitempty"`
+	ExtraParams          map[string]interface{} `json:"-"`
+}
+
+func (r *VertexGeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
@@ -146,9 +201,18 @@ type VertexEmbeddingValues struct {
 	Statistics *VertexEmbeddingStatistics `json:"statistics"` // Statistics about the input text
 }
 
-// VertexEmbeddingPrediction represents a single prediction in the response
+// VertexEmbeddingPrediction represents a single prediction in the response.
+// Text embedding models populate Embeddings.
+// The native multimodal model (multimodalembedding@001) populates TextEmbedding,
+// ImageEmbedding, and/or VideoEmbeddings — all in the same embedding space.
 type VertexEmbeddingPrediction struct {
-	Embeddings *VertexEmbeddingValues `json:"embeddings"` // The embedding result
+	// Text embedding model response
+	Embeddings *VertexEmbeddingValues `json:"embeddings,omitempty"`
+
+	// Native multimodal model response (multimodalembedding@001)
+	TextEmbedding   []float64              `json:"textEmbedding,omitempty"`
+	ImageEmbedding  []float64              `json:"imageEmbedding,omitempty"`
+	VideoEmbeddings []VertexVideoEmbedding `json:"videoEmbeddings,omitempty"`
 }
 
 // VertexEmbeddingResponse represents the complete embedding response from Vertex AI

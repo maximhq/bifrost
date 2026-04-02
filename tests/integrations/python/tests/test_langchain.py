@@ -389,7 +389,8 @@ class TestLangChainIntegration:
             assert all(isinstance(x, float) for x in result)
 
             # Test batch embeddings
-            batch_result = embeddings.embed_documents(EMBEDDINGS_MULTIPLE_TEXTS)        
+            batch_result = embeddings.embed_documents(EMBEDDINGS_MULTIPLE_TEXTS)
+            print(len(batch_result))        
 
             assert isinstance(batch_result, list)
             assert len(batch_result) == len(EMBEDDINGS_MULTIPLE_TEXTS)

@@ -127,6 +127,7 @@ providers:
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
+    multimodal_embeddings: "gemini-embedding-2-preview"
     image_generation: "gemini-2.5-flash-image"
     image_edit: "gemini-3-pro-image-preview"
     imagen: "imagen-4.0-generate-001"
@@ -159,6 +160,7 @@ providers:
     file: "claude-sonnet-4-5"
     thinking: "gemini-2.5-pro"
     embeddings: "gemini-embedding-001"
+    multimodal_embeddings: "gemini-embedding-2-preview"
     image_generation: "imagen-4.0-generate-001"
     image_edit: "imagen-3.0-capability-001"
     imagen: "imagen-4.0-generate-001"
@@ -196,6 +198,7 @@ providers:
     vision: "command-a-vision-07-2025"
     tools: "command-a-03-2025"
     embeddings: "embed-v4.0"
+    multimodal_embeddings: "embed-v4.0"
     streaming: "command-a-03-2025"
     count_tokens: "command-a-03-2025"
     alternatives:
@@ -404,6 +407,7 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
+    multimodal_embeddings: true
     image_generation: true  # Gemini image generation via responseModalities
     image_edit: true  # Gemini image editing
     imagen: true  # Imagen via :predict endpoint
@@ -451,6 +455,7 @@ provider_scenarios:
     transcription: false
     transcription_streaming: false
     embeddings: true
+    multimodal_embeddings: true
     image_generation: true
     image_edit: true
     imagen: true  # Imagen via :predict endpoint
@@ -540,6 +545,7 @@ provider_scenarios:
     transcription: false
     transcription_streaming: false
     embeddings: true
+    multimodal_embeddings: true
     thinking: false
     prompt_caching: false
     citations: false
@@ -601,6 +607,7 @@ scenario_capabilities:
   transcription: "transcription"
   transcription_streaming: "transcription"
   embeddings: "embeddings"
+  multimodal_embeddings: "multimodal_embeddings"
   image_generation: "image_generation"  # Uses image_generation model
   image_edit: "image_edit"  # Uses image_edit model
   imagen: "imagen"  # Uses imagen model (Gemini/Vertex)

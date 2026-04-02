@@ -92,11 +92,11 @@ func TestUnmarshalHuggingFaceEmbeddingResponsePreservesPrecision(t *testing.T) {
 	if resp == nil || len(resp.Data) != 1 {
 		t.Fatalf("expected single embedding response, got %#v", resp)
 	}
-	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
-		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	if len(resp.Data[0].Embedding.Float) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.Float)
 	}
 
-	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	got := resp.Data[0].Embedding.Float[0]
 	if got != want {
 		t.Fatalf("expected %0.18f, got %0.18f", want, got)
 	}
@@ -117,11 +117,11 @@ func TestUnmarshalHuggingFaceEmbeddingResponse1DPreservesPrecision(t *testing.T)
 	if resp == nil || len(resp.Data) != 1 {
 		t.Fatalf("expected single embedding response, got %#v", resp)
 	}
-	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
-		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	if len(resp.Data[0].Embedding.Float) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.Float)
 	}
 
-	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	got := resp.Data[0].Embedding.Float[0]
 	if got != want {
 		t.Fatalf("expected %0.18f, got %0.18f", want, got)
 	}
