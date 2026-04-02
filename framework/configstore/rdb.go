@@ -1478,6 +1478,46 @@ func (s *RDBConfigStore) UpdateConfig(ctx context.Context, config *tables.TableG
 	return txDB.WithContext(ctx).Save(config).Error
 }
 
+// GetComplexityRouterConfig retrieves the persisted complexity-router config
+// from governance_config.
+func (s *RDBConfigStore) GetComplexityRouterConfig(ctx context.Context) (*PersistedComplexityRouterConfig, error) {
+	configEntry, err := s.GetConfig(ctx, tables.ConfigComplexityRouterKey)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry == nil || configEntry.Value == "" {
+		return nil, nil
+	}
+
+	var cfg PersistedComplexityRouterConfig
+	if err := json.Unmarshal([]byte(configEntry.Value), &cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal complexity router config: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// UpdateComplexityRouterConfig upserts the persisted complexity-router config in
+// governance_config.
+func (s *RDBConfigStore) UpdateComplexityRouterConfig(ctx context.Context, config *PersistedComplexityRouterConfig) error {
+	if config == nil {
+		return fmt.Errorf("complexity router config is nil")
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal complexity router config: %w", err)
+	}
+
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityRouterKey,
+		Value: string(configJSON),
+	}).Error
+}
+
 // GetModelPrices retrieves all model pricing records from the database.
 func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error) {
 	var modelPrices []tables.TableModelPricing
@@ -3378,6 +3418,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		return nil, nil
 	}
 	var authConfig *AuthConfig
+	var complexityRouterConfig *ComplexityRouterConfig
 	if len(governanceConfigs) > 0 {
 		// Checking if username and password is present
 		var username *string
@@ -3394,6 +3435,15 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 				isEnabled = entry.Value == "true"
 			case tables.ConfigDisableAuthOnInferenceKey:
 				disableAuthOnInference = entry.Value == "true"
+			case tables.ConfigComplexityRouterKey:
+				var persisted PersistedComplexityRouterConfig
+				if err := json.Unmarshal([]byte(entry.Value), &persisted); err != nil {
+					if s.logger != nil {
+						s.logger.Warn("failed to unmarshal complexity router config from governance_config: %v", err)
+					}
+					continue
+				}
+				complexityRouterConfig = ComplexityRouterConfigFromPersisted(&persisted)
 			}
 		}
 		if username != nil && password != nil {
@@ -3406,15 +3456,16 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:  virtualKeys,
-		Teams:        teams,
-		Customers:    customers,
-		Budgets:      budgets,
-		RateLimits:   rateLimits,
-		ModelConfigs: modelConfigs,
-		Providers:    providers,
-		RoutingRules: routingRules,
-		AuthConfig:   authConfig,
+		VirtualKeys:      virtualKeys,
+		Teams:            teams,
+		Customers:        customers,
+		Budgets:          budgets,
+		RateLimits:       rateLimits,
+		ModelConfigs:     modelConfigs,
+		Providers:        providers,
+		RoutingRules:     routingRules,
+		AuthConfig:       authConfig,
+		ComplexityRouter: complexityRouterConfig,
 	}, nil
 }
 

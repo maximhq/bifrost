@@ -362,6 +362,7 @@ type MockConfigStore struct {
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	mcpConfig        *schemas.MCPConfig
 	governanceConfig *configstore.GovernanceConfig
+	complexityRouter *configstore.PersistedComplexityRouterConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
 	vectorConfig     *vectorstore.Config
@@ -592,7 +593,26 @@ func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) 
 
 // Governance config
 func (m *MockConfigStore) GetGovernanceConfig(ctx context.Context) (*configstore.GovernanceConfig, error) {
+	if m.governanceConfig == nil && m.complexityRouter != nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	if m.governanceConfig != nil {
+		m.governanceConfig.ComplexityRouter = configstore.ComplexityRouterConfigFromPersisted(m.complexityRouter)
+	}
 	return m.governanceConfig, nil
+}
+
+func (m *MockConfigStore) GetComplexityRouterConfig(ctx context.Context) (*configstore.PersistedComplexityRouterConfig, error) {
+	return configstore.ClonePersistedComplexityRouterConfig(m.complexityRouter), nil
+}
+
+func (m *MockConfigStore) UpdateComplexityRouterConfig(ctx context.Context, cfg *configstore.PersistedComplexityRouterConfig) error {
+	m.complexityRouter = configstore.ClonePersistedComplexityRouterConfig(cfg)
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	m.governanceConfig.ComplexityRouter = configstore.ComplexityRouterConfigFromPersisted(cfg)
+	return nil
 }
 
 func (m *MockConfigStore) CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
@@ -12439,6 +12459,143 @@ func TestGenerateClientConfigHash(t *testing.T) {
 // ===================================================================================
 // COMBINED GOVERNANCE RECONCILIATION TEST
 // ===================================================================================
+
+func TestSQLite_ComplexityRouter_FileSeededWithHash(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		ComplexityRouter: &configstore.ComplexityRouterConfig{
+			Enabled: true,
+			Models: map[string]string{
+				"SIMPLE":    "openai/gpt-5.4-nano",
+				"MEDIUM":    "openai/gpt-5.4-mini",
+				"COMPLEX":   "openai/gpt-5.2",
+				"REASONING": "openai/gpt-5.4",
+			},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+
+	require.NotNil(t, config.GovernanceConfig)
+	require.NotNil(t, config.GovernanceConfig.ComplexityRouter)
+	require.True(t, config.GovernanceConfig.ComplexityRouter.Enabled)
+
+	storedCfg, err := config.ConfigStore.GetComplexityRouterConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, storedCfg)
+	require.NotEmpty(t, storedCfg.ConfigHash)
+	require.True(t, storedCfg.Enabled)
+}
+
+func TestSQLite_ComplexityRouter_UnchangedFilePreservesDBEdit(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		ComplexityRouter: &configstore.ComplexityRouterConfig{
+			Enabled: true,
+			Models: map[string]string{
+				"SIMPLE":    "openai/gpt-5.4-nano",
+				"MEDIUM":    "openai/gpt-5.4-mini",
+				"COMPLEX":   "openai/gpt-5.2",
+				"REASONING": "openai/gpt-5.4",
+			},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	storedCfg, err := config1.ConfigStore.GetComplexityRouterConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, storedCfg)
+
+	require.NoError(t, config1.ConfigStore.UpdateComplexityRouterConfig(ctx, &configstore.PersistedComplexityRouterConfig{
+		Enabled: false,
+		Models: map[string]string{
+			"SIMPLE":    "openai/gpt-5.4-nano",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"COMPLEX":   "openai/gpt-5.2",
+			"REASONING": "openai/gpt-5.4",
+		},
+		ConfigHash: storedCfg.ConfigHash,
+	}))
+	config1.Close(ctx)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	require.NotNil(t, config2.GovernanceConfig)
+	require.NotNil(t, config2.GovernanceConfig.ComplexityRouter)
+	require.False(t, config2.GovernanceConfig.ComplexityRouter.Enabled)
+}
+
+func TestSQLite_ComplexityRouter_FileChangeOverridesDBEdit(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		ComplexityRouter: &configstore.ComplexityRouterConfig{
+			Enabled: true,
+			Models: map[string]string{
+				"SIMPLE":    "openai/gpt-5.4-nano",
+				"MEDIUM":    "openai/gpt-5.4-mini",
+				"COMPLEX":   "openai/gpt-5.2",
+				"REASONING": "openai/gpt-5.4",
+			},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	storedCfg, err := config1.ConfigStore.GetComplexityRouterConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, storedCfg)
+
+	require.NoError(t, config1.ConfigStore.UpdateComplexityRouterConfig(ctx, &configstore.PersistedComplexityRouterConfig{
+		Enabled: false,
+		Models: map[string]string{
+			"SIMPLE":    "openai/gpt-5.4-nano",
+			"MEDIUM":    "openai/gpt-5.4-mini",
+			"COMPLEX":   "openai/gpt-5.2",
+			"REASONING": "openai/gpt-5.4",
+		},
+		ConfigHash: storedCfg.ConfigHash,
+	}))
+	config1.Close(ctx)
+
+	configData.Governance.ComplexityRouter.Models["MEDIUM"] = "openai/gpt-5.2"
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	require.NotNil(t, config2.GovernanceConfig)
+	require.NotNil(t, config2.GovernanceConfig.ComplexityRouter)
+	require.True(t, config2.GovernanceConfig.ComplexityRouter.Enabled)
+	require.Equal(t, "openai/gpt-5.2", config2.GovernanceConfig.ComplexityRouter.Models["MEDIUM"])
+
+	reloadedStoredCfg, err := config2.ConfigStore.GetComplexityRouterConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, reloadedStoredCfg)
+	require.NotEqual(t, storedCfg.ConfigHash, reloadedStoredCfg.ConfigHash)
+}
 
 // TestSQLite_Governance_FullReconciliation tests full governance reconciliation
 func TestSQLite_Governance_FullReconciliation(t *testing.T) {

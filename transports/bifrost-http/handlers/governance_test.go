@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -19,6 +20,10 @@ type mockGovernanceManagerForVK struct {
 }
 
 func (m *mockGovernanceManagerForVK) GetGovernanceData() *governance.GovernanceData {
+	return nil
+}
+
+func (m *mockGovernanceManagerForVK) ReloadComplexityRouterConfig(ctx context.Context) error {
 	return nil
 }
 
@@ -34,6 +39,34 @@ func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ conf
 
 func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreTables.TableVirtualKey, error) {
 	return nil, nil
+}
+
+type mockGovernanceManagerForComplexity struct {
+	GovernanceManager
+	reloadCalls int
+}
+
+func (m *mockGovernanceManagerForComplexity) ReloadComplexityRouterConfig(ctx context.Context) error {
+	m.reloadCalls++
+	return nil
+}
+
+func (m *mockGovernanceManagerForComplexity) GetGovernanceData() *governance.GovernanceData {
+	return nil
+}
+
+type mockConfigStoreForComplexity struct {
+	configstore.ConfigStore
+	persisted *configstore.PersistedComplexityRouterConfig
+}
+
+func (m *mockConfigStoreForComplexity) GetComplexityRouterConfig(_ context.Context) (*configstore.PersistedComplexityRouterConfig, error) {
+	return configstore.ClonePersistedComplexityRouterConfig(m.persisted), nil
+}
+
+func (m *mockConfigStoreForComplexity) UpdateComplexityRouterConfig(_ context.Context, cfg *configstore.PersistedComplexityRouterConfig) error {
+	m.persisted = configstore.ClonePersistedComplexityRouterConfig(cfg)
+	return nil
 }
 
 // TestGetVirtualKeys_PaginatedEndpoint_ResponseShape verifies the JSON response
@@ -164,6 +197,101 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetComplexityRouterConfig_NullWhenMissing(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore:       &mockConfigStoreForComplexity{},
+		governanceManager: &mockGovernanceManagerForComplexity{},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/complexity-router")
+
+	h.getComplexityRouterConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+
+	var resp any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Nil(t, resp)
+}
+
+func TestUpdateComplexityRouterConfig_PreservesConfigHashAndReloads(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForComplexity{
+		persisted: &configstore.PersistedComplexityRouterConfig{
+			Enabled: true,
+			Models: map[string]string{
+				"SIMPLE":    "openai/gpt-5.4-nano",
+				"MEDIUM":    "openai/gpt-5.4-mini",
+				"COMPLEX":   "openai/gpt-5.2",
+				"REASONING": "openai/gpt-5.4",
+			},
+			ConfigHash: "file-hash",
+		},
+	}
+	manager := &mockGovernanceManagerForComplexity{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetRequestURI("/api/governance/complexity-router")
+	ctx.Request.SetBodyString(`{"enabled":false,"models":{"SIMPLE":"openai/gpt-5.4-nano","MEDIUM":"openai/gpt-5.4-mini","COMPLEX":"openai/gpt-5.2","REASONING":"openai/gpt-5.4"}}`)
+
+	h.updateComplexityRouterConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotNil(t, store.persisted)
+	require.Equal(t, "file-hash", store.persisted.ConfigHash)
+	require.Equal(t, 1, manager.reloadCalls)
+
+	var resp configstore.ComplexityRouterConfig
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.False(t, resp.Enabled)
+}
+
+func TestUpdateComplexityRouterConfig_RejectsInvalidTierKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore:       &mockConfigStoreForComplexity{},
+		governanceManager: &mockGovernanceManagerForComplexity{},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetRequestURI("/api/governance/complexity-router")
+	ctx.Request.SetBodyString(`{"enabled":true,"models":{"SIMPLE":"openai/gpt-5.4-nano","MEDIUM":"openai/gpt-5.4-mini","COMPLEX":"openai/gpt-5.2","WRONG":"openai/gpt-5.4"}}`)
+
+	h.updateComplexityRouterConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+}
+
+func TestUpdateComplexityRouterConfig_RejectsInvalidBoundaries(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore:       &mockConfigStoreForComplexity{},
+		governanceManager: &mockGovernanceManagerForComplexity{},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetRequestURI("/api/governance/complexity-router")
+	ctx.Request.SetBodyString(`{"enabled":true,"tier_boundaries":{"simple_medium":0.4,"medium_complex":0.3,"complex_reasoning":0.6},"models":{"SIMPLE":"openai/gpt-5.4-nano","MEDIUM":"openai/gpt-5.4-mini","COMPLEX":"openai/gpt-5.2","REASONING":"openai/gpt-5.4"}}`)
+
+	h.updateComplexityRouterConfig(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 }
 
 // Ensure mockLogger satisfies schemas.Logger (already defined in middlewares_test.go

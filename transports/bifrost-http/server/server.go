@@ -87,6 +87,7 @@ type ServerCallbacks interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
+	ReloadComplexityRouterConfig(ctx context.Context) error
 	// MCP related callbacks
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -662,6 +663,35 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	if err := store.DeleteRoutingRuleInMemory(id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from store: %w", err)
 	}
+	return nil
+}
+
+// ReloadComplexityRouterConfig reloads the persisted complexity-router config
+// and swaps the governance plugin runtime snapshot atomically.
+func (s *BifrostHTTPServer) ReloadComplexityRouterConfig(ctx context.Context) error {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return fmt.Errorf("config store not found")
+	}
+
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+
+	persistedCfg, err := s.Config.ConfigStore.GetComplexityRouterConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load complexity router config: %w", err)
+	}
+
+	runtimeCfg := configstore.ComplexityRouterConfigFromPersisted(persistedCfg)
+	governancePlugin.ReloadComplexityRouterConfig(runtimeCfg)
+
+	if storeWithSetter, ok := governancePlugin.GetGovernanceStore().(interface {
+		SetComplexityRouterConfig(*configstore.ComplexityRouterConfig)
+	}); ok {
+		storeWithSetter.SetComplexityRouterConfig(runtimeCfg)
+	}
+
 	return nil
 }
 

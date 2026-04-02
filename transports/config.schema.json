@@ -579,6 +579,47 @@
             },
             "required": ["name"]
           }
+        },
+        "complexity_router": {
+          "type": "object",
+          "description": "Automatic complexity-based model routing. When enabled and no explicit CEL routing rule matches, routes requests to models based on their computed complexity tier.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable automatic complexity-based routing"
+            },
+            "tier_boundaries": {
+              "type": "object",
+              "description": "Score thresholds for tier classification",
+              "properties": {
+                "simple_medium": {
+                  "type": "number",
+                  "default": 0.15,
+                  "description": "Score threshold between SIMPLE and MEDIUM tiers"
+                },
+                "medium_complex": {
+                  "type": "number",
+                  "default": 0.35,
+                  "description": "Score threshold between MEDIUM and COMPLEX tiers"
+                },
+                "complex_reasoning": {
+                  "type": "number",
+                  "default": 0.60,
+                  "description": "Score threshold between COMPLEX and REASONING tiers"
+                }
+              },
+              "additionalProperties": false
+            },
+            "models": {
+              "type": "object",
+              "description": "Map of tier name to provider/model string (e.g. {\"SIMPLE\": \"openai/gpt-4o-mini\", \"COMPLEX\": \"anthropic/claude-sonnet-4-5\"})",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

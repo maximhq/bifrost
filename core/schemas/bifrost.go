@@ -266,9 +266,10 @@ const (
 
 // RoutingEngine constants
 const (
-	RoutingEngineGovernance    = "governance"
-	RoutingEngineRoutingRule   = "routing-rule"
-	RoutingEngineLoadbalancing = "loadbalancing"
+	RoutingEngineGovernance        = "governance"
+	RoutingEngineRoutingRule       = "routing-rule"
+	RoutingEngineLoadbalancing     = "loadbalancing"
+	RoutingEngineComplexityRouter  = "complexity-router"
 )
 
 // RoutingEngineLogEntry represents a log entry from a routing engine

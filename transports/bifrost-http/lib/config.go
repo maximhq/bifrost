@@ -1363,6 +1363,51 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
 	}
+
+	if configData.Governance != nil {
+		reconcileComplexityRouterConfig(ctx, config, governanceConfig, configData.Governance.ComplexityRouter)
+	}
+}
+
+func reconcileComplexityRouterConfig(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig, fileCfg *configstore.ComplexityRouterConfig) {
+	if governanceConfig == nil || fileCfg == nil {
+		return
+	}
+
+	fileHash, err := configstore.GenerateComplexityRouterConfigHash(fileCfg)
+	if err != nil {
+		logger.Warn("failed to generate complexity router config hash: %v", err)
+		governanceConfig.ComplexityRouter = configstore.CloneComplexityRouterConfig(fileCfg)
+		config.GovernanceConfig.ComplexityRouter = governanceConfig.ComplexityRouter
+		return
+	}
+
+	var persistedCfg *configstore.PersistedComplexityRouterConfig
+	if config.ConfigStore != nil {
+		persistedCfg, err = config.ConfigStore.GetComplexityRouterConfig(ctx)
+		if err != nil {
+			logger.Warn("failed to load persisted complexity router config: %v", err)
+			persistedCfg = nil
+		}
+	}
+
+	if persistedCfg != nil && persistedCfg.ConfigHash == fileHash {
+		governanceConfig.ComplexityRouter = configstore.ComplexityRouterConfigFromPersisted(persistedCfg)
+		config.GovernanceConfig.ComplexityRouter = governanceConfig.ComplexityRouter
+		return
+	}
+
+	governanceConfig.ComplexityRouter = configstore.CloneComplexityRouterConfig(fileCfg)
+	config.GovernanceConfig.ComplexityRouter = governanceConfig.ComplexityRouter
+
+	if config.ConfigStore == nil {
+		return
+	}
+
+	persistedFromFile := configstore.PersistedComplexityRouterConfigFromPublic(fileCfg, fileHash)
+	if err := config.ConfigStore.UpdateComplexityRouterConfig(ctx, persistedFromFile); err != nil {
+		logger.Fatal("failed to sync complexity router config: %v", err)
+	}
 	// Sync pricing overrides into the model catalog in one batch to avoid
 	// rebuilding the lookup map on every iteration.
 	if config.ModelCatalog != nil {
@@ -1646,6 +1691,26 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 
 			virtualKey.ProviderConfigs = providerConfigs
 			virtualKey.MCPConfigs = mcpConfigs
+		}
+
+		if config.GovernanceConfig.ComplexityRouter != nil {
+			complexityHash, err := configstore.GenerateComplexityRouterConfigHash(config.GovernanceConfig.ComplexityRouter)
+			if err != nil {
+				return fmt.Errorf("failed to generate complexity router config hash: %w", err)
+			}
+
+			persistedCfg := configstore.PersistedComplexityRouterConfigFromPublic(config.GovernanceConfig.ComplexityRouter, complexityHash)
+			configJSON, err := json.Marshal(persistedCfg)
+			if err != nil {
+				return fmt.Errorf("failed to marshal complexity router config: %w", err)
+			}
+
+			if err := tx.Save(&configstoreTables.TableGovernanceConfig{
+				Key:   configstoreTables.ConfigComplexityRouterKey,
+				Value: string(configJSON),
+			}).Error; err != nil {
+				return fmt.Errorf("failed to save complexity router config: %w", err)
+			}
 		}
 
 		// Create pricing overrides after virtual keys so that scoped overrides referencing

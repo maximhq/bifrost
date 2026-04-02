@@ -1510,6 +1510,22 @@ func TestExtractRoutingVariables_NilMaps(t *testing.T) {
 	assert.Equal(t, 0.0, variables["request"])
 }
 
+func TestExtractRoutingVariables_ComplexityUnavailable(t *testing.T) {
+	ctx := &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	}
+
+	variables, err := extractRoutingVariables(ctx)
+	require.NoError(t, err)
+
+	complexityVars, ok := variables["complexity"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, false, complexityVars["available"])
+	assert.Equal(t, "", complexityVars["tier"])
+	assert.Equal(t, 0.0, complexityVars["score"])
+}
+
 // TestExtractRoutingVariables_MultipleProviders tests with multiple rate limits
 func TestExtractRoutingVariables_MultipleProviders(t *testing.T) {
 	ctx := &RoutingContext{
