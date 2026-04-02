@@ -285,10 +285,61 @@ var containerCreateParamsKnownFields = map[string]bool{
 }
 
 type BifrostParams struct {
-	Model        string   `json:"model"`                   // Model to use in "provider/model" format
-	Fallbacks    []string `json:"fallbacks"`               // Fallback providers and models in "provider/model" format
-	Stream       *bool    `json:"stream"`                  // Whether to stream the response
-	StreamFormat *string  `json:"stream_format,omitempty"` // For speech
+	Model        string         `json:"model"`                   // Model to use in "provider/model" format
+	Fallbacks    FallbacksInput `json:"fallbacks"`               // Accepts either ["provider/model"] or [{"provider":"...","model":"...","params":{...}}]
+	Stream       *bool          `json:"stream"`                  // Whether to stream the response
+	StreamFormat *string        `json:"stream_format,omitempty"` // For speech
+}
+
+type FallbacksInput []schemas.Fallback
+
+const invalidFallbackEntryError = "invalid fallback entry: provider and model must be specified"
+
+func normalizeAndValidateFallbackEntry(fallback schemas.Fallback, index int) (schemas.Fallback, error) {
+	if fallback.Provider == "" || strings.TrimSpace(fallback.Model) == "" {
+		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
+	}
+
+	parsedProvider, parsedModel := schemas.ParseModelString(fallback.Model, fallback.Provider)
+	if parsedProvider == "" || parsedModel == "" || parsedProvider != fallback.Provider {
+		return schemas.Fallback{}, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, index)
+	}
+
+	fallback.Provider = parsedProvider
+	fallback.Model = parsedModel
+	return fallback, nil
+}
+
+func (f *FallbacksInput) UnmarshalJSON(data []byte) error {
+	var fallbackStrings []string
+	if err := sonic.Unmarshal(data, &fallbackStrings); err == nil {
+		parsed := make([]schemas.Fallback, 0, len(fallbackStrings))
+		for i, fallback := range fallbackStrings {
+			provider, model := schemas.ParseModelString(fallback, "")
+			if provider == "" || model == "" {
+				return fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+			}
+			parsed = append(parsed, schemas.Fallback{Provider: provider, Model: model})
+		}
+		*f = parsed
+		return nil
+	}
+
+	var fallbackObjects []schemas.Fallback
+	if err := sonic.Unmarshal(data, &fallbackObjects); err == nil {
+		parsed := make([]schemas.Fallback, 0, len(fallbackObjects))
+		for i, fallback := range fallbackObjects {
+			normalized, normalizeErr := normalizeAndValidateFallbackEntry(fallback, i)
+			if normalizeErr != nil {
+				return normalizeErr
+			}
+			parsed = append(parsed, normalized)
+		}
+		*f = parsed
+		return nil
+	}
+
+	return fmt.Errorf("invalid fallbacks format: expected array of strings or array of fallback objects")
 }
 
 type TextRequest struct {
@@ -498,19 +549,52 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
 }
 
-// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
-func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
-	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
-	for _, fallback := range fallbackStrings {
-		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModelName != "" {
-			fallbacks = append(fallbacks, schemas.Fallback{
-				Provider: fallbackProvider,
-				Model:    fallbackModelName,
-			})
+// parseFallbacks normalizes fallback entries while preserving per-fallback params.
+func parseFallbacks(rawFallbacks FallbacksInput) ([]schemas.Fallback, error) {
+	fallbacks := make([]schemas.Fallback, 0, len(rawFallbacks))
+	for i, fallback := range rawFallbacks {
+		normalized, err := normalizeAndValidateFallbackEntry(fallback, i)
+		if err != nil {
+			return nil, err
 		}
+
+		fallbacks = append(fallbacks, schemas.Fallback{
+			Provider: normalized.Provider,
+			Model:    normalized.Model,
+			Params:   normalized.Params,
+		})
 	}
 	return fallbacks, nil
+}
+
+func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
+	parsed := make(FallbacksInput, 0, len(fallbackStrings))
+	for i, fallback := range fallbackStrings {
+		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
+		if fallbackProvider == "" || fallbackModelName == "" {
+			return nil, fmt.Errorf("%s (index %d)", invalidFallbackEntryError, i)
+		}
+		parsed = append(parsed, schemas.Fallback{
+			Provider: fallbackProvider,
+			Model:    fallbackModelName,
+		})
+	}
+	return parsed, nil
+}
+
+func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
+	if len(values) == 1 {
+		trimmed := strings.TrimSpace(values[0])
+		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+			var parsed FallbacksInput
+			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err != nil {
+				return nil, err
+			}
+			return parsed, nil
+		}
+	}
+
+	return fallbackStringsToInput(values)
 }
 
 // extractExtraParams processes unknown fields from JSON data into ExtraParams
@@ -1368,6 +1452,18 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTran
 		Input:    transcriptionInput,
 		Params:   transcriptionParams,
 	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, false, parseErr
+		}
+
+		fallbacks, parseFallbackErr := parseFallbacks(parsedFallbacks)
+		if parseFallbackErr != nil {
+			return nil, false, parseFallbackErr
+		}
+		bifrostTranscriptionReq.Fallbacks = fallbacks
+	}
 	return bifrostTranscriptionReq, stream, nil
 }
 
@@ -1948,7 +2044,11 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		req.Fallbacks = fallbackValues
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		req.Fallbacks = parsedFallbacks
 	}
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
 		stream := streamValues[0] == "true"
@@ -2089,7 +2189,11 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostIma
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		fallbacks, err := parseFallbacks(fallbackValues)
+		rawFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		fallbacks, err := parseFallbacks(rawFallbacks)
 		if err != nil {
 			return nil, err
 		}
