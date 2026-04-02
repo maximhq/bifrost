@@ -27,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed build-agent run-agent test-agent
 
 all: help
 
@@ -1401,3 +1401,53 @@ test-cli: install-gotestsum ## Run CLI tests
 		--format=$(GOTESTSUM_FORMAT) \
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
+
+# ─── Agent ─────────────────────────────────────────────────────────────────────
+# The Bifrost Agent is a desktop app that intercepts AI API traffic via TUN and
+# routes it through the Bifrost gateway. Requires elevated privileges for TUN
+# device creation. No DNS changes needed — routes real AI domain IPs through TUN.
+
+# Agent variables
+AGENT_GATEWAY ?= http://localhost:$(PORT)
+AGENT_VIRTUAL_KEY ?=
+AGENT_MANAGEMENT_URL ?=
+AGENT_TOKEN ?=
+AGENT_FLAGS ?=
+
+build-agent: ## Build bifrost-agent binary
+	@echo "$(GREEN)Building bifrost-agent...$(NC)"
+	@mkdir -p ./tmp
+	@cd agent && CGO_ENABLED=1 go build \
+		-ldflags="-w -s" \
+		-o ../tmp/bifrost-agent \
+		.
+	@echo "$(GREEN)Built: tmp/bifrost-agent$(NC)"
+
+run-agent: build-agent ## Build and run bifrost-agent locally (requires sudo for TUN)
+	@echo "$(GREEN)Running bifrost-agent...$(NC)"
+	@echo "$(YELLOW)Note: TUN device creation requires elevated privileges.$(NC)"
+	@echo "$(YELLOW)You will be prompted for your password.$(NC)"
+	@echo ""
+	@sudo ./tmp/bifrost-agent \
+		-gateway "$(AGENT_GATEWAY)" \
+		$(if $(AGENT_VIRTUAL_KEY),-virtual-key "$(AGENT_VIRTUAL_KEY)") \
+		$(if $(AGENT_MANAGEMENT_URL),-management-url "$(AGENT_MANAGEMENT_URL)") \
+		$(if $(AGENT_TOKEN),-agent-token "$(AGENT_TOKEN)") \
+		$(if $(filter 1 true,$(VERBOSE)),-verbose) \
+		$(AGENT_FLAGS)
+
+run-agent-headless: build-agent ## Run bifrost-agent in headless mode (no system tray, requires sudo)
+	@echo "$(GREEN)Running bifrost-agent (headless)...$(NC)"
+	@sudo ./tmp/bifrost-agent \
+		-gateway "$(AGENT_GATEWAY)" \
+		$(if $(AGENT_VIRTUAL_KEY),-virtual-key "$(AGENT_VIRTUAL_KEY)") \
+		$(if $(AGENT_MANAGEMENT_URL),-management-url "$(AGENT_MANAGEMENT_URL)") \
+		$(if $(AGENT_TOKEN),-agent-token "$(AGENT_TOKEN)") \
+		$(if $(filter 1 true,$(VERBOSE)),-verbose) \
+		-no-tray \
+		$(AGENT_FLAGS)
+
+test-agent: ## Run agent tests
+	@echo "$(GREEN)Running agent tests...$(NC)"
+	@cd agent && go test ./... -v -count=1
+	@echo "$(GREEN)Agent tests passed$(NC)"

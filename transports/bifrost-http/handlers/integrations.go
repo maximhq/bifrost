@@ -34,6 +34,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewOpenAIPassthroughRouter(client, handlerStore, logger),
 		integrations.NewAnthropicPassthroughRouter(client, handlerStore, logger),
 		integrations.NewCursorRouter(client, handlerStore, logger),
+		integrations.NewChatGPTPassthroughRouter(client, handlerStore, logger),
 	}
 
 	return &IntegrationHandler{
