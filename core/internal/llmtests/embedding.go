@@ -58,12 +58,15 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			"Goodnight, moon!",
 		}
 
+		contents := make([]schemas.EmbeddingContent, len(testTexts))
+		for i, text := range testTexts {
+			t := text
+			contents[i] = schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}
+		}
 		request := &schemas.BifrostEmbeddingRequest{
 			Provider: testConfig.Provider,
 			Model:    testConfig.EmbeddingModel,
-			Input: &schemas.EmbeddingInput{
-				Texts: testTexts,
-			},
+			Input: contents,
 			Params: &schemas.EmbeddingParameters{
 				EncodingFormat: bifrost.Ptr("float"),
 			},
@@ -123,12 +126,7 @@ func validateEmbeddingSemantics(t *testing.T, response *schemas.BifrostEmbedding
 	embeddings := make([][]float64, len(testTexts))
 	responseDataLength := len(response.Data)
 	if responseDataLength != len(testTexts) {
-		if responseDataLength > 0 && response.Data[0].Embedding.Embedding2DArray != nil {
-			responseDataLength = len(response.Data[0].Embedding.Embedding2DArray)
-		}
-		if responseDataLength != len(testTexts) {
-			t.Fatalf("Expected %d embedding results, got %d", len(testTexts), responseDataLength)
-		}
+		t.Fatalf("Expected %d embedding results, got %d", len(testTexts), responseDataLength)
 	}
 
 	for i := range responseDataLength {

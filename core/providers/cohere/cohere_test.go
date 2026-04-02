@@ -28,7 +28,8 @@ func TestCohere(t *testing.T) {
 		ChatModel:      "command-a-03-2025",
 		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
 		TextModel:      "",                         // Cohere focuses on chat
-		EmbeddingModel: "embed-v4.0",
+		EmbeddingModel:           "embed-v4.0",
+		MultimodalEmbeddingModel: "embed-v4.0",
 		RerankModel:    "rerank-v3.5",
 		ReasoningModel: "command-a-reasoning-08-2025",
 		Scenarios: llmtests.TestScenarios{
@@ -49,6 +50,7 @@ func TestCohere(t *testing.T) {
 			FileURL:                    false, // Not supported
 			CompleteEnd2End:            false,
 			Embedding:                  true,
+			MultimodalEmbedding:        true,
 			Rerank:                     true,
 			Reasoning:                  true,
 			ListModels:                 true,

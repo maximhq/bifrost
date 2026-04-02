@@ -651,9 +651,14 @@ func CreateEmbeddingRequest(texts []string) *schemas.BifrostEmbeddingRequest {
 	return &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.OpenAI,
 		Model:    "text-embedding-3-small",
-		Input: &schemas.EmbeddingInput{
-			Texts: texts,
-		},
+		Input: func() []schemas.EmbeddingContent {
+			contents := make([]schemas.EmbeddingContent, len(texts))
+			for i, text := range texts {
+				t := text
+				contents[i] = schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}
+			}
+			return contents
+		}(),
 	}
 }
 

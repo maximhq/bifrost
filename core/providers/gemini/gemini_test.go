@@ -36,7 +36,8 @@ func TestGemini(t *testing.T) {
 			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
 		},
 		VisionModel:          "gemini-2.5-flash",
-		EmbeddingModel:       "gemini-embedding-001",
+		EmbeddingModel:          "gemini-embedding-001",
+		MultimodalEmbeddingModel: "gemini-embedding-001",
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
 		ImageGenerationModel: "gemini-2.5-flash-image",
@@ -72,6 +73,7 @@ func TestGemini(t *testing.T) {
 			FileURL:                    false, // supported files via gemini files api
 			CompleteEnd2End:            true,
 			Embedding:                  true,
+			MultimodalEmbedding:        true,
 			Transcription:              false,
 			TranscriptionStream:        false,
 			SpeechSynthesis:            true,
@@ -214,7 +216,7 @@ func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 
 	require.NotNil(t, resp)
 
-	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	got := resp.Data[0].Embedding.Float[0]
 	assert.Equal(t, want, got)
 	assert.NotEqual(t, float64(float32(want)), got)
 }

@@ -5,31 +5,37 @@ import (
 	"fmt"
 	"strings"
 
+	cohere "github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ToBedrockTitanEmbeddingRequest converts a Bifrost embedding request to Bedrock Titan format
+// ToBedrockTitanEmbeddingRequest converts a Bifrost embedding request to Bedrock Titan format.
 func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*BedrockTitanEmbeddingRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
 
-	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0 {
-		return nil, fmt.Errorf("no input text provided for embedding")
+	if len(bifrostReq.Input) == 0 {
+		return nil, fmt.Errorf("no input provided for Titan embedding")
 	}
 
-	titanReq := &BedrockTitanEmbeddingRequest{}
+	if len(bifrostReq.Input) != 1 {
+		return nil, fmt.Errorf("amazon Titan embedding models support exactly one content item per request; got %d", len(bifrostReq.Input))
+	}
 
-	// Set input text
-	if bifrostReq.Input.Text != nil {
-		titanReq.InputText = *bifrostReq.Input.Text
-	} else if len(bifrostReq.Input.Texts) > 0 {
-		var embeddingText string
-		for _, text := range bifrostReq.Input.Texts {
-			embeddingText += text + " \n"
+	var sb strings.Builder
+	for _, part := range bifrostReq.Input[0] {
+		if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
+			return nil, fmt.Errorf("amazon Titan embedding models only support text input")
 		}
-		titanReq.InputText = embeddingText
+		if sb.Len() > 0 {
+			sb.WriteString(" \n")
+		}
+		sb.WriteString(*part.Text)
+	}
+
+	titanReq := &BedrockTitanEmbeddingRequest{
+		InputText: sb.String(),
 	}
 
 	if bifrostReq.Params != nil {
@@ -39,7 +45,6 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 				titanReq.Normalize = &b
 			}
 		}
-		// Forward remaining extra params (excluding normalize which is now a first-class field)
 		if len(bifrostReq.Params.ExtraParams) > 0 {
 			extra := make(map[string]interface{})
 			for k, v := range bifrostReq.Params.ExtraParams {
@@ -68,8 +73,8 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 			{
 				Index:  0,
 				Object: "embedding",
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingArray: response.Embedding,
+				Embedding: schemas.EmbeddingsByType{
+					Float: response.Embedding,
 				},
 			},
 		},
@@ -83,80 +88,13 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 }
 
 // ToBedrockCohereEmbeddingRequest converts a Bifrost embedding request to Bedrock Cohere format.
-// Unlike the direct Cohere API, Bedrock does not accept a "model" field in the request body.
-func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*BedrockCohereEmbeddingRequest, error) {
+// Reuses the Cohere converter since the format is identical.
+func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*cohere.CohereEmbeddingRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
-	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
-		return nil, fmt.Errorf("no input provided for embedding")
-	}
 
-	req := &BedrockCohereEmbeddingRequest{}
-
-	// Map texts
-	if bifrostReq.Input.Text != nil {
-		req.Texts = []string{*bifrostReq.Input.Text}
-	} else if len(bifrostReq.Input.Texts) > 0 {
-		req.Texts = bifrostReq.Input.Texts
-	}
-
-	if bifrostReq.Params != nil {
-		extra := make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
-		for k, v := range bifrostReq.Params.ExtraParams {
-			extra[k] = v
-		}
-
-		if v, ok := extra["input_type"]; ok {
-			if s, ok := v.(string); ok {
-				req.InputType = s
-				delete(extra, "input_type")
-			}
-		}
-		if v, ok := extra["truncate"]; ok {
-			if s, ok := v.(string); ok {
-				req.Truncate = &s
-				delete(extra, "truncate")
-			}
-		}
-		if v, ok := extra["embedding_types"]; ok {
-			if ss, ok := v.([]string); ok {
-				req.EmbeddingTypes = ss
-				delete(extra, "embedding_types")
-			}
-		}
-		if v, ok := extra["images"]; ok {
-			if ss, ok := v.([]string); ok {
-				req.Images = ss
-				delete(extra, "images")
-			}
-		}
-		if v, ok := extra["inputs"]; ok {
-			if inputs, ok := v.([]BedrockCohereEmbeddingInput); ok {
-				req.Inputs = inputs
-				delete(extra, "inputs")
-			}
-		}
-		if v, ok := extra["max_tokens"]; ok {
-			switch n := v.(type) {
-			case int:
-				req.MaxTokens = &n
-				delete(extra, "max_tokens")
-			case float64:
-				i := int(n)
-				req.MaxTokens = &i
-				delete(extra, "max_tokens")
-			}
-		}
-		if bifrostReq.Params.Dimensions != nil {
-			req.OutputDimension = bifrostReq.Params.Dimensions
-		}
-		if len(extra) > 0 {
-			req.ExtraParams = extra
-		}
-	}
-
-	return req, nil
+	return cohere.ToCohereEmbeddingRequest(bifrostReq)
 }
 
 // DetermineEmbeddingModelType determines the embedding model type from the model name
@@ -189,63 +127,47 @@ func (r *BedrockCohereEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.
 			Float   [][]float32 `json:"float"`
 			Base64  []string    `json:"base64"`
 			Int8    [][]int8    `json:"int8"`
-			Uint8   [][]int32   `json:"uint8"`  // int32 avoids []byte→base64 JSON issue
+			Uint8   [][]int32   `json:"uint8"` // int32 avoids []byte→base64 JSON issue
 			Binary  [][]int8    `json:"binary"`
 			Ubinary [][]int32   `json:"ubinary"` // int32 avoids []byte→base64 JSON issue
 		}
 		if err := json.Unmarshal(r.Embeddings, &typed); err != nil {
 			return nil, fmt.Errorf("error parsing embeddings_by_type: %w", err)
 		}
-		if typed.Float != nil {
-			for i, emb := range typed.Float {
-				float64Emb := make([]float64, len(emb))
-				for j, v := range emb {
-					float64Emb[j] = float64(v)
+
+		// Determine document count from whichever type was returned.
+		count := max(len(typed.Float), len(typed.Base64), len(typed.Int8), len(typed.Uint8), len(typed.Binary), len(typed.Ubinary))
+		for i := range count {
+			entry := schemas.EmbeddingData{Object: "embedding", Index: i}
+			if i < len(typed.Float) {
+				entry.Embedding.Float = make([]float64, len(typed.Float[i]))
+				for j, v := range typed.Float[i] {
+					entry.Embedding.Float[j] = float64(v)
 				}
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-					Object:    "embedding",
-					Index:     i,
-					Embedding: schemas.EmbeddingStruct{EmbeddingArray: float64Emb},
-				})
 			}
-		}
-		if typed.Base64 != nil {
-			for i, emb := range typed.Base64 {
-				e := emb
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-					Object:    "embedding",
-					Index:     i,
-					Embedding: schemas.EmbeddingStruct{EmbeddingStr: &e},
-				})
+			if i < len(typed.Base64) {
+				s := typed.Base64[i]
+				entry.Embedding.Base64 = &s
 			}
-		}
-		for i, emb := range typed.Int8 {
-			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
-			})
-		}
-		for i, emb := range typed.Binary {
-			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: emb},
-			})
-		}
-		for i, emb := range typed.Uint8 {
-			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
-			})
-		}
-		for i, emb := range typed.Ubinary {
-			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-				Object:    "embedding",
-				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingInt32Array: emb},
-			})
+			if i < len(typed.Int8) {
+				entry.Embedding.Int8 = typed.Int8[i]
+			}
+			if i < len(typed.Binary) {
+				entry.Embedding.Binary = typed.Binary[i]
+			}
+			if i < len(typed.Uint8) {
+				entry.Embedding.Uint8 = make([]uint8, len(typed.Uint8[i]))
+				for j, v := range typed.Uint8[i] {
+					entry.Embedding.Uint8[j] = uint8(v)
+				}
+			}
+			if i < len(typed.Ubinary) {
+				entry.Embedding.Ubinary = make([]uint8, len(typed.Ubinary[i]))
+				for j, v := range typed.Ubinary[i] {
+					entry.Embedding.Ubinary[j] = uint8(v)
+				}
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, entry)
 		}
 
 	default:
@@ -262,7 +184,7 @@ func (r *BedrockCohereEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
 				Object:    "embedding",
 				Index:     i,
-				Embedding: schemas.EmbeddingStruct{EmbeddingArray: float64Emb},
+				Embedding: schemas.EmbeddingsByType{Float: float64Emb},
 			})
 		}
 	}

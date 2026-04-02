@@ -2,6 +2,7 @@ package huggingface
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -28,15 +29,30 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		hfReq = &HuggingFaceEmbeddingRequest{}
 	}
 
-	// Convert input
-	if bifrostReq.Input != nil {
+	if len(bifrostReq.Input) > 0 {
+		contents := bifrostReq.Input
 		var input InputsCustomType
-		if bifrostReq.Input.Text != nil {
-			input = InputsCustomType{Text: bifrostReq.Input.Text}
 
-		} else if bifrostReq.Input.Texts != nil {
-			input = InputsCustomType{Texts: bifrostReq.Input.Texts}
+		if len(contents) == 1 {
+			// Single content: extract text from the single entry
+			text, err := extractTextFromContent(contents[0])
+			if err != nil {
+				return nil, err
+			}
+			input = InputsCustomType{Text: &text}
+		} else {
+			// Batch: extract text from each content entry
+			texts := make([]string, 0, len(contents))
+			for _, content := range contents {
+				text, err := extractTextFromContent(content)
+				if err != nil {
+					return nil, err
+				}
+				texts = append(texts, text)
+			}
+			input = InputsCustomType{Texts: texts}
 		}
+
 		if inferenceProvider == hfInference {
 			hfReq.Inputs = &input
 		} else {
@@ -44,11 +60,9 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		}
 	}
 
-	// Map parameters
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
-		// Map standard parameters
 		if params.EncodingFormat != nil {
 			encodingType := EncodingType(*params.EncodingFormat)
 			hfReq.EncodingFormat = &encodingType
@@ -57,7 +71,6 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 			hfReq.Dimensions = params.Dimensions
 		}
 
-		// Check for HuggingFace-specific parameters in ExtraParams
 		if params.ExtraParams != nil {
 			if normalize, ok := params.ExtraParams["normalize"].(bool); ok {
 				delete(params.ExtraParams, "normalize")
@@ -80,6 +93,25 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 	}
 
 	return hfReq, nil
+}
+
+// extractTextFromContent extracts a single text string from a content entry.
+// All parts must be text-only; multiple text parts are stitched together.
+func extractTextFromContent(content schemas.EmbeddingContent) (string, error) {
+	var sb strings.Builder
+	for _, part := range content {
+		if part.Type != schemas.EmbeddingContentPartTypeText || part.Text == nil {
+			return "", fmt.Errorf("huggingface embedding only supports text input")
+		}
+		if sb.Len() > 0 {
+			sb.WriteString(" \n")
+		}
+		sb.WriteString(*part.Text)
+	}
+	if sb.Len() == 0 {
+		return "", fmt.Errorf("huggingface embedding content has no text")
+	}
+	return sb.String(), nil
 }
 
 // UnmarshalHuggingFaceEmbeddingResponse unmarshals HuggingFace API response directly into BifrostEmbeddingResponse
@@ -109,11 +141,7 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 			if obj.Usage != nil {
 				bifrostResponse.Usage = obj.Usage
 			} else {
-				bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-					PromptTokens:     0,
-					CompletionTokens: 0,
-					TotalTokens:      0,
-				}
+				bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
 			}
 			return bifrostResponse, nil
 		}
@@ -125,7 +153,7 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 		embeddings := make([]schemas.EmbeddingData, len(arr2D))
 		for idx, embedding := range arr2D {
 			embeddings[idx] = schemas.EmbeddingData{
-				Embedding: schemas.EmbeddingStruct{EmbeddingArray: append([]float64(nil), embedding...)},
+				Embedding: schemas.EmbeddingsByType{Float: append([]float64(nil), embedding...)},
 				Index:     idx,
 				Object:    "embedding",
 			}
@@ -134,11 +162,7 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 			Data:   embeddings,
 			Model:  model,
 			Object: "list",
-			Usage: &schemas.BifrostLLMUsage{
-				PromptTokens:     0,
-				CompletionTokens: 0,
-				TotalTokens:      0,
-			},
+			Usage:  &schemas.BifrostLLMUsage{},
 		}, nil
 	}
 
@@ -146,18 +170,14 @@ func UnmarshalHuggingFaceEmbeddingResponse(data []byte, model string) (*schemas.
 	var arr1D []float64
 	if err := sonic.Unmarshal(data, &arr1D); err == nil {
 		return &schemas.BifrostEmbeddingResponse{
-			Data: []schemas.EmbeddingData{{
-				Embedding: schemas.EmbeddingStruct{EmbeddingArray: append([]float64(nil), arr1D...)},
-				Index:     0,
-				Object:    "embedding",
-			}},
+		Data: []schemas.EmbeddingData{{
+			Embedding: schemas.EmbeddingsByType{Float: append([]float64(nil), arr1D...)},
+			Index:     0,
+			Object:    "embedding",
+		}},
 			Model:  model,
 			Object: "list",
-			Usage: &schemas.BifrostLLMUsage{
-				PromptTokens:     0,
-				CompletionTokens: 0,
-				TotalTokens:      0,
-			},
+			Usage:  &schemas.BifrostLLMUsage{},
 		}, nil
 	}
 

@@ -209,6 +209,12 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
+
+		if err := ensureEmbeddingInputBackfill(context.Background(), lock.conn); err != nil {
+			logger.Warn(fmt.Sprintf("logstore: embedding input backfill failed: %s (historical embedding logs may be missing input data)", err))
+		} else {
+			logger.Info("logstore: embedding input backfill completed")
+		}
 	}()
 
 	// Create materialized views and start periodic refresh for dashboard queries.

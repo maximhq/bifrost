@@ -272,6 +272,7 @@ type CohereEmbeddingRequest struct {
 	OutputDimension *int                   `json:"output_dimension,omitempty"` // Optional: Embedding dimensions (256, 512, 1024, 1536)
 	EmbeddingTypes  []string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
 	Truncate        *string                `json:"truncate,omitempty"`         // Optional: How to handle long inputs
+	Priority        *int                   `json:"priority,omitempty"`         // Optional: Priority of the request
 	ExtraParams     map[string]interface{} `json:"-"`                          // Optional: Extra parameters
 }
 

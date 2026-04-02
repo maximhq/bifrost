@@ -49,6 +49,7 @@ type TestScenarios struct {
 	Transcription                bool // Speech-to-text functionality
 	TranscriptionStream          bool // Streaming speech-to-text functionality
 	Embedding                    bool // Embedding functionality
+	MultimodalEmbedding          bool // Multimodal embedding functionality (text + image)
 	Reasoning                    bool // Reasoning/thinking functionality via Responses API
 	PromptCaching                bool // Prompt caching functionality
 	ListModels                   bool // List available models functionality
@@ -109,6 +110,7 @@ type ComprehensiveTestConfig struct {
 	VisionModel              string
 	ReasoningModel           string
 	EmbeddingModel           string
+	MultimodalEmbeddingModel string // Model for multimodal embedding tests (text + image)
 	RerankModel              string
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
@@ -340,7 +342,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004"},
+				Models: []string{"text-multilingual-embedding-002", "gemini-2.5-pro", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001", "semantic-ranker-default@latest", "semantic-ranker-default-004", "multimodalembedding@001"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Models: []string{"gemini-embedding-2-preview"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
