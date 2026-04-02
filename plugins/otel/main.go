@@ -365,14 +365,14 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 	customerID := getStringAttr(attrs, schemas.AttrCustomerID)
 	customerName := getStringAttr(attrs, schemas.AttrCustomerName)
 
-	// Build common attributes for all metrics
-	otelAttrs := BuildBifrostAttributes(
+	// Build common attributes for all metrics (including dynamic request dimensions from headers)
+	otelAttrs := AppendBifrostDimensionMetricAttrs(attrs, BuildBifrostAttributes(
 		provider, model, method,
 		virtualKeyID, virtualKeyName,
 		selectedKeyID, selectedKeyName,
 		numberOfRetries, fallbackIndex,
 		teamID, teamName, customerID, customerName,
-	)
+	))
 
 	// Record upstream request count
 	p.metricsExporter.RecordUpstreamRequest(ctx, otelAttrs...)

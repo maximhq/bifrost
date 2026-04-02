@@ -4746,6 +4746,15 @@ func executeRequestWithRetries[T any](
 		}
 		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts)
 
+		if dimMap, ok := ctx.Value(schemas.BifrostContextKeyRequestDimensions).(map[string]string); ok {
+			for label, val := range dimMap {
+				if val == "" {
+					continue
+				}
+				tracer.SetAttribute(handle, schemas.DimensionAttrKey(label), val)
+			}
+		}
+
 		// Populate LLM request attributes (messages, parameters, etc.)
 		if req != nil {
 			tracer.PopulateLLMRequestAttributes(handle, req)

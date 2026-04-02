@@ -28,7 +28,7 @@ func getPrometheusLabelValues(expectedLabels []string, headerValues map[string]s
 
 // collectPrometheusKeyValues collects all metrics for a request including:
 // - Default metrics (path, method, status, request size)
-// - Custom prometheus headers (x-bf-prom-*)
+// - Custom dimension headers (x-bf-dim-* preferred; x-bf-prom-* legacy; dim overrides prom)
 // Returns a map of all label values
 func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 	path := string(ctx.Path())
@@ -40,16 +40,34 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 		"method": method,
 	}
 
-	// Collect custom prometheus headers
+	// Collect custom dimension headers (x-bf-dim-* preferred; x-bf-prom-* legacy — dim overrides prom on same label)
+	dimVals := make(map[string]string)
+	promVals := make(map[string]string)
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
+		if strings.HasPrefix(keyStr, "x-bf-dim-") {
+			labelName := strings.TrimPrefix(keyStr, "x-bf-dim-")
+			if labelName != "" {
+				dimVals[labelName] = string(value)
+			}
+			return true
+		}
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
-			labelValues[labelName] = string(value)
-			ctx.SetUserValue(keyStr, string(value))
+			if labelName != "" {
+				promVals[labelName] = string(value)
+				ctx.SetUserValue(keyStr, string(value))
+			}
+			return true
 		}
 		return true
 	})
+	for k, v := range promVals {
+		labelValues[k] = v
+	}
+	for k, v := range dimVals {
+		labelValues[k] = v
+	}
 
 	return labelValues
 }

@@ -33,7 +33,8 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `maxim.TraceIDKey` | `x-bf-maxim-trace-id` | `string` | Maxim trace ID |
 | `maxim.GenerationIDKey` | `x-bf-maxim-generation-id` | `string` | Maxim generation ID |
 | `maxim.TagsKey` | `x-bf-maxim-*` | `map[string]string` | Maxim tags (custom tag names) |
-| `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Prometheus metric labels |
+| `BifrostContextKeyRequestDimensions` | `x-bf-dim-*`, `x-bf-prom-*` | `map[string]string` | Request dimensions (merged; `x-bf-dim-*` overrides `x-bf-prom-*` on conflict); used for OTEL span attributes (`gen_ai.dimension.*`) and Prometheus when labels are configured |
+| `BifrostContextKey(labelName)` | `x-bf-prom-*` only | `string` | Legacy per-label context keys (still set for `x-bf-prom-*`) |
 
 
 ## Request Configuration Options
@@ -893,21 +894,21 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 </Tab>
 </Tabs>
 
-## Prometheus Options
+## Request dimensions (Prometheus and OpenTelemetry)
 
-**Context Key:** `BifrostContextKey(labelName)`  
-**Header Pattern:** `x-bf-prom-{label-name}`  
-**Type:** `string`  
+**Context key:** `BifrostContextKeyRequestDimensions`  
+**Header patterns:** `x-bf-dim-{label-name}` (preferred), `x-bf-prom-{label-name}` (legacy)  
+**Type:** `map[string]string` on `BifrostContext` (HTTP gateway merges headers into this map)  
 **Required:** No
 
-Add custom labels to Prometheus metrics. The `x-bf-prom-` prefix is stripped and the remainder becomes the label name.
+Add custom dimensions for Prometheus metrics (when those label names are listed in telemetry `custom_labels` / `prometheus_labels`) and for OpenTelemetry: they are recorded on LLM and retry spans as `gen_ai.dimension.<normalized-name>` and included in OTEL metrics when the OTEL plugin metrics push is enabled.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
 ```bash
 curl --location 'http://localhost:8080/v1/chat/completions' \
---header 'x-bf-prom-environment: production' \
---header 'x-bf-prom-team: engineering' \
+--header 'x-bf-dim-environment: production' \
+--header 'x-bf-dim-team: engineering' \
 --header 'Content-Type: application/json' \
 --data '{
     "model": "openai/gpt-4o-mini",
@@ -917,11 +918,11 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 </Tab>
 <Tab title="Go SDK">
 ```go
-ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKey("environment"), "production")
-ctx = context.WithValue(ctx, schemas.BifrostContextKey("team"), "engineering")
+dims := map[string]string{"environment": "production", "team": "engineering"}
+bctx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+bctx.SetValue(schemas.BifrostContextKeyRequestDimensions, dims)
 
-response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(bctx, &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -929,6 +930,8 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 ```
 </Tab>
 </Tabs>
+
+Legacy **`x-bf-prom-*`** still sets `BifrostContextKey(labelName)` for backward compatibility and feeds the same merged dimension map as `x-bf-dim-*`.
 
 ## Security Denylist
 
