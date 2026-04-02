@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/valyala/fasthttp"
 )
@@ -48,14 +49,14 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 		if strings.HasPrefix(keyStr, "x-bf-dim-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-dim-")
 			if labelName != "" {
-				dimVals[labelName] = string(value)
+				dimVals[schemas.SanitizeDimensionLabel(labelName)] = string(value)
 			}
 			return true
 		}
 		if strings.HasPrefix(keyStr, "x-bf-prom-") {
 			labelName := strings.TrimPrefix(keyStr, "x-bf-prom-")
 			if labelName != "" {
-				promVals[labelName] = string(value)
+				promVals[schemas.SanitizeDimensionLabel(labelName)] = string(value)
 				ctx.SetUserValue(keyStr, string(value))
 			}
 			return true
