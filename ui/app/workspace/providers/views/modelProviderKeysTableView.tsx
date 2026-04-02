@@ -181,8 +181,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												checked={isKeyEnabled}
 												size="md"
 												disabled={!hasUpdateProviderAccess}
-												onCheckedChange={(checked) => {
-													updateProvider({
+												onAsyncCheckedChange={async (checked) => {
+													await updateProvider({
 														...provider,
 														keys: provider.keys.map((k, i) => (i === index ? { ...k, enabled: checked } : k)),
 													})
@@ -215,6 +215,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															Edit
 														</DropdownMenuItem>
 														<DropdownMenuItem
+															variant="destructive"
 															onClick={() => {
 																setShowDeleteKeyDialog({ show: true, keyIndex: index });
 															}}

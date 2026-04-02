@@ -1,0 +1,410 @@
+---
+title: "Custom Pricing"
+description: "Set custom rates for any model across global or virtual key scopes, optionally narrowed to a specific provider or key."
+icon: "circle-dollar-to-slot"
+---
+
+## Overview
+
+Bifrost computes request costs using a built-in pricing catalog that is automatically synced from a remote datasheet. **Custom Pricing** lets you override those catalog prices at runtime without redeploying, applying your own rates for any model across any combination of provider, key, and virtual key scopes.
+
+**Key capabilities:**
+- **Scoped overrides** — apply prices globally or narrow them to a specific provider, provider key, or virtual key
+- **Pattern matching** — target an exact model name or a wildcard prefix (e.g. `gpt-4*`)
+- **Request type filtering** — restrict an override to one or more specific operations (chat, embeddings, image generation, etc.); at least one request type is required
+- **Hierarchical resolution** — the most-specific matching override always wins; broader scopes act as fallbacks
+
+---
+
+## Pricing data source
+
+Before configuring overrides, Bifrost needs a pricing catalog to work from. By default it ships with built-in prices and syncs them every 24 hours. You can point it at a custom pricing URL if you maintain your own datasheet.
+
+<Tabs group="pricing-source">
+<Tab title="Web UI">
+
+1. Navigate to **Models** in the sidebar
+2. Click the **Pricing Settings** tab
+3. Enter your pricing datasheet URL in the **Pricing Datasheet URL** field
+4. Set the **Pricing Sync Interval** (in hours)
+5. Click **Save**
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "framework": {
+    "pricing": {
+      "pricing_url": "https://your-host/pricing.json",
+      "pricing_sync_interval": 86400
+    }
+  }
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pricing_url` | string (URI) | No | built-in | URL of the pricing datasheet to sync from |
+| `pricing_sync_interval` | integer | No | `86400` | Sync interval in seconds. Minimum `3600` (1 hour) |
+
+</Tab>
+</Tabs>
+
+---
+
+## Scope hierarchy
+
+Every override is assigned a **scope kind** that determines which requests it applies to. When Bifrost resolves pricing for a request, it evaluates all matching overrides and selects the one with the most specific scope. More specific scopes always win over broader ones.
+
+```
+virtual_key_provider_key  (most specific)
+virtual_key_provider
+virtual_key
+provider_key
+provider
+global                    (least specific / catch-all)
+```
+
+**Scope kinds and their required identifiers:**
+
+| Scope kind | Required | Description |
+|------------|----------|-------------|
+| `global` | — | Applies to every request regardless of provider, key, or virtual key |
+| `provider` | `provider_id` | Applies to all keys under a specific provider |
+| `provider_key` | `provider_key_id` | Applies to a specific provider API key only |
+| `virtual_key` | `virtual_key_id` | Applies to all requests made under a virtual key |
+| `virtual_key_provider` | `virtual_key_id` + `provider_id` | Applies when a virtual key routes to a specific provider |
+| `virtual_key_provider_key` | `virtual_key_id` + `provider_key_id` | Most specific: virtual key + exact provider API key |
+
+<Note>
+Scope identifiers are exclusive to their scope kind — you cannot mix them. For example, `virtual_key_provider` requires `virtual_key_id` and `provider_id` and must not include `provider_key_id`.
+</Note>
+
+---
+
+## Pattern matching
+
+The `pattern` field controls which model names the override applies to. The `match_type` field controls how the pattern is interpreted.
+
+| Match type | Behavior | Example |
+|------------|----------|---------|
+| `exact` | Matches only the exact model name | `gpt-4o` matches only `gpt-4o` |
+| `wildcard` | Prefix match — pattern must end with `*` | `gpt-4*` matches `gpt-4o`, `gpt-4-turbo`, `gpt-4o-mini` |
+
+<Info>
+For wildcard patterns, append a `*` at the end of the prefix. For example, `claude-3*` will match all Claude 3 variants.
+</Info>
+
+---
+
+## Request type filtering
+
+`request_types` is **required** and must contain at least one value. Only request types that have pricing support are accepted. Stream variants are treated identically to their base type — specifying `chat_completion` covers both streaming and non-streaming chat requests.
+
+| Type | Description |
+|------|-------------|
+| `chat_completion` | Chat requests (streaming included) |
+| `text_completion` | Legacy text completions (streaming included) |
+| `responses` | Responses API requests (streaming included) |
+| `embedding` | Embedding generation |
+| `rerank` | Reranking |
+| `speech` | Text-to-speech (streaming included) |
+| `transcription` | Speech-to-text (streaming included) |
+| `image_generation` | Image generation (streaming included) |
+| `image_variation` | Image variation |
+| `image_edit` | Image editing (streaming included) |
+| `video_generation` | Video generation |
+| `video_remix` | Video remixing |
+
+---
+
+## Creating an override
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Models** → **Pricing Overrides** in the sidebar
+
+![Pricing Overrides Table](../media/ui-custom-pricing-table.png)
+
+2. Click **Create Override**
+3. Fill in the form:
+   - **Name** — a human-readable label
+   - **Scope** — select the scope kind and provide the matching IDs
+   - **Pattern** — enter the model name or wildcard prefix
+   - **Match type** — choose **Exact** or **Wildcard**
+   - **Request types** — select one or more request types (required)
+   - **Pricing fields** — enter the price values you want to override (only non-zero fields are applied)
+4. Click **Save**
+
+![Pricing Override Form](../media/ui-custom-pricing-form.png)
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/governance/pricing-overrides \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "GPT-4o reduced input cost",
+    "scope_kind": "global",
+    "match_type": "exact",
+    "pattern": "gpt-4o",
+    "request_types": ["chat_completion"],
+    "patch": {
+      "input_cost_per_token": 0.0000025,
+      "output_cost_per_token": 0.000010
+    }
+  }'
+```
+
+**Response:**
+```json
+{
+  "message": "Pricing override created successfully",
+  "pricing_override": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "GPT-4o reduced input cost",
+    "scope_kind": "global",
+    "match_type": "exact",
+    "pattern": "gpt-4o",
+    "request_types": ["chat_completion"],
+    "pricing_patch": "{\"input_cost_per_token\":0.0000025,\"output_cost_per_token\":0.00001}",
+    "created_at": "2026-03-20T10:00:00Z",
+    "updated_at": "2026-03-20T10:00:00Z"
+  }
+}
+```
+
+**Update (sparse patch):**
+```bash
+curl -X PATCH http://localhost:8080/api/governance/pricing-overrides/{id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patch": {
+      "input_cost_per_token": 0.000002
+    }
+  }'
+```
+
+**Delete:**
+```bash
+curl -X DELETE http://localhost:8080/api/governance/pricing-overrides/{id}
+```
+
+**List (with optional filters):**
+```bash
+# All overrides
+curl http://localhost:8080/api/governance/pricing-overrides
+
+# Filter by scope
+curl "http://localhost:8080/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id=vk-abc123"
+```
+
+</Tab>
+<Tab title="config.json">
+
+Pricing overrides are defined under `governance.pricing_overrides`. Each entry requires `id`, `name`, `scope_kind`, `match_type`, `pattern`, and `request_types`. The `pricing_patch` is a JSON-encoded string containing only the fields you want to override.
+
+```json
+{
+  "governance": {
+    "pricing_overrides": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "name": "Global GPT-4o rate",
+        "scope_kind": "global",
+        "match_type": "exact",
+        "pattern": "gpt-4o",
+        "request_types": ["chat_completion"],
+        "pricing_patch": "{\"input_cost_per_token\":0.0000025,\"output_cost_per_token\":0.00001}"
+      },
+      {
+        "id": "660e8400-e29b-41d4-a716-446655440001",
+        "name": "All Claude models for prod VK",
+        "scope_kind": "virtual_key",
+        "virtual_key_id": "vk-abc123",
+        "match_type": "wildcard",
+        "pattern": "claude-3*",
+        "request_types": ["chat_completion"],
+        "pricing_patch": "{\"input_cost_per_token\":0.000003,\"output_cost_per_token\":0.000015}"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique override ID (UUID recommended) |
+| `name` | string | Yes | Human-readable label |
+| `scope_kind` | string | Yes | One of: `global`, `provider`, `provider_key`, `virtual_key`, `virtual_key_provider`, `virtual_key_provider_key` |
+| `virtual_key_id` | string | Conditional | Required for `virtual_key*` scopes |
+| `provider_id` | string | Conditional | Required for `provider` and `virtual_key_provider` scopes |
+| `provider_key_id` | string | Conditional | Required for `provider_key` and `virtual_key_provider_key` scopes |
+| `match_type` | string | Yes | `exact` or `wildcard` |
+| `pattern` | string | Yes | Model name or wildcard prefix ending with `*` |
+| `request_types` | array | Yes | Request types this override applies to. At least one value required. |
+| `pricing_patch` | string | No | JSON-encoded pricing fields to override |
+| `config_hash` | string | No | Auto-managed. Do not set manually |
+
+</Tab>
+</Tabs>
+
+---
+
+## Pricing fields reference
+
+Only fields with non-zero values are applied. All values are cost **per unit** in USD.
+
+### Token costs
+
+| Field | Description |
+|-------|-------------|
+| `input_cost_per_token` | Standard input token cost |
+| `output_cost_per_token` | Standard output token cost |
+| `input_cost_per_token_batches` | Input token cost for batch requests |
+| `output_cost_per_token_batches` | Output token cost for batch requests |
+| `input_cost_per_token_priority` | Input token cost for priority requests |
+| `output_cost_per_token_priority` | Output token cost for priority requests |
+| `input_cost_per_character` | Input cost per character (character-billed models) |
+
+### Token tier costs
+
+| Field | Description |
+|-------|-------------|
+| `input_cost_per_token_above_128k_tokens` | Input cost above 128k context |
+| `output_cost_per_token_above_128k_tokens` | Output cost above 128k context |
+| `input_cost_per_token_above_200k_tokens` | Input cost above 200k context |
+| `output_cost_per_token_above_200k_tokens` | Output cost above 200k context |
+
+### Cache costs
+
+| Field | Description |
+|-------|-------------|
+| `cache_creation_input_token_cost` | Cost to write a token to the prompt cache |
+| `cache_read_input_token_cost` | Cost to read a cached input token |
+| `cache_creation_input_token_cost_above_200k_tokens` | Cache creation above 200k context |
+| `cache_read_input_token_cost_above_200k_tokens` | Cache read above 200k context |
+| `cache_read_input_token_cost_priority` | Priority cache read cost |
+| `cache_read_input_image_token_cost` | Cache read cost for image tokens |
+| `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
+
+### Image costs
+
+| Field | Description |
+|-------|-------------|
+| `input_cost_per_image` | Cost per input image |
+| `output_cost_per_image` | Cost per generated image |
+| `input_cost_per_pixel` | Cost per input pixel |
+| `output_cost_per_pixel` | Cost per output pixel |
+| `input_cost_per_image_token` | Cost per image input token |
+| `output_cost_per_image_token` | Cost per image output token |
+| `output_cost_per_image_low_quality` | Generated image — low quality |
+| `output_cost_per_image_medium_quality` | Generated image — medium quality |
+| `output_cost_per_image_high_quality` | Generated image — high quality |
+| `output_cost_per_image_auto_quality` | Generated image — auto quality |
+| `output_cost_per_image_above_512_and_512_pixels` | Generated image > 512×512 |
+| `output_cost_per_image_above_1024_and_1024_pixels` | Generated image > 1024×1024 |
+| `output_cost_per_image_above_2048_and_2048_pixels` | Generated image > 2048×2048 |
+| `output_cost_per_image_above_4096_and_4096_pixels` | Generated image > 4096×4096 |
+
+### Audio and video costs
+
+| Field | Description |
+|-------|-------------|
+| `input_cost_per_audio_token` | Cost per audio input token |
+| `input_cost_per_audio_per_second` | Cost per second of audio input |
+| `input_cost_per_second` | Cost per second of input (generic) |
+| `input_cost_per_video_per_second` | Cost per second of video input |
+| `output_cost_per_audio_token` | Cost per audio output token |
+| `output_cost_per_second` | Cost per second of audio output |
+| `output_cost_per_video_per_second` | Cost per second of video output |
+| `input_cost_per_video_per_second_above_128k_tokens` | Video input cost above 128k context |
+| `input_cost_per_audio_per_second_above_128k_tokens` | Audio input cost above 128k context |
+
+### Other costs
+
+| Field | Description |
+|-------|-------------|
+| `search_context_cost_per_query` | Cost per web search context query |
+| `code_interpreter_cost_per_session` | Cost per code interpreter session |
+
+---
+
+## Examples
+
+### Flat rate for all Anthropic models
+
+Apply a single input/output rate to every Claude model globally:
+
+```json
+{
+  "id": "anthropic-flat-rate",
+  "name": "Anthropic flat rate",
+  "scope_kind": "provider",
+  "provider_id": "anthropic",
+  "match_type": "wildcard",
+  "pattern": "claude*",
+  "request_types": ["chat_completion", "text_completion", "responses"],
+  "pricing_patch": "{\"input_cost_per_token\":0.000003,\"output_cost_per_token\":0.000015}"
+}
+```
+
+### Per-virtual-key negotiated rate
+
+A specific virtual key has negotiated lower prices for GPT-4o:
+
+```json
+{
+  "id": "vk-prod-gpt4o-rate",
+  "name": "Prod VK — GPT-4o negotiated rate",
+  "scope_kind": "virtual_key",
+  "virtual_key_id": "vk-abc123",
+  "match_type": "exact",
+  "pattern": "gpt-4o",
+  "request_types": ["chat_completion"],
+  "pricing_patch": "{\"input_cost_per_token\":0.000002,\"output_cost_per_token\":0.000008}"
+}
+```
+
+### Image generation override
+
+Override costs for a specific image model at global scope:
+
+```json
+{
+  "id": "dall-e-3-rate",
+  "name": "DALL-E 3 custom rate",
+  "scope_kind": "global",
+  "match_type": "exact",
+  "pattern": "dall-e-3",
+  "request_types": ["image_generation"],
+  "pricing_patch": "{\"output_cost_per_image_high_quality\":0.04,\"output_cost_per_image_medium_quality\":0.02}"
+}
+```
+
+### Global catch-all for a new model
+
+Use a global override to add pricing for a model not yet in the built-in catalog:
+
+```json
+{
+  "id": "my-new-model-rate",
+  "name": "my-new-model pricing",
+  "scope_kind": "global",
+  "match_type": "exact",
+  "pattern": "my-new-model-v1",
+  "request_types": ["chat_completion"],
+  "pricing_patch": "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000005}"
+}
+```
+
+---
+
+## Next steps
+
+- **[Virtual Keys](../features/governance/virtual-keys)** — Attach virtual-key-scoped overrides to virtual keys for per-customer pricing
+- **[Budget and Limits](../features/governance/budget-and-limits)** — Understand how costs are tracked against budgets
+- **[Model Catalog](../architecture/framework/model-catalog)** — Deep dive into how pricing resolution and cost calculation work internally

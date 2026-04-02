@@ -1,3 +1,0 @@
-- feat: added /api/models/details endpoint with model capability metadata
-- fix: populate customer virtual_keys in governance APIs
-- fix: enterprise model catalog sync improvements

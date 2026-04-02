@@ -1,0 +1,46 @@
+---
+title: "v1.3.14"
+description: "v1.3.14 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.14">
+
+## Changelog
+
+This release adds support for Claude Office Suite (Excel add-on), calendar-aligned billing, and ANTHROPIC_AUTH_TOKEN authentication. It also includes Anthropic streaming usage and cache token fixes, CORS wildcard header handling, and enterprise-side improvements for secrets management and new customer onboarding.
+
+## ✨ Features
+
+- **Claude Office Suite Support** — Added support for the Claude Office Suite Excel add-on, including fixes for proper integration
+- **Calendar-Aligned Billing** — Added calendar alignment feature for billing periods with supporting migration
+- **ANTHROPIC_AUTH_TOKEN Support** — Added support for `ANTHROPIC_AUTH_TOKEN` as an authentication method
+- **URL-Based Log Selection** — Added URL-based log selection with keyboard navigation and cross-page browsing in the dashboard
+- **Secrets Limit Workaround** — Added ability to circumvent the 100 secrets limit in CI/CD pipelines
+- **Manual Image Overrides** — Added manual overrides for container images in deployment configurations
+- **New Customer Environments** — Onboarded Beckhoff, Dish, and Technarts with full Terraform and Dockerfile configurations
+
+## 🐞 Fixed
+
+- **Anthropic Streaming Usage** — Fixed usage reporting for Anthropic streaming responses
+- **Anthropic Cache Token Reporting** — Fixed cache token reporting for Anthropic provider
+- **Semantic Cache count_tokens** — Skipped unsupported `count_tokens` requests in semantic cache plugin
+- **CORS Wildcard Headers** — Fixed wildcard (`*`) allowed headers handling for CORS
+- **Greptile Integration** — Fixed issues with Greptile integration
+- **Dashboard Style Fixes** — Refined dashboard page styling and layout improvements
+- **Ada Token Expiry** — Increased Ada environment token expiry duration
+
+## 📀 Base OSS version
+
+`transports/v1.4.18-0.20260327163039-277421844123`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+go get github.com/maximhq/bifrost/core@2774218441230eef858636ebe3b70552fb575a93
+go get github.com/maximhq/bifrost/framework@2774218441230eef858636ebe3b70552fb575a93
+go get github.com/maximhq/bifrost/plugins/governance@2774218441230eef858636ebe3b70552fb575a93
+go get github.com/maximhq/bifrost/plugins/logging@2774218441230eef858636ebe3b70552fb575a93
+go get github.com/maximhq/bifrost/transports@2774218441230eef858636ebe3b70552fb575a93
+```
+
+</Update>

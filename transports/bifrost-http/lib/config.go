@@ -284,7 +284,7 @@ type Config struct {
 	LogsStore   logstore.LogStore
 
 	// In-memory storage
-	ClientConfig     configstore.ClientConfig
+	ClientConfig     *configstore.ClientConfig
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	MCPConfig        *schemas.MCPConfig
 	GovernanceConfig *configstore.GovernanceConfig
@@ -338,6 +338,7 @@ type Config struct {
 	headerMatcher atomic.Pointer[HeaderMatcher]
 }
 
+// DefaultClientConfig is the default client config used when no config is provided.
 var DefaultClientConfig = configstore.ClientConfig{
 	DropExcessRequests:              false,
 	PrometheusLabels:                []string{},
@@ -348,6 +349,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	AllowDirectKeys:                 false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
+	WhitelistedRoutes:               []string{},
 	MaxRequestBodySizeMB:            100,
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
@@ -644,8 +646,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
-			config.ClientConfig = *configData.Client
-			applyClientConfigDefaults(&config.ClientConfig)
+			config.ClientConfig = configData.Client
+			applyClientConfigDefaults(config.ClientConfig)
 			// Generate hash for the file config
 			fileHash, hashErr := configData.Client.GenerateClientConfigHash()
 			if hashErr != nil {
@@ -654,7 +656,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 				config.ClientConfig.ConfigHash = fileHash
 			}
 		} else {
-			config.ClientConfig = DefaultClientConfig
+			config.ClientConfig = new(DefaultClientConfig)
 			// Generate hash for default config
 			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHash()
 			if hashErr != nil {
@@ -665,15 +667,15 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		}
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
+			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}
 		return
 	}
 	// Case 2: Config exists in DB
-	config.ClientConfig = *clientConfig
-	applyClientConfigDefaults(&config.ClientConfig)
+	config.ClientConfig = clientConfig
+	applyClientConfigDefaults(config.ClientConfig)
 	// Case 2a: No file config - use DB config as-is
 	if configData.Client == nil {
 		logger.Debug("no client config in file, using DB config")
@@ -688,13 +690,13 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig.ConfigHash != fileHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
-		config.ClientConfig = *configData.Client
+		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
-		applyClientConfigDefaults(&config.ClientConfig)
+		applyClientConfigDefaults(config.ClientConfig)
 		// Update store with file config
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store from file")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
+			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}

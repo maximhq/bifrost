@@ -607,12 +607,19 @@ func MergeBetaHeaders(providerExtraHeaders map[string]string, ctx context.Contex
 			}
 		}
 	}
-	if v := providerExtraHeaders[AnthropicBetaHeader]; v != "" {
-		add(v)
+	for k, v := range providerExtraHeaders {
+		if strings.EqualFold(k, AnthropicBetaHeader) && v != "" {
+			add(v)
+		}
 	}
 	if ctxHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-		for _, v := range ctxHeaders[AnthropicBetaHeader] {
-			add(v)
+		for k, vals := range ctxHeaders {
+			if !strings.EqualFold(k, AnthropicBetaHeader) {
+				continue
+			}
+			for _, v := range vals {
+				add(v)
+			}
 		}
 	}
 	return all

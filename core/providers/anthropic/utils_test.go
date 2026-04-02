@@ -1,9 +1,12 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -894,6 +897,46 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 	})
 }
 
+func TestMergeBetaHeaders(t *testing.T) {
+	t.Run("context_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"Anthropic-Beta": {"structured-outputs-2025-11-13"},
+		})
+		got := MergeBetaHeaders(nil, ctx)
+		want := []string{"structured-outputs-2025-11-13"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		got := MergeBetaHeaders(map[string]string{
+			"Anthropic-Beta": "mcp-client-2025-04-04",
+		}, ctx)
+		want := []string{"mcp-client-2025-04-04"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("merges_provider_then_context_deduping_tokens", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
+		})
+		got := MergeBetaHeaders(map[string]string{
+			"anthropic-beta": "foo",
+		}, ctx)
+		sort.Strings(got)
+		wantSorted := []string{"bar", "baz", "foo"}
+		if !slices.Equal(got, wantSorted) {
+			t.Fatalf("got %v, want %v", got, wantSorted)
+		}
+	})
+}
+
 func TestFilterBetaHeadersForProvider(t *testing.T) {
 	allHeaders := []string{
 		AnthropicComputerUseBetaHeader20251124,
@@ -1364,9 +1407,9 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 			MCPToolset: &AnthropicMCPToolsetTool{
 				Type:          "mcp_toolset",
 				MCPServerName: "test-server",
-				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
+				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: new(false)},
 				Configs: map[string]*AnthropicMCPToolsetConfig{
-					"tool_a": {Enabled: schemas.Ptr(true)},
+					"tool_a": {Enabled: new(true)},
 				},
 			},
 		}
@@ -1446,7 +1489,7 @@ func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
 			MCPServerName: "test-server",
 			DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
 			Configs: map[string]*AnthropicMCPToolsetConfig{
-				"search": {Enabled: schemas.Ptr(true)},
+				"search": {Enabled: new(true)},
 				"create": {Enabled: schemas.Ptr(true)},
 				"delete": {Enabled: schemas.Ptr(false)},
 			},

@@ -79,7 +79,7 @@ export default function VirtualKeysTable({
   const selectedVirtualKey = useMemo(
     () => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
     [selectedVirtualKeyId, virtualKeys],
-  )
+  )	
 
   const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
   const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
@@ -332,6 +332,7 @@ export default function VirtualKeysTable({
 															<Button
 																variant="ghost"
 																size="sm"
+																className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
 																onClick={(e) => e.stopPropagation()}
 																disabled={!hasDeleteAccess}
 																data-testid={`vk-delete-btn-${vk.name}`}
@@ -349,7 +350,7 @@ export default function VirtualKeysTable({
 															</AlertDialogHeader>
 															<AlertDialogFooter>
 																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting}>
+																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
 																	{isDeleting ? "Deleting..." : "Delete"}
 																</AlertDialogAction>
 															</AlertDialogFooter>

@@ -220,7 +220,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
+				<Button variant="outline" size="icon" aria-label="Delete log" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
 					<Trash2 />
 				</Button>
 			);

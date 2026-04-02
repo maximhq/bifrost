@@ -12,15 +12,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.4.15
-	github.com/maximhq/bifrost/framework v1.2.34
-	github.com/maximhq/bifrost/plugins/governance v1.4.34
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.23
-	github.com/maximhq/bifrost/plugins/logging v1.4.34
-	github.com/maximhq/bifrost/plugins/maxim v1.5.33
-	github.com/maximhq/bifrost/plugins/otel v1.1.33
-	github.com/maximhq/bifrost/plugins/semanticcache v1.4.32
-	github.com/maximhq/bifrost/plugins/telemetry v1.4.34
+	github.com/maximhq/bifrost/core v1.4.16
+	github.com/maximhq/bifrost/framework v1.2.35
+	github.com/maximhq/bifrost/plugins/governance v1.4.35
+	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.24
+	github.com/maximhq/bifrost/plugins/logging v1.4.35
+	github.com/maximhq/bifrost/plugins/maxim v1.5.34
+	github.com/maximhq/bifrost/plugins/otel v1.1.34
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.33
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.35
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -111,8 +111,8 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.4.33 // indirect
-	github.com/maximhq/maxim-go v0.2.0 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.4.34 // indirect
+	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
@@ -156,7 +156,7 @@ require (
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
 	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260203192932-546029d2fa20 // indirect

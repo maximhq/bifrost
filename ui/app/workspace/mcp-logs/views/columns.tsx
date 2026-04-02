@@ -101,7 +101,7 @@ export const createMCPColumns = (
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" onClick={() => void handleDelete(log)} disabled={!hasDeleteAccess} aria-label="Delete log">
+				<Button variant="outline" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => void handleDelete(log)} disabled={!hasDeleteAccess} aria-label="Delete log">
 					<Trash2 />
 				</Button>
 			);

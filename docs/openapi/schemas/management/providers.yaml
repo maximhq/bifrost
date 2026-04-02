@@ -139,14 +139,54 @@ BedrockKeyConfig:
               is_default:
                 type: boolean
 
-HuggingFaceKeyConfig:
+VllmKeyConfig:
   type: object
-  description: Hugging Face-specific key configuration
+  description: VLLM-specific key configuration
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    model_name:
+      type: string
+  required:
+    - url
+
+OllamaKeyConfig:
+  type: object
+  description: Ollama-specific key configuration
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - url
+
+SglKeyConfig:
+  type: object
+  description: SGLang-specific key configuration
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - url
+
+ReplicateKeyConfig:
+  type: object
+  description: Replicate-specific key configuration
   properties:
     deployments:
       type: object
       additionalProperties:
         type: string
+
+VLLMKeyConfig:
+  type: object
+  description: vLLM-specific key configuration for per-key routing to different vLLM instances
+  properties:
+    url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: vLLM server base URL (required)
+    model_name:
+      type: string
+      description: Exact model name served on this vLLM instance
 
 Key:
   type: object
@@ -165,7 +205,12 @@ Key:
       type: array
       items:
         type: string
-      description: List of models this key can access
+      description: List of models this key can access (whitelist)
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+      description: List of models this key cannot access (blacklist)
     weight:
       type: number
       description: Weight for load balancing
@@ -175,12 +220,29 @@ Key:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
-    huggingface_key_config:
-      $ref: '#/HuggingFaceKeyConfig'
+    replicate_key_config:
+      $ref: '#/ReplicateKeyConfig'
+    vllm_key_config:
+      $ref: '#/VllmKeyConfig'
+    ollama_key_config:
+      $ref: '#/OllamaKeyConfig'
+    sgl_key_config:
+      $ref: '#/SglKeyConfig'
     enabled:
       type: boolean
+      description: Whether the key is active (defaults to true)
     use_for_batch_api:
       type: boolean
+      description: Whether this key can be used for batch API operations
+    config_hash:
+      type: string
+      description: Hash of config.json version, used for change detection
+    status:
+      type: string
+      description: Status of key (e.g., success, list_models_failed)
+    description:
+      type: string
+      description: Error or status description for the key
 
 AllowedRequests:
   type: object
@@ -258,10 +320,6 @@ ProviderResponse:
   properties:
     name:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
-    keys:
-      type: array
-      items:
-        $ref: '#/Key'
     network_config:
       $ref: '#/NetworkConfig'
     concurrency_and_buffer_size:
@@ -272,10 +330,18 @@ ProviderResponse:
       type: boolean
     send_back_raw_response:
       type: boolean
+    store_raw_request_response:
+      type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
-    status:
+    provider_status:
       $ref: '#/ProviderStatus'
+    status:
+      type: string
+      description: Operational status (e.g., list_models_failed)
+    description:
+      type: string
+      description: Error/status description
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection
@@ -293,16 +359,12 @@ ListProvidersResponse:
 
 AddProviderRequest:
   type: object
-  description: Add provider request
+  description: Add provider request. Keys are managed separately via /api/providers/{provider}/keys.
   required:
     - provider
   properties:
     provider:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
-    keys:
-      type: array
-      items:
-        $ref: '#/Key'
     network_config:
       $ref: '#/NetworkConfig'
     concurrency_and_buffer_size:
@@ -312,18 +374,16 @@ AddProviderRequest:
     send_back_raw_request:
       type: boolean
     send_back_raw_response:
+      type: boolean
+    store_raw_request_response:
       type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
 
 UpdateProviderRequest:
   type: object
-  description: Update provider request
+  description: Update provider request. Keys are managed separately via /api/providers/{provider}/keys.
   properties:
-    keys:
-      type: array
-      items:
-        $ref: '#/Key'
     network_config:
       $ref: '#/NetworkConfig'
     concurrency_and_buffer_size:
@@ -334,8 +394,21 @@ UpdateProviderRequest:
       type: boolean
     send_back_raw_response:
       type: boolean
+    store_raw_request_response:
+      type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+
+ListProviderKeysResponse:
+  type: object
+  description: Response for listing keys for a provider
+  properties:
+    keys:
+      type: array
+      items:
+        $ref: '#/Key'
+    total:
+      type: integer
 
 ModelResponse:
   type: object

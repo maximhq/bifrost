@@ -55,7 +55,7 @@ curl --location 'http://localhost:8080/api/providers' \
         {
             "name": "openai-custom-key-1",
             "value": "env.OPENAI_API_KEY",
-            "models": [],
+            "models": ["*"],
             "weight": 1.0
         }
     ],
@@ -94,7 +94,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 {
                     "name": "openai-custom-key-1",
                     "value": "env.OPENAI_API_KEY",
-                    "models": [],
+                    "models": ["*"],
                     "weight": 1.0
                 }
             ],
@@ -301,7 +301,7 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 ```json
 {
     "custom-llm": {
-        "keys": [{ "name": "custom-llm-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "custom-llm-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "network_config": {
             "base_url": "https://your-openai-compatible-endpoint.com"
         },
@@ -338,7 +338,7 @@ These options are mutually exclusive. Do not set `insecure_skip_verify: true` to
 ```json
 {
     "my-air-gapped-provider": {
-        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": ["*"], "weight": 1.0 }],
         "network_config": {
             "base_url": "https://internal-llm.example.com",
             "insecure_skip_verify": true
@@ -359,7 +359,7 @@ These options are mutually exclusive. Do not set `insecure_skip_verify: true` to
 ```json
 {
     "my-internal-provider": {
-        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "key-1", "value": "env.API_KEY", "models": ["*"], "weight": 1.0 }],
         "network_config": {
             "base_url": "https://internal-llm.example.com",
             "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
@@ -388,7 +388,7 @@ Create different configurations for production, staging, and development environ
 ```json
 {
     "openai-production": {
-        "keys": [{ "name": "openai-prod-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-prod-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -401,7 +401,7 @@ Create different configurations for production, staging, and development environ
         }
     },
     "openai-staging": {
-        "keys": [{ "name": "openai-stage-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-stage-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -414,7 +414,7 @@ Create different configurations for production, staging, and development environ
         }
     },
     "openai-dev": {
-        "keys": [{ "name": "openai-dev-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-dev-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -436,7 +436,7 @@ Restrict capabilities based on user roles or team permissions. You can then crea
 ```json
 {
     "openai-developers": {
-        "keys": [{ "name": "openai-developers-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-developers-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -448,7 +448,7 @@ Restrict capabilities based on user roles or team permissions. You can then crea
         }
     },
     "openai-analysts": {
-        "keys": [{ "name": "openai-analysts-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-analysts-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -458,7 +458,7 @@ Restrict capabilities based on user roles or team permissions. You can then crea
         }
     },
     "openai-support": {
-        "keys": [{ "name": "openai-support-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-support-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -477,7 +477,7 @@ Test new features with limited user groups:
 ```json
 {
     "openai-beta-streaming": {
-        "keys": [{ "name": "openai-streaming-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-streaming-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
@@ -488,7 +488,7 @@ Test new features with limited user groups:
         }
     },
     "openai-stable": {
-        "keys": [{ "name": "openai-stable-key-1", "value": "env.PROVIDER_API_KEY", "models": [], "weight": 1.0 }],
+        "keys": [{ "name": "openai-stable-key-1", "value": "env.PROVIDER_API_KEY", "models": ["*"], "weight": 1.0 }],
         "custom_provider_config": {
             "base_provider_type": "openai",
             "allowed_requests": {
