@@ -116,7 +116,6 @@ func MaterializeStreamErrorBody(ctx *schemas.BifrostContext, resp *fasthttp.Resp
 func FinalizeResponseWithLargeDetection(
 	ctx *schemas.BifrostContext,
 	resp *fasthttp.Response,
-	providerName schemas.ModelProvider,
 	logger schemas.Logger,
 ) ([]byte, bool, *schemas.BifrostError) {
 	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
@@ -125,7 +124,7 @@ func FinalizeResponseWithLargeDetection(
 	if responseThreshold <= 0 {
 		body, err := CheckAndDecodeBody(resp)
 		if err != nil {
-			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
 		// Copy body before caller releases resp
 		return append([]byte(nil), body...), false, nil
@@ -142,14 +141,14 @@ func FinalizeResponseWithLargeDetection(
 			}
 			bodyBytes, readErr := io.ReadAll(reader)
 			if readErr != nil {
-				return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr, providerName)
+				return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)
 			}
 			return bodyBytes, false, nil
 		}
 		// No stream — buffered fallback
 		body, err := CheckAndDecodeBody(resp)
 		if err != nil {
-			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
 		return append([]byte(nil), body...), false, nil
 	}
@@ -169,7 +168,7 @@ func FinalizeResponseWithLargeDetection(
 			bodyBytes, readErr := io.ReadAll(io.LimitReader(reader, responseThreshold+1))
 			if readErr != nil {
 				releaseGzip()
-				return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr, providerName)
+				return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)
 			}
 			if int64(len(bodyBytes)) <= responseThreshold {
 				releaseGzip()
@@ -195,7 +194,7 @@ func FinalizeResponseWithLargeDetection(
 		// No stream — buffered fallback
 		body, err := CheckAndDecodeBody(resp)
 		if err != nil {
-			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
 		return append([]byte(nil), body...), false, nil
 	}
@@ -206,11 +205,11 @@ func FinalizeResponseWithLargeDetection(
 	if bodyStream == nil {
 		// No stream available — fall back to buffered read
 		if logger != nil {
-			logger.Warn("large-response fallback to buffered path: provider=%s content_length=%d threshold=%d body_stream_nil=true", providerName, contentLength, responseThreshold)
+			logger.Warn("large-response fallback to buffered path: content_length=%d threshold=%d body_stream_nil=true", contentLength, responseThreshold)
 		}
 		body, err := CheckAndDecodeBody(resp)
 		if err != nil {
-			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
 		return append([]byte(nil), body...), false, nil
 	}
@@ -232,7 +231,7 @@ func FinalizeResponseWithLargeDetection(
 		if wasGzip {
 			ReleaseGzipReader(gz)
 		}
-		return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr, providerName)
+		return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, readErr)
 	}
 	prefetchBuf = prefetchBuf[:n]
 

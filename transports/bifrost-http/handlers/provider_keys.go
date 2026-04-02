@@ -113,6 +113,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := key.Aliases.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
 	if key.ID == "" {
 		key.ID = uuid.NewString()
 	}
@@ -216,6 +221,11 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
+		return
+	}
+
+	if err := mergedKey.Aliases.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
 		return
 	}
 
@@ -423,6 +433,11 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 			updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
 			mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
 		}
+	}
+
+	// ReplicateKeyConfig has no sensitive fields — pass through as-is
+	if updateKey.ReplicateKeyConfig == nil && oldRawKey.ReplicateKeyConfig != nil {
+		mergedKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig
 	}
 
 	if updateKey.OllamaKeyConfig != nil && oldRedactedKey.OllamaKeyConfig != nil && oldRawKey.OllamaKeyConfig != nil {

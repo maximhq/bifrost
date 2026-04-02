@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -74,8 +73,6 @@ func (provider *ElevenlabsProvider) GetProviderKey() schemas.ModelProvider {
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -103,10 +100,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			RequestType: schemas.ListModelsRequest,
-		})
+		return nil, parseElevenlabsError(resp)
 	}
 
 	var elevenlabsResponse ElevenlabsListModelsResponse
@@ -115,7 +109,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 
-	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, request.Unfiltered)
+	response := elevenlabsResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
@@ -188,8 +182,6 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -211,7 +203,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 			endpoint = "/v1/text-to-speech/" + voice
 		}
 	} else {
-		return nil, providerUtils.NewBifrostOperationError("voice parameter is required", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("voice parameter is required", nil)
 	}
 
 	requestURL := provider.buildBaseSpeechRequestURL(ctx, endpoint, schemas.SpeechRequest, request)
@@ -228,8 +220,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToElevenlabsSpeechRequest(request), nil
-		},
-		providerName)
+		})
 
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -250,26 +241,18 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       request.Model,
-			RequestType: schemas.SpeechRequest,
-		}), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Get the response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Create response based on whether timestamps were requested
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:             schemas.SpeechRequest,
-			Provider:                providerName,
-			ModelRequested:          request.Model,
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
@@ -282,7 +265,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	if withTimestampsRequest {
 		var timestampResponse ElevenlabsSpeechWithTimestampsResponse
 		if err := sonic.Unmarshal(body, &timestampResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to parse with-timestamps response", err, providerName)
+			return nil, providerUtils.NewBifrostOperationError("failed to parse with-timestamps response", err)
 		}
 
 		bifrostResponse.AudioBase64 = &timestampResponse.AudioBase64
@@ -321,15 +304,12 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
-
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToElevenlabsSpeechRequest(request), nil
-		},
-		providerName)
+		})
 
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -345,7 +325,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	if request.Params == nil || request.Params.VoiceConfig == nil || request.Params.VoiceConfig.Voice == nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("voice parameter is required", nil, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("voice parameter is required", nil), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	req.SetRequestURI(provider.buildBaseSpeechRequestURL(ctx, "/v1/text-to-speech/"+*request.Params.VoiceConfig.Voice+"/stream", schemas.SpeechStreamRequest, request))
@@ -376,9 +356,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -387,11 +367,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       request.Model,
-			RequestType: schemas.SpeechStreamRequest,
-		}), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -402,9 +378,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.SpeechStreamRequest, provider.logger)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.SpeechStreamRequest, provider.logger)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger)
 			}
 			close(responseChan)
 		}()
@@ -445,7 +421,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error reading stream: %v", err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
 				return
 			}
 
@@ -458,11 +434,8 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 					Type:  schemas.SpeechStreamResponseTypeDelta,
 					Audio: audioChunk,
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.SpeechStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(lastChunkTime).Milliseconds(),
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(lastChunkTime).Milliseconds(),
 					},
 				}
 
@@ -481,11 +454,8 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Audio: []byte{},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.SpeechStreamRequest,
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				ChunkIndex:     chunkIndex + 1,
-				Latency:        time.Since(startTime).Milliseconds(),
+				ChunkIndex: chunkIndex + 1,
+				Latency:    time.Since(startTime).Milliseconds(),
 			},
 		}
 
@@ -506,32 +476,30 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
-
 	reqBody := ToElevenlabsTranscriptionRequest(request)
 	if reqBody == nil {
-		return nil, providerUtils.NewBifrostOperationError("transcription request is not provided", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("transcription request is not provided", nil)
 	}
 
 	hasFile := len(reqBody.File) > 0
 	hasURL := reqBody.CloudStorageURL != nil && strings.TrimSpace(*reqBody.CloudStorageURL) != ""
 	if hasFile && hasURL {
-		return nil, providerUtils.NewBifrostOperationError("provide either a file or cloud_storage_url, not both", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("provide either a file or cloud_storage_url, not both", nil)
 	}
 	if !hasFile && !hasURL {
-		return nil, providerUtils.NewBifrostOperationError("either a transcription file or cloud_storage_url must be provided", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("either a transcription file or cloud_storage_url must be provided", nil)
 	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	if bifrostErr := writeTranscriptionMultipart(writer, reqBody, providerName); bifrostErr != nil {
+	if bifrostErr := writeTranscriptionMultipart(writer, reqBody); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	contentType := writer.FormDataContentType()
 	if err := writer.Close(); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to finalize multipart transcription request", err, providerName)
+		return nil, providerUtils.NewBifrostOperationError("failed to finalize multipart transcription request", err)
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -562,17 +530,12 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
-			Provider:    providerName,
-			Model:       request.Model,
-			RequestType: schemas.TranscriptionRequest,
-		})
+		return nil, parseElevenlabsError(resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	// Check for empty response
@@ -588,18 +551,15 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	chunks, err := parseTranscriptionResponse(responseBody)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
 	}
 
 	if len(chunks) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("no chunks found in transcription response", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("no chunks found in transcription response", nil)
 	}
 
 	response := ToBifrostTranscriptionResponse(chunks)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType:             schemas.TranscriptionRequest,
-		Provider:                providerName,
-		ModelRequested:          request.Model,
 		Latency:                 latency.Milliseconds(),
 		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
@@ -607,7 +567,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
+			rawResponse = string(responseBody)
 		}
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -615,9 +575,9 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	return response, nil
 }
 
-func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTranscriptionRequest) *schemas.BifrostError {
 	if err := writer.WriteField("model_id", reqBody.ModelID); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model_id field", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write model_id field", err)
 	}
 
 	if len(reqBody.File) > 0 {
@@ -627,98 +587,98 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 		}
 		fileWriter, err := writer.CreateFormFile("file", filename)
 		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to create file field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to create file field", err)
 		}
 		if _, err := fileWriter.Write(reqBody.File); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write file data", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write file data", err)
 		}
 	}
 
 	if reqBody.CloudStorageURL != nil && strings.TrimSpace(*reqBody.CloudStorageURL) != "" {
 		if err := writer.WriteField("cloud_storage_url", *reqBody.CloudStorageURL); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write cloud_storage_url field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write cloud_storage_url field", err)
 		}
 	}
 
 	if reqBody.LanguageCode != nil && strings.TrimSpace(*reqBody.LanguageCode) != "" {
 		if err := writer.WriteField("language_code", *reqBody.LanguageCode); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write language_code field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write language_code field", err)
 		}
 	}
 
 	if reqBody.TagAudioEvents != nil {
 		if err := writer.WriteField("tag_audio_events", strconv.FormatBool(*reqBody.TagAudioEvents)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write tag_audio_events field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write tag_audio_events field", err)
 		}
 	}
 
 	if reqBody.NumSpeakers != nil && *reqBody.NumSpeakers > 0 {
 		if err := writer.WriteField("num_speakers", strconv.Itoa(*reqBody.NumSpeakers)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write num_speakers field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write num_speakers field", err)
 		}
 	}
 
 	if reqBody.TimestampsGranularity != nil && *reqBody.TimestampsGranularity != "" {
 		if err := writer.WriteField("timestamps_granularity", string(*reqBody.TimestampsGranularity)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write timestamps_granularity field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write timestamps_granularity field", err)
 		}
 	}
 
 	if reqBody.Diarize != nil {
 		if err := writer.WriteField("diarize", strconv.FormatBool(*reqBody.Diarize)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write diarize field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write diarize field", err)
 		}
 	}
 
 	if reqBody.DiarizationThreshold != nil {
 		if err := writer.WriteField("diarization_threshold", strconv.FormatFloat(*reqBody.DiarizationThreshold, 'f', -1, 64)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write diarization_threshold field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write diarization_threshold field", err)
 		}
 	}
 
 	if len(reqBody.AdditionalFormats) > 0 {
 		payload, err := providerUtils.MarshalSorted(reqBody.AdditionalFormats)
 		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to marshal additional_formats", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to marshal additional_formats", err)
 		}
 		if err := writer.WriteField("additional_formats", string(payload)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write additional_formats field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write additional_formats field", err)
 		}
 	}
 
 	if reqBody.FileFormat != nil && *reqBody.FileFormat != "" {
 		if err := writer.WriteField("file_format", string(*reqBody.FileFormat)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write file_format field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write file_format field", err)
 		}
 	}
 
 	if reqBody.Webhook != nil {
 		if err := writer.WriteField("webhook", strconv.FormatBool(*reqBody.Webhook)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write webhook field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write webhook field", err)
 		}
 	}
 
 	if reqBody.WebhookID != nil && strings.TrimSpace(*reqBody.WebhookID) != "" {
 		if err := writer.WriteField("webhook_id", *reqBody.WebhookID); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write webhook_id field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write webhook_id field", err)
 		}
 	}
 
 	if reqBody.Temperature != nil {
 		if err := writer.WriteField("temperature", strconv.FormatFloat(*reqBody.Temperature, 'f', -1, 64)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write temperature field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write temperature field", err)
 		}
 	}
 
 	if reqBody.Seed != nil {
 		if err := writer.WriteField("seed", strconv.Itoa(*reqBody.Seed)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write seed field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write seed field", err)
 		}
 	}
 
 	if reqBody.UseMultiChannel != nil {
 		if err := writer.WriteField("use_multi_channel", strconv.FormatBool(*reqBody.UseMultiChannel)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write use_multi_channel field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write use_multi_channel field", err)
 		}
 	}
 
@@ -727,16 +687,16 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 		case string:
 			if strings.TrimSpace(v) != "" {
 				if err := writer.WriteField("webhook_metadata", v); err != nil {
-					return providerUtils.NewBifrostOperationError("failed to write webhook_metadata field", err, providerName)
+					return providerUtils.NewBifrostOperationError("failed to write webhook_metadata field", err)
 				}
 			}
 		default:
 			payload, err := providerUtils.MarshalSorted(v)
 			if err != nil {
-				return providerUtils.NewBifrostOperationError("failed to marshal webhook_metadata", err, providerName)
+				return providerUtils.NewBifrostOperationError("failed to marshal webhook_metadata", err)
 			}
 			if err := writer.WriteField("webhook_metadata", string(payload)); err != nil {
-				return providerUtils.NewBifrostOperationError("failed to write webhook_metadata field", err, providerName)
+				return providerUtils.NewBifrostOperationError("failed to write webhook_metadata field", err)
 			}
 		}
 	}

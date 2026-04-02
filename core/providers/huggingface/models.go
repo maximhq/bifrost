@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -13,7 +14,7 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
-func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -22,11 +23,20 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       providerKey,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	includedModels := make(map[string]bool)
+	included := make(map[string]bool)
+
 	for _, model := range response.Models {
 		if model.ModelID == "" {
 			continue
@@ -37,37 +47,31 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 			continue
 		}
 
-		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(model.ModelID) {
-			continue
+		// Aliases apply at the model level (model.ModelID), not at the compound
+		// "{providerKey}/{inferenceProvider}/{modelID}" level.
+		for _, result := range pipeline.FilterModel(model.ModelID) {
+			newModel := schemas.Model{
+				// inferenceProvider stays in the compound ID; aliases rename only the model segment
+				ID:               fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, result.ResolvedID),
+				Name:             schemas.Ptr(model.ModelID),
+				SupportedMethods: supported,
+				HuggingFaceID:    schemas.Ptr(model.ID),
+			}
+			if result.AliasValue != "" {
+				newModel.Alias = schemas.Ptr(result.AliasValue)
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, newModel)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
-		if !unfiltered && blacklistedModels.IsBlocked(model.ModelID) {
-			continue
-		}
-
-		newModel := schemas.Model{
-			ID:               fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, model.ModelID),
-			Name:             schemas.Ptr(model.ModelID),
-			SupportedMethods: supported,
-			HuggingFaceID:    schemas.Ptr(model.ID),
-		}
-
-		bifrostResponse.Data = append(bifrostResponse.Data, newModel)
-		includedModels[strings.ToLower(model.ModelID)] = true
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && allowedModels.IsRestricted() {
-		for _, allowedModel := range allowedModels {
-			if blacklistedModels.IsBlocked(allowedModel) {
-				continue
-			}
-			if !includedModels[strings.ToLower(allowedModel)] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, allowedModel),
-					Name: schemas.Ptr(allowedModel),
-				})
-			}
-		}
+	// Backfill: use standard pipeline. Note that backfilled HF entries use a simplified
+	// compound ID since we don't know which inferenceProvider to assign them to.
+	for _, m := range pipeline.BackfillModels(included) {
+		// Re-wrap the backfill ID to include the inferenceProvider segment
+		rawID := strings.TrimPrefix(m.ID, string(providerKey)+"/")
+		m.ID = fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, rawID)
+		bifrostResponse.Data = append(bifrostResponse.Data, m)
 	}
 
 	return bifrostResponse

@@ -346,6 +346,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddChainRuleColumnToRoutingRules(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationDropDeploymentColumnsAndAddAliases(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddReplicateKeyConfigColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBudgetCalendarAlignedColumn(ctx, db); err != nil {
 		return err
 	}
@@ -1320,15 +1326,15 @@ func migrationAddVertexProjectNumberColumn(ctx context.Context, db *gorm.DB) err
 	return nil
 }
 
-// migrationAddVertexDeploymentsJSONColumn adds the vertex_deployments_json column to the key table
+// migrationAddVertexDeploymentsJSONColumn adds the vertex_deployments_json column to the key table.
+// This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
 func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_vertex_deployments_json_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
-				if err := migrator.AddColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN vertex_deployments_json TEXT").Error; err != nil {
 					return err
 				}
 			}
@@ -1336,15 +1342,15 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) e
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if err := migrator.DropColumn(&tables.TableKey{}, "vertex_deployments_json"); err != nil {
-				return err
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "vertex_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN vertex_deployments_json").Error; err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vertex deployments JSON migration: %s", err.Error())
 	}
 	return nil
@@ -2044,14 +2050,14 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 					if key.ConfigHash == "" {
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
-							Name:               key.Name,
-							Value:              key.Value,
-							Models:             key.Models,
-							Weight:             getWeight(key.Weight),
-							AzureKeyConfig:     key.AzureKeyConfig,
-							VertexKeyConfig:    key.VertexKeyConfig,
-							BedrockKeyConfig:   key.BedrockKeyConfig,
-							ReplicateKeyConfig: key.ReplicateKeyConfig,
+							Name:             key.Name,
+							Value:            key.Value,
+							Models:           key.Models,
+							Weight:           getWeight(key.Weight),
+							AzureKeyConfig:   key.AzureKeyConfig,
+							VertexKeyConfig:  key.VertexKeyConfig,
+							BedrockKeyConfig: key.BedrockKeyConfig,
+							Aliases:          key.Aliases,
 						}
 						hash, err := GenerateKeyHash(schemaKey)
 						if err != nil {
@@ -3520,15 +3526,15 @@ func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table
+// migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table.
+// This column is later dropped by migrationDropDeploymentColumnsAndAddAliases after data is migrated.
 func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_replicate_deployments_json_column",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
-				if err := migrator.AddColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
+			if !tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys ADD COLUMN replicate_deployments_json TEXT").Error; err != nil {
 					return err
 				}
 			}
@@ -3536,16 +3542,119 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if err := migrator.DropColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
-				return err
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
+				if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN replicate_deployments_json").Error; err != nil {
+					return err
+				}
 			}
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
+	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running replicate deployments JSON migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropDeploymentColumnsAndAddAliases adds the unified aliases_json column, migrates
+// existing per-provider deployment data into it, then drops the legacy columns.
+// Only one deployment column will be populated per row (they were mutually exclusive).
+func migrationDropDeploymentColumnsAndAddAliases(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_deployment_columns_and_add_aliases",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+
+			// Add aliases_json column first
+			if !m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				if err := m.AddColumn(&tables.TableKey{}, "aliases_json"); err != nil {
+					return err
+				}
+			}
+
+			// Copy data from whichever legacy deployment column is populated into aliases_json.
+			// Only rows where aliases_json is not already set are touched.
+			// Exactly one deployment column will be non-null per row (they were mutually exclusive).
+			for _, col := range []string{
+				"azure_deployments_json",
+				"vertex_deployments_json",
+				"bedrock_deployments_json",
+				"replicate_deployments_json",
+			} {
+				if !m.HasColumn(&tables.TableKey{}, col) {
+					continue
+				}
+				if err := tx.Exec(
+					"UPDATE config_keys SET aliases_json = " + col +
+						" WHERE aliases_json IS NULL AND " + col + " IS NOT NULL AND " + col + " != ''",
+				).Error; err != nil {
+					return err
+				}
+			}
+
+			// Drop legacy deployment columns
+			for _, col := range []string{
+				"azure_deployments_json",
+				"vertex_deployments_json",
+				"bedrock_deployments_json",
+				"replicate_deployments_json",
+			} {
+				if m.HasColumn(&tables.TableKey{}, col) {
+					if err := tx.Exec("ALTER TABLE config_keys DROP COLUMN " + col).Error; err != nil {
+						return err
+					}
+				}
+			}
+
+			// Recompute config_hash for keys that had aliases_json populated above,
+			// since aliases_json is part of the hash input and these rows now have stale hashes.
+			var affectedKeys []tables.TableKey
+			if err := tx.Where(
+				"aliases_json IS NOT NULL AND aliases_json != ? AND aliases_json != ?", "", "{}",
+			).Find(&affectedKeys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
+			}
+			for _, key := range affectedKeys {
+				schemaKey := schemas.Key{
+					Name:               key.Name,
+					Value:              key.Value,
+					Models:             key.Models,
+					BlacklistedModels:  key.BlacklistedModels,
+					Weight:             getWeight(key.Weight),
+					AzureKeyConfig:     key.AzureKeyConfig,
+					VertexKeyConfig:    key.VertexKeyConfig,
+					BedrockKeyConfig:   key.BedrockKeyConfig,
+					Aliases:            key.Aliases,
+					VLLMKeyConfig:      key.VLLMKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					Enabled:            key.Enabled,
+					UseForBatchAPI:     key.UseForBatchAPI,
+				}
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for key '%s' after aliases migration", key.Name)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+			if m.HasColumn(&tables.TableKey{}, "aliases_json") {
+				if err := m.DropColumn(&tables.TableKey{}, "aliases_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running drop deployment columns and add aliases migration: %s", err.Error())
 	}
 	return nil
 }
@@ -5095,8 +5204,9 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 					AzureKeyConfig:     key.AzureKeyConfig,
 					VertexKeyConfig:    key.VertexKeyConfig,
 					BedrockKeyConfig:   key.BedrockKeyConfig,
-					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					Aliases:            key.Aliases,
 					VLLMKeyConfig:      key.VLLMKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
 					OllamaKeyConfig:    key.OllamaKeyConfig,
 					SGLKeyConfig:       key.SGLKeyConfig,
 					Enabled:            key.Enabled,
@@ -5371,6 +5481,82 @@ func migrationAddChainRuleColumnToRoutingRules(ctx context.Context, db *gorm.DB)
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_chain_rule_column_to_routing_rules migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddReplicateKeyConfigColumn adds the replicate_use_deployments_endpoint column to the key table
+func migrationAddReplicateKeyConfigColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_replicate_key_config_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				if err := mg.AddColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
+					return err
+				}
+				// Backfill: Replicate keys that had deployments configured (now in aliases_json after
+				// migrationDropDeploymentColumnsAndAddAliases) were using the deployments endpoint.
+				trueVal := true
+				if err := tx.Model(&tables.TableKey{}).
+					Where("provider = ? AND aliases_json IS NOT NULL AND aliases_json != ? AND aliases_json != ?",
+						string(schemas.Replicate), "", "{}",
+					).
+					Update("ReplicateUseDeploymentsEndpoint", &trueVal).Error; err != nil {
+					return err
+				}
+
+				// Recompute config_hash for Replicate keys that were updated above,
+				// since replicate_use_deployments_endpoint is part of the hash input.
+				var affectedKeys []tables.TableKey
+				if err := tx.Where(
+					"provider = ? AND replicate_use_deployments_endpoint IS NOT NULL",
+					string(schemas.Replicate),
+				).Find(&affectedKeys).Error; err != nil {
+					return fmt.Errorf("failed to fetch replicate keys for hash recomputation: %w", err)
+				}
+				for _, key := range affectedKeys {
+					schemaKey := schemas.Key{
+						Name:               key.Name,
+						Value:              key.Value,
+						Models:             key.Models,
+						BlacklistedModels:  key.BlacklistedModels,
+						Weight:             getWeight(key.Weight),
+						AzureKeyConfig:     key.AzureKeyConfig,
+						VertexKeyConfig:    key.VertexKeyConfig,
+						BedrockKeyConfig:   key.BedrockKeyConfig,
+						Aliases:            key.Aliases,
+						VLLMKeyConfig:      key.VLLMKeyConfig,
+						ReplicateKeyConfig: key.ReplicateKeyConfig,
+						Enabled:            key.Enabled,
+						UseForBatchAPI:     key.UseForBatchAPI,
+					}
+					hash, err := GenerateKeyHash(schemaKey)
+					if err != nil {
+						return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+					}
+					if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+						return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+					}
+					log.Printf("[Migration] Recomputed config_hash for replicate key '%s' after replicate config backfill", key.Name)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint") {
+				if err := mg.DropColumn(&tables.TableKey{}, "replicate_use_deployments_endpoint"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_replicate_key_config_column migration: %s", err.Error())
 	}
 	return nil
 }

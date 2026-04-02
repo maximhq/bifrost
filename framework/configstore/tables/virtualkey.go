@@ -122,7 +122,6 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil
 			key.AzureScopesJSON = nil
-			key.AzureDeploymentsJSON = nil
 			key.AzureKeyConfig = nil
 
 			// Clear all Vertex-related sensitive fields
@@ -141,12 +140,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockRoleARN = nil
 			key.BedrockExternalID = nil
 			key.BedrockRoleSessionName = nil
-			key.BedrockDeploymentsJSON = nil
 			key.BedrockKeyConfig = nil
-
-			// Clear all Replicate-related sensitive fields
-			key.ReplicateDeploymentsJSON = nil
-			key.ReplicateKeyConfig = nil
 
 			pc.Keys[i] = *key
 		}

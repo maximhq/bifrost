@@ -328,6 +328,23 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	return entry
 }
 
+// applyModelAlias sets entry.Model to resolvedModel (falling back to requestedModel if empty)
+// and entry.Alias to requestedModel when the two differ (i.e. an alias mapping was applied).
+func applyModelAlias(entry *logstore.Log, requestedModel, resolvedModel string) {
+	if resolvedModel != "" && resolvedModel != requestedModel {
+		entry.Model = resolvedModel
+		entry.Alias = &requestedModel
+	} else {
+		// No alias mapping; keep whichever value is non-empty as the model.
+		if resolvedModel != "" {
+			entry.Model = resolvedModel
+		} else if requestedModel != "" {
+			entry.Model = requestedModel
+		}
+		entry.Alias = nil
+	}
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,

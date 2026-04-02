@@ -65,7 +65,7 @@ func (provider *XAIProvider) GetProviderKey() schemas.ModelProvider {
 // ListModels performs a list models request to xAI's API.
 func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if provider.networkConfig.BaseURL == "" {
-		return nil, providerUtils.NewConfigurationError("base_url is not set", provider.GetProviderKey())
+		return nil, providerUtils.NewConfigurationError("base_url is not set")
 	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,

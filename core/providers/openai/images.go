@@ -125,18 +125,18 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add model field (required)
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model field", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write model field", err)
 	}
 
 	// Add prompt field (required)
 	if err := writer.WriteField("prompt", openaiReq.Input.Prompt); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write prompt field", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write prompt field", err)
 	}
 
 	// Add stream field when requesting streaming
 	if openaiReq.Stream != nil && *openaiReq.Stream {
 		if err := writer.WriteField("stream", "true"); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write stream field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write stream field", err)
 		}
 	}
 
@@ -168,71 +168,71 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 			"Content-Type":        {mimeType},
 		})
 		if err != nil {
-			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to create form part for image %d", i), err, providerName)
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to create form part for image %d", i), err)
 		}
 		if _, err := part.Write(imageInput.Image); err != nil {
-			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to write image %d data", i), err, providerName)
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to write image %d data", i), err)
 		}
 	}
 
 	// Add optional parameters
 	if openaiReq.N != nil {
 		if err := writer.WriteField("n", strconv.Itoa(*openaiReq.N)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write n field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write n field", err)
 		}
 	}
 
 	if openaiReq.Size != nil {
 		if err := writer.WriteField("size", *openaiReq.Size); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write size field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write size field", err)
 		}
 	}
 
 	if openaiReq.ResponseFormat != nil {
 		if err := writer.WriteField("response_format", *openaiReq.ResponseFormat); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write response_format field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write response_format field", err)
 		}
 	}
 
 	if openaiReq.Quality != nil {
 		if err := writer.WriteField("quality", *openaiReq.Quality); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write quality field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write quality field", err)
 		}
 	}
 
 	if openaiReq.Background != nil {
 		if err := writer.WriteField("background", *openaiReq.Background); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write background field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write background field", err)
 		}
 	}
 
 	if openaiReq.InputFidelity != nil {
 		if err := writer.WriteField("input_fidelity", *openaiReq.InputFidelity); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write input_fidelity field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write input_fidelity field", err)
 		}
 	}
 
 	if openaiReq.PartialImages != nil {
 		if err := writer.WriteField("partial_images", strconv.Itoa(*openaiReq.PartialImages)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write partial_images field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write partial_images field", err)
 		}
 	}
 
 	if openaiReq.OutputFormat != nil {
 		if err := writer.WriteField("output_format", *openaiReq.OutputFormat); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write output_format field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write output_format field", err)
 		}
 	}
 
 	if openaiReq.OutputCompression != nil {
 		if err := writer.WriteField("output_compression", strconv.Itoa(*openaiReq.OutputCompression)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write output_compression field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write output_compression field", err)
 		}
 	}
 
 	if openaiReq.User != nil {
 		if err := writer.WriteField("user", *openaiReq.User); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write user field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write user field", err)
 		}
 	}
 
@@ -260,16 +260,16 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 			"Content-Type":        {maskMimeType},
 		})
 		if err != nil {
-			return providerUtils.NewBifrostOperationError("failed to create mask form part", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to create mask form part", err)
 		}
 		if _, err := maskPart.Write(openaiReq.Mask); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write mask data", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write mask data", err)
 		}
 	}
 
 	// Close the multipart writer
 	if err := writer.Close(); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	return nil
@@ -299,12 +299,12 @@ func ToOpenAIImageVariationRequest(bifrostReq *schemas.BifrostImageVariationRequ
 func parseImageVariationFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageVariationRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add model field (required)
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model field", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write model field", err)
 	}
 
 	// Add image file (required)
 	if openaiReq.Input == nil || openaiReq.Input.Image.Image == nil || len(openaiReq.Input.Image.Image) == 0 {
-		return providerUtils.NewBifrostOperationError("image is required", nil, providerName)
+		return providerUtils.NewBifrostOperationError("image is required", nil)
 	}
 
 	// Detect MIME type
@@ -320,41 +320,41 @@ func parseImageVariationFormDataBodyFromRequest(writer *multipart.Writer, openai
 		"Content-Type":        {mimeType},
 	})
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create image part", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to create image part", err)
 	}
 
 	if _, err := part.Write(openaiReq.Input.Image.Image); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write image data", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write image data", err)
 	}
 
 	// Add optional parameters
 	if openaiReq.N != nil {
 		if err := writer.WriteField("n", strconv.Itoa(*openaiReq.N)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write n field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write n field", err)
 		}
 	}
 
 	if openaiReq.ResponseFormat != nil {
 		if err := writer.WriteField("response_format", *openaiReq.ResponseFormat); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write response_format field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write response_format field", err)
 		}
 	}
 
 	if openaiReq.Size != nil {
 		if err := writer.WriteField("size", *openaiReq.Size); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write size field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write size field", err)
 		}
 	}
 
 	if openaiReq.User != nil {
 		if err := writer.WriteField("user", *openaiReq.User); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write user field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write user field", err)
 		}
 	}
 
 	// Close the multipart writer
 	if err := writer.Close(); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
 	return nil

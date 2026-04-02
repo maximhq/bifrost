@@ -448,9 +448,16 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 		return nil, fmt.Errorf("bifrost response is nil")
 	}
 
-	model := resp.Model
-	if resp.ExtraFields.ModelRequested != "" {
-		model = resp.ExtraFields.ModelRequested
+	model := ""
+	if resp.Model != "" {
+		model = resp.Model
+	} else {
+		extraFields := resp.ExtraFields
+		if extraFields.ResolvedModelUsed != "" {
+			model = extraFields.ResolvedModelUsed
+		} else if extraFields.OriginalModelRequested != "" {
+			model = extraFields.OriginalModelRequested
+		}
 	}
 
 	// Nova models: delegate to existing ToBedrockConverseResponse (Nova InvokeModel matches Converse format)
@@ -623,12 +630,17 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	// final Completed event). Without checking resp.ExtraFields, early chunks would
 	// have model="" and Nova streams would be mis-routed through the Anthropic path.
 	model := ""
-	if resp.ExtraFields.ModelRequested != "" {
-		model = resp.ExtraFields.ModelRequested
-	} else if resp.Response != nil && resp.Response.ExtraFields.ModelRequested != "" {
-		model = resp.Response.ExtraFields.ModelRequested
-	} else if resp.Response != nil && resp.Response.Model != "" {
-		model = resp.Response.Model
+	if resp.Response != nil {
+		if resp.Response.Model != "" {
+			model = resp.Response.Model
+		} else {
+			extraFields := resp.Response.ExtraFields
+			if extraFields.ResolvedModelUsed != "" {
+				model = extraFields.ResolvedModelUsed
+			} else if extraFields.OriginalModelRequested != "" {
+				model = extraFields.OriginalModelRequested
+			}
+		}
 	}
 
 	// Nova models: delegate to existing converse stream response (same format)
@@ -666,8 +678,11 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 
 	switch resp.Type {
 	case schemas.ResponsesStreamResponseTypeCreated:
-		// message_start — use ExtraFields.ModelRequested as fallback for early chunks
-		model := resp.ExtraFields.ModelRequested
+		// message_start — prefer resolved model for accurate family detection on early chunks
+		model := resp.ExtraFields.ResolvedModelUsed
+		if model == "" {
+			model = resp.ExtraFields.OriginalModelRequested
+		}
 		msgStart := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -777,7 +792,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":          "input_json_delta",
+					"type":         "input_json_delta",
 					"partial_json": *resp.Delta,
 				},
 			}

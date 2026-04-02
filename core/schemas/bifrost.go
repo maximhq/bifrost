@@ -209,7 +209,7 @@ const (
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
 	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
-	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                 // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
+	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
@@ -222,7 +222,7 @@ const (
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
-	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"              // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
+	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -798,6 +798,213 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
+	if r == nil {
+		return
+	}
+	resolvedModel := resolvedModelUsed
+	if resolvedModel == "" {
+		resolvedModel = originalModelRequested
+	}
+	switch {
+	case r.ListModelsResponse != nil:
+		r.ListModelsResponse.ExtraFields.RequestType = requestType
+		r.ListModelsResponse.ExtraFields.Provider = provider
+		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.TextCompletionResponse != nil:
+		r.TextCompletionResponse.ExtraFields.RequestType = requestType
+		r.TextCompletionResponse.ExtraFields.Provider = provider
+		r.TextCompletionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.TextCompletionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ChatResponse != nil:
+		r.ChatResponse.ExtraFields.RequestType = requestType
+		r.ChatResponse.ExtraFields.Provider = provider
+		r.ChatResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ChatResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ResponsesResponse != nil:
+		r.ResponsesResponse.ExtraFields.RequestType = requestType
+		r.ResponsesResponse.ExtraFields.Provider = provider
+		r.ResponsesResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ResponsesResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ResponsesStreamResponse != nil:
+		r.ResponsesStreamResponse.ExtraFields.RequestType = requestType
+		r.ResponsesStreamResponse.ExtraFields.Provider = provider
+		r.ResponsesStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CountTokensResponse != nil:
+		r.CountTokensResponse.ExtraFields.RequestType = requestType
+		r.CountTokensResponse.ExtraFields.Provider = provider
+		r.CountTokensResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CountTokensResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.EmbeddingResponse != nil:
+		r.EmbeddingResponse.ExtraFields.RequestType = requestType
+		r.EmbeddingResponse.ExtraFields.Provider = provider
+		r.EmbeddingResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.EmbeddingResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.RerankResponse != nil:
+		r.RerankResponse.ExtraFields.RequestType = requestType
+		r.RerankResponse.ExtraFields.Provider = provider
+		r.RerankResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.RerankResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.SpeechResponse != nil:
+		r.SpeechResponse.ExtraFields.RequestType = requestType
+		r.SpeechResponse.ExtraFields.Provider = provider
+		r.SpeechResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.SpeechResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.SpeechStreamResponse != nil:
+		r.SpeechStreamResponse.ExtraFields.RequestType = requestType
+		r.SpeechStreamResponse.ExtraFields.Provider = provider
+		r.SpeechStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.SpeechStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.TranscriptionResponse != nil:
+		r.TranscriptionResponse.ExtraFields.RequestType = requestType
+		r.TranscriptionResponse.ExtraFields.Provider = provider
+		r.TranscriptionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.TranscriptionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.TranscriptionStreamResponse != nil:
+		r.TranscriptionStreamResponse.ExtraFields.RequestType = requestType
+		r.TranscriptionStreamResponse.ExtraFields.Provider = provider
+		r.TranscriptionStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.TranscriptionStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ImageGenerationResponse != nil:
+		r.ImageGenerationResponse.ExtraFields.RequestType = requestType
+		r.ImageGenerationResponse.ExtraFields.Provider = provider
+		r.ImageGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ImageGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ImageGenerationStreamResponse != nil:
+		r.ImageGenerationStreamResponse.ExtraFields.RequestType = requestType
+		r.ImageGenerationStreamResponse.ExtraFields.Provider = provider
+		r.ImageGenerationStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ImageGenerationStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.VideoGenerationResponse != nil:
+		r.VideoGenerationResponse.ExtraFields.RequestType = requestType
+		r.VideoGenerationResponse.ExtraFields.Provider = provider
+		r.VideoGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.VideoGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.VideoDownloadResponse != nil:
+		r.VideoDownloadResponse.ExtraFields.RequestType = requestType
+		r.VideoDownloadResponse.ExtraFields.Provider = provider
+		r.VideoDownloadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.VideoDownloadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.VideoListResponse != nil:
+		r.VideoListResponse.ExtraFields.RequestType = requestType
+		r.VideoListResponse.ExtraFields.Provider = provider
+		r.VideoListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.VideoListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.VideoDeleteResponse != nil:
+		r.VideoDeleteResponse.ExtraFields.RequestType = requestType
+		r.VideoDeleteResponse.ExtraFields.Provider = provider
+		r.VideoDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.VideoDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.FileUploadResponse != nil:
+		r.FileUploadResponse.ExtraFields.RequestType = requestType
+		r.FileUploadResponse.ExtraFields.Provider = provider
+		r.FileUploadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.FileUploadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.FileListResponse != nil:
+		r.FileListResponse.ExtraFields.RequestType = requestType
+		r.FileListResponse.ExtraFields.Provider = provider
+		r.FileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.FileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.FileRetrieveResponse != nil:
+		r.FileRetrieveResponse.ExtraFields.RequestType = requestType
+		r.FileRetrieveResponse.ExtraFields.Provider = provider
+		r.FileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.FileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.FileDeleteResponse != nil:
+		r.FileDeleteResponse.ExtraFields.RequestType = requestType
+		r.FileDeleteResponse.ExtraFields.Provider = provider
+		r.FileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.FileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.FileContentResponse != nil:
+		r.FileContentResponse.ExtraFields.RequestType = requestType
+		r.FileContentResponse.ExtraFields.Provider = provider
+		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchCreateResponse != nil:
+		r.BatchCreateResponse.ExtraFields.RequestType = requestType
+		r.BatchCreateResponse.ExtraFields.Provider = provider
+		r.BatchCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchListResponse != nil:
+		r.BatchListResponse.ExtraFields.RequestType = requestType
+		r.BatchListResponse.ExtraFields.Provider = provider
+		r.BatchListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchRetrieveResponse != nil:
+		r.BatchRetrieveResponse.ExtraFields.RequestType = requestType
+		r.BatchRetrieveResponse.ExtraFields.Provider = provider
+		r.BatchRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchCancelResponse != nil:
+		r.BatchCancelResponse.ExtraFields.RequestType = requestType
+		r.BatchCancelResponse.ExtraFields.Provider = provider
+		r.BatchCancelResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchCancelResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchDeleteResponse != nil:
+		r.BatchDeleteResponse.ExtraFields.RequestType = requestType
+		r.BatchDeleteResponse.ExtraFields.Provider = provider
+		r.BatchDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.BatchResultsResponse != nil:
+		r.BatchResultsResponse.ExtraFields.RequestType = requestType
+		r.BatchResultsResponse.ExtraFields.Provider = provider
+		r.BatchResultsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.BatchResultsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerCreateResponse != nil:
+		r.ContainerCreateResponse.ExtraFields.RequestType = requestType
+		r.ContainerCreateResponse.ExtraFields.Provider = provider
+		r.ContainerCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerListResponse != nil:
+		r.ContainerListResponse.ExtraFields.RequestType = requestType
+		r.ContainerListResponse.ExtraFields.Provider = provider
+		r.ContainerListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerRetrieveResponse != nil:
+		r.ContainerRetrieveResponse.ExtraFields.RequestType = requestType
+		r.ContainerRetrieveResponse.ExtraFields.Provider = provider
+		r.ContainerRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerDeleteResponse != nil:
+		r.ContainerDeleteResponse.ExtraFields.RequestType = requestType
+		r.ContainerDeleteResponse.ExtraFields.Provider = provider
+		r.ContainerDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerFileCreateResponse != nil:
+		r.ContainerFileCreateResponse.ExtraFields.RequestType = requestType
+		r.ContainerFileCreateResponse.ExtraFields.Provider = provider
+		r.ContainerFileCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerFileCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerFileListResponse != nil:
+		r.ContainerFileListResponse.ExtraFields.RequestType = requestType
+		r.ContainerFileListResponse.ExtraFields.Provider = provider
+		r.ContainerFileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerFileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerFileRetrieveResponse != nil:
+		r.ContainerFileRetrieveResponse.ExtraFields.RequestType = requestType
+		r.ContainerFileRetrieveResponse.ExtraFields.Provider = provider
+		r.ContainerFileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerFileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerFileContentResponse != nil:
+		r.ContainerFileContentResponse.ExtraFields.RequestType = requestType
+		r.ContainerFileContentResponse.ExtraFields.Provider = provider
+		r.ContainerFileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerFileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.ContainerFileDeleteResponse != nil:
+		r.ContainerFileDeleteResponse.ExtraFields.RequestType = requestType
+		r.ContainerFileDeleteResponse.ExtraFields.Provider = provider
+		r.ContainerFileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.ContainerFileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.PassthroughResponse != nil:
+		r.PassthroughResponse.ExtraFields.RequestType = requestType
+		r.PassthroughResponse.ExtraFields.Provider = provider
+		r.PassthroughResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.PassthroughResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	}
+}
+
 // BifrostMCPResponse is the response struct for all MCP responses.
 // only ONE of the following fields should be set:
 // - ChatMessage
@@ -812,10 +1019,10 @@ type BifrostMCPResponse struct {
 type BifrostResponseExtraFields struct {
 	RequestType             RequestType        `json:"request_type"`
 	Provider                ModelProvider      `json:"provider,omitempty"`
-	ModelRequested          string             `json:"model_requested,omitempty"`
-	ModelDeployment         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
-	Latency                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	OriginalModelRequested  string             `json:"original_model_requested,omitempty"` // the model alias the caller sent in the request
+	ResolvedModelUsed       string             `json:"resolved_model_used,omitempty"`      // the actual provider API identifier used (equals OriginalModelRequested when no alias mapping exists)
+	Latency                 int64              `json:"latency"`                            // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex              int                `json:"chunk_index"`                        // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest              interface{}        `json:"raw_request,omitempty"`
 	RawResponse             interface{}        `json:"raw_response,omitempty"`
 	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
@@ -909,6 +1116,20 @@ type BifrostError struct {
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
+func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider ModelProvider, originalModelRequested string, resolvedModelUsed string) {
+	if e == nil {
+		return
+	}
+	e.ExtraFields.RequestType = requestType
+	e.ExtraFields.Provider = provider
+	e.ExtraFields.OriginalModelRequested = originalModelRequested
+	if resolvedModelUsed != "" {
+		e.ExtraFields.ResolvedModelUsed = resolvedModelUsed
+	} else {
+		e.ExtraFields.ResolvedModelUsed = originalModelRequested
+	}
+}
+
 // StreamControl represents stream control options.
 type StreamControl struct {
 	LogError   *bool `json:"log_error,omitempty"`   // Optional: Controls logging of error
@@ -982,11 +1203,12 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider,omitempty"`
-	ModelRequested string        `json:"model_requested,omitempty"`
-	RequestType    RequestType   `json:"request_type,omitempty"`
-	RawRequest     interface{}   `json:"raw_request,omitempty"`
-	RawResponse    interface{}   `json:"raw_response,omitempty"`
-	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
-	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+	Provider               ModelProvider `json:"provider,omitempty"`
+	OriginalModelRequested string        `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed      string        `json:"resolved_model_used,omitempty"`
+	RequestType            RequestType   `json:"request_type,omitempty"`
+	RawRequest             interface{}   `json:"raw_request,omitempty"`
+	RawResponse            interface{}   `json:"raw_response,omitempty"`
+	LiteLLMCompat          bool          `json:"litellm_compat,omitempty"`
+	KeyStatuses            []KeyStatus   `json:"key_statuses,omitempty"`
 }

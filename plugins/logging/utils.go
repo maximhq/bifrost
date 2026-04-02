@@ -63,6 +63,9 @@ type LogManager interface {
 	// GetAvailableModels returns all unique models from logs
 	GetAvailableModels(ctx context.Context) []string
 
+	// GetAvailableAliases returns all unique alias values from logs
+	GetAvailableAliases(ctx context.Context) []string
+
 	// GetAvailableSelectedKeys returns all unique selected key ID-Name pairs from logs
 	GetAvailableSelectedKeys(ctx context.Context) []KeyPair
 
@@ -209,6 +212,11 @@ func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {
 // GetAvailableModels returns all unique models from logs
 func (p *PluginLogManager) GetAvailableModels(ctx context.Context) []string {
 	return p.plugin.GetAvailableModels(ctx)
+}
+
+// GetAvailableAliases returns all unique alias values from logs
+func (p *PluginLogManager) GetAvailableAliases(ctx context.Context) []string {
+	return p.plugin.GetAvailableAliases(ctx)
 }
 
 // GetAvailableSelectedKeys returns all unique selected key ID-Name pairs from logs
@@ -480,7 +488,7 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	// Build accumulated data
 	data := &streaming.AccumulatedData{
 		RequestID:             result.RequestID,
-		Model:                 result.Model,
+		Model:                 result.RequestedModel,
 		Status:                result.Status,
 		Stream:                true,
 		Latency:               result.Latency,
@@ -503,11 +511,12 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 	}
 
 	resp := &streaming.ProcessedStreamResponse{
-		RequestID:  result.RequestID,
-		StreamType: streamType,
-		Provider:   result.Provider,
-		Model:      result.Model,
-		Data:       data,
+		RequestID:      result.RequestID,
+		StreamType:     streamType,
+		Provider:       result.Provider,
+		RequestedModel: result.RequestedModel,
+		ResolvedModel:  result.ResolvedModel,
+		Data:           data,
 	}
 
 	if result.RawRequest != nil {

@@ -2250,7 +2250,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		if rules, ok := value.([]*configstoreTables.TableRoutingRule); ok {
 			for _, rule := range rules {
 				if _, err := gs.GetRoutingProgram(rule); err != nil {
-					gs.logger.Warn("Failed to pre-compile routing program for rule %s: %v", rule.ID, err)
+					gs.logger.Warn("Failed to pre-compile routing program for rule %s: %v", rule.Name, err)
 				}
 			}
 		}
@@ -3731,7 +3731,7 @@ func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(rule *configstoreTable
 
 	// Recompile the program immediately to update cache with fresh compilation
 	if _, err := gs.GetRoutingProgram(rule); err != nil {
-		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.ID, err)
+		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.Name, err)
 	}
 
 	return nil

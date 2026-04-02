@@ -109,58 +109,58 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, req *Mi
 	}
 	fileWriter, err := writer.CreateFormFile("file", filename)
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to create form file",  err)
 	}
 	if _, err := fileWriter.Write(req.File); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write file data", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write file data",  err)
 	}
 
 	// Add model field (required)
 	if err := writer.WriteField("model", req.Model); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model field", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to write model field",  err)
 	}
 
 	// Add stream field if streaming
 	if req.Stream != nil && *req.Stream {
 		if err := writer.WriteField("stream", "true"); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write stream field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write stream field",  err)
 		}
 	}
 
 	// Add optional fields
 	if req.Language != nil {
 		if err := writer.WriteField("language", *req.Language); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write language field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write language field",  err)
 		}
 	}
 
 	if req.Prompt != nil {
 		if err := writer.WriteField("prompt", *req.Prompt); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write prompt field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write prompt field",  err)
 		}
 	}
 
 	if req.ResponseFormat != nil {
 		if err := writer.WriteField("response_format", *req.ResponseFormat); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write response_format field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write response_format field",  err)
 		}
 	}
 
 	if req.Temperature != nil {
 		if err := writer.WriteField("temperature", formatFloat64(*req.Temperature)); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write temperature field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write temperature field",  err)
 		}
 	}
 
 	for _, granularity := range req.TimestampGranularities {
 		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write timestamp_granularities field", err, providerName)
+			return providerUtils.NewBifrostOperationError("failed to write timestamp_granularities field",  err)
 		}
 	}
 
 	// Close the multipart writer to finalize the form
 	if err := writer.Close(); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+		return providerUtils.NewBifrostOperationError("failed to close multipart writer",  err)
 	}
 
 	return nil

@@ -3626,17 +3626,17 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 		{
 			Type:         schemas.ResponsesStreamResponseTypeOutputTextDone,
 			ContentIndex: &contentIdx,
-			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
 		},
 		{
 			Type:         schemas.ResponsesStreamResponseTypeContentPartDone,
 			ContentIndex: &contentIdx,
-			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
 		},
 		{
 			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
 			ContentIndex: &contentIdx,
-			ExtraFields:  schemas.BifrostResponseExtraFields{ModelRequested: model},
+			ExtraFields:  schemas.BifrostResponseExtraFields{OriginalModelRequested: model},
 		},
 	}
 

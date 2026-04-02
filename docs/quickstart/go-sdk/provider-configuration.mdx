@@ -417,16 +417,17 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 Value:  "", // Leave empty for Service Principal auth
                 Models: []string{"gpt-4o", "gpt-4o-mini"},
                 Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o":      "gpt-4o-deployment",
+                    "gpt-4o-mini": "gpt-4o-mini-deployment",
+                },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
                     Endpoint:     os.Getenv("AZURE_ENDPOINT"),
                     ClientID:     bifrost.Ptr(os.Getenv("AZURE_CLIENT_ID")),
                     ClientSecret: bifrost.Ptr(os.Getenv("AZURE_CLIENT_SECRET")),
                     TenantID:     bifrost.Ptr(os.Getenv("AZURE_TENANT_ID")),
-                    Deployments: map[string]string{
-                        "gpt-4o":      "gpt-4o-deployment",
-                        "gpt-4o-mini": "gpt-4o-mini-deployment",
-                    },
-                    APIVersion: bifrost.Ptr("2024-08-01-preview"),
+                    Scopes:       []string{"https://cognitiveservices.azure.com/.default"},
+                    APIVersion:   bifrost.Ptr("2024-08-01-preview"),
                 },
             },
         }, nil
@@ -448,12 +449,12 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                 Value:  os.Getenv("AZURE_OPENAI_KEY"),
                 Models: []string{"gpt-4o", "gpt-4o-mini"},
                 Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "gpt-4o":      "gpt-4o-deployment",
+                    "gpt-4o-mini": "gpt-4o-mini-deployment",
+                },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint: os.Getenv("AZURE_ENDPOINT"),
-                    Deployments: map[string]string{
-                        "gpt-4o":      "gpt-4o-deployment",
-                        "gpt-4o-mini": "gpt-4o-mini-deployment",
-                    },
+                    Endpoint:   os.Getenv("AZURE_ENDPOINT"),
                     APIVersion: bifrost.Ptr("2024-08-01-preview"),
                 },
             },
@@ -479,19 +480,19 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Bedrock:
         return []schemas.Key{
             {
-                Models: []string{"anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1"},
+                Models: []string{"anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1", "claude-3-sonnet"},
                 Weight: 1.0,
                 Value:  os.Getenv("AWS_API_KEY"), // Leave empty for IAM role authentication
+                // Model profiles (inference profiles): map short names to profile resource IDs
+                Aliases: schemas.KeyAliases{
+                    "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+                },
                 BedrockKeyConfig: &schemas.BedrockKeyConfig{
                     AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),     // Leave empty for API Key authentication or system's IAM pickup
                     SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"), // Leave empty for API Key authentication or system's IAM pickup
                     SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")), // Optional
                     Region:       bifrost.Ptr("us-east-1"),
-                    // For model profiles (inference profiles)
-                    Deployments: map[string]string{
-                        "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-                    },
-                    // For direct model access without profiles
+                    // ARN prefix for profile URLs; put resource IDs only in Aliases, not full ARNs
                     ARN: bifrost.Ptr("arn:aws:bedrock:us-east-1:123456789012:inference-profile"),
                 },
             },
@@ -504,9 +505,9 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 **Notes:**
 - If using API Key authentication, set `Value` field to the API key, else leave it empty for IAM role authentication.
 - In IAM role authentication, if both `AccessKey` and `SecretKey` are empty, Bifrost uses IAM from the environment.
-- `ARN` is required for URL formation - `Deployments` mapping is ignored without it.
-- When using `ARN` + `Deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
-- **ARN vs Deployments**: Put the ARN prefix in `ARN` and the model/inference profile resource ID only in `Deployments` — never the full ARN in Deployments. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
+- `ARN` is required when you want Bifrost to build a full inference-profile ARN from an alias target.
+- Aliases are still resolved before provider dispatch; without `ARN`, the resolved alias value is sent as the Bedrock model/profile identifier directly.
+- **ARN vs Aliases**: Put the ARN prefix in `ARN` and the model/inference profile resource ID only in `Aliases` — never the full ARN in alias values. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
 
 </Tab>
 
@@ -521,16 +522,16 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
         return []schemas.Key{
             {
                 Value:  os.Getenv("VERTEX_API_KEY"), // only when using gemini or fine-tuned models
-                Models: []string{"gemini-pro", "gemini-pro-vision"},
+                Models: []string{"gemini-pro", "gemini-pro-vision", "fine-tuned-gemini-2.5-pro"},
                 Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "fine-tuned-gemini-2.5-pro": "123456789",
+                },
                 VertexKeyConfig: &schemas.VertexKeyConfig{
-                    ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),       // GCP project ID
-                    ProjectNumber:   os.Getenv("VERTEX_PROJECT_NUMBER"),   // GCP project number (only when using fine-tuned models)
-                    Region:          "us-central1",                        // GCP region
-                    AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),      // Service account JSON
-                     Deployments: map[string]string{
-                        "fine-tuned-gemini-2.5-pro": "123456789"
-                    },
+                    ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),     // GCP project ID
+                    ProjectNumber:   os.Getenv("VERTEX_PROJECT_NUMBER"), // GCP project number (only when using fine-tuned models)
+                    Region:          "us-central1",                       // GCP region
+                    AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),   // Service account JSON
                 },
             },
         }, nil
@@ -543,7 +544,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 - You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
 - You must set Project Number if using fine-tuned models.
 - API Key Authentication is only supported for Gemini and fine-tuned models.
-- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-deployment-alias>` if you have set the deployments in the key config.
+- You can use custom fine-tuned models by passing `vertex/<model-alias>` if you have set the aliases on the key.
 
 <Note>
 Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.

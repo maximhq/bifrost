@@ -414,5 +414,3 @@ func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[str
 	mc.logger.Debug("model-parameters-sync: successfully downloaded and parsed %d model parameters records", len(paramsData))
 	return paramsData, nil
 }
-
-

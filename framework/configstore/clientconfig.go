@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"sort"
 	"strconv"
 
@@ -338,6 +339,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			enabled := *key.Enabled
 			redactedConfig.Keys[i].Enabled = &enabled
 		}
+		if key.Aliases != nil {
+			redactedConfig.Keys[i].Aliases = maps.Clone(key.Aliases)
+		}
 		redactedConfig.Keys[i].Value = *key.Value.Redacted()
 		// Add back use for batch api
 		if key.UseForBatchAPI != nil {
@@ -352,9 +356,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
-			azureConfig := &schemas.AzureKeyConfig{
-				Deployments: key.AzureKeyConfig.Deployments,
-			}
+			azureConfig := &schemas.AzureKeyConfig{}
 			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
 			if key.AzureKeyConfig.ClientID != nil {
@@ -374,9 +376,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Vertex key config if present
 		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{
-				Deployments: key.VertexKeyConfig.Deployments,
-			}
+			vertexConfig := &schemas.VertexKeyConfig{}
 			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
 			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
 			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
@@ -386,9 +386,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Redact Bedrock key config if present
 		if key.BedrockKeyConfig != nil {
-			bedrockConfig := &schemas.BedrockKeyConfig{
-				Deployments: key.BedrockKeyConfig.Deployments,
-			}
+			bedrockConfig := &schemas.BedrockKeyConfig{}
 			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
 			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
 			if key.BedrockKeyConfig.SessionToken != nil {
@@ -416,19 +414,19 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
-		if key.ReplicateKeyConfig != nil {
-			replicateConfig := &schemas.ReplicateKeyConfig{
-				Deployments: key.ReplicateKeyConfig.Deployments,
-			}
-			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
-		}
-
 		if key.VLLMKeyConfig != nil {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
 			}
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
+		}
+
+		if key.ReplicateKeyConfig != nil {
+			replicateConfig := &schemas.ReplicateKeyConfig{
+				UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+			}
+			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
 		}
 
 		if key.OllamaKeyConfig != nil {
@@ -584,9 +582,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash ReplicateKeyConfig
-	if key.ReplicateKeyConfig != nil {
-		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+	// Hash Aliases
+	if key.Aliases != nil {
+		data, err := sonic.Marshal(key.Aliases)
 		if err != nil {
 			return "", err
 		}
@@ -595,6 +593,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash ReplicateKeyConfig
+	if key.ReplicateKeyConfig != nil {
+		data, err := sonic.Marshal(key.ReplicateKeyConfig)
 		if err != nil {
 			return "", err
 		}

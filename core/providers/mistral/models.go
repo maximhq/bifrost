@@ -3,10 +3,11 @@ package mistral
 import (
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -15,44 +16,40 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 		Data: make([]schemas.Model, 0, len(response.Data)),
 	}
 
-	if !unfiltered && (allowedModels.IsEmpty() || blacklistedModels.IsBlockAll()) {
+	pipeline := &providerUtils.ListModelsPipeline{
+		AllowedModels:     allowedModels,
+		BlacklistedModels: blacklistedModels,
+		Aliases:           aliases,
+		Unfiltered:        unfiltered,
+		ProviderKey:       schemas.Mistral,
+		MatchFns:          providerUtils.DefaultMatchFns(),
+	}
+	if pipeline.ShouldEarlyExit() {
 		return bifrostResponse
 	}
 
-	includedModels := make(map[string]bool)
+	included := make(map[string]bool)
+
 	for _, model := range response.Data {
-		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(model.ID) {
-			continue
+		for _, result := range pipeline.FilterModel(model.ID) {
+			entry := schemas.Model{
+				ID:            string(schemas.Mistral) + "/" + result.ResolvedID,
+				Name:          schemas.Ptr(model.Name),
+				Description:   schemas.Ptr(model.Description),
+				Created:       schemas.Ptr(model.Created),
+				ContextLength: schemas.Ptr(int(model.MaxContextLength)),
+				OwnedBy:       schemas.Ptr(model.OwnedBy),
+			}
+			if result.AliasValue != "" {
+				entry.Alias = schemas.Ptr(result.AliasValue)
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, entry)
+			included[strings.ToLower(result.ResolvedID)] = true
 		}
-		if !unfiltered && blacklistedModels.IsBlocked(model.ID) {
-			continue
-		}
-		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:            string(schemas.Mistral) + "/" + model.ID,
-			Name:          schemas.Ptr(model.Name),
-			Description:   schemas.Ptr(model.Description),
-			Created:       schemas.Ptr(model.Created),
-			ContextLength: schemas.Ptr(int(model.MaxContextLength)),
-			OwnedBy:       schemas.Ptr(model.OwnedBy),
-		})
-		includedModels[strings.ToLower(model.ID)] = true
 	}
 
-	// Backfill allowed models that were not in the response
-	if !unfiltered && allowedModels.IsRestricted() {
-		for _, allowedModel := range allowedModels {
-			if blacklistedModels.IsBlocked(allowedModel) {
-				continue
-			}
-			if !includedModels[strings.ToLower(allowedModel)] {
-				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-					ID:   string(schemas.Mistral) + "/" + allowedModel,
-					Name: schemas.Ptr(allowedModel),
-				})
-				includedModels[strings.ToLower(allowedModel)] = true
-			}
-		}
-	}
+	bifrostResponse.Data = append(bifrostResponse.Data,
+		pipeline.BackfillModels(included)...)
 
 	return bifrostResponse
 }

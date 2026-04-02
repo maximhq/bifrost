@@ -31,6 +31,7 @@ const (
 type SearchFilters struct {
 	Providers         []string          `json:"providers,omitempty"`
 	Models            []string          `json:"models,omitempty"`
+	Aliases           []string          `json:"aliases,omitempty"`
 	Status            []string          `json:"status,omitempty"`
 	Objects           []string          `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
@@ -84,6 +85,7 @@ type Log struct {
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"` // Set when model was resolved via alias mapping; the original name the caller used
 	NumberOfRetries         int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex           int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID           string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`

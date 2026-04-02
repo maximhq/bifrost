@@ -390,9 +390,10 @@ func TestDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-5.2",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-5.2",
+				ResolvedModelUsed:      "gpt-5.2",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -417,8 +418,11 @@ func TestDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t *testing
 	if extraFields.Provider != schemas.OpenAI {
 		t.Fatalf("expected cached provider %q, got %q", schemas.OpenAI, extraFields.Provider)
 	}
-	if extraFields.ModelRequested != "gpt-5.2" {
-		t.Fatalf("expected cached model_requested %q, got %q", "gpt-5.2", extraFields.ModelRequested)
+	if extraFields.OriginalModelRequested != "gpt-5.2" {
+		t.Fatalf("expected OriginalModelRequested %q, got %q", "gpt-5.2", extraFields.OriginalModelRequested)
+	}
+	if extraFields.ResolvedModelUsed != "gpt-5.2" {
+		t.Fatalf("expected ResolvedModelUsed %q, got %q", "gpt-5.2", extraFields.ResolvedModelUsed)
 	}
 	if extraFields.CacheDebug == nil {
 		t.Fatal("expected cache_debug on cache hit")
@@ -491,10 +495,11 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:       schemas.OpenAI,
-					ModelRequested: "gpt-5.2",
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					ChunkIndex:     chunk.chunkIndex,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-5.2",
+					ResolvedModelUsed:      "gpt-5.2",
+					RequestType:            schemas.ChatCompletionStreamRequest,
+					ChunkIndex:             chunk.chunkIndex,
 				},
 			},
 		}
@@ -526,8 +531,11 @@ func TestStreamingDirectCacheHitPreservesCachedProviderMetadataAcrossProviders(t
 		if extraFields.Provider != schemas.OpenAI {
 			t.Fatalf("expected cached provider %q on chunk %d, got %q", schemas.OpenAI, chunkCount, extraFields.Provider)
 		}
-		if extraFields.ModelRequested != "gpt-5.2" {
-			t.Fatalf("expected cached model_requested %q on chunk %d, got %q", "gpt-5.2", chunkCount, extraFields.ModelRequested)
+		if extraFields.OriginalModelRequested != "gpt-5.2" {
+			t.Fatalf("expected OriginalModelRequested %q on chunk %d, got %q", "gpt-5.2", chunkCount, extraFields.OriginalModelRequested)
+		}
+		if extraFields.ResolvedModelUsed != "gpt-5.2" {
+			t.Fatalf("expected ResolvedModelUsed %q on chunk %d, got %q", "gpt-5.2", chunkCount, extraFields.ResolvedModelUsed)
 		}
 		if chunkCount == len(chunks)-1 {
 			if extraFields.CacheDebug == nil || !extraFields.CacheDebug.CacheHit {

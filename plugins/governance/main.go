@@ -28,9 +28,7 @@ import (
 const PluginName = "governance"
 
 const (
-	governanceRejectedContextKey    schemas.BifrostContextKey = "bf-governance-rejected"
-	governanceIsCacheReadContextKey schemas.BifrostContextKey = "bf-governance-is-cache-read"
-	governanceIsBatchContextKey     schemas.BifrostContextKey = "bf-governance-is-batch"
+	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -1237,27 +1235,13 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 
 	// Extract request type, provider, and model
-	requestType, provider, model := bifrost.GetResponseFields(result, err)
+	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
-
-	// Extract cache and batch flags from context
-	isCacheRead := false
-	isBatch := false
-	if val := ctx.Value(governanceIsCacheReadContextKey); val != nil {
-		if b, ok := val.(bool); ok {
-			isCacheRead = b
-		}
-	}
-	if val := ctx.Value(governanceIsBatchContextKey); val != nil {
-		if b, ok := val.(bool); ok {
-			isBatch = b
-		}
-	}
 
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil && virtualKey != "" {
 		// filter models which are not supported on this virtual key
@@ -1277,11 +1261,12 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
-	if model != "" {
+	if requestedModel != "" {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.postHookWorker(result, provider, model, requestType, effectiveVK, requestID, userID, isCacheRead, isBatch, isFinalChunk, pricingScopes)
+			// Use the requested model for usage tracking
+			p.postHookWorker(result, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, pricingScopes)
 		}()
 	}
 
@@ -1463,7 +1448,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, _, _, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, pricingScopes *modelcatalog.PricingLookupScopes) {
 	// Determine if request was successful
 	success := (result != nil)
 

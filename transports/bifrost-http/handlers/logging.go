@@ -94,6 +94,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
 		filters.Models = parseCommaSeparated(models)
 	}
+	if aliases := string(ctx.QueryArgs().Peek("aliases")); aliases != "" {
+		filters.Aliases = parseCommaSeparated(aliases)
+	}
 	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
 		filters.Status = parseCommaSeparated(statuses)
 	}
@@ -305,6 +308,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
 		filters.Models = parseCommaSeparated(models)
 	}
+	if aliases := string(ctx.QueryArgs().Peek("aliases")); aliases != "" {
+		filters.Aliases = parseCommaSeparated(aliases)
+	}
 	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
 		filters.Status = parseCommaSeparated(statuses)
 	}
@@ -433,6 +439,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
 		filters.Models = parseCommaSeparated(models)
+	}
+	if aliases := string(ctx.QueryArgs().Peek("aliases")); aliases != "" {
+		filters.Aliases = parseCommaSeparated(aliases)
 	}
 	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
 		filters.Status = parseCommaSeparated(statuses)
@@ -636,6 +645,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 
 	var (
 		models         []string
+		aliases        []string
 		selectedKeys   []logging.KeyPair
 		virtualKeys    []logging.KeyPair
 		routingRules   []logging.KeyPair
@@ -650,6 +660,13 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		result := h.logManager.GetAvailableModels(gCtx)
 		mu.Lock()
 		models = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result := h.logManager.GetAvailableAliases(gCtx)
+		mu.Lock()
+		aliases = result
 		mu.Unlock()
 		return nil
 	})
@@ -780,7 +797,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	if metadataKeys == nil {
 		metadataKeys = make(map[string][]string)
 	}
-	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "metadata_keys": metadataKeys})
+	SendJSON(ctx, map[string]interface{}{"models": models, "aliases": aliases, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines, "metadata_keys": metadataKeys})
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs

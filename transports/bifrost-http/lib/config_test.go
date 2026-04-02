@@ -2259,9 +2259,8 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
-			APIVersion:  schemas.NewEnvVar(apiVersion),
+			Endpoint:   *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
+			APIVersion: schemas.NewEnvVar(apiVersion),
 		},
 	}
 
@@ -2282,10 +2281,28 @@ func TestGenerateKeyHash(t *testing.T) {
 		Models: []string{"gpt-4", "gpt-3.5-turbo"},
 		Weight: 1.5,
 		AzureKeyConfig: &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
-			APIVersion:  schemas.NewEnvVar(apiVersion),
+			Endpoint:   *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Different endpoint
+			APIVersion: schemas.NewEnvVar(apiVersion),
 		},
+	}
+
+	// Aliases alone should produce different hash
+	keyWithAliases := schemas.Key{
+		ID:      "key-1",
+		Name:    "test-key",
+		Value:   *schemas.NewEnvVar("sk-123"),
+		Models:  []string{"gpt-4", "gpt-3.5-turbo"},
+		Weight:  1.5,
+		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
+	}
+
+	hashWithAliases, err := configstore.GenerateKeyHash(keyWithAliases)
+	if err != nil {
+		t.Fatalf("Failed to generate hash: %v", err)
+	}
+
+	if hash1 == hashWithAliases {
+		t.Error("Expected different hash for keys with Aliases")
 	}
 
 	hash6b, err := configstore.GenerateKeyHash(key6b)
@@ -4744,12 +4761,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4758,12 +4773,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4783,12 +4796,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4797,12 +4808,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://different-azure.openai.azure.com"), // Changed!
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4822,12 +4831,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4836,12 +4843,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-10-21"), // Changed!
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4861,11 +4866,9 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4874,12 +4877,9 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment", "gpt-3.5-turbo": "gpt-35-turbo-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":         "gpt-4-deployment",
-					"gpt-3.5-turbo": "gpt-35-turbo-deployment", // Added!
-				},
 			},
 		}
 
@@ -4912,9 +4912,6 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4938,9 +4935,6 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4969,12 +4963,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				// APIVersion is nil (will use default)
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -4983,12 +4975,10 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				APIVersion: schemas.NewEnvVar("2024-02-01"), // Explicitly set
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -5011,13 +5001,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5026,13 +5014,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5052,13 +5038,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5067,13 +5051,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"), // Changed!
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5093,13 +5075,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5108,13 +5088,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("differentSecretKey/NEWKEY/bPxRfiCYEXAMPLEKEY"), // Changed!
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5134,13 +5112,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5149,13 +5125,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-west-2"), // Changed!
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5175,14 +5149,12 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-east-1:123456789012:inference-profile/old-profile"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5191,14 +5163,12 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-east-1:123456789012:inference-profile/new-profile"), // Changed!
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5218,13 +5188,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5233,14 +5201,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3":   "claude-3-inference-profile", "claude-3.5": "claude-35-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "claude-3-inference-profile",
-					"claude-3.5": "claude-35-inference-profile", // Added!
-				},
 			},
 		}
 
@@ -5274,9 +5239,6 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5301,9 +5263,6 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5332,14 +5291,12 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
 				// SessionToken is nil
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5348,14 +5305,12 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey:    *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey:    *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:       schemas.NewEnvVar("us-east-1"),
 				SessionToken: schemas.NewEnvVar("AQoDYXdzEJr..."), // Explicitly set
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5376,13 +5331,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar(""),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				SecretKey: *schemas.NewEnvVar(""), // Empty for IAM role auth
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5392,13 +5345,11 @@ func TestKeyHashComparison_BedrockConfigSyncScenarios(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar(""),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "claude-3-inference-profile"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "claude-3-inference-profile",
-				},
 			},
 		}
 
@@ -5420,12 +5371,10 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:   "azure-openai-key",
 		Value:  *schemas.NewEnvVar("azure-api-key-initial"),
 		Weight: 1,
+		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			APIVersion: schemas.NewEnvVar("2024-02-01"),
-			Deployments: map[string]string{
-				"gpt-4": "gpt-4-deployment",
-			},
 		},
 	}
 
@@ -5457,12 +5406,10 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 		Name:   "azure-openai-key",
 		Value:  *schemas.NewEnvVar("azure-api-key-dashboard-edited"), // Changed via dashboard!
 		Weight: 1,
+		Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 		AzureKeyConfig: &schemas.AzureKeyConfig{
 			Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			APIVersion: schemas.NewEnvVar("2024-02-01"),
-			Deployments: map[string]string{
-				"gpt-4": "gpt-4-deployment",
-			},
 		},
 	}
 
@@ -5492,12 +5439,10 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("azure-api-key-initial"), // Original value from file
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
 				},
 			},
 		},
@@ -5531,13 +5476,10 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("azure-api-key-initial"),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4":  "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
 					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
-					Deployments: map[string]string{
-						"gpt-4":  "gpt-4-deployment",
-						"gpt-4o": "gpt-4o-deployment", // Added!
-					},
 				},
 			},
 		},
@@ -5629,8 +5571,8 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	if finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue() != "2024-10-21" {
 		t.Errorf("Expected updated APIVersion, got %s", finalConfig.Keys[0].AzureKeyConfig.APIVersion.GetValue())
 	}
-	if len(finalConfig.Keys[0].AzureKeyConfig.Deployments) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].AzureKeyConfig.Deployments))
+	if len(finalConfig.Keys[0].Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].Aliases))
 	}
 
 	t.Log("Step 5 - Final state verified, Azure provider lifecycle complete ✓")
@@ -5644,13 +5586,11 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:   "aws-bedrock-key",
 		Value:  *schemas.NewEnvVar(""), // Empty for Bedrock with IAM or AccessKey auth
 		Weight: 1,
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 			Region:    schemas.NewEnvVar("us-east-1"),
-			Deployments: map[string]string{
-				"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-			},
 		},
 	}
 
@@ -5681,13 +5621,11 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		Name:   "aws-bedrock-key-eu",
 		Value:  *schemas.NewEnvVar(""),
 		Weight: 1,
+		Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			AccessKey: *schemas.NewEnvVar("AKIAI44QH8DHBEXAMPLE"),
 			SecretKey: *schemas.NewEnvVar("je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"),
 			Region:    schemas.NewEnvVar("eu-west-1"), // Different region
-			Deployments: map[string]string{
-				"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-			},
 		},
 	}
 
@@ -5710,13 +5648,11 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -5751,15 +5687,12 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),                                                           // Changed!
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-						"claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0", // Added!
-					},
 				},
 			},
 		},
@@ -5863,8 +5796,8 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	if fileKey.BedrockKeyConfig.ARN == nil || fileKey.BedrockKeyConfig.ARN.GetValue() != "arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile" {
 		t.Error("Expected ARN to be set")
 	}
-	if len(fileKey.BedrockKeyConfig.Deployments) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(fileKey.BedrockKeyConfig.Deployments))
+	if len(fileKey.Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(fileKey.Aliases))
 	}
 
 	// Verify dashboard-added key is preserved
@@ -5882,15 +5815,12 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0", "claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"),
-					Deployments: map[string]string{
-						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
-						"claude-3-opus":   "anthropic.claude-3-opus-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -5928,12 +5858,10 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("azure-api-key-123"),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
 				},
 			},
 		},
@@ -5997,13 +5925,11 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -6068,12 +5994,10 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 					APIVersion: schemas.NewEnvVar("2024-02-01"),
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment",
-					},
 				},
 			},
 		},
@@ -6099,12 +6023,10 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("original-key-from-file"), // Different value than DB!
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
 					APIVersion: schemas.NewEnvVar("2024-02-01"),                        // Same
-					Deployments: map[string]string{
-						"gpt-4": "gpt-4-deployment", // Same
-					},
 				},
 			},
 		},
@@ -6158,13 +6080,11 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
 					SecretKey: *schemas.NewEnvVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
 					Region:    schemas.NewEnvVar("us-east-1"),
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0",
-					},
 				},
 			},
 		},
@@ -6190,13 +6110,11 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
 					Region:    schemas.NewEnvVar("us-east-1"),                                 // Same
-					Deployments: map[string]string{
-						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0", // Same
-					},
 				},
 			},
 		},
@@ -6281,12 +6199,10 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Name:   "azure-openai-key",
 				Value:  *schemas.NewEnvVar("azure-api-key-123"),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"gpt-4o": "gpt-4o-deployment"},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
 					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
-					Deployments: map[string]string{
-						"gpt-4o": "gpt-4o-deployment", // Added!
-					},
 				},
 			},
 		},
@@ -6371,14 +6287,12 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 				Name:   "aws-bedrock-key",
 				Value:  *schemas.NewEnvVar(""),
 				Weight: 1,
+				Aliases: schemas.KeyAliases{"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0"},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
 					Region:    schemas.NewEnvVar("us-west-2"),                                                            // Changed!
 					ARN:       schemas.NewEnvVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
-					Deployments: map[string]string{
-						"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0", // Added!
-					},
 				},
 			},
 		},
@@ -13349,9 +13263,8 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("AzureKeyConfig_GORMRoundTrip", func(t *testing.T) {
 		apiVersion := "2024-02-01"
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:    *schemas.NewEnvVar("https://myresource.openai.azure.com"),
-			APIVersion:  schemas.NewEnvVar(apiVersion),
-			Deployments: map[string]string{"gpt-4": "gpt-4-deployment"},
+			Endpoint:   *schemas.NewEnvVar("https://myresource.openai.azure.com"),
+			APIVersion: schemas.NewEnvVar(apiVersion),
 		}
 
 		keyToSave := tables.TableKey{
@@ -13362,6 +13275,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          *schemas.NewEnvVar("azure-key-value"),
 			Weight:         ptrFloat64(1.0),
 			AzureKeyConfig: azureConfig,
+			Aliases:        schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 		}
 
 		schemaKey := schemas.Key{
@@ -13369,6 +13283,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          keyToSave.Value,
 			Weight:         getWeight(keyToSave.Weight),
 			AzureKeyConfig: keyToSave.AzureKeyConfig,
+			Aliases:        keyToSave.Aliases,
 		}
 		hashBeforeSave, _ := configstore.GenerateKeyHash(schemaKey)
 
@@ -13382,6 +13297,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Value:          keyFromDB.Value,
 			Weight:         getWeight(keyFromDB.Weight),
 			AzureKeyConfig: keyFromDB.AzureKeyConfig,
+			Aliases:        keyFromDB.Aliases,
 		}
 		hashAfterLoad, _ := configstore.GenerateKeyHash(schemaKeyFromDB)
 
@@ -14466,14 +14382,12 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
 				Region:          *schemas.NewEnvVar("us-central1"),
 				AuthCredentials: *schemas.NewEnvVar(`{"type":"service_account"}`),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -14482,14 +14396,12 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID:       *schemas.NewEnvVar("my-project-123"),
 				ProjectNumber:   *schemas.NewEnvVar("123456789"),
 				Region:          *schemas.NewEnvVar("us-central1"),
 				AuthCredentials: *schemas.NewEnvVar(`{"type":"service_account"}`),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -14614,12 +14526,10 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -14628,13 +14538,10 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-api-key-123"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro":     "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added!
-				},
 			},
 		}
 
@@ -15018,11 +14925,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -15031,12 +14936,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4":  "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":  "gpt-4-deployment",
-					"gpt-4o": "gpt-4o-deployment", // Added
-				},
 			},
 		}
 
@@ -15054,12 +14956,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4":  "gpt-4-deployment", "gpt-4o": "gpt-4o-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4":  "gpt-4-deployment",
-					"gpt-4o": "gpt-4o-deployment",
-				},
 			},
 		}
 
@@ -15068,11 +14967,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment", // gpt-4o removed
-				},
 			},
 		}
 
@@ -15090,11 +14987,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v1"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment-v1",
-				},
 			},
 		}
 
@@ -15103,11 +14998,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment-v2"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment-v2", // Value changed
-				},
 			},
 		}
 
@@ -15126,8 +15019,7 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
-				Endpoint:    *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: nil, // No deployments
+				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 			},
 		}
 
@@ -15136,11 +15028,9 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			Name:   "azure-key",
 			Value:  *schemas.NewEnvVar("azure-api-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gpt-4": "gpt-4-deployment"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
-				Deployments: map[string]string{
-					"gpt-4": "gpt-4-deployment",
-				},
 			},
 		}
 
@@ -15161,13 +15051,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-				},
 			},
 		}
 
@@ -15176,14 +15064,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-					"claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5", // Added
-				},
 			},
 		}
 
@@ -15201,14 +15086,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3", "claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3":   "arn:aws:bedrock:us-east-1::inference-profile/claude-3",
-					"claude-3.5": "arn:aws:bedrock:us-east-1::inference-profile/claude-3.5",
-				},
 			},
 		}
 
@@ -15217,13 +15099,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3", // claude-3.5 removed
-				},
 			},
 		}
 
@@ -15241,13 +15121,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-old",
-				},
 			},
 		}
 
@@ -15256,13 +15134,11 @@ func TestKeyHashComparison_BedrockDeploymentsChange(t *testing.T) {
 			Name:   "bedrock-key",
 			Value:  *schemas.NewEnvVar("bedrock-key"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new"},
 			BedrockKeyConfig: &schemas.BedrockKeyConfig{
 				AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
 				SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI"),
 				Region:    schemas.NewEnvVar("us-east-1"),
-				Deployments: map[string]string{
-					"claude-3": "arn:aws:bedrock:us-east-1::inference-profile/claude-3-new", // Value changed
-				},
 			},
 		}
 
@@ -15283,12 +15159,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 
@@ -15297,13 +15171,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro":     "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added
-				},
 			},
 		}
 
@@ -15321,13 +15192,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro":     "gemini-pro-endpoint", "gemini-1.5-pro": "gemini-15-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro":     "gemini-pro-endpoint",
-					"gemini-1.5-pro": "gemini-15-pro-endpoint",
-				},
 			},
 		}
 
@@ -15336,12 +15204,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint", // gemini-1.5-pro removed
-				},
 			},
 		}
 
@@ -15359,12 +15225,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v1"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint-v1",
-				},
 			},
 		}
 
@@ -15373,12 +15237,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint-v2"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint-v2", // Value changed
-				},
 			},
 		}
 
@@ -15397,9 +15259,8 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
 			VertexKeyConfig: &schemas.VertexKeyConfig{
-				ProjectID:   *schemas.NewEnvVar("my-project"),
-				Region:      *schemas.NewEnvVar("us-central1"),
-				Deployments: nil, // No deployments
+				ProjectID: *schemas.NewEnvVar("my-project"),
+				Region:    *schemas.NewEnvVar("us-central1"),
 			},
 		}
 
@@ -15408,12 +15269,10 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 			Name:   "vertex-key",
 			Value:  *schemas.NewEnvVar("vertex-creds"),
 			Weight: 1,
+			Aliases: schemas.KeyAliases{"gemini-pro": "gemini-pro-endpoint"},
 			VertexKeyConfig: &schemas.VertexKeyConfig{
 				ProjectID: *schemas.NewEnvVar("my-project"),
 				Region:    *schemas.NewEnvVar("us-central1"),
-				Deployments: map[string]string{
-					"gemini-pro": "gemini-pro-endpoint",
-				},
 			},
 		}
 

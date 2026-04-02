@@ -20,7 +20,7 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 			finalResponse := &schemas.BifrostImageGenerationResponse{
 				ID:      chunks[i].Delta.ID,
 				Created: chunks[i].Delta.CreatedAt,
-				Model:   chunks[i].Delta.ExtraFields.ModelRequested,
+				Model:   chunks[i].Delta.ExtraFields.OriginalModelRequested,
 				Data: []schemas.ImageData{
 					{
 						B64JSON:       chunks[i].Delta.B64JSON,
@@ -53,8 +53,8 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 		}
 
 		// Extract metadata
-		if model == "" && chunk.Delta.ExtraFields.ModelRequested != "" {
-			model = chunk.Delta.ExtraFields.ModelRequested
+		if model == "" && chunk.Delta.ExtraFields.OriginalModelRequested != "" {
+			model = chunk.Delta.ExtraFields.OriginalModelRequested
 		}
 
 		// Store revised prompt if present (usually in first chunk)
@@ -216,7 +216,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		// Log error but don't fail the request
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
-	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	_, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	chunk := a.getImageStreamChunk()
@@ -310,12 +310,13 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 				rawRequest = result.ImageGenerationStreamResponse.ExtraFields.RawRequest
 			}
 			return &ProcessedStreamResponse{
-				RequestID:  requestID,
-				StreamType: StreamTypeImage,
-				Provider:   provider,
-				Model:      model,
-				Data:       data,
-				RawRequest: &rawRequest,
+				RequestID:      requestID,
+				StreamType:     StreamTypeImage,
+				Provider:       provider,
+				RequestedModel: requestedModel,
+				ResolvedModel:  resolvedModel,
+				Data:           data,
+				RawRequest:     &rawRequest,
 			}, nil
 		}
 
@@ -325,10 +326,11 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
 	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: StreamTypeImage,
-		Provider:   provider,
-		Model:      model,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     StreamTypeImage,
+		Provider:       provider,
+		RequestedModel: requestedModel,
+		ResolvedModel:  resolvedModel,
+		Data:           nil,
 	}, nil
 }

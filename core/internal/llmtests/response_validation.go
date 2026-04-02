@@ -847,7 +847,7 @@ func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse,
 	}
 
 	provider := response.ExtraFields.Provider
-	model := response.ExtraFields.ModelDeployment
+	model := response.ExtraFields.ResolvedModelUsed
 
 	// Verify top level status is present for OpenAI and Azure with  non-Claude models
 	if provider != "" && (provider == schemas.OpenAI || provider == schemas.Azure) && !strings.Contains(strings.ToLower(model), "claude") {
@@ -976,8 +976,7 @@ func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostRes
 
 	// Check model field
 	if expectations.ShouldHaveModel {
-		if strings.TrimSpace(response.Model) == "" &&
-			strings.TrimSpace(response.ExtraFields.ModelDeployment) == "" {
+		if strings.TrimSpace(response.Model) == "" {
 			result.Passed = false
 			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}

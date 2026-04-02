@@ -165,21 +165,13 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
-func TestSchemaVertexKeyDeployments(t *testing.T) {
-	schemaPath := getSchemaPath(t)
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		t.Fatalf("failed to read schema: %v", err)
-	}
-	var schema map[string]interface{}
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("failed to parse schema: %v", err)
-	}
+func TestSchemaKeyAliases(t *testing.T) {
+	schema := loadSchema(t)
 
-	t.Run("vertex_key $def includes deployments field", func(t *testing.T) {
-		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+	t.Run("base_key $def includes aliases field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "base_key", "properties", "aliases")
 		if !found {
-			t.Error("$defs/vertex_key is missing 'deployments' property — vertex provider uses getModelDeployment() on every request")
+			t.Error("$defs/base_key is missing 'aliases' property — aliases replaced per-provider deployments maps")
 		}
 	})
 
@@ -190,30 +182,60 @@ func TestSchemaVertexKeyDeployments(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex config with deployments validates successfully", func(t *testing.T) {
+	t.Run("vertex_key_config does not include deployments field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+		if found {
+			t.Error("$defs/vertex_key still has 'deployments' in vertex_key_config — deployments were moved to top-level key aliases")
+		}
+	})
+
+	t.Run("key with aliases validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)
 		config := `{
 			"providers": {
 				"vertex": {
 					"keys": [{
-						"key_id": "test",
 						"name": "test",
 						"value": "",
 						"weight": 1,
 						"models": ["gemini-2.0-flash"],
+						"aliases": {"gemini-2.0-flash": "gemini-2.0-flash-001"},
 						"vertex_key_config": {
 							"project_id": "my-project",
 							"region": "us-central1",
 							"auth_credentials": "",
-							"project_number": "123456",
-							"deployments": {"gemini-2.0-flash": "gemini-2.0-flash-001"}
+							"project_number": "123456"
 						}
 					}]
 				}
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
-			t.Errorf("vertex config with deployments should be valid, got: %v", err)
+			t.Errorf("key with aliases should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("azure key with aliases validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"azure": {
+					"keys": [{
+						"name": "test",
+						"value": "my-api-key",
+						"weight": 1,
+						"models": ["gpt-4o"],
+						"aliases": {"gpt-4o": "gpt-4o-deployment"},
+						"azure_key_config": {
+							"endpoint": "https://my-resource.openai.azure.com",
+							"api_version": "2024-02-01"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("azure key with aliases should be valid, got: %v", err)
 		}
 	})
 }

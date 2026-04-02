@@ -27,7 +27,6 @@ var modelInputImageFieldMap = map[string]string{
 	"black-forest-labs/flux-krea-dev": "image",
 }
 
-
 // ToReplicateImageGenerationInput converts a Bifrost image generation request to Replicate prediction input
 func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationRequest) *ReplicatePredictionRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -124,9 +123,6 @@ func ToBifrostImageGenerationResponse(
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "prediction response is nil",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider: schemas.Replicate,
 			},
 		}
 	}

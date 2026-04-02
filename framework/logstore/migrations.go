@@ -212,6 +212,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginLogsColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAliasColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2030,6 +2033,11 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_ts_provider_status",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_ts_provider_status ON logs(timestamp, provider, status)",
 	},
+	{
+		table: "logs",
+		name:  "idx_logs_alias",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_alias ON logs(alias)",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -2173,6 +2181,44 @@ func migrationAddPluginLogsColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding plugin logs column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAliasColumn adds the alias column to the logs table.
+// The alias field stores the original model name the caller used when routing resolved it to a different model via alias mapping.
+// Index creation is deferred to ensurePerformanceIndexes (called post-startup in a background goroutine)
+// because CREATE INDEX CONCURRENTLY cannot run inside a transaction and a regular CREATE INDEX
+// takes a SHARE lock that blocks writes on large tables during rolling deploys.
+func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_alias_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "alias") {
+				if err := mig.AddColumn(&Log{}, "alias"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "alias") {
+				if err := mig.DropColumn(&Log{}, "alias"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding alias column: %s", err.Error())
 	}
 	return nil
 }

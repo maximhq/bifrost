@@ -4,13 +4,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { HeadersTable, type CellRenderParams } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info, Plus, Trash2 } from "lucide-react";
@@ -19,6 +19,34 @@ import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
+
+/** Normalize form value (object or legacy JSON string) for the alias map editor. */
+function normalizeAliasesValue(
+	v: Record<string, string> | string | undefined | null,
+): Record<string, string> {
+	if (v == null) {
+		return {};
+	}
+	if (typeof v === "string") {
+		const t = v.trim();
+		if (!t) {
+			return {};
+		}
+		try {
+			const p = JSON.parse(t) as unknown;
+			if (typeof p === "object" && p !== null && !Array.isArray(p)) {
+				return Object.fromEntries(Object.entries(p as Record<string, unknown>).map(([k, val]) => [k, String(val ?? "")]));
+			}
+		} catch {
+			return {};
+		}
+		return {};
+	}
+	if (typeof v === "object" && !Array.isArray(v)) {
+		return Object.fromEntries(Object.entries(v).map(([k, val]) => [k, typeof val === "string" ? val : String(val ?? "")]));
+	}
+	return {};
+}
 
 interface Props {
 	control: Control<any>;
@@ -174,7 +202,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!isAzure && !isBedrock && !isKeylessProvider && (
+			{!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && !(isBedrock) && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -293,6 +321,45 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										}
 										unfiltered={true}
 									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.aliases`}
+						render={({ field }) => (
+							<FormItem data-testid="apikey-aliases-field">
+								<FormLabel>Aliases (Optional)</FormLabel>
+								<FormDescription>
+									Map each request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint ID,
+									etc.) or just a custom name, e.g. &quot;claude-sonnet-4-5&quot; -&gt; &quot;custom-claude-4.5-sonnet&quot;.
+								</FormDescription>
+								<FormControl>
+									<div data-testid="apikey-aliases-table">
+										<HeadersTable
+											label=""
+											value={normalizeAliasesValue(field.value)}
+											onChange={(next) => {
+												form.clearErrors("key.aliases");
+												field.onChange(Object.keys(next).length > 0 ? next : {});
+											}}
+											keyPlaceholder="Request model name"
+											valuePlaceholder="Deployment / profile / resource ID"
+											renderValueInput={({ value: cellValue, onChange, placeholder, disabled }: CellRenderParams) => (
+												<ModelMultiselect
+													isSingleSelect
+													provider={providerName}
+													value={cellValue}
+													onChange={onChange}
+													placeholder={placeholder ?? "Deployment / profile / resource ID"}
+													disabled={disabled}
+													unfiltered={true}
+												/>
+											)}
+										/>
+									</div>
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -465,46 +532,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							/>
 						</>
 					)}
-
-					<FormField
-						control={control}
-						name={`key.azure_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Required)</FormLabel>
-								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"gpt-4": "my-gpt4-deployment", "gpt-3.5-turbo": "my-gpt35-deployment"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											form.clearErrors("key.azure_key_config.deployments");
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
@@ -573,50 +600,13 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										{...field}
 									/>
 								</FormControl>
+								<FormMessage />
 								{isRedacted(field.value?.value ?? "") && (
 									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
 										<Info className="h-3 w-3" />
 										<span>Credentials are stored securely. Edit to update.</span>
 									</div>
 								)}
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.vertex_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to custom fine-tuned model deployment ids</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"custom-gemini-2.5-pro": "123456789", "custom-gemini-2.0-flash-001": "987654321"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								<FormMessage />
 							</FormItem>
 						)}
 					/>
@@ -627,39 +617,18 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<Separator className="my-6" />
 					<FormField
 						control={control}
-						name={`key.replicate_key_config.deployments`}
+						name="key.replicate_key_config.use_deployments_endpoint"
 						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Use Deployments Endpoint</FormLabel>
+									<FormDescription>
+										Route requests through the Replicate deployments endpoint instead of the models endpoint.
+									</FormDescription>
+								</div>
 								<FormControl>
-									<Textarea
-										placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
+									<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
 								</FormControl>
-								<FormMessage />
 							</FormItem>
 						)}
 					/>
@@ -918,44 +887,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormLabel>ARN (Optional)</FormLabel>
 								<FormControl>
 									<EnvVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.deployments`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Deployments (Optional)</FormLabel>
-								<FormDescription>JSON object mapping model names to inference profile names</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0", "claude-v2": "us.anthropic.claude-v2:1"}'
-										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-										onChange={(e) => {
-											// Store as string during editing to allow intermediate invalid states
-											field.onChange(e.target.value);
-										}}
-										onBlur={(e) => {
-											// Try to parse as JSON on blur, but keep as string if invalid
-											const value = e.target.value.trim();
-											if (value) {
-												try {
-													const parsed = JSON.parse(value);
-													if (typeof parsed === "object" && parsed !== null) {
-														field.onChange(parsed);
-													}
-												} catch {
-													// Keep as string for validation on submit
-												}
-											}
-											field.onBlur();
-										}}
-										rows={3}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
 								</FormControl>
 								<FormMessage />
 							</FormItem>
