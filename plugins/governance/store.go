@@ -1939,6 +1939,15 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 			}
 			return fmt.Errorf("failed to dump budgets to database: %w", err)
 		}
+
+		// After successful dump, update LastDBUsagesBudgets so this node's broadcast
+		// delta reflects "nothing uncommitted". This prevents double-counting if
+		// this node transitions from leader to non-leader.
+		gs.LastDBUsagesBudgetsMu.Lock()
+		for _, inMemoryBudget := range budgets {
+			gs.LastDBUsagesBudgets[inMemoryBudget.ID] = inMemoryBudget.CurrentUsage
+		}
+		gs.LastDBUsagesBudgetsMu.Unlock()
 	}
 
 	return nil
