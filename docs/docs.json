@@ -470,6 +470,13 @@
         ]
       },
       {
+        "tab": "Migration Guides",
+        "icon": "arrow-up-right-dots",
+        "pages": [
+          "migration-guides/v1.5.0"
+        ]
+      },
+      {
         "tab": "Changelogs",
         "icon": "bolt",
         "menu": [
