@@ -514,12 +514,49 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 		Model:    model,
 	}
 
+	var contents []schemas.EmbeddingContent
 	if r.InputText != "" {
-		req.Input = &schemas.EmbeddingInput{Text: &r.InputText}
+		inputText := r.InputText
+		contents = append(contents, schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &inputText},
+		})
 	} else if len(r.Texts) > 0 {
-		req.Input = &schemas.EmbeddingInput{Texts: r.Texts}
+		for _, t := range r.Texts {
+			text := t
+			contents = append(contents, schemas.EmbeddingContent{
+				{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			})
+		}
 	}
-	// image-only (r.Images) or mixed (r.Inputs): req.Input stays nil; data flows via ExtraParams
+	for _, img := range r.Images {
+		imgCopy := img
+		contents = append(contents, schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: &imgCopy}},
+		})
+	}
+	for _, input := range r.Inputs {
+		content := make(schemas.EmbeddingContent, 0, len(input.Content))
+		for _, block := range input.Content {
+			switch block.Type {
+			case "text":
+				if block.Text != nil {
+					t := *block.Text
+					content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeText, Text: &t})
+				}
+			case "image_url":
+				if block.ImageURL != nil {
+					u := block.ImageURL.URL
+					content = append(content, schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &u}})
+				}
+			}
+		}
+		if len(content) > 0 {
+			contents = append(contents, content)
+		}
+	}
+	if len(contents) > 0 {
+		req.Input = contents
+	}
 
 	extraParams := make(map[string]interface{})
 	// Forward known embedding-only params into ExtraParams so the provider can pick them up

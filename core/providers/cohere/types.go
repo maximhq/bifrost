@@ -297,6 +297,7 @@ type CohereEmbeddingRequest struct {
 	OutputDimension *int                   `json:"output_dimension,omitempty"` // Optional: Embedding dimensions (256, 512, 1024, 1536)
 	EmbeddingTypes  []string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
 	Truncate        *string                `json:"truncate,omitempty"`         // Optional: How to handle long inputs
+	Priority        *int                   `json:"priority,omitempty"`         // Optional: Priority of the request
 	ExtraParams     map[string]interface{} `json:"-"`                          // Optional: Extra parameters
 }
 
@@ -323,9 +324,9 @@ type CohereEmbeddingResponse struct {
 type CohereEmbeddingData struct {
 	Float   [][]float64 `json:"float,omitempty"`   // Float embeddings
 	Int8    [][]int8    `json:"int8,omitempty"`    // Int8 embeddings
-	Uint8   [][]uint8   `json:"uint8,omitempty"`   // Uint8 embeddings
+	Uint8   [][]int32   `json:"uint8,omitempty"`   // Uint8 embeddings; int32 avoids []byte→base64 JSON issue
 	Binary  [][]int8    `json:"binary,omitempty"`  // Binary embeddings
-	Ubinary [][]uint8   `json:"ubinary,omitempty"` // Unsigned binary embeddings
+	Ubinary [][]int32   `json:"ubinary,omitempty"` // Unsigned binary embeddings; int32 avoids []byte→base64 JSON issue
 	Base64  []string    `json:"base64,omitempty"`  // Base64 embeddings
 }
 

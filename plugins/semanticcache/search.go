@@ -140,8 +140,8 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
 		Model:    plugin.config.EmbeddingModel,
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
+		Input: []schemas.EmbeddingContent{
+			{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
 		},
 	}
 
@@ -180,7 +180,12 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	switch {
 	case embedding.EmbeddingStr != nil:
 		var vals []float32
-		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err != nil {
+		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err == nil {
+			return vals, inputTokens, nil
+		}
+		// encoding_format=base64 packs little-endian float32s rather than a JSON array.
+		vals, err := decodeBase64Embedding(*embedding.EmbeddingStr)
+		if err != nil {
 			return nil, 0, fmt.Errorf("failed to parse string embedding: %w", err)
 		}
 		return vals, inputTokens, nil

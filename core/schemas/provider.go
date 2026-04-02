@@ -348,6 +348,7 @@ type AllowedRequests struct {
 	CountTokens           bool `json:"count_tokens"`
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
+	BatchEmbedding        bool `json:"batch_embedding"`
 	Rerank                bool `json:"rerank"`
 	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
@@ -432,6 +433,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Compaction
 	case EmbeddingRequest:
 		return ar.Embedding
+	case BatchEmbeddingRequest:
+		return ar.BatchEmbedding
 	case RerankRequest:
 		return ar.Rerank
 	case OCRRequest:
@@ -657,6 +660,8 @@ type Provider interface {
 	Compaction(ctx *BifrostContext, key Key, request *BifrostCompactionRequest) (*BifrostCompactionResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
+	// BatchEmbedding performs a batch embedding request with optional per-item parameter overrides
+	BatchEmbedding(ctx *BifrostContext, key Key, request *BifrostBatchEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Rerank performs a rerank request to reorder documents by relevance to a query
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document

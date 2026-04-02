@@ -52,10 +52,88 @@ func (req *OpenAITextCompletionRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
 }
 
+type OpenAIEmbeddingInput struct {
+	Text       *string
+	Texts      []string
+	Embedding  []int
+	Embeddings [][]int
+}
+
+func (e *OpenAIEmbeddingInput) MarshalJSON() ([]byte, error) {
+	// enforce one-of
+	set := 0
+	if e.Text != nil {
+		set++
+	}
+	if e.Texts != nil {
+		set++
+	}
+	if e.Embedding != nil {
+		set++
+	}
+	if e.Embeddings != nil {
+		set++
+	}
+	if set == 0 {
+		return nil, fmt.Errorf("embedding input is empty")
+	}
+	if set > 1 {
+		return nil, fmt.Errorf("embedding input must set exactly one of: text, texts, embedding, embeddings")
+	}
+
+	if e.Text != nil {
+		return providerUtils.MarshalSorted(*e.Text)
+	}
+	if e.Texts != nil {
+		return providerUtils.MarshalSorted(e.Texts)
+	}
+	if e.Embedding != nil {
+		return providerUtils.MarshalSorted(e.Embedding)
+	}
+	if e.Embeddings != nil {
+		return providerUtils.MarshalSorted(e.Embeddings)
+	}
+
+	return nil, fmt.Errorf("invalid embedding input")
+}
+
+func (e *OpenAIEmbeddingInput) UnmarshalJSON(data []byte) error {
+	e.Text = nil
+	e.Texts = nil
+	e.Embedding = nil
+	e.Embeddings = nil
+	// Try string
+	var s string
+	if err := sonic.Unmarshal(data, &s); err == nil {
+		e.Text = &s
+		return nil
+	}
+	// Try []string
+	var ss []string
+	if err := sonic.Unmarshal(data, &ss); err == nil {
+		e.Texts = ss
+		return nil
+	}
+	// Try []int
+	var i []int
+	if err := sonic.Unmarshal(data, &i); err == nil {
+		e.Embedding = i
+		return nil
+	}
+	// Try [][]int
+	var i2 [][]int
+	if err := sonic.Unmarshal(data, &i2); err == nil {
+		e.Embeddings = i2
+		return nil
+	}
+
+	return fmt.Errorf("unsupported embedding input shape")
+}
+
 // OpenAIEmbeddingRequest represents an OpenAI embedding request
 type OpenAIEmbeddingRequest struct {
-	Model string                  `json:"model"`
-	Input *schemas.EmbeddingInput `json:"input"` // Can be string or []string
+	Model string                `json:"model"`
+	Input *OpenAIEmbeddingInput `json:"input"` // Can be string or []string
 
 	schemas.EmbeddingParameters
 

@@ -358,6 +358,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 	// baseline below.
 	n := len(log.InputHistory) +
 		len(log.ResponsesInputHistory) +
+		len(log.EmbeddingInput) +
 		len(log.OutputMessage) +
 		len(log.ResponsesOutput) +
 		len(log.EmbeddingOutput) +
@@ -435,6 +436,8 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		CreatedAt:                   pending.Timestamp,
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
+		BatchEmbeddingInputParsed:   pending.InitialData.BatchEmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		MetadataParsed:              pending.InitialData.Metadata,
@@ -466,6 +469,8 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		// Set parsed fields for serialization via GORM hooks
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
+		BatchEmbeddingInputParsed:   pending.InitialData.BatchEmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		SpeechInputParsed:           pending.InitialData.SpeechInput,

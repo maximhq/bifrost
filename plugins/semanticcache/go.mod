@@ -3,6 +3,7 @@ module github.com/maximhq/bifrost/plugins/semanticcache
 go 1.27.0
 
 require (
+	github.com/bytedance/sonic v1.15.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.8.3

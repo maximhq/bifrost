@@ -460,6 +460,10 @@ func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key s
 	)
 }
 
+func (provider *OpenRouterProvider) BatchEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchEmbeddingRequest, provider.GetProviderKey())
+}
+
 // Speech performs a text-to-speech request to the OpenRouter API.
 func (provider *OpenRouterProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAISpeechRequest(
