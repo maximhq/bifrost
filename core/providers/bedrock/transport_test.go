@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -278,13 +279,14 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 func writeEventStreamException(t *testing.T, w io.Writer, excType, msg string) {
 	t.Helper()
 	enc := eventstream.NewEncoder()
-	payload := []byte(`{"message":"` + msg + `"}`)
+	payload, err := json.Marshal(map[string]string{"message": msg})
+	require.NoError(t, err, "failed to marshal exception payload")
 	headers := eventstream.Headers{
 		{Name: ":message-type", Value: eventstream.StringValue("exception")},
 		{Name: ":exception-type", Value: eventstream.StringValue(excType)},
 		{Name: ":content-type", Value: eventstream.StringValue("application/json")},
 	}
-	err := enc.Encode(w, eventstream.Message{Headers: headers, Payload: payload})
+	err = enc.Encode(w, eventstream.Message{Headers: headers, Payload: payload})
 	require.NoError(t, err, "failed to encode EventStream exception frame")
 }
 
@@ -396,6 +398,134 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	require.NotNil(t, errChunk, "expected error chunk for validationException")
 	assert.True(t, errChunk.BifrostError.IsBifrostError,
 		"non-retryable validationException must remain IsBifrostError:true")
+}
+
+// testTextCompletionRequest returns a minimal BifrostTextCompletionRequest for streaming tests.
+func testTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
+	prompt := "hello"
+	return &schemas.BifrostTextCompletionRequest{
+		Model: "anthropic.claude-sonnet-4-5",
+		Input: &schemas.TextCompletionInput{PromptStr: &prompt},
+	}
+}
+
+// testResponsesRequest returns a minimal BifrostResponsesRequest for streaming tests.
+func testResponsesRequest() *schemas.BifrostResponsesRequest {
+	msgType := schemas.ResponsesMessageType("message")
+	roleUser := schemas.ResponsesMessageRoleType("user")
+	content := "hello"
+	return &schemas.BifrostResponsesRequest{
+		Model: "anthropic.claude-sonnet-4-5",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:    &msgType,
+				Role:    &roleUser,
+				Content: &schemas.ResponsesMessageContent{ContentStr: &content},
+			},
+		},
+	}
+}
+
+// assertRetryableExceptionChunk is the shared assertion helper for all three
+// streaming-method retryable-exception tests.
+func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError, excType string, expectedStatus int) {
+	t.Helper()
+	if bifrostErr != nil {
+		assert.False(t, bifrostErr.IsBifrostError, "pre-stream error must be IsBifrostError:false")
+		return
+	}
+	require.NotNil(t, streamChan)
+
+	var errChunk *schemas.BifrostStreamChunk
+	for chunk := range streamChan {
+		if chunk != nil && chunk.BifrostError != nil {
+			errChunk = chunk
+			break
+		}
+	}
+	for range streamChan {
+	}
+
+	require.NotNil(t, errChunk, "expected error chunk for %s", excType)
+	assert.False(t, errChunk.BifrostError.IsBifrostError,
+		"%s must be IsBifrostError:false so retry gate can retry it", excType)
+	require.NotNil(t, errChunk.BifrostError.StatusCode,
+		"%s must carry a StatusCode for the retryableStatusCodes gate", excType)
+	assert.Equal(t, expectedStatus, *errChunk.BifrostError.StatusCode,
+		"%s must map to HTTP %d", excType, expectedStatus)
+}
+
+// TestTextCompletionStream_RetryableException_ChunkIsRetryable mirrors the
+// ChatCompletionStream test for the TextCompletionStream path, which has
+// slightly different payload-parsing logic (extra BedrockError JSON unmarshal).
+func TestTextCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) {
+	tests := []struct {
+		excType        string
+		expectedStatus int
+	}{
+		{"serviceUnavailableException", 503},
+		{"throttlingException", 429},
+		{"modelNotReadyException", 503},
+		{"internalServerException", 500},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.excType, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				writeEventStreamException(t, w, tc.excType, "service is unavailable, please retry")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}))
+			defer ts.Close()
+
+			provider := newTestProviderWithServer(t, ts)
+			streamChan, bifrostErr := provider.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, testBedrockKey(), testTextCompletionRequest())
+			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
+		})
+	}
+}
+
+// TestResponsesStream_RetryableException_ChunkIsRetryable mirrors the
+// ChatCompletionStream test for the ResponsesStream path.
+func TestResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
+	tests := []struct {
+		excType        string
+		expectedStatus int
+	}{
+		{"serviceUnavailableException", 503},
+		{"throttlingException", 429},
+		{"modelNotReadyException", 503},
+		{"internalServerException", 500},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.excType, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				writeEventStreamException(t, w, tc.excType, "service is unavailable, please retry")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}))
+			defer ts.Close()
+
+			provider := newTestProviderWithServer(t, ts)
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, testBedrockKey(), testResponsesRequest())
+			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
+		})
+	}
 }
 
 func generateTestCACert(t *testing.T) string {
