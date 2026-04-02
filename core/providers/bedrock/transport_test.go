@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -267,6 +269,133 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	require.NotNil(t, errChunk.BifrostError.Error)
 	assert.Equal(t, schemas.ErrProviderNetworkError, errChunk.BifrostError.Error.Message,
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
+}
+
+// writeEventStreamException encodes a well-formed AWS EventStream exception
+// frame with the given exception type and message into w.
+// The frame format is: prelude (total_len + headers_len + CRC) + headers + payload + message_CRC.
+// We use the AWS SDK's eventstream.Encoder so the binary framing is correct.
+func writeEventStreamException(t *testing.T, w io.Writer, excType, msg string) {
+	t.Helper()
+	enc := eventstream.NewEncoder()
+	payload := []byte(`{"message":"` + msg + `"}`)
+	headers := eventstream.Headers{
+		{Name: ":message-type", Value: eventstream.StringValue("exception")},
+		{Name: ":exception-type", Value: eventstream.StringValue(excType)},
+		{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+	}
+	err := enc.Encode(w, eventstream.Message{Headers: headers, Payload: payload})
+	require.NoError(t, err, "failed to encode EventStream exception frame")
+}
+
+// TestChatCompletionStream_RetryableException_ChunkIsRetryable verifies that
+// when AWS Bedrock sends a retryable exception (serviceUnavailableException,
+// throttlingException, etc.) through the EventStream, the resulting error chunk
+// has IsBifrostError:false and the correct HTTP StatusCode so that the retry
+// gate in executeRequestWithRetries can retry the request.
+func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) {
+	tests := []struct {
+		excType        string
+		expectedStatus int
+	}{
+		{"serviceUnavailableException", 503},
+		{"throttlingException", 429},
+		{"modelNotReadyException", 503},
+		{"internalServerException", 500},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.excType, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				writeEventStreamException(t, w, tc.excType, "service is unavailable, please retry")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}))
+			defer ts.Close()
+
+			provider := newTestProviderWithServer(t, ts)
+			ctx := testBedrockCtx()
+			key := testBedrockKey()
+
+			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+			if bifrostErr != nil {
+				assert.False(t, bifrostErr.IsBifrostError,
+					"pre-stream error must be IsBifrostError:false")
+				return
+			}
+
+			require.NotNil(t, streamChan)
+
+			var errChunk *schemas.BifrostStreamChunk
+			for chunk := range streamChan {
+				if chunk != nil && chunk.BifrostError != nil {
+					errChunk = chunk
+					break
+				}
+			}
+			for range streamChan {
+			}
+
+			require.NotNil(t, errChunk, "expected error chunk for %s", tc.excType)
+			assert.False(t, errChunk.BifrostError.IsBifrostError,
+				"%s must be IsBifrostError:false so retry gate can retry it", tc.excType)
+			require.NotNil(t, errChunk.BifrostError.StatusCode,
+				"%s must carry a StatusCode for the retryableStatusCodes gate", tc.excType)
+			assert.Equal(t, tc.expectedStatus, *errChunk.BifrostError.StatusCode,
+				"%s must map to HTTP %d", tc.excType, tc.expectedStatus)
+		})
+	}
+}
+
+// TestChatCompletionStream_NonRetryableException_IsTerminal verifies that
+// non-retryable exception types (e.g. validationException, accessDeniedException)
+// continue to use ProcessAndSendError (IsBifrostError:true) and are NOT retried.
+func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		writeEventStreamException(t, w, "validationException", "input validation failed")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	ctx := testBedrockCtx()
+	key := testBedrockKey()
+
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
+	if bifrostErr != nil {
+		// If error surfaces synchronously it's already a terminal error — fine.
+		return
+	}
+
+	require.NotNil(t, streamChan)
+
+	var errChunk *schemas.BifrostStreamChunk
+	for chunk := range streamChan {
+		if chunk != nil && chunk.BifrostError != nil {
+			errChunk = chunk
+			break
+		}
+	}
+	for range streamChan {
+	}
+
+	require.NotNil(t, errChunk, "expected error chunk for validationException")
+	assert.True(t, errChunk.BifrostError.IsBifrostError,
+		"non-retryable validationException must remain IsBifrostError:true")
 }
 
 func generateTestCACert(t *testing.T) string {
