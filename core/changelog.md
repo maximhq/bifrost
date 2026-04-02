@@ -1,0 +1,2 @@
+- feat: add model alias support
+- refactor: standardize extra fields handling for all providers
