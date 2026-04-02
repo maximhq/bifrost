@@ -1,0 +1,410 @@
+---
+title: "Migrating to v1.5.0"
+description: "Breaking changes and migration instructions for the v1.5.0 release"
+---
+
+v1.5.0 introduces several breaking changes across provider key configuration, Virtual Key semantics, the REST API, and plugins. This page consolidates every breaking change with before/after examples and a migration checklist.
+
+<Warning>
+**Make a database backup before upgrading.** Automatic database migrations run on startup and are not revertible. A backup is the only way to restore a previous state if anything goes wrong. A database successfully migrated to v1.5.0 cannot be used to run v1.4.x.
+</Warning>
+
+---
+
+## Automatic Database Migration
+
+If you are running Bifrost with a database (SQLite or Postgres), existing data is automatically migrated on startup. You do not need to manually update your database records.
+
+The following automatic migrations run on upgrade:
+
+- Provider keys with `models: []` are converted to `models: ["*"]`
+- Virtual Key provider configs with `allowed_models: []` are converted to `allowed_models: ["*"]`
+- Virtual Keys with no `provider_configs` are backfilled with all currently configured providers (`allowed_models: ["*"]`, `key_ids: ["*"]`)
+- Virtual Keys with no `mcp_configs` are backfilled with all currently connected MCP clients (`tools_to_execute: ["*"]`)
+
+**The automatic migration only protects your existing data.** Any new configuration created after upgrading — via `config.json` or the REST API — must follow the new semantics described below.
+
+---
+
+## Breaking Change 1: Empty Array Now Means "Deny All"
+
+v1.5.0 flips the meaning of empty arrays across all allow-list fields:
+
+| What you write | v1.4.x meaning | v1.5.0 meaning |
+|---|---|---|
+| `[]` (empty array) | Allow **all** | Allow **none** |
+| `["*"]` (wildcard) | Not applicable | Allow **all** |
+| `["a", "b"]` | Only `a` and `b` | Only `a` and `b` (unchanged) |
+
+This affects four fields:
+
+| Field | Where |
+|---|---|
+| `models` | Provider key |
+| `allowed_models` | Virtual Key provider config |
+| `key_ids` | Virtual Key provider config |
+| `tools_to_execute` | Virtual Key MCP config |
+
+### Provider key `models`
+
+**Before:**
+```json
+{ "value": "env.OPENAI_API_KEY", "models": [] }
+```
+`models: []` → key served all models
+
+**After:**
+```json
+{ "value": "env.OPENAI_API_KEY", "models": ["*"] }
+```
+
+### Virtual Key `allowed_models`
+
+**Before:**
+```json
+{ "provider": "openai", "weight": 1.0 }
+```
+Missing `allowed_models` → all models allowed
+
+**After:**
+```json
+{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+```
+
+### Virtual Key MCP `tools_to_execute`
+
+**Before:**
+```json
+{ "mcp_client_name": "my-tools", "tools_to_execute": [] }
+```
+
+**After:**
+```json
+{ "mcp_client_name": "my-tools", "tools_to_execute": ["*"] }
+```
+
+---
+
+## Breaking Change 2: `allowed_keys` Renamed to `key_ids`
+
+The field used to restrict which provider API keys a Virtual Key can use has been renamed from `allowed_keys` to `key_ids`. The deny-by-default rule also applies — omitting the field or setting it to `[]` now blocks all keys.
+
+<Note>
+Unlike `allowed_models`, there is no automatic database migration for `key_ids`. An empty or omitted `key_ids` disables all key selection. You must explicitly use `["*"]` to restore allow-all behavior.
+</Note>
+
+**Before:**
+```json
+{ "provider": "openai", "allowed_keys": ["key-prod-001"], "weight": 1.0 }
+```
+
+**After:**
+```json
+{ "provider": "openai", "key_ids": ["key-prod-001"], "allowed_models": ["*"], "weight": 1.0 }
+```
+
+To allow all keys:
+```json
+{ "provider": "openai", "key_ids": ["*"], "allowed_models": ["*"], "weight": 1.0 }
+```
+
+---
+
+## Breaking Change 3: Virtual Key `provider_configs` is Deny-by-Default
+
+In v1.4.x, a Virtual Key with no `provider_configs` had access to all providers. In v1.5.0, it blocks all providers.
+
+**Before:** `"provider_configs": []` → access to all providers
+
+**After:** `"provider_configs": []` → no provider access
+
+To allow all providers, list each one explicitly:
+```json
+{
+  "provider_configs": [
+    { "provider": "openai",    "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+    { "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+  ]
+}
+```
+
+The automatic migration backfills all currently configured providers into any VK that has an empty `provider_configs`. However, any VK created after upgrading must include explicit provider configs.
+
+---
+
+## Breaking Change 4: WhiteList Validation
+
+Two new validation rules are enforced on all allow-list fields. The API returns **HTTP 400** if either is violated.
+
+**Rule 1: Wildcard cannot be mixed with other values**
+```json
+// ❌ Invalid
+{ "allowed_models": ["*", "gpt-4o"] }
+
+// ✅ Valid
+{ "allowed_models": ["*"] }
+```
+
+**Rule 2: No duplicate values**
+```json
+// ❌ Invalid
+{ "allowed_models": ["gpt-4o", "gpt-4o"] }
+```
+
+Applies to: `models`, `allowed_models`, `key_ids`, `tools_to_execute`, `tools_to_auto_execute`, `allowed_extra_headers`.
+
+---
+
+## Breaking Change 5: `weight` is Now Nullable
+
+The `weight` field on a Virtual Key provider config was previously a required `float64`. It is now an optional `*float64`.
+
+- `weight: 0.5` — provider participates in weighted load balancing
+- `weight: null` / omitted — provider is accessible for direct routing but excluded from weighted selection
+
+**API response change:** `weight` may now be `null`. Update any client code that assumes it is always a number.
+
+---
+
+## Breaking Change 6: Provider Keys API Separated
+
+Provider key management now has dedicated endpoints. The `keys` field has been removed from all provider API requests and responses.
+
+### What changed
+
+| Before (v1.4.x) | After (v1.5.0) |
+|---|---|
+| `GET /api/providers/{p}` returns `keys` | `keys` field removed from provider response |
+| `POST /api/providers` accepts `keys` | `keys` field ignored — create keys separately |
+| `PUT /api/providers/{p}` accepts `keys` | `keys` field ignored — update keys via dedicated endpoints |
+
+### New endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/providers/{provider}/keys` | List all keys |
+| `GET` | `/api/providers/{provider}/keys/{key_id}` | Get a single key |
+| `POST` | `/api/providers/{provider}/keys` | Create a key |
+| `PUT` | `/api/providers/{provider}/keys/{key_id}` | Update a key |
+| `DELETE` | `/api/providers/{provider}/keys/{key_id}` | Delete a key |
+
+### How to update
+
+**Creating a provider with keys:**
+
+**Before:**
+```bash
+curl -X POST localhost:8080/api/providers -d '{
+  "provider": "openai",
+  "keys": [{"name": "main", "value": "sk-..."}]
+}'
+```
+
+**After:** Create provider first, then add keys:
+```bash
+curl -X POST localhost:8080/api/providers -d '{"provider": "openai"}'
+curl -X POST localhost:8080/api/providers/openai/keys -d '{"name": "main", "value": "sk-..."}'
+```
+
+**Reading keys:**
+
+**Before:** `curl localhost:8080/api/providers/openai | jq '.keys'`
+
+**After:** `curl localhost:8080/api/providers/openai/keys | jq '.keys'`
+
+**Updating / deleting keys:**
+
+**Before:** Bulk replace via provider update:
+```bash
+curl -X PUT localhost:8080/api/providers/openai -d '{"keys": [{"id": "key-1", "value": "sk-new"}]}'
+```
+
+**After:** Individual key operations:
+```bash
+curl -X PUT localhost:8080/api/providers/openai/keys/key-1 -d '{"name": "updated", "value": "sk-new"}'
+curl -X DELETE localhost:8080/api/providers/openai/keys/key-2
+```
+
+---
+
+## Breaking Change 7: Compact Plugin Restructured
+
+The `enable_litellm_fallbacks` option has been removed and replaced with three granular options.
+
+**Before:**
+```json
+{ "compat": { "enable_litellm_fallbacks": true } }
+```
+
+**After:**
+```json
+{
+  "compat": {
+    "convert_text_to_chat": true,
+    "convert_chat_to_responses": true,
+    "should_drop_params": true
+  }
+}
+```
+
+| Old option | New option | Description |
+|---|---|---|
+| `enable_litellm_fallbacks` | `convert_text_to_chat` | Text completion → chat completion fallback |
+| _(new)_ | `convert_chat_to_responses` | Chat completion → Responses API fallback |
+| _(new)_ | `should_drop_params` | Drop unsupported OpenAI-compatible params |
+
+**Response field changes:**
+
+| Field | Change |
+|---|---|
+| `extra_fields.litellm_compat` | **Removed** |
+| `extra_fields.dropped_compat_plugin_params` | **Added** — lists params dropped by this plugin |
+| `extra_fields.converted_request_type` | **Added** — the request type it was converted to |
+
+---
+
+## Breaking Change 8: Replicate Image Edits Removed from Generations Endpoint
+
+The `/v1/images/generations` endpoint on the Replicate provider no longer accepts image editing parameters (source image, mask). It now only handles text-to-image generation.
+
+If you were passing image editing parameters to `/v1/images/generations` on Replicate, switch to `/v1/images/edits`.
+
+<Note>
+Support for image editing via `/v1/images/edits` on Replicate is also being removed in a follow-up release. Plan to migrate to an alternative provider.
+</Note>
+
+---
+
+## Breaking Change 9: Ollama and SGL Per-Key URL Configuration
+
+**Who is affected:** Anyone running Ollama or SGL providers configured with `network_config.base_url` and no keys.
+
+### What changed
+
+Ollama and SGL previously used a single provider-level `base_url` and required no API keys. In v1.5.0, both providers use a **per-key URL model** — each key must include an `ollama_key_config` (or `sgl_key_config`) with the server `url`. This enables load balancing across multiple Ollama/SGL instances.
+
+- `network_config.base_url` is no longer used at runtime for Ollama/SGL — the URL must be on each key
+- Ollama/SGL keys now **require** `ollama_key_config.url` / `sgl_key_config.url`
+- The key management endpoints (`POST/PUT/DELETE /api/providers/{provider}/keys`) are now enabled for Ollama and SGL
+
+<Note>
+If you are running Bifrost with a database, existing Ollama/SGL providers are automatically migrated on startup. For each provider that has a `network_config.base_url`, the migration creates a default key with that URL. Only `config.json` files need to be updated manually.
+</Note>
+
+**Before:**
+```json
+{
+  "providers": {
+    "ollama": {
+      "network_config": { "base_url": "http://localhost:11434" }
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "id": "ollama-local",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": { "url": "http://localhost:11434" }
+        }
+      ]
+    }
+  }
+}
+```
+
+The same pattern applies to SGL — replace `ollama_key_config` with `sgl_key_config`. Server URLs support the `env.` prefix for environment variables.
+
+---
+
+## Breaking Change 10: Go SDK Changes
+
+If you import Bifrost's Go packages directly:
+
+- **`HuggingFaceKeyConfig` removed** from the `Key` struct — remove any references to `HuggingFaceKeyConfig` or `huggingface_key_config`
+- **`providerRequiresKey()` signature changed** — the `providerKey` parameter was removed; it now only accepts `*CustomProviderConfig`
+
+---
+
+## Complete Migration Checklist
+
+<Steps>
+<Step title="Backup your database">
+Make a copy of your config store database before starting the upgrade.
+</Step>
+
+<Step title="Update provider key models in config.json">
+Replace `"models": []` or missing `models` fields with `"models": ["*"]` on every provider key.
+</Step>
+
+<Step title="Add allowed_models and key_ids to every VK provider config">
+Add `"allowed_models": ["*"]` and `"key_ids": ["*"]` to every `provider_configs` entry (or list specific values). Rename any `allowed_keys` fields to `key_ids`.
+</Step>
+
+<Step title="Ensure every VK has at least one provider config">
+Any Virtual Key with `"provider_configs": []` or no `provider_configs` will block all traffic.
+</Step>
+
+<Step title="Update tools_to_execute for MCP configs">
+Replace `"tools_to_execute": []` with `"tools_to_execute": ["*"]`. Ensure every VK that needs MCP access has at least one `mcp_configs` entry.
+</Step>
+
+<Step title="Handle nullable weight in API consumers">
+Update any client code that processes `weight` to accept `null` in addition to numbers.
+</Step>
+
+<Step title="Fix invalid WhiteList values">
+Ensure no list mixes `"*"` with specific values and no list has duplicate entries.
+</Step>
+
+<Step title="Migrate key management to dedicated endpoints">
+Stop sending `keys` in provider create/update payloads and stop reading `keys` from provider responses. Use `/api/providers/{provider}/keys` for all key operations.
+</Step>
+
+<Step title="Update compact plugin config">
+Replace `enable_litellm_fallbacks` with the appropriate combination of `convert_text_to_chat`, `convert_chat_to_responses`, and `should_drop_params`.
+</Step>
+
+<Step title="Migrate Ollama/SGL from base_url to per-key URLs">
+Move `network_config.base_url` into per-key `ollama_key_config.url` / `sgl_key_config.url` in `config.json`. Database users are auto-migrated on startup, but `config.json` must be updated manually.
+</Step>
+
+<Step title="Update Go SDK references (if applicable)">
+Remove any references to `HuggingFaceKeyConfig` / `huggingface_key_config` from the `Key` struct. Update any direct calls to `providerRequiresKey()` — the `providerKey` parameter has been removed.
+</Step>
+</Steps>
+
+---
+
+## Troubleshooting
+
+**All requests returning 403/blocked after upgrade**
+
+A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. Check Bifrost logs — a blocked request logs which rule denied it. Fix: add `"models": ["*"]` on provider keys and `"allowed_models": ["*"]` on VK provider configs.
+
+**MCP tools not being injected / tool calls blocked**
+
+The VK needs an `mcp_configs` entry for the MCP client with `"tools_to_execute": ["*"]` (or specific tools).
+
+**API returning 400 on VK create/update**
+
+A whitelist validation failure — either mixing `"*"` with specific values, or duplicate values in a list.
+
+**"No keys available" or key selection errors**
+
+A provider config with `key_ids` omitted or `[]` now blocks all keys. Add `"key_ids": ["*"]`.
+
+**Provider create/update errors about `keys` field**
+
+The `keys` field has been removed. Remove it from provider payloads and use `/api/providers/{provider}/keys` instead.
+
+**Ollama/SGL requests fail with "no base URL configured"**
+
+Ollama/SGL keys must have `ollama_key_config.url` / `sgl_key_config.url` set. Database users are auto-migrated. For `config.json`, add the key config manually — see Breaking Change 9 for examples.
