@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS based on container cgroup limits
 
@@ -145,11 +146,13 @@ func main() {
 	handlers.SetLogger(logger)
 
 	ctx := context.Background()
+	t := time.Now()
 	err := server.Bootstrap(ctx)
 	if err != nil {
 		logger.Error("failed to bootstrap server: %v", err)
 		os.Exit(1)
 	}
+	logger.Info("Time spent in Bifrost server bootstrap %d ms", time.Since(t).Milliseconds())
 	err = server.Start()
 	if err != nil {
 		logger.Error("failed to start server: %v", err)
