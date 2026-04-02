@@ -64,9 +64,15 @@ func collectPrometheusKeyValues(ctx *fasthttp.RequestCtx) map[string]string {
 		return true
 	})
 	for k, v := range promVals {
+		if _, reserved := labelValues[k]; reserved {
+			continue
+		}
 		labelValues[k] = v
 	}
 	for k, v := range dimVals {
+		if _, reserved := labelValues[k]; reserved {
+			continue
+		}
 		labelValues[k] = v
 	}
 
