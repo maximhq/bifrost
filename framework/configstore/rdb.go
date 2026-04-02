@@ -1582,11 +1582,21 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 
 	// Apply pagination defaults
 	limit := params.Limit
-	if limit <= 0 {
-		limit = 25
-	}
-	if limit > 100 {
-		limit = 100
+	if params.Export {
+		// Export mode: allow large fetches, cap at 10000 as a safety net
+		if limit <= 0 {
+			limit = 10000
+		}
+		if limit > 10000 {
+			limit = 10000
+		}
+	} else {
+		if limit <= 0 {
+			limit = 25
+		}
+		if limit > 100 {
+			limit = 100
+		}
 	}
 
 	offset := params.Offset
@@ -1594,10 +1604,33 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 		offset = 0
 	}
 
+	// Determine sort order
+	orderClause := "governance_virtual_keys.created_at ASC, governance_virtual_keys.id ASC"
+	if params.SortBy != "" {
+		dir := "ASC"
+		if strings.EqualFold(params.Order, "desc") {
+			dir = "DESC"
+		}
+		switch params.SortBy {
+		case "name":
+			orderClause = fmt.Sprintf("governance_virtual_keys.name %s, governance_virtual_keys.id ASC", dir)
+		case "budget_spent":
+			orderClause = fmt.Sprintf("COALESCE(governance_budgets.current_usage, 0) %s, governance_virtual_keys.id ASC", dir)
+		case "created_at":
+			orderClause = fmt.Sprintf("governance_virtual_keys.created_at %s, governance_virtual_keys.id ASC", dir)
+		case "status":
+			orderClause = fmt.Sprintf("governance_virtual_keys.is_active %s, governance_virtual_keys.id ASC", dir)
+		}
+	}
+
 	// Fetch with preloads and pagination
+	query := preloadVirtualKeyBaseRelations(baseQuery)
+	if params.SortBy == "budget_spent" {
+		query = query.Joins("LEFT JOIN governance_budgets ON governance_budgets.id = governance_virtual_keys.budget_id")
+	}
 	var virtualKeys []tables.TableVirtualKey
-	if err := preloadVirtualKeyBaseRelations(baseQuery).
-		Order("created_at ASC, id ASC").
+	if err := query.
+		Order(orderClause).
 		Offset(offset).
 		Limit(limit).
 		Find(&virtualKeys).Error; err != nil {
