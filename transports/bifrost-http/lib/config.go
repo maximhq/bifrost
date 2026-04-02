@@ -307,6 +307,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
 	EnableLiteLLMFallbacks:          false,
 	HideDeletedVirtualKeysInFilters: false,
+	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
 }
 
 // LoadConfig loads initial configuration from a JSON config file into memory
@@ -565,6 +566,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	}
 	if cc.MCPAgentDepth == 0 {
 		cc.MCPAgentDepth = DefaultClientConfig.MCPAgentDepth
+	}
+	if cc.RoutingChainMaxDepth == 0 {
+		cc.RoutingChainMaxDepth = DefaultClientConfig.RoutingChainMaxDepth
 	}
 	if cc.MCPToolExecutionTimeout == 0 {
 		cc.MCPToolExecutionTimeout = DefaultClientConfig.MCPToolExecutionTimeout

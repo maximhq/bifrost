@@ -12,6 +12,7 @@ import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
+import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
@@ -22,6 +23,8 @@ const PAGE_SIZE = 25;
 export function RoutingRulesView() {
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
+	const [infoSheetOpen, setInfoSheetOpen] = useState(false);
+	const [selectedRule, setSelectedRule] = useState<RoutingRule | null>(null);
 
 	const [search, setSearch] = useState("");
 	const [offset, setOffset] = useState(0);
@@ -66,6 +69,11 @@ export function RoutingRulesView() {
 	const handleEdit = (rule: RoutingRule) => {
 		setEditingRule(rule);
 		setDialogOpen(true);
+	};
+
+	const handleRowClick = (rule: RoutingRule) => {
+		setSelectedRule(rule);
+		setInfoSheetOpen(true);
 	};
 
 	const handleDialogOpenChange = (open: boolean) => {
@@ -113,6 +121,7 @@ export function RoutingRulesView() {
 				totalCount={totalCount}
 				isLoading={isLoading}
 				onEdit={handleEdit}
+				onRowClick={handleRowClick}
 				canDelete={canDelete}
 				search={search}
 				onSearchChange={setSearch}
@@ -122,6 +131,7 @@ export function RoutingRulesView() {
 			/>
 
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
+			<RoutingRuleInfoSheet rule={selectedRule} open={infoSheetOpen} onOpenChange={setInfoSheetOpen} />
 		</div>
 	);
 }

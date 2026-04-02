@@ -143,6 +143,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		RequiredHeaders:                 config.RequiredHeaders,
 		LoggingHeaders:                  config.LoggingHeaders,
 		HideDeletedVirtualKeysInFilters: config.HideDeletedVirtualKeysInFilters,
+		RoutingChainMaxDepth:            config.RoutingChainMaxDepth,
 		HeaderFilterConfig:              config.HeaderFilterConfig,
 		ConfigHash:                      config.ConfigHash,
 	}
@@ -310,6 +311,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		RequiredHeaders:                 dbConfig.RequiredHeaders,
 		LoggingHeaders:                  dbConfig.LoggingHeaders,
 		HideDeletedVirtualKeysInFilters: dbConfig.HideDeletedVirtualKeysInFilters,
+		RoutingChainMaxDepth:            dbConfig.RoutingChainMaxDepth,
 		HeaderFilterConfig:              dbConfig.HeaderFilterConfig,
 		ConfigHash:                      dbConfig.ConfigHash,
 	}, nil

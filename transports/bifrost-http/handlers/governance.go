@@ -141,7 +141,8 @@ type RoutingTarget struct {
 type CreateRoutingRuleRequest struct {
 	Name          string          `json:"name" validate:"required"`
 	Description   string          `json:"description,omitempty"`
-	Enabled       *bool           `json:"enabled,omitempty"` // nil = use DB default (true)
+	Enabled       *bool           `json:"enabled,omitempty"`    // nil = use DB default (true)
+	ChainRule     *bool           `json:"chain_rule,omitempty"` // nil = use DB default (false)
 	CelExpression string          `json:"cel_expression"`
 	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
 	Fallbacks     []string        `json:"fallbacks,omitempty"`
@@ -156,6 +157,7 @@ type UpdateRoutingRuleRequest struct {
 	Name          *string         `json:"name,omitempty"`
 	Description   *string         `json:"description,omitempty"`
 	Enabled       *bool           `json:"enabled,omitempty"`
+	ChainRule     *bool           `json:"chain_rule,omitempty"`
 	CelExpression *string         `json:"cel_expression,omitempty"`
 	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
 	Fallbacks     []string        `json:"fallbacks,omitempty"`
@@ -3177,16 +3179,21 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Create routing rule
-	// Handle Enabled: nil means use DB default (true), otherwise use provided value
+	// Handle Enabled/ChainRule: nil means use DB default (true/false), otherwise use provided value
 	enabled := true // DB default
 	if req.Enabled != nil {
 		enabled = *req.Enabled
+	}
+	chainRule := false // DB default
+	if req.ChainRule != nil {
+		chainRule = *req.ChainRule
 	}
 	rule := &configstoreTables.TableRoutingRule{
 		ID:              ruleID,
 		Name:            req.Name,
 		Description:     req.Description,
 		Enabled:         enabled,
+		ChainRule:       chainRule,
 		CelExpression:   req.CelExpression,
 		Targets:         targets,
 		Scope:           scope,
@@ -3245,6 +3252,9 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Enabled != nil {
 		rule.Enabled = *req.Enabled
+	}
+	if req.ChainRule != nil {
+		rule.ChainRule = *req.ChainRule
 	}
 	if req.CelExpression != nil {
 		rule.CelExpression = *req.CelExpression

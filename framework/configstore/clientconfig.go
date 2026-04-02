@@ -61,6 +61,7 @@ type ClientConfig struct {
 	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
 	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
+	RoutingChainMaxDepth            int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
 	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
 
@@ -116,6 +117,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
+	}
+
+	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
+	// config change that should be reflected in the hash. The migration that introduces
+	// this field backfills existing rows with RoutingChainMaxDepth=10 and regenerates
+	// their config_hash so there is no hash churn on upgrade for unmodified configs.
+	if c.RoutingChainMaxDepth > 0 {
+		hash.Write([]byte("routingChainMaxDepth:" + strconv.Itoa(c.RoutingChainMaxDepth)))
 	}
 
 	if c.MCPAgentDepth > 0 {
@@ -205,6 +214,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+
+	// Hash LoggingHeaders (sorted for deterministic hashing)
+	if len(c.LoggingHeaders) > 0 {
+		sortedLogging := make([]string, len(c.LoggingHeaders))
+		copy(sortedLogging, c.LoggingHeaders)
+		sort.Strings(sortedLogging)
+		data, err := sonic.Marshal(sortedLogging)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("loggingHeaders:"))
 		hash.Write(data)
 	}
 
@@ -1006,6 +1028,13 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash ChainRule
+	if r.ChainRule {
+		hash.Write([]byte("chain_rule:true"))
+	} else {
+		hash.Write([]byte("chain_rule:false"))
 	}
 
 	// Hash Scope

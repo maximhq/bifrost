@@ -384,6 +384,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Toggle whether deleted virtual keys should appear in logs filter data.
 	updatedConfig.HideDeletedVirtualKeysInFilters = payload.ClientConfig.HideDeletedVirtualKeysInFilters
 
+	// No restart needed - routing engine reads via pointer, change is effective immediately.
+	if payload.ClientConfig.RoutingChainMaxDepth > 0 {
+		updatedConfig.RoutingChainMaxDepth = payload.ClientConfig.RoutingChainMaxDepth
+	}
+
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
 		// Validate that no security headers are in the allowlist or denylist

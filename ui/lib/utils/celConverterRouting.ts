@@ -159,21 +159,21 @@ function convertRuleToCEL(rule: RuleType): string {
 
   // Handle existence checks (null/notNull)
   if (operator === 'null') {
-    // For keyValue fields, check if key exists in map
     const keyValuePair = parseKeyValue(String(value));
     if (keyValuePair && keyValuePair.key) {
       return `!(${formatValue(keyValuePair.key, 'text')} in ${field})`;
     }
-    return `!has(${field})`;
+    // has() requires a field selection (e.g. has(obj.field)) and cannot be used with bare
+    // variable names. Plain string variables are always defined; "not set" means empty string.
+    return `${field} == ""`;
   }
 
   if (operator === 'notNull') {
-    // For keyValue fields, check if key exists in map
     const keyValuePair = parseKeyValue(String(value));
     if (keyValuePair && keyValuePair.key) {
       return `${formatValue(keyValuePair.key, 'text')} in ${field}`;
     }
-    return `has(${field})`;
+    return `${field} != ""`;
   }
 
   // Handle string method operators (startsWith, endsWith, contains, matches)
