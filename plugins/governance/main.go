@@ -49,6 +49,7 @@ type InMemoryStore interface {
 
 type BaseGovernancePlugin interface {
 	GetName() string
+	EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError)
 	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
 	PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
@@ -366,7 +367,14 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	var needsMarshal bool
 
 	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
-	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
+	lowerCT := strings.ToLower(contentType)
+	isMultipart := strings.HasPrefix(lowerCT, "multipart/form-data")
+	isJSON := lowerCT == "" || strings.HasPrefix(lowerCT, "application/json")
+
+	if !isMultipart && !isJSON {
+		// Non-parseable body (e.g., application/sdp for WebRTC signaling) — skip governance
+		return nil, nil
+	}
 
 	var err error
 	if isMultipart {
@@ -984,7 +992,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 	return nil
 }
 
-// evaluateGovernanceRequest is a common function that handles virtual key validation
+// EvaluateGovernanceRequest is a common function that handles virtual key validation
 // and governance evaluation logic. It returns the evaluation result and a BifrostError
 // if the request should be rejected, or nil if allowed.
 //
@@ -995,7 +1003,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 // Returns:
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
-func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
+func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
 	// Check if authentication is mandatory (either VK or user auth)
 	// Checking if the virtual key is valid or not
 	isVirtualKeyValid := false
@@ -1208,7 +1216,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		UserID:     userID,
 	}
 	// Evaluate governance using common function
-	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
+	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
 	// Convert BifrostError to LLMPluginShortCircuit if needed
 	if bifrostError != nil {
 		return req, &schemas.LLMPluginShortCircuit{
@@ -1307,7 +1315,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Evaluate governance using common function
-	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, schemas.MCPToolExecutionRequest)
+	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, schemas.MCPToolExecutionRequest)
 
 	// Convert BifrostError to MCPPluginShortCircuit if needed
 	if bifrostError != nil {
@@ -1317,7 +1325,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Blind single-tool check: validate the specific tool being executed against VK MCPConfigs.
-	// This runs independently of evaluateGovernanceRequest to enforce execution-time allow-list.
+	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(virtualKeyValue)
 		if !ok || vk == nil || !vk.IsActive {
