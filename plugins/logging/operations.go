@@ -4,6 +4,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -12,6 +13,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
+
+const realtimeMissingTranscriptText = "[Audio transcription unavailable]"
 
 // insertInitialLogEntry creates a new log entry in the database using GORM
 func (p *LoggerPlugin) insertInitialLogEntry(
@@ -722,6 +725,270 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	}
 }
 
+func (p *LoggerPlugin) applyRealtimeOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if result == nil || result.ResponsesResponse == nil {
+		return
+	}
+
+	if usage := result.ResponsesResponse.Usage; usage != nil {
+		bifrostUsage := usage.ToBifrostLLMUsage()
+		entry.TokenUsageParsed = bifrostUsage
+		entry.PromptTokens = bifrostUsage.PromptTokens
+		entry.CompletionTokens = bifrostUsage.CompletionTokens
+		entry.TotalTokens = bifrostUsage.TotalTokens
+	}
+
+	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
+
+	if contentLoggingEnabled {
+		if outputMessage := extractRealtimeOutputMessage(result.ResponsesResponse.Output); outputMessage != nil {
+			entry.OutputMessageParsed = outputMessage
+		}
+	}
+
+	extraFields := result.GetExtraFields()
+	if contentLoggingEnabled && extraFields.RawRequest != nil {
+		switch raw := extraFields.RawRequest.(type) {
+		case string:
+			entry.RawRequest = strings.TrimSpace(raw)
+		default:
+			if rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest); err == nil {
+				entry.RawRequest = string(rawRequestBytes)
+			}
+		}
+	}
+	if contentLoggingEnabled && len(entry.InputHistoryParsed) == 0 && strings.TrimSpace(entry.RawRequest) != "" {
+		if inputHistory := extractRealtimeInputHistoryFromRawRequest(entry.RawRequest); len(inputHistory) > 0 {
+			entry.InputHistoryParsed = inputHistory
+		}
+	}
+	if contentLoggingEnabled && extraFields.RawResponse != nil {
+		switch raw := extraFields.RawResponse.(type) {
+		case string:
+			entry.RawResponse = strings.TrimSpace(raw)
+		default:
+			if rawResponseBytes, err := sonic.Marshal(extraFields.RawResponse); err == nil {
+				entry.RawResponse = string(rawResponseBytes)
+			}
+		}
+	}
+}
+
+func extractRealtimeInputHistoryFromRawRequest(rawRequest string) []schemas.ChatMessage {
+	rawRequest = strings.TrimSpace(rawRequest)
+	if rawRequest == "" {
+		return nil
+	}
+
+	parts := strings.Split(rawRequest, "\n\n")
+	messages := make([]schemas.ChatMessage, 0, len(parts))
+	for _, part := range parts {
+		event, err := schemas.ParseRealtimeEvent([]byte(strings.TrimSpace(part)))
+		if err != nil || event == nil {
+			continue
+		}
+
+		switch {
+		case schemas.IsRealtimeInputTranscriptEvent(event):
+			if transcript := extractRealtimeTranscript(event); transcript != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(transcript),
+					},
+				})
+			}
+		case schemas.IsRealtimeUserInputEvent(event):
+			if content := extractRealtimeRawItemContent(event.Item); content != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(content),
+					},
+				})
+			}
+		case schemas.IsRealtimeToolOutputEvent(event):
+			if content := extractRealtimeRawItemContent(event.Item); content != "" {
+				messages = append(messages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleTool,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr(content),
+					},
+					ChatToolMessage: &schemas.ChatToolMessage{
+						ToolCallID: schemas.Ptr(event.Item.CallID),
+					},
+				})
+			}
+		}
+	}
+
+	if len(messages) == 0 {
+		return nil
+	}
+	return messages
+}
+
+func extractRealtimeTranscript(event *schemas.BifrostRealtimeEvent) string {
+	if event == nil || event.ExtraParams == nil {
+		return realtimeMissingTranscriptText
+	}
+	raw, ok := event.ExtraParams["transcript"]
+	if !ok || len(raw) == 0 {
+		return realtimeMissingTranscriptText
+	}
+	var transcript string
+	if err := schemas.Unmarshal(raw, &transcript); err != nil {
+		return realtimeMissingTranscriptText
+	}
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		return realtimeMissingTranscriptText
+	}
+	return transcript
+}
+
+func extractRealtimeRawItemContent(item *schemas.RealtimeItem) string {
+	if item == nil {
+		return ""
+	}
+	if content := extractRealtimeRawContent(item.Content); content != "" {
+		return content
+	}
+	if item.Role == "user" && realtimeItemHasMissingAudioTranscript(item) {
+		return realtimeMissingTranscriptText
+	}
+	switch {
+	case strings.TrimSpace(item.Output) != "":
+		return strings.TrimSpace(item.Output)
+	case strings.TrimSpace(item.Arguments) != "":
+		return strings.TrimSpace(item.Arguments)
+	default:
+		return ""
+	}
+}
+
+func realtimeItemHasMissingAudioTranscript(item *schemas.RealtimeItem) bool {
+	if item == nil || len(item.Content) == 0 {
+		return false
+	}
+
+	var decoded []map[string]any
+	if err := sonic.Unmarshal(item.Content, &decoded); err != nil {
+		return false
+	}
+
+	for _, part := range decoded {
+		partType, _ := part["type"].(string)
+		if partType != "input_audio" {
+			continue
+		}
+		if transcript, exists := part["transcript"]; !exists || transcript == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func extractRealtimeRawContent(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var decoded any
+	if err := sonic.Unmarshal(raw, &decoded); err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+
+	var parts []string
+	collectRealtimeRawTextFragments(decoded, &parts)
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func collectRealtimeRawTextFragments(value any, parts *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, field := range v {
+			switch key {
+			case "text", "transcript", "input_text", "output_text", "output", "arguments":
+				if text, ok := field.(string); ok {
+					text = strings.TrimSpace(text)
+					if text != "" {
+						*parts = append(*parts, text)
+					}
+					continue
+				}
+			}
+			collectRealtimeRawTextFragments(field, parts)
+		}
+	case []any:
+		for _, item := range v {
+			collectRealtimeRawTextFragments(item, parts)
+		}
+	}
+}
+
+func extractRealtimeOutputMessage(output []schemas.ResponsesMessage) *schemas.ChatMessage {
+	var contentParts []string
+	toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0)
+	for _, item := range output {
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeMessage:
+			if item.Role == nil || *item.Role != schemas.ResponsesInputMessageRoleAssistant {
+				continue
+			}
+			if text := extractRealtimeResponsesContent(item.Content); text != "" {
+				contentParts = append(contentParts, text)
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			if item.ResponsesToolMessage == nil || item.ResponsesToolMessage.Name == nil {
+				continue
+			}
+			toolType := "function"
+			toolCall := schemas.ChatAssistantMessageToolCall{
+				Index: uint16(len(toolCalls)),
+				Type:  &toolType,
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      item.ResponsesToolMessage.Name,
+					Arguments: derefString(item.ResponsesToolMessage.Arguments),
+				},
+			}
+			if item.CallID != nil && strings.TrimSpace(*item.CallID) != "" {
+				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.CallID))
+			} else if item.ID != nil && strings.TrimSpace(*item.ID) != "" {
+				toolCall.ID = schemas.Ptr(strings.TrimSpace(*item.ID))
+			}
+			toolCalls = append(toolCalls, toolCall)
+		}
+	}
+
+	if len(contentParts) == 0 && len(toolCalls) == 0 {
+		return nil
+	}
+
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant}
+	if len(contentParts) > 0 {
+		content := strings.Join(contentParts, "\n")
+		message.Content = &schemas.ChatMessageContent{ContentStr: &content}
+	}
+	if len(toolCalls) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls: toolCalls,
+		}
+	}
+	return message
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 // SearchLogs searches logs with filters and pagination using GORM
 func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFilters, pagination logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	// Set default pagination if not provided
@@ -736,6 +1003,25 @@ func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFi
 	}
 	// Build base query with all filters applied
 	return p.store.SearchLogs(ctx, filters, pagination)
+}
+
+// GetSessionLogs returns paginated logs for a single parent_request_id session.
+func (p *LoggerPlugin) GetSessionLogs(ctx context.Context, sessionID string, pagination logstore.PaginationOptions) (*logstore.SessionDetailResult, error) {
+	if pagination.Limit == 0 {
+		pagination.Limit = 50
+	}
+	if pagination.SortBy == "" {
+		pagination.SortBy = "timestamp"
+	}
+	if pagination.Order == "" {
+		pagination.Order = "asc"
+	}
+	return p.store.GetSessionLogs(ctx, sessionID, pagination)
+}
+
+// GetSessionSummary returns aggregate totals for a single parent_request_id session.
+func (p *LoggerPlugin) GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error) {
+	return p.store.GetSessionSummary(ctx, sessionID)
 }
 
 // GetLog retrieves a single log entry by ID including all fields (raw_request, raw_response).
