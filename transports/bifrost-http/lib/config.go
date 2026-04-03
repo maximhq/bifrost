@@ -2100,9 +2100,14 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	}
 
 	// Initialize MCP catalog
-	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
-		PricingData: buildMCPPricingDataFromConfig(ctx, configData),
-	}, logger)
+	// Merge file-based pricing into mcpPricingConfig (DB data already loaded above).
+	// File config is used as fallback; DB values take precedence via the merge order.
+	for k, v := range buildMCPPricingDataFromConfig(ctx, configData) {
+		if _, exists := mcpPricingConfig.PricingData[k]; !exists {
+			mcpPricingConfig.PricingData[k] = v
+		}
+	}
+	mcpCatalog, err := mcpcatalog.Init(ctx, mcpPricingConfig, logger)
 	if err != nil {
 		logger.Warn("failed to initialize MCP catalog: %v", err)
 	}
