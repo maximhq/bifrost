@@ -2963,10 +2963,6 @@
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
         },
-        "node_id": {
-          "type": "string",
-          "description": "Unique identifier for this cluster node"
-        },
         "region": {
           "type": "string",
           "description": "AWS region for cluster deployment (default: us-east-1)"
