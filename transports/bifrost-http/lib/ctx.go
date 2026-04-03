@@ -31,6 +31,37 @@ const (
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
 )
 
+// ParseSessionIDFromBaggage extracts the session-id baggage member value.
+// It supports simple W3C baggage parsing sufficient for log grouping.
+func ParseSessionIDFromBaggage(header string) string {
+	for _, member := range strings.Split(header, ",") {
+		member = strings.TrimSpace(member)
+		if member == "" {
+			continue
+		}
+
+		parts := strings.SplitN(member, ";", 2)
+		kv := strings.SplitN(strings.TrimSpace(parts[0]), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		value := strings.TrimSpace(kv[1])
+		if key != "session-id" || value == "" {
+			continue
+		}
+		if len(value) > 255 {
+			if logger != nil {
+				logger.Warn("session-id exceeds 255 chars, ignoring: length=%d, prefix=%s", len(value), value[:255])
+			}
+			continue
+		}
+		return value
+	}
+	return ""
+}
+
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
 //
@@ -173,6 +204,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
+		if keyStr == "baggage" {
+			if sessionID := ParseSessionIDFromBaggage(string(value)); sessionID != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
+			}
+			return true
+		}
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
 			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			return true
