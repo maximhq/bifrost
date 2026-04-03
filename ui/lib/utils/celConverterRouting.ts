@@ -158,10 +158,13 @@ function convertRuleToCEL(rule: RuleType): string {
   const celOperator = getOperatorCELSyntax(operator);
 
   // Handle existence checks (null/notNull)
+  const isKeyValueField = field === 'headers' || field === 'params';
   if (operator === 'null') {
-    const keyValuePair = parseKeyValue(String(value));
-    if (keyValuePair && keyValuePair.key) {
-      return `!(${formatValue(keyValuePair.key, 'text')} in ${field})`;
+    if (isKeyValueField) {
+      const keyValuePair = parseKeyValue(String(value));
+      if (keyValuePair && keyValuePair.key) {
+        return `!(${formatValue(keyValuePair.key, 'text')} in ${field})`;
+      }
     }
     // has() requires a field selection (e.g. has(obj.field)) and cannot be used with bare
     // variable names. Plain string variables are always defined; "not set" means empty string.
@@ -169,9 +172,11 @@ function convertRuleToCEL(rule: RuleType): string {
   }
 
   if (operator === 'notNull') {
-    const keyValuePair = parseKeyValue(String(value));
-    if (keyValuePair && keyValuePair.key) {
-      return `${formatValue(keyValuePair.key, 'text')} in ${field}`;
+    if (isKeyValueField) {
+      const keyValuePair = parseKeyValue(String(value));
+      if (keyValuePair && keyValuePair.key) {
+        return `${formatValue(keyValuePair.key, 'text')} in ${field}`;
+      }
     }
     return `${field} != ""`;
   }
@@ -218,7 +223,6 @@ function convertRuleToCEL(rule: RuleType): string {
   }
 
   // Handle other keyValue fields (headers, params) for other operators
-  const isKeyValueField = field === 'headers' || field === 'params';
   if (isKeyValueField) {
     const keyValuePair = parseKeyValue(String(value));
     if (keyValuePair && keyValuePair.key && keyValuePair.value) {

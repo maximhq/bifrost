@@ -254,7 +254,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			if err != nil {
 				return nil, fmt.Errorf("failed to create model catalog pricing sync lock: %w", err)
 			}
-			if err := lock.Lock(ctx); err != nil {
+			if err := lock.LockWithRetry(ctx, 10); err != nil {
 				return nil, fmt.Errorf("failed to acquire model catalog pricing sync lock: %w", err)
 			}
 			defer lock.Unlock(ctx)

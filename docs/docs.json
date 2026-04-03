@@ -100,6 +100,13 @@
             ]
           },
           {
+            "group": "Migration Guides",
+            "icon": "arrow-up-right-dots",
+            "pages": [
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
             "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
@@ -141,6 +148,7 @@
               },
               "providers/routing-rules",
               "providers/provider-routing",
+              "providers/aliasing-models",
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
@@ -467,13 +475,6 @@
           "benchmarking/t3.medium",
           "benchmarking/t3.xl",
           "benchmarking/run-your-own-benchmarks"
-        ]
-      },
-      {
-        "tab": "Migration Guides",
-        "icon": "arrow-up-right-dots",
-        "pages": [
-          "migration-guides/v1.5.0"
         ]
       },
       {
