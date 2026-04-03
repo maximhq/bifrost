@@ -264,7 +264,8 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 					},
 				},
 			},
-			Usage: p.Data.TokenUsage,
+			Created: p.Data.StartTimestamp.Unix(),
+			Usage:   p.Data.TokenUsage,
 		}
 
 		resp.TextCompletionResponse = textResp
