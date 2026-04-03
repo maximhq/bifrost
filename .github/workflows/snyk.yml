@@ -44,8 +44,11 @@ jobs:
         with:
           go-version: "1.26.1"
 
+      - name: Setup Go workspace
+        run: make setup-workspace
+
       - name: Build
-        run: make build
+        run: make build LOCAL=1
 
       - name: Install Snyk CLI
         uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
@@ -95,8 +98,11 @@ jobs:
         with:
           go-version: "1.26.1"
 
+      - name: Setup Go workspace
+        run: make setup-workspace
+
       - name: Build
-        run: make build
+        run: make build LOCAL=1
 
       - name: Install Snyk CLI
         uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
