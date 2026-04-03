@@ -8,6 +8,57 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+type testRealtimeObservabilityPlugin struct {
+	injected chan *schemas.Trace
+}
+
+func (p *testRealtimeObservabilityPlugin) GetName() string { return "test-observability" }
+func (p *testRealtimeObservabilityPlugin) Cleanup() error  { return nil }
+func (p *testRealtimeObservabilityPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *testRealtimeObservabilityPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		p.injected <- nil
+		return nil
+	}
+	traceCopy := *trace
+	p.injected <- &traceCopy
+	return nil
+}
+
+func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	plugin := &testRealtimeObservabilityPlugin{
+		injected: make(chan *schemas.Trace, 1),
+	}
+
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case trace := <-plugin.injected:
+		if trace == nil || trace.TraceID != traceID {
+			t.Fatalf("injected trace = %+v, want trace %q", trace, traceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observability inject")
+	}
+
+	if got := tracer.store.GetTrace(traceID); got != nil {
+		t.Fatalf("trace %q was not released after flush", traceID)
+	}
+}
+
 func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 	// This is the key test: verifies that when an incoming request has a W3C traceparent header,
 	// the root span in Bifrost correctly links to the upstream service's span.
