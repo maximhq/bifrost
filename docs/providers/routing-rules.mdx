@@ -8,6 +8,10 @@ icon: "chart-diagram"
 
 Routing Rules provide dynamic, expression-based control over request routing. They execute **before governance provider selection** and can override it, allowing you to make sophisticated routing decisions based on request context, headers, parameters, capacity metrics, and organizational hierarchy.
 
+<Frame>
+  <img src="/media/ui-routing-tree.png" alt="Routing Rules Tree" />
+</Frame>
+
 Unlike governance routing (which uses static provider weights), routing rules use **CEL expressions** (Common Expression Language) to evaluate conditions at runtime and make routing decisions dynamically.
 
 ---

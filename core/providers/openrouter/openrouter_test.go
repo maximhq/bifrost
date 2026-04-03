@@ -31,25 +31,25 @@ func TestOpenRouter(t *testing.T) {
 		EmbeddingModel: "",
 		ReasoningModel: "openai/gpt-oss-120b",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        true,
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    false, // OpenRouter's responses API is in Beta
+			TextCompletion:             true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         false, // OpenRouter's responses API is in Beta
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // OpenRouter's responses API is in Beta
-			ImageBase64:           false, // OpenRouter's responses API is in Beta
-			MultipleImages:        false, // OpenRouter's responses API is in Beta
-			FileBase64:            true,
-			FileURL:               true,
-			CompleteEnd2End:       false, // OpenRouter's responses API is in Beta
-			Reasoning:             true,
-			ListModels:            true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // OpenRouter's responses API is in Beta
+			ImageBase64:                false, // OpenRouter's responses API is in Beta
+			MultipleImages:             false, // OpenRouter's responses API is in Beta
+			FileBase64:                 true,
+			FileURL:                    true,
+			CompleteEnd2End:            false, // OpenRouter's responses API is in Beta
+			Reasoning:                  true,
+			ListModels:                 true,
+			StructuredOutputs:          true, // Structured outputs with nullable enum support
 		},
 	}
 
