@@ -117,6 +117,10 @@ type Tracer interface {
 	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
 	AttachPluginLogs(traceID string, logs []PluginLogEntry)
 
+	// CompleteAndFlushTrace ends a trace, exports it to observability plugins, and
+	// releases the trace resources. Used by transports that bypass normal HTTP trace completion.
+	CompleteAndFlushTrace(traceID string)
+
 	// Stop releases resources associated with the tracer.
 	// Should be called during shutdown to stop background goroutines.
 	Stop()
@@ -184,6 +188,9 @@ func (n *NoOpTracer) ProcessStreamingChunk(_ string, _ bool, _ *BifrostResponse,
 
 // AttachPluginLogs does nothing.
 func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
+
+// CompleteAndFlushTrace does nothing.
+func (n *NoOpTracer) CompleteAndFlushTrace(_ string) {}
 
 // Stop does nothing.
 func (n *NoOpTracer) Stop() {}
