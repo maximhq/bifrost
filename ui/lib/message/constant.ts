@@ -20,7 +20,7 @@ export const JINJA_VAR_REGEX = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\}\}/g
  */
 export const JINJA_VAR_HIGHLIGHT_PATTERNS = [
 	{
-		pattern: /{{.*?}}/g,
+		pattern: /\{\{\s*[a-zA-Z_][a-zA-Z0-9_.]*\s*\}\}/g,
 		className: "outline-content-brand-light text-sm cursor-pointer bg-green-500/20",
 		validate: (part: string) => {
 			return (
