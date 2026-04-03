@@ -327,11 +327,7 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			key := testBedrockKey()
 
 			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
-			if bifrostErr != nil {
-				assert.False(t, bifrostErr.IsBifrostError,
-					"pre-stream error must be IsBifrostError:false")
-				return
-			}
+			require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 			require.NotNil(t, streamChan)
 
@@ -378,10 +374,7 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	key := testBedrockKey()
 
 	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, key, testChatRequest())
-	if bifrostErr != nil {
-		// If error surfaces synchronously it's already a terminal error — fine.
-		return
-	}
+	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 	require.NotNil(t, streamChan)
 
@@ -430,10 +423,7 @@ func testResponsesRequest() *schemas.BifrostResponsesRequest {
 // streaming-method retryable-exception tests.
 func assertRetryableExceptionChunk(t *testing.T, streamChan chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError, excType string, expectedStatus int) {
 	t.Helper()
-	if bifrostErr != nil {
-		assert.False(t, bifrostErr.IsBifrostError, "pre-stream error must be IsBifrostError:false")
-		return
-	}
+	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk, not a pre-stream error")
 	require.NotNil(t, streamChan)
 
 	var errChunk *schemas.BifrostStreamChunk
