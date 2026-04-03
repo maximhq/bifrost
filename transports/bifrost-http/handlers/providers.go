@@ -748,8 +748,8 @@ func parseModelListQuery(ctx *fasthttp.RequestCtx, defaultLimit int) modelListQu
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 
-	if len(queryArgs.Peek("keys")) > 0 {
-		keyIDs := strings.Split(string(queryArgs.Peek("keys")), ",")
+	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
+		keyIDs := strings.Split(string(keysRaw), ",")
 		query.KeyIDs = make([]string, 0, len(keyIDs))
 		for _, keyID := range keyIDs {
 			trimmedKeyID := strings.TrimSpace(keyID)
