@@ -1,4 +1,5 @@
 export { AllowedRequestsFields } from "./allowedRequestsFields";
+export { BetaHeadersFormFragment } from "./betaHeadersFormFragment";
 export { ApiKeyFormFragment } from "./apiKeysFormFragment";
 export { ApiStructureFormFragment } from "./apiStructureFormFragment";
 export { DebuggingFormFragment } from "./debuggingFormFragment";

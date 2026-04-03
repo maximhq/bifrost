@@ -63,6 +63,7 @@ type NetworkConfig struct {
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`              // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                   // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`           // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -82,6 +83,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -99,6 +101,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
+	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -129,6 +132,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
+		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -144,6 +148,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
+		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
 	}
 
 	return json.Marshal(alias)
@@ -532,6 +537,13 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		headersCopy := make(map[string]string, len(config.NetworkConfig.ExtraHeaders))
 		maps.Copy(headersCopy, config.NetworkConfig.ExtraHeaders)
 		config.NetworkConfig.ExtraHeaders = headersCopy
+	}
+
+	// Create a defensive copy of BetaHeaderOverrides to prevent data races
+	if config.NetworkConfig.BetaHeaderOverrides != nil {
+		overridesCopy := make(map[string]bool, len(config.NetworkConfig.BetaHeaderOverrides))
+		maps.Copy(overridesCopy, config.NetworkConfig.BetaHeaderOverrides)
+		config.NetworkConfig.BetaHeaderOverrides = overridesCopy
 	}
 }
 

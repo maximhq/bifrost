@@ -31,10 +31,12 @@ export default function SecurityView() {
 		allowed_origins: string;
 		allowed_headers: string;
 		required_headers: string;
+		whitelisted_routes: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
+		whitelisted_routes: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -51,6 +53,7 @@ export default function SecurityView() {
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
 				required_headers: config?.required_headers?.join(", ") || "",
+				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -86,10 +89,22 @@ export default function SecurityView() {
 		const serverRequired = config.required_headers?.slice().sort().join(",");
 		const requiredChanged = localRequired !== serverRequired;
 
+		const localWhitelistedRoutes = localConfig.whitelisted_routes?.slice().sort().join(",");
+		const serverWhitelistedRoutes = config.whitelisted_routes?.slice().sort().join(",");
+		const whitelistedRoutesChanged = localWhitelistedRoutes !== serverWhitelistedRoutes;
+
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || requiredChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
+		return (
+			originsChanged ||
+			headersChanged ||
+			requiredChanged ||
+			whitelistedRoutesChanged ||
+			authChanged ||
+			enforceAuthOnInferenceChanged ||
+			allowDirectKeysChanged
+		);
 	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const needsRestart = useMemo(() => {
@@ -121,6 +136,11 @@ export default function SecurityView() {
 	const handleRequiredHeadersChange = useCallback((value: string) => {
 		setLocalValues((prev) => ({ ...prev, required_headers: value }));
 		setLocalConfig((prev) => ({ ...prev, required_headers: parseArrayFromText(value) }));
+	}, []);
+
+	const handleWhitelistedRoutesChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, whitelisted_routes: value }));
+		setLocalConfig((prev) => ({ ...prev, whitelisted_routes: parseArrayFromText(value) }));
 	}, []);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
@@ -254,7 +274,7 @@ export default function SecurityView() {
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
-						{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
+							{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							{IS_ENTERPRISE
@@ -357,6 +377,29 @@ export default function SecurityView() {
 							placeholder="X-Tenant-ID, X-Custom-Header"
 							value={localValues.required_headers}
 							onChange={(e) => handleRequiredHeadersChange(e.target.value)}
+						/>
+					</div>
+				</div>
+				{/* Whitelisted Routes */}
+				<div>
+					<div className="space-y-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
+								Whitelisted Routes
+							</label>
+							<p className="text-muted-foreground text-sm">
+								Comma-separated list of routes that bypass the auth middleware. Requests to these routes will not require authentication.
+								System routes like <b>/health</b>, <b>/api/session/login</b>, and <b>/api/session/is-auth-enabled</b> are always whitelisted
+								regardless of this setting.
+							</p>
+						</div>
+						<Textarea
+							id="whitelisted-routes"
+							data-testid="whitelisted-routes-textarea"
+							className="h-24"
+							placeholder="/api/custom-webhook, /api/public-endpoint"
+							value={localValues.whitelisted_routes}
+							onChange={(e) => handleWhitelistedRoutesChange(e.target.value)}
 						/>
 					</div>
 				</div>

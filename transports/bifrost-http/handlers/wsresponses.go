@@ -173,7 +173,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(provider); cfgErr == nil &&
 		providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
 		event.Store = schemas.Ptr(false)
-	} else if event.Store == nil {
+	} else {
 		event.Store = schemas.Ptr(true)
 	}
 
@@ -183,7 +183,6 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		return
 	}
 
-	
 	// Extract extra params (unknown fields) and forward them, matching the HTTP path behavior
 	extraParams, extractErr := extractExtraParams(message, wsResponsesKnownFields)
 	if extractErr == nil && len(extraParams) > 0 {
@@ -434,7 +433,6 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	if len(input) == 0 {
 		return nil, errInputRequired
 	}
-	
 
 	params := &schemas.ResponsesParameters{}
 	if event.Temperature != nil {

@@ -38,7 +38,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, routing rules, and pricing overrides
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -563,10 +563,16 @@ paths:
     $ref: './paths/management/providers.yaml#/providers'
   /api/providers/{provider}:
     $ref: './paths/management/providers.yaml#/providers-by-name'
+  /api/providers/{provider}/keys:
+    $ref: './paths/management/providers.yaml#/provider-keys'
+  /api/providers/{provider}/keys/{key_id}:
+    $ref: './paths/management/providers.yaml#/provider-key-by-id'
   /api/keys:
     $ref: './paths/management/providers.yaml#/keys'
   /api/models:
     $ref: './paths/management/providers.yaml#/models'
+  /api/models/details:
+    $ref: './paths/management/providers.yaml#/models-details'
   /api/models/parameters:
     $ref: './paths/management/providers.yaml#/models-parameters'
   /api/models/base:
@@ -635,6 +641,12 @@ paths:
     $ref: './paths/management/governance.yaml#/provider-governance'
   /api/governance/providers/{provider_name}:
     $ref: './paths/management/governance.yaml#/provider-governance-by-name'
+
+  # Governance - Pricing Overrides
+  /api/governance/pricing-overrides:
+    $ref: './paths/management/governance.yaml#/pricing-overrides'
+  /api/governance/pricing-overrides/{id}:
+    $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
 
   # Logging
   /api/logs:
@@ -970,6 +982,8 @@ components:
       $ref: './schemas/management/providers.yaml#/UpdateProviderRequest'
     Key:
       $ref: './schemas/management/providers.yaml#/Key'
+    ListProviderKeysResponse:
+      $ref: './schemas/management/providers.yaml#/ListProviderKeysResponse'
     NetworkConfig:
       $ref: './schemas/management/providers.yaml#/NetworkConfig'
     ConcurrencyAndBufferSize:
@@ -1096,6 +1110,22 @@ components:
       $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
     UpdateProviderGovernanceRequest:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+
+    # Governance - Pricing Overrides
+    PricingOverrideRequestType:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
+    PricingPatch:
+      $ref: './schemas/management/governance.yaml#/PricingPatch'
+    PricingOverride:
+      $ref: './schemas/management/governance.yaml#/PricingOverride'
+    CreatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+    UpdatePricingOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+    PricingOverrideResponse:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
+    ListPricingOverridesResponse:
+      $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
 
     # Logging
     LogEntry:

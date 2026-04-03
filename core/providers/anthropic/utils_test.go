@@ -1,8 +1,12 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -802,7 +806,7 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 
 			var headers []string
 			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-				headers = extraHeaders["anthropic-beta"]
+				headers = extraHeaders[AnthropicBetaHeader]
 			}
 
 			for _, expected := range tt.expectHeaders {
@@ -844,7 +848,7 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 
 		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
-		betaHeaders := extraHeaders["anthropic-beta"]
+		betaHeaders := extraHeaders[AnthropicBetaHeader]
 		// Should only have the old header, not both
 		if len(betaHeaders) != 1 {
 			t.Errorf("expected 1 header, got %d: %v", len(betaHeaders), betaHeaders)
@@ -869,7 +873,7 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 
 		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
-		betaHeaders := extraHeaders["anthropic-beta"]
+		betaHeaders := extraHeaders[AnthropicBetaHeader]
 		if len(betaHeaders) != 1 {
 			t.Errorf("expected 1 header, got %d: %v", len(betaHeaders), betaHeaders)
 		}
@@ -886,9 +890,49 @@ func TestAddMissingBetaHeadersToContext_PassthroughWins(t *testing.T) {
 		AddMissingBetaHeadersToContext(ctx, req, schemas.Anthropic)
 
 		extraHeaders := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
-		betaHeaders := extraHeaders["anthropic-beta"]
+		betaHeaders := extraHeaders[AnthropicBetaHeader]
 		if len(betaHeaders) != 1 || betaHeaders[0] != AnthropicMCPClientBetaHeader {
 			t.Errorf("expected [%q], got %v", AnthropicMCPClientBetaHeader, betaHeaders)
+		}
+	})
+}
+
+func TestMergeBetaHeaders(t *testing.T) {
+	t.Run("context_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"Anthropic-Beta": {"structured-outputs-2025-11-13"},
+		})
+		got := MergeBetaHeaders(nil, ctx)
+		want := []string{"structured-outputs-2025-11-13"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		got := MergeBetaHeaders(map[string]string{
+			"Anthropic-Beta": "mcp-client-2025-04-04",
+		}, ctx)
+		want := []string{"mcp-client-2025-04-04"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("merges_provider_then_context_deduping_tokens", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
+		})
+		got := MergeBetaHeaders(map[string]string{
+			"anthropic-beta": "foo",
+		}, ctx)
+		sort.Strings(got)
+		wantSorted := []string{"bar", "baz", "foo"}
+		if !slices.Equal(got, wantSorted) {
+			t.Fatalf("got %v, want %v", got, wantSorted)
 		}
 	})
 }
@@ -907,28 +951,28 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		AnthropicSkillsBetaHeader,
 		AnthropicContext1MBetaHeader,
 		AnthropicFastModeBetaHeader,
+		AnthropicRedactThinkingBetaHeader,
+	}
+
+	containsHeader := func(result []string, h string) bool {
+		for _, r := range result {
+			if r == h {
+				return true
+			}
+		}
+		return false
 	}
 
 	t.Run("Anthropic/keeps_all_headers", func(t *testing.T) {
-		result, err := FilterBetaHeadersForProvider(allHeaders, schemas.Anthropic)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		result := FilterBetaHeadersForProvider(allHeaders, schemas.Anthropic)
 		for _, h := range allHeaders {
-			found := false
-			for _, r := range result {
-				if r == h {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !containsHeader(result, h) {
 				t.Errorf("expected header %q to be kept for Anthropic, got %v", h, result)
 			}
 		}
 	})
 
-	t.Run("Vertex/errors_on_unsupported_headers", func(t *testing.T) {
+	t.Run("Vertex/drops_unsupported_headers", func(t *testing.T) {
 		unsupported := []string{
 			AnthropicStructuredOutputsBetaHeader,
 			AnthropicMCPClientBetaHeader,
@@ -937,16 +981,17 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicFilesAPIBetaHeader,
 			AnthropicSkillsBetaHeader,
 			AnthropicFastModeBetaHeader,
+			AnthropicRedactThinkingBetaHeader,
 		}
 		for _, h := range unsupported {
-			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Vertex)
-			if err == nil {
-				t.Errorf("expected error for header %q on Vertex, got nil", h)
+			result := FilterBetaHeadersForProvider([]string{h}, schemas.Vertex)
+			if len(result) != 0 {
+				t.Errorf("expected header %q to be dropped for Vertex, got %v", h, result)
 			}
 		}
 	})
 
-	t.Run("Vertex/allows_supported_headers", func(t *testing.T) {
+	t.Run("Vertex/keeps_supported_headers", func(t *testing.T) {
 		supported := []string{
 			AnthropicComputerUseBetaHeader20251124,
 			AnthropicCompactionBetaHeader,
@@ -954,16 +999,13 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicInterleavedThinkingBetaHeader,
 			AnthropicContext1MBetaHeader,
 		}
-		result, err := FilterBetaHeadersForProvider(supported, schemas.Vertex)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		result := FilterBetaHeadersForProvider(supported, schemas.Vertex)
 		if len(result) != len(supported) {
 			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
 		}
 	})
 
-	t.Run("Bedrock/errors_on_unsupported_headers", func(t *testing.T) {
+	t.Run("Bedrock/drops_unsupported_headers", func(t *testing.T) {
 		unsupported := []string{
 			AnthropicMCPClientBetaHeader,
 			AnthropicPromptCachingScopeBetaHeader,
@@ -971,35 +1013,175 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 			AnthropicFilesAPIBetaHeader,
 			AnthropicSkillsBetaHeader,
 			AnthropicFastModeBetaHeader,
+			AnthropicRedactThinkingBetaHeader,
 		}
 		for _, h := range unsupported {
-			_, err := FilterBetaHeadersForProvider([]string{h}, schemas.Bedrock)
-			if err == nil {
-				t.Errorf("expected error for header %q on Bedrock, got nil", h)
+			result := FilterBetaHeadersForProvider([]string{h}, schemas.Bedrock)
+			if len(result) != 0 {
+				t.Errorf("expected header %q to be dropped for Bedrock, got %v", h, result)
 			}
 		}
 	})
 
-	t.Run("unknown_headers_forwarded", func(t *testing.T) {
-		headers := []string{"some-future-beta-2025"}
-		result, err := FilterBetaHeadersForProvider(headers, schemas.Vertex)
-		if err != nil {
-			t.Fatalf("unexpected error for unknown headers: %v", err)
+	t.Run("Azure/drops_unsupported_headers", func(t *testing.T) {
+		unsupported := []string{
+			AnthropicFastModeBetaHeader,
 		}
+		for _, h := range unsupported {
+			result := FilterBetaHeadersForProvider([]string{h}, schemas.Azure)
+			if len(result) != 0 {
+				t.Errorf("expected header %q to be dropped for Azure, got %v", h, result)
+			}
+		}
+	})
+
+	t.Run("Azure/keeps_supported_headers", func(t *testing.T) {
+		supported := []string{
+			AnthropicComputerUseBetaHeader20251124,
+			AnthropicStructuredOutputsBetaHeader,
+			AnthropicMCPClientBetaHeader,
+			AnthropicPromptCachingScopeBetaHeader,
+			AnthropicCompactionBetaHeader,
+			AnthropicContextManagementBetaHeader,
+			AnthropicAdvancedToolUseBetaHeader,
+			AnthropicFilesAPIBetaHeader,
+			AnthropicInterleavedThinkingBetaHeader,
+			AnthropicSkillsBetaHeader,
+			AnthropicContext1MBetaHeader,
+			AnthropicRedactThinkingBetaHeader,
+		}
+		result := FilterBetaHeadersForProvider(supported, schemas.Azure)
+		if len(result) != len(supported) {
+			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("Bedrock/keeps_supported_headers", func(t *testing.T) {
+		supported := []string{
+			AnthropicComputerUseBetaHeader20251124,
+			AnthropicStructuredOutputsBetaHeader,
+			AnthropicCompactionBetaHeader,
+			AnthropicContextManagementBetaHeader,
+			AnthropicInterleavedThinkingBetaHeader,
+			AnthropicContext1MBetaHeader,
+		}
+		result := FilterBetaHeadersForProvider(supported, schemas.Bedrock)
+		if len(result) != len(supported) {
+			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("unknown_headers_dropped_for_non_anthropic", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{"some-future-beta-2025"}, schemas.Vertex)
+		if len(result) != 0 {
+			t.Errorf("expected unknown header to be dropped for Vertex, got %v", result)
+		}
+	})
+
+	t.Run("unknown_headers_forwarded_for_anthropic", func(t *testing.T) {
+		headers := []string{"some-future-beta-2025"}
+		result := FilterBetaHeadersForProvider(headers, schemas.Anthropic)
 		if len(result) != len(headers) {
-			t.Errorf("expected all unknown headers to be forwarded, got %v", result)
+			t.Errorf("expected unknown header to be forwarded for Anthropic, got %v", result)
 		}
 	})
 
 	t.Run("unknown_provider_allows_all", func(t *testing.T) {
-		result, err := FilterBetaHeadersForProvider(allHeaders, schemas.ModelProvider("custom-provider"))
-		if err != nil {
-			t.Fatalf("unexpected error for unknown provider: %v", err)
-		}
+		result := FilterBetaHeadersForProvider(allHeaders, schemas.ModelProvider("custom-provider"))
 		if len(result) != len(allHeaders) {
 			t.Errorf("expected all headers for unknown provider, got %v", result)
 		}
 	})
+
+	t.Run("override_enables_unsupported_header", func(t *testing.T) {
+		// redact-thinking is not supported on Vertex by default
+		overrides := map[string]bool{AnthropicRedactThinkingBetaHeaderPrefix: true}
+		result := FilterBetaHeadersForProvider([]string{AnthropicRedactThinkingBetaHeader}, schemas.Vertex, overrides)
+		if len(result) != 1 || result[0] != AnthropicRedactThinkingBetaHeader {
+			t.Errorf("expected override to allow header, got %v", result)
+		}
+	})
+
+	t.Run("override_disables_supported_header", func(t *testing.T) {
+		// compaction is supported on Vertex by default; override to false should drop it silently
+		overrides := map[string]bool{"compact-": false}
+		result := FilterBetaHeadersForProvider([]string{AnthropicCompactionBetaHeader}, schemas.Vertex, overrides)
+		if len(result) != 0 {
+			t.Errorf("expected override false to drop supported header, got %v", result)
+		}
+	})
+
+	t.Run("override_nil_uses_defaults", func(t *testing.T) {
+		// Passing nil overrides should behave identically to no overrides
+		result := FilterBetaHeadersForProvider([]string{AnthropicCompactionBetaHeader}, schemas.Vertex, nil)
+		if len(result) != 1 {
+			t.Errorf("expected default behavior with nil overrides, got %v", result)
+		}
+	})
+
+	// Custom override tests for all providers
+	customOverrideProviders := []struct {
+		provider                schemas.ModelProvider
+		expectForwardNoOverride bool // unknown headers forwarded without override?
+	}{
+		{schemas.Anthropic, true},
+		{schemas.Vertex, false},
+		{schemas.Bedrock, false},
+		{schemas.Azure, false},
+	}
+
+	for _, tc := range customOverrideProviders {
+		tc := tc
+		t.Run(fmt.Sprintf("%s/custom_override_enables_unknown_header", tc.provider), func(t *testing.T) {
+			overrides := map[string]bool{"new-feature-": true}
+			result := FilterBetaHeadersForProvider([]string{"new-feature-2026-01-01"}, tc.provider, overrides)
+			if len(result) != 1 || result[0] != "new-feature-2026-01-01" {
+				t.Errorf("expected custom override to allow header on %s, got %v", tc.provider, result)
+			}
+		})
+
+		t.Run(fmt.Sprintf("%s/custom_override_disables_unknown_header", tc.provider), func(t *testing.T) {
+			overrides := map[string]bool{"new-feature-": false}
+			result := FilterBetaHeadersForProvider([]string{"new-feature-2026-01-01"}, tc.provider, overrides)
+			if len(result) != 0 {
+				t.Errorf("expected custom override false to drop header on %s, got %v", tc.provider, result)
+			}
+		})
+
+		t.Run(fmt.Sprintf("%s/custom_override_no_match_still_handled_correctly", tc.provider), func(t *testing.T) {
+			overrides := map[string]bool{"new-feature-": true}
+			result := FilterBetaHeadersForProvider([]string{"other-thing-2026"}, tc.provider, overrides)
+			if tc.expectForwardNoOverride {
+				if len(result) != 1 {
+					t.Errorf("expected unknown header forwarded to %s, got %v", tc.provider, result)
+				}
+			} else {
+				if len(result) != 0 {
+					t.Errorf("expected unknown header dropped for %s, got %v", tc.provider, result)
+				}
+			}
+		})
+
+		t.Run(fmt.Sprintf("%s/custom_override_with_multiple_prefixes", tc.provider), func(t *testing.T) {
+			overrides := map[string]bool{
+				"alpha-": true,
+				"beta-":  false,
+				"gamma-": true,
+			}
+			result := FilterBetaHeadersForProvider([]string{"alpha-2026-01"}, tc.provider, overrides)
+			if len(result) != 1 {
+				t.Errorf("expected alpha- allowed on %s, got %v", tc.provider, result)
+			}
+			result = FilterBetaHeadersForProvider([]string{"beta-2026-01"}, tc.provider, overrides)
+			if len(result) != 0 {
+				t.Errorf("expected beta- dropped on %s, got %v", tc.provider, result)
+			}
+			result = FilterBetaHeadersForProvider([]string{"gamma-2026-01"}, tc.provider, overrides)
+			if len(result) != 1 {
+				t.Errorf("expected gamma- allowed on %s, got %v", tc.provider, result)
+			}
+		})
+	}
 }
 
 func TestStripAutoInjectableTools(t *testing.T) {
@@ -1225,9 +1407,9 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 			MCPToolset: &AnthropicMCPToolsetTool{
 				Type:          "mcp_toolset",
 				MCPServerName: "test-server",
-				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
+				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: new(false)},
 				Configs: map[string]*AnthropicMCPToolsetConfig{
-					"tool_a": {Enabled: schemas.Ptr(true)},
+					"tool_a": {Enabled: new(true)},
 				},
 			},
 		}
@@ -1307,7 +1489,7 @@ func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
 			MCPServerName: "test-server",
 			DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
 			Configs: map[string]*AnthropicMCPToolsetConfig{
-				"search": {Enabled: schemas.Ptr(true)},
+				"search": {Enabled: new(true)},
 				"create": {Enabled: schemas.Ptr(true)},
 				"delete": {Enabled: schemas.Ptr(false)},
 			},

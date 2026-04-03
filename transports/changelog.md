@@ -1,0 +1,1 @@
+- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`

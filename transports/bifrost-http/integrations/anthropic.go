@@ -172,7 +172,7 @@ var passthroughSafeHeaders = map[string]bool{
 
 func hasPromptCachingScopeBetaHeader(headers map[string][]string) bool {
 	for k, v := range headers {
-		if strings.ToLower(k) == "anthropic-beta" {
+		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
 			for _, headerValue := range v {
 				if strings.Contains(headerValue, anthropic.AnthropicPromptCachingScopeBetaHeader) {
 					return true
@@ -185,7 +185,7 @@ func hasPromptCachingScopeBetaHeader(headers map[string][]string) bool {
 
 func hasFastModeBetaHeader(headers map[string][]string) bool {
 	for k, v := range headers {
-		if strings.ToLower(k) != "anthropic-beta" {
+		if strings.ToLower(k) != anthropic.AnthropicBetaHeader {
 			continue
 		}
 		for _, headerValue := range v {
@@ -206,7 +206,7 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 	var betaHeaders []string
 	var found bool
 	for k, v := range headers {
-		if strings.ToLower(k) == "anthropic-beta" {
+		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
 			betaHeaderKey = k
 			betaHeaders = v
 			found = true
@@ -231,7 +231,8 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
 					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
 					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) {
+					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicRedactThinkingBetaHeaderPrefix) {
 					continue
 				}
 				filteredBetas = append(filteredBetas, beta)
@@ -253,12 +254,8 @@ func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.
 	filtered := make(map[string][]string)
 	for k, v := range allHeaders {
 		if passthroughSafeHeaders[strings.ToLower(k)] {
-			filtered[k] = v
+			filtered[strings.ToLower(k)] = v
 		}
-	}
-
-	if provider == schemas.Vertex {
-		filtered = filterVertexUnsupportedBetaHeaders(filtered)
 	}
 
 	return filtered
@@ -413,8 +410,6 @@ func isClaudeModel(model, deployment, provider string) bool {
 // extractAnthropicListModelsParams extracts query parameters for list models request
 func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-		// Set provider to Anthropic
-		listModelsReq.Provider = schemas.Anthropic
 
 		// Extract limit from query parameters
 		if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {

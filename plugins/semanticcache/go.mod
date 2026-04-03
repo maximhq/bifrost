@@ -5,8 +5,8 @@ go 1.26.1
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.4.15
-	github.com/maximhq/bifrost/framework v1.2.34
+	github.com/maximhq/bifrost/core v1.4.16
+	github.com/maximhq/bifrost/framework v1.2.35
 	github.com/maximhq/bifrost/plugins/mocker v1.4.17
 )
 
@@ -119,7 +119,7 @@ require (
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect

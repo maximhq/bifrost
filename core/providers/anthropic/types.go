@@ -16,6 +16,9 @@ const (
 	AnthropicDefaultMaxTokens = 4096
 	MinimumReasoningMaxTokens = 1024
 
+	// AnthropicBetaHeader is the HTTP header name used to enable Anthropic beta features.
+	AnthropicBetaHeader = "anthropic-beta"
+
 	// Beta headers for various Anthropic features
 	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
@@ -43,6 +46,8 @@ const (
 	AnthropicContext1MBetaHeader = "context-1m-2025-08-07"
 	// AnthropicFastModeBetaHeader is required for fast mode on Opus 4.6 (research preview).
 	AnthropicFastModeBetaHeader = "fast-mode-2026-02-01"
+	// AnthropicRedactThinkingBetaHeader is required for redacting thinking blocks in responses.
+	AnthropicRedactThinkingBetaHeader = "redact-thinking-2026-02-12"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -53,39 +58,41 @@ const (
 	// Prefixes for beta headers (version-bump proof).
 	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
-	AnthropicAdvancedToolUseBetaHeaderPrefix    = "advanced-tool-use-"
-	AnthropicStructuredOutputsBetaHeaderPrefix  = "structured-outputs-"
-	AnthropicPromptCachingScopeBetaHeaderPrefix = "prompt-caching-scope-"
-	AnthropicMCPClientBetaHeaderPrefix          = "mcp-client-"
+	AnthropicAdvancedToolUseBetaHeaderPrefix     = "advanced-tool-use-"
+	AnthropicStructuredOutputsBetaHeaderPrefix   = "structured-outputs-"
+	AnthropicPromptCachingScopeBetaHeaderPrefix  = "prompt-caching-scope-"
+	AnthropicMCPClientBetaHeaderPrefix           = "mcp-client-"
 	AnthropicInterleavedThinkingBetaHeaderPrefix = "interleaved-thinking-"
 	AnthropicSkillsBetaHeaderPrefix              = "skills-"
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
+	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
 // Source: https://docs.anthropic.com/en/build-with-claude/overview (March 2026)
 type ProviderFeatureSupport struct {
-	WebSearch          bool // web_search server tool
-	WebSearchDynamic   bool // web_search_20260209 (dynamic filtering, requires code_execution)
-	WebFetch           bool // web_fetch server tool
-	CodeExecution      bool // code_execution server tool
-	ComputerUse        bool // computer_use client tool
-	Bash               bool // bash client tool
-	Memory             bool // memory client tool
-	TextEditor         bool // text_editor client tool
-	ToolSearch         bool // tool_search server tool
-	MCP                bool // MCP connector
-	AdvancedToolUse    bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
-	StructuredOutputs  bool // strict tool validation and output_format
-	PromptCachingScope bool // prompt caching scope
-	Compaction         bool // server-side context compaction
-	ContextEditing     bool // context editing (clear_tool_uses, clear_thinking)
+	WebSearch           bool // web_search server tool
+	WebSearchDynamic    bool // web_search_20260209 (dynamic filtering, requires code_execution)
+	WebFetch            bool // web_fetch server tool
+	CodeExecution       bool // code_execution server tool
+	ComputerUse         bool // computer_use client tool
+	Bash                bool // bash client tool
+	Memory              bool // memory client tool
+	TextEditor          bool // text_editor client tool
+	ToolSearch          bool // tool_search server tool
+	MCP                 bool // MCP connector
+	AdvancedToolUse     bool // advanced-tool-use (defer_loading, input_examples, allowed_callers)
+	StructuredOutputs   bool // strict tool validation and output_format
+	PromptCachingScope  bool // prompt caching scope
+	Compaction          bool // server-side context compaction
+	ContextEditing      bool // context editing (clear_tool_uses, clear_thinking)
 	FilesAPI            bool // Files API
 	InterleavedThinking bool // interleaved thinking between tool calls
 	Skills              bool // Agent Skills
 	Context1M           bool // 1M context window beta (for Sonnet 4.5/4 only)
 	FastMode            bool // fast mode (Opus 4.6 only, research preview)
+	RedactThinking      bool // redact thinking blocks in responses
 	FileSearch          bool // file_search server tool (OpenAI-only)
 	ImageGeneration     bool // image_generation server tool (OpenAI-only)
 }
@@ -98,9 +105,10 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
+		RedactThinking: true,
 	},
 	schemas.Vertex: {
-		WebSearch: true, // only web_search_20250305 (basic), NOT dynamic filtering
+		WebSearch:   true, // only web_search_20250305 (basic), NOT dynamic filtering
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		Compaction: true, ContextEditing: true,
 		InterleavedThinking: true, Context1M: true,
@@ -116,6 +124,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true,
+		RedactThinking: true,
 	},
 }
 
@@ -151,7 +160,7 @@ func (req *AnthropicTextRequest) IsStreamingRequested() bool {
 // and the effort parameter (output_config.effort) for controlling token spending.
 type AnthropicOutputConfig struct {
 	Format json.RawMessage `json:"format,omitempty"`
-	Effort *string     `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
+	Effort *string         `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -856,24 +865,24 @@ const (
 	AnthropicToolTypeMemory20250818 AnthropicToolType = "memory_20250818"
 
 	// Tool search (client-side, for defer_loading)
-	AnthropicToolTypeToolSearchBM25            AnthropicToolType = "tool_search_tool_bm25"
-	AnthropicToolTypeToolSearchBM2520251119    AnthropicToolType = "tool_search_tool_bm25_20251119"
-	AnthropicToolTypeToolSearchRegex           AnthropicToolType = "tool_search_tool_regex"
-	AnthropicToolTypeToolSearchRegex20251119   AnthropicToolType = "tool_search_tool_regex_20251119"
+	AnthropicToolTypeToolSearchBM25          AnthropicToolType = "tool_search_tool_bm25"
+	AnthropicToolTypeToolSearchBM2520251119  AnthropicToolType = "tool_search_tool_bm25_20251119"
+	AnthropicToolTypeToolSearchRegex         AnthropicToolType = "tool_search_tool_regex"
+	AnthropicToolTypeToolSearchRegex20251119 AnthropicToolType = "tool_search_tool_regex_20251119"
 )
 
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer            AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch           AnthropicToolName = "web_search"
-	AnthropicToolNameWebFetch            AnthropicToolName = "web_fetch"
-	AnthropicToolNameBash                AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor          AnthropicToolName = "str_replace_based_edit_tool"
-	AnthropicToolNameCodeExecution       AnthropicToolName = "code_execution"
-	AnthropicToolNameMemory              AnthropicToolName = "memory"
-	AnthropicToolNameToolSearchBM25      AnthropicToolName = "tool_search_tool_bm25"
-	AnthropicToolNameToolSearchRegex     AnthropicToolName = "tool_search_tool_regex"
+	AnthropicToolNameComputer        AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch       AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch        AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash            AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor      AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameCodeExecution   AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory          AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25  AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex AnthropicToolName = "tool_search_tool_regex"
 )
 
 type AnthropicToolComputerUse struct {
@@ -908,7 +917,7 @@ type AnthropicToolWebFetch struct {
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
 	Input       json.RawMessage `json:"input"`
-	Description *string `json:"description,omitempty"`
+	Description *string         `json:"description,omitempty"`
 }
 
 // AnthropicTool represents a tool in Anthropic format
@@ -997,20 +1006,20 @@ type AnthropicMCPToolConfig struct {
 // AnthropicMCPServerV2 represents a simplified MCP server for mcp-client-2025-11-20 format.
 // Tool configuration is now in AnthropicMCPToolsetTool in the tools[] array.
 type AnthropicMCPServerV2 struct {
-	Type               string  `json:"type"`                         // "url"
-	URL                string  `json:"url"`                          // Server endpoint (must be https://)
-	Name               string  `json:"name"`                         // Unique server name
+	Type               string  `json:"type"`                          // "url"
+	URL                string  `json:"url"`                           // Server endpoint (must be https://)
+	Name               string  `json:"name"`                          // Unique server name
 	AuthorizationToken *string `json:"authorization_token,omitempty"` // OAuth token
 }
 
 // AnthropicMCPToolsetTool represents the new mcp_toolset tool type (mcp-client-2025-11-20).
 // Lives in the tools[] array and references an MCP server by name.
 type AnthropicMCPToolsetTool struct {
-	Type          string                                    `json:"type"`            // "mcp_toolset"
-	MCPServerName string                                    `json:"mcp_server_name"` // Must match a server in mcp_servers[]
-	DefaultConfig *AnthropicMCPToolsetConfig                `json:"default_config,omitempty"`
-	Configs       map[string]*AnthropicMCPToolsetConfig     `json:"configs,omitempty"`
-	CacheControl  *schemas.CacheControl                     `json:"cache_control,omitempty"`
+	Type          string                                `json:"type"`            // "mcp_toolset"
+	MCPServerName string                                `json:"mcp_server_name"` // Must match a server in mcp_servers[]
+	DefaultConfig *AnthropicMCPToolsetConfig            `json:"default_config,omitempty"`
+	Configs       map[string]*AnthropicMCPToolsetConfig `json:"configs,omitempty"`
+	CacheControl  *schemas.CacheControl                 `json:"cache_control,omitempty"`
 }
 
 // AnthropicMCPToolsetConfig configures individual MCP tools or provides defaults.

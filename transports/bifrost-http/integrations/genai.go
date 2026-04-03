@@ -1193,9 +1193,6 @@ func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 // extractGeminiListModelsParams extracts query parameters for list models request
 func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-		// Set provider to Gemini unless explicitly overridden.
-		listModelsReq.Provider = getProviderFromHeader(ctx, schemas.Gemini)
-
 		// Extract pageSize from query parameters (Gemini uses pageSize instead of limit)
 		if pageSizeStr := string(ctx.QueryArgs().Peek("pageSize")); pageSizeStr != "" {
 			if pageSize, err := strconv.Atoi(pageSizeStr); err == nil {

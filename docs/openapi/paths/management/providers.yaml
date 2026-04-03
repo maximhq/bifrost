@@ -141,6 +141,205 @@ providers-by-name:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+provider-keys:
+  get:
+    operationId: listProviderKeys
+    summary: List keys for a provider
+    description: Returns all keys configured for a specific provider.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListProviderKeysResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createProviderKey
+    summary: Create a key for a provider
+    description: |
+      Creates a new API key for the specified provider. The key `id` is auto-generated
+      if omitted. `enabled` defaults to `true` if omitted. `value` is required and must
+      not be empty. Keys cannot be created on keyless providers.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/Key'
+    responses:
+      '200':
+        description: Key created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/Key'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: Key ID already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+provider-key-by-id:
+  get:
+    operationId: getProviderKey
+    summary: Get a specific key for a provider
+    description: Returns a single key for the specified provider.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+      - name: key_id
+        in: path
+        required: true
+        description: Key ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/Key'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider or key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateProviderKey
+    summary: Update a key for a provider
+    description: |
+      Updates an existing key. Send the full key object. Redacted values sent back
+      unchanged are automatically preserved (the server merges them with the stored
+      raw values).
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+      - name: key_id
+        in: path
+        required: true
+        description: Key ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/Key'
+    responses:
+      '200':
+        description: Key updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/Key'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider or key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteProviderKey
+    summary: Delete a key from a provider
+    description: Deletes a key from the specified provider. Returns the deleted key.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+      - name: key_id
+        in: path
+        required: true
+        description: Key ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Key deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/Key'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider or key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 keys:
   get:
     operationId: listKeys
@@ -182,14 +381,24 @@ models:
       - name: keys
         in: query
         description: Comma-separated list of key IDs to filter models accessible by those keys
+        style: form
+        explode: false
         schema:
-          type: string
+          type: array
+          items:
+            type: string
       - name: limit
         in: query
         description: Maximum number of results to return (default 5)
         schema:
           type: integer
           default: 5
+      - name: unfiltered
+        in: query
+        description: If true, return all models including those filtered out by provider-level restrictions
+        schema:
+          type: boolean
+          default: false
     responses:
       '200':
         description: Successful response
@@ -197,6 +406,56 @@ models:
           application/json:
             schema:
               $ref: '../../schemas/management/providers.yaml#/ListModelsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-details:
+  get:
+    operationId: listModelDetailsManagement
+    summary: List model details
+    description: |
+      Lists available models with capability metadata, when available from the model catalog, with optional filtering by query, provider, or keys.
+    tags:
+      - Providers
+    parameters:
+      - name: query
+        in: query
+        description: Filter models by name (case-insensitive partial match)
+        schema:
+          type: string
+      - name: provider
+        in: query
+        description: Filter by specific provider name
+        schema:
+          type: string
+      - name: keys
+        in: query
+        description: Comma-separated list of key IDs to filter models accessible by those keys
+        style: form
+        explode: false
+        schema:
+          type: array
+          items:
+            type: string
+      - name: limit
+        in: query
+        description: Maximum number of results to return (default 20)
+        schema:
+          type: integer
+          default: 20
+      - name: unfiltered
+        in: query
+        description: If true, return all models including those filtered out by provider-level restrictions
+        schema:
+          type: boolean
+          default: false
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListModelDetailsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

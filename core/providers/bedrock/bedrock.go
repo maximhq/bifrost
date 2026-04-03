@@ -152,6 +152,28 @@ func ensureBedrockKeyConfig(key *schemas.Key) bool {
 	return false
 }
 
+// isStreamTransportError reports whether err is a transport-level connection
+// failure that occurred while reading the EventStream body — as opposed to a
+// semantic error (JSON parse failure, AWS exception event, etc.).
+//
+// Transport errors are caused by the underlying TCP/HTTP/2 connection being
+// closed or reset (e.g. AWS Bedrock closing idle connections after ~60 s).
+// They are retryable: the request has not yet been partially processed by the
+// provider, so a fresh connection can be used to retry transparently.
+//
+// Detected cases:
+//   - *net.OpError  — "use of closed network connection", connection reset, etc.
+//   - *net.DNSError — transient DNS failure
+//   - io.ErrUnexpectedEOF — HTTP/2 stream closed mid-frame (body abruptly ended)
+func isStreamTransportError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
+}
+
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
@@ -177,6 +199,12 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value.GetValue() != "" {
@@ -206,10 +234,10 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
@@ -331,10 +359,10 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
@@ -405,6 +433,12 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
+	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(provider.networkConfig.ExtraHeaders, ctx), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
+		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
+	} else {
+		req.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	if key.Value.GetValue() != "" {
@@ -433,18 +467,36 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
+			return nil, deployment, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
 		}
 		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
-			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
+			return nil, deployment, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderNetworkError, respErr, providerName)
+			return nil, deployment, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   respErr,
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					Provider: providerName,
+				},
+			}
 		}
-		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
+		return nil, deployment, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderDoRequest,
+				Error:   respErr,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider: providerName,
+			},
+		}
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -681,10 +733,10 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName)
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
@@ -927,7 +979,24 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.TextCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1030,7 +1099,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to parse bedrock response", err, providerName), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	// Convert using the new response converter	
+	// Convert using the new response converter
 	bifrostResponse, err := bedrockResponse.ToBifrostChatResponse(ctx, request.Model)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err, providerName), jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1166,7 +1235,24 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ChatCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1545,7 +1631,24 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ResponsesStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 

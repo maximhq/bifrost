@@ -50,9 +50,12 @@ Bifrost automatically manages Anthropic beta headers — detecting required head
 | `skills-2025-10-02` | ✅ | ✅ | ❌ | ❌ | Passthrough |
 | `context-1m-2025-08-07` | ✅ | ✅ | ✅ | ✅ | Passthrough |
 | `fast-mode-2026-02-01` | ✅ | ❌ | ❌ | ❌ | ✅ (speed=fast) |
+| `redact-thinking-2026-02-12` | ✅ | ✅ | ❌ | ❌ | Passthrough |
 
 <Note>
-**Passthrough headers** are not auto-injected but are validated and forwarded when set manually via the `anthropic-beta` request header. Unknown headers are always forwarded for forward compatibility.
+**Passthrough headers** are not auto-injected but are validated and forwarded when set manually via the `anthropic-beta` request header. Unknown headers are forwarded to Anthropic only; for other providers (Vertex, Bedrock, Azure), unknown headers are silently dropped by default to prevent upstream errors.
+
+**Beta header overrides**: You can override the default support per provider via the Beta Headers tab in provider configuration, or by setting `beta_header_overrides` in the provider's `network_config`. See [Beta Header Overrides](/quickstart/gateway/provider-configuration#beta-header-overrides) for details.
 </Note>
 
 ---

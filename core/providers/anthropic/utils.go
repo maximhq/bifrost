@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -64,7 +65,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 			if !features.ImageGeneration {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
-		// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
+			// ResponsesToolTypeFunction, ResponsesToolTypeCustom, etc. are always allowed
 		}
 	}
 	return nil
@@ -364,9 +365,9 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			extraHeaders = ctxExtraHeaders
 		}
 	}
-	existing := extraHeaders["anthropic-beta"]
+	existing := extraHeaders[AnthropicBetaHeader]
 	if len(existing) == 0 {
-		extraHeaders["anthropic-beta"] = headers
+		extraHeaders[AnthropicBetaHeader] = headers
 	} else {
 		// Passthrough wins: skip auto-injected headers when a same-prefix header
 		// already exists from passthrough. This prevents conflicting versions
@@ -376,7 +377,7 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 				existing = append(existing, h)
 			}
 		}
-		extraHeaders["anthropic-beta"] = existing
+		extraHeaders[AnthropicBetaHeader] = existing
 	}
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	return nil
@@ -396,6 +397,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicSkillsBetaHeaderPrefix,
 	AnthropicContext1MBetaHeaderPrefix,
 	AnthropicFastModeBetaHeaderPrefix,
+	AnthropicRedactThinkingBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -574,85 +576,136 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 	return jsonBody, nil
 }
 
+// betaHeaderPrefixToFeature maps each known beta header prefix to a function that checks
+// whether the feature is supported by the provider's default feature set.
+var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
+	"computer-use-": func(f ProviderFeatureSupport) bool { return f.ComputerUse },
+	AnthropicStructuredOutputsBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.StructuredOutputs },
+	AnthropicMCPClientBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.MCP },
+	AnthropicPromptCachingScopeBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.PromptCachingScope },
+	"compact-":                                   func(f ProviderFeatureSupport) bool { return f.Compaction },
+	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
+	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
+	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
+	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
+	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
+	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
+	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
+}
+
+// MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
+// per-request context headers, deduplicating them.
+func MergeBetaHeaders(providerExtraHeaders map[string]string, ctx context.Context) []string {
+	seen := make(map[string]bool)
+	var all []string
+	add := func(v string) {
+		for _, part := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(part); t != "" && !seen[t] {
+				seen[t] = true
+				all = append(all, t)
+			}
+		}
+	}
+	for k, v := range providerExtraHeaders {
+		if strings.EqualFold(k, AnthropicBetaHeader) && v != "" {
+			add(v)
+		}
+	}
+	if ctxHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+		for k, vals := range ctxHeaders {
+			if !strings.EqualFold(k, AnthropicBetaHeader) {
+				continue
+			}
+			for _, v := range vals {
+				add(v)
+			}
+		}
+	}
+	return all
+}
+
 // FilterBetaHeadersForProvider validates that all beta headers are supported by the given provider.
 // Returns an error if a known beta header is not supported by the provider.
-// Unknown headers (not matched by any known prefix) are forwarded as-is for forward compatibility.
-func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvider) ([]string, error) {
+// Unknown headers are forwarded only to Anthropic; for other providers they are silently dropped.
+// If overrides is non-nil, its entries (keyed by prefix) take precedence over the hardcoded defaults.
+func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvider, overrides ...map[string]bool) []string {
 	features, hasProvider := ProviderFeatures[provider]
 	if !hasProvider {
 		// Unknown provider — allow all headers (safe default for custom providers)
-		return headers, nil
+		return headers
+	}
+
+	var overrideMap map[string]bool
+	if len(overrides) > 0 {
+		overrideMap = overrides[0]
 	}
 
 	filtered := make([]string, 0, len(headers))
 	for _, h := range headers {
-		switch {
-		case strings.HasPrefix(h, "computer-use-"):
-			if !features.ComputerUse {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+		tokens := strings.Split(h, ",")
+		for _, token := range tokens {
+			token = strings.TrimSpace(token)
+
+			if token == "" {
+				continue
 			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicStructuredOutputsBetaHeaderPrefix):
-			if !features.StructuredOutputs {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+
+			// Find which known prefix this token matches
+			var matchedPrefix string
+			for _, prefix := range betaHeaderPrefixKnown {
+				if strings.HasPrefix(token, prefix) {
+					matchedPrefix = prefix
+					break
+				}
 			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicMCPClientBetaHeaderPrefix):
-			if !features.MCP {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+
+			if matchedPrefix == "" {
+				// Check if any custom override prefix matches this unknown header
+				if overrideMap != nil {
+					matched := false
+					for prefix, allowed := range overrideMap {
+						if strings.HasPrefix(token, prefix) {
+							if allowed {
+								filtered = append(filtered, token)
+							}
+							// If not allowed, silently drop — custom overrides are user preferences,
+							// not hard incompatibilities that should break the request.
+							matched = true
+							break
+						}
+					}
+					if matched {
+						continue
+					}
+				}
+				// No override match — forward only to Anthropic API for forward compatibility.
+				// Non-Anthropic providers reject unrecognized headers, so drop unknown ones.
+				if provider == schemas.Anthropic {
+					filtered = append(filtered, token)
+				}
+				continue
 			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicPromptCachingScopeBetaHeaderPrefix):
-			if !features.PromptCachingScope {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+
+			// Check override first, then fall back to hardcoded feature support
+			supported := false
+			if overrideMap != nil {
+				if override, hasOverride := overrideMap[matchedPrefix]; hasOverride {
+					supported = override
+				} else if featureCheck, ok := betaHeaderPrefixToFeature[matchedPrefix]; ok {
+					supported = featureCheck(features)
+				}
+			} else if featureCheck, ok := betaHeaderPrefixToFeature[matchedPrefix]; ok {
+				supported = featureCheck(features)
 			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, "compact-"):
-			if !features.Compaction {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
+
+			if !supported {
+				continue
 			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, "context-management-"):
-			if !features.ContextEditing {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, "files-api-"):
-			if !features.FilesAPI {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicAdvancedToolUseBetaHeaderPrefix):
-			if !features.AdvancedToolUse {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicInterleavedThinkingBetaHeaderPrefix):
-			if !features.InterleavedThinking {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicSkillsBetaHeaderPrefix):
-			if !features.Skills {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicContext1MBetaHeaderPrefix):
-			if !features.Context1M {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		case strings.HasPrefix(h, AnthropicFastModeBetaHeaderPrefix):
-			if !features.FastMode {
-				return nil, fmt.Errorf("beta header '%s' is not supported by provider '%s'", h, provider)
-			}
-			filtered = append(filtered, h)
-		default:
-			// Unknown headers are forwarded for forward compatibility
-			filtered = append(filtered, h)
+			filtered = append(filtered, token)
 		}
 	}
-	return filtered, nil
+	return filtered
 }
 
 // appendUniqueHeader adds a header to the slice if not already present
@@ -667,9 +720,9 @@ func appendUniqueHeader(slice []string, item string) []string {
 
 // appendBetaHeader appends a beta header to the request, preserving any existing beta headers
 func appendBetaHeader(req *fasthttp.Request, betaHeader string) {
-	existing := string(req.Header.Peek("anthropic-beta"))
+	existing := string(req.Header.Peek(AnthropicBetaHeader))
 	if existing == "" {
-		req.Header.Set("anthropic-beta", betaHeader)
+		req.Header.Set(AnthropicBetaHeader, betaHeader)
 		return
 	}
 	// Check if header already present
@@ -678,7 +731,7 @@ func appendBetaHeader(req *fasthttp.Request, betaHeader string) {
 			return
 		}
 	}
-	req.Header.Set("anthropic-beta", existing+","+betaHeader)
+	req.Header.Set(AnthropicBetaHeader, existing+","+betaHeader)
 }
 
 // convertChatResponseFormatToTool converts a response_format config to an Anthropic tool for structured output
@@ -2048,4 +2101,3 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 	}
 	return false
 }
-

@@ -100,6 +100,13 @@
             ]
           },
           {
+            "group": "Migration Guides",
+            "icon": "arrow-up-right-dots",
+            "pages": [
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
             "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
@@ -144,6 +151,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/custom-pricing",
               "providers/request-options"
             ]
           },
@@ -476,15 +484,22 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v1.4.18",
-              "changelogs/v1.4.17",
-              "changelogs/v1.4.16",
-              "changelogs/v1.4.15",
-              "changelogs/v1.4.14",
-              "changelogs/v1.4.13",
-              "changelogs/v1.4.12",
-              "changelogs/v1.4.11",
-              "changelogs/v1.4.10",
+              "changelogs/v1.5.0-prerelease1",
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/v1.4.19",
+                  "changelogs/v1.4.18",
+                  "changelogs/v1.4.17",
+                  "changelogs/v1.4.16",
+                  "changelogs/v1.4.15",
+                  "changelogs/v1.4.14",
+                  "changelogs/v1.4.13",
+                  "changelogs/v1.4.12",
+                  "changelogs/v1.4.11",
+                  "changelogs/v1.4.10"
+                ]
+              },
               {
                 "group": "February 2026",
                 "pages": [
@@ -615,6 +630,9 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.3.16",
+              "changelogs/ent-v1.3.15",
+              "changelogs/ent-v1.3.14",
               "changelogs/ent-v1.3.13",
               "changelogs/ent-v1.3.12",
               "changelogs/ent-v1.3.11",

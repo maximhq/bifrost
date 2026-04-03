@@ -11,26 +11,66 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
-import { Customer, Team, VirtualKey } from "@/lib/types/governance"
-import { resetDurationLabels } from "@/lib/constants/governance"
-import { cn } from "@/lib/utils"
-import { formatCurrency } from "@/lib/utils/governance"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard"
-import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
-import { toast } from "sonner"
-import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
-import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
-import VirtualKeySheet from "./virtualKeySheet"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { resetDurationLabels } from "@/lib/constants/governance";
+import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
+import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { ArrowUpDown, ChevronLeft, ChevronRight, Copy, Download, Edit, Eye, EyeOff, Loader2, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
+import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
+import VirtualKeySheet from "./virtualKeySheet";
 
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration
+
+type ExportScope = "current_page" | "all"
+
+function virtualKeysToCSV(vks: VirtualKey[]): string {
+	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"]
+	const rows = vks.map((vk) => {
+		const isExhausted =
+			(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
+			(vk.rate_limit?.token_current_usage && vk.rate_limit?.token_max_limit && vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
+			(vk.rate_limit?.request_current_usage && vk.rate_limit?.request_max_limit && vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit)
+		const status = vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"
+		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : ""
+		const budgetLimit = vk.budget ? formatCurrency(vk.budget.max_limit) : ""
+		const budgetSpent = vk.budget ? formatCurrency(vk.budget.current_usage) : ""
+		const budgetReset = vk.budget ? formatResetDuration(vk.budget.reset_duration) : ""
+		return [vk.name, status, assignedTo, budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at]
+	})
+	return [headers, ...rows]
+		.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+		.join("\n")
+}
+
+function downloadCSV(content: string) {
+	const blob = new Blob([content], { type: "text/csv;charset=utf-8;" })
+	const url = URL.createObjectURL(blob)
+	const link = document.createElement("a")
+	link.href = url
+	link.download = `virtual-keys-${new Date().toISOString().split("T")[0]}.csv`
+	link.click()
+	URL.revokeObjectURL(url)
+}
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -47,6 +87,9 @@ interface VirtualKeysTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	sortBy?: string;
+	order?: string;
+	onSortChange: (sortBy: string, order: string) => void;
 }
 
 export default function VirtualKeysTable({
@@ -64,28 +107,37 @@ export default function VirtualKeysTable({
 	offset,
 	limit,
 	onOffsetChange,
+	sortBy,
+	order,
+	onSortChange,
 }: VirtualKeysTableProps) {
-  const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
-  const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
-  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
-  const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
-  const [showDetailSheet, setShowDetailSheet] = useState(false)
+	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
+	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
+	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
+	const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
+	const [showDetailSheet, setShowDetailSheet] = useState(false)
 
-  // Derive objects from props so they stay in sync with RTK cache updates
-  const editingVirtualKey = useMemo(
-    () => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
-    [editingVirtualKeyId, virtualKeys],
-  )
-  const selectedVirtualKey = useMemo(
-    () => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
-    [selectedVirtualKeyId, virtualKeys],
-  )
+	// Export dialog state
+	const [showExportDialog, setShowExportDialog] = useState(false)
+	const [exportScope, setExportScope] = useState<ExportScope>("current_page")
+	const [exportMaxLimit, setExportMaxLimit] = useState("")
+	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery()
 
-  const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
-  const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
+	// Derive objects from props so they stay in sync with RTK cache updates
+	const editingVirtualKey = useMemo(
+		() => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
+		[editingVirtualKeyId, virtualKeys],
+	)
+	const selectedVirtualKey = useMemo(
+		() => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
+		[selectedVirtualKeyId, virtualKeys],
+	)
 
-  const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
+	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
+	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
+	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
+
+	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -141,6 +193,64 @@ export default function VirtualKeysTable({
 
 	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter;
 
+	const toggleSort = (column: string) => {
+		if (sortBy === column) {
+			if (order === "asc") {
+				onSortChange(column, "desc")
+			} else {
+				// Clicking again clears sort
+				onSortChange("", "")
+			}
+		} else {
+			onSortChange(column, "asc")
+		}
+	}
+
+	const handleExportCSV = async () => {
+		if (exportScope === "current_page") {
+			downloadCSV(virtualKeysToCSV(virtualKeys))
+			toast.success(`Exported ${virtualKeys.length} virtual keys`)
+			setShowExportDialog(false)
+			return
+		}
+
+		// Fetch all with same filters/sort applied
+		const maxLimit = exportMaxLimit ? parseInt(exportMaxLimit, 10) : undefined
+		const fetchLimit = maxLimit && maxLimit > 0 ? maxLimit : 10000
+
+		try {
+			const result = await fetchVirtualKeys({
+				limit: fetchLimit,
+				offset: 0,
+				search: debouncedSearch || undefined,
+				customer_id: customerFilter || undefined,
+				team_id: teamFilter || undefined,
+				sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
+				order: (order as "asc" | "desc") || undefined,
+				export: true,
+			}).unwrap()
+
+			downloadCSV(virtualKeysToCSV(result.virtual_keys))
+			toast.success(`Exported ${result.virtual_keys.length} virtual keys`)
+			setShowExportDialog(false)
+		} catch (error) {
+			toast.error(`Export failed: ${getErrorMessage(error)}`)
+		}
+	}
+
+	const openExportDialog = () => {
+		setExportScope("current_page")
+		setExportMaxLimit("")
+		setShowExportDialog(true)
+	}
+
+	const SortableHeader = ({ column, label }: { column: string; label: string }) => (
+		<Button variant="ghost" onClick={() => toggleSort(column)} data-testid={`vk-sort-${column}`}>
+			{label}
+			<ArrowUpDown className={cn("ml-2 h-4 w-4", sortBy === column && "text-foreground")} />
+		</Button>
+	)
+
 	// True empty state: no VKs at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
 		return (
@@ -173,16 +283,115 @@ export default function VirtualKeysTable({
 
 			{showDetailSheet && selectedVirtualKey && <VirtualKeyDetailSheet virtualKey={selectedVirtualKey} onClose={handleDetailSheetClose} />}
 
+			{/* Export Dialog */}
+			<Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+				<DialogContent className="sm:max-w-[425px]">
+					<DialogHeader className="pb-0">
+						<DialogTitle>Export Virtual Keys</DialogTitle>
+						<DialogDescription>
+							Download as CSV with current filters and sorting applied.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-4">
+						<div className="space-y-2">
+							<Label className="text-sm">Export scope</Label>
+							<div className="grid grid-cols-2 gap-2" data-testid="vk-export-scope">
+								<button
+									type="button"
+									onClick={() => setExportScope("current_page")}
+									className={cn(
+										"flex flex-col items-center cursor-pointer gap-1 rounded-md border px-3 py-3 text-sm transition-colors",
+										exportScope === "current_page"
+											? "border-primary bg-primary/5 text-foreground"
+											: "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+									)}
+								>
+									<span className="font-medium">Current page</span>
+									<span className="text-muted-foreground text-xs">{virtualKeys.length} entries</span>
+								</button>
+								<button
+									type="button"
+									onClick={() => setExportScope("all")}
+									className={cn(
+										"flex flex-col items-center cursor-pointer gap-1 rounded-md border px-3 py-3 text-sm transition-colors",
+										exportScope === "all"
+											? "border-primary bg-primary/5 text-foreground"
+											: "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
+									)}
+								>
+									<span className="font-medium">All entries</span>
+									<span className="text-muted-foreground text-xs">{totalCount} total</span>
+								</button>
+							</div>
+						</div>
+
+						{exportScope === "all" && (
+							<div className="space-y-2">
+								<Label htmlFor="export-max-limit" className="text-sm">Max entries <span className="text-muted-foreground font-normal">(optional)</span></Label>
+								<Input
+									id="export-max-limit"
+									type="number"
+									min="1"
+									placeholder={`Leave blank for all ${totalCount}`}
+									value={exportMaxLimit}
+									onChange={(e) => setExportMaxLimit(e.target.value)}
+									data-testid="vk-export-max-limit"
+								/>
+							</div>
+						)}
+
+						{hasActiveFilters && (
+							<p className="text-muted-foreground text-xs">
+								Filters applied: {[
+									debouncedSearch && `search "${debouncedSearch}"`,
+									customerFilter && "customer filter",
+									teamFilter && "team filter",
+								].filter(Boolean).join(", ")}
+							</p>
+						)}
+
+						<div className="flex items-center gap-2 text-muted-foreground">
+							<ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+							<p className="text-xs">API tokens are excluded from the export.</p>
+						</div>
+					</div>
+					<DialogFooter className="pt-0">
+						<Button variant="outline" onClick={() => setShowExportDialog(false)} disabled={isExporting}>
+							Cancel
+						</Button>
+						<Button onClick={handleExportCSV} disabled={isExporting} data-testid="vk-export-confirm-btn">
+							{isExporting ? (
+								<>
+									<Loader2 className="h-4 w-4 animate-spin" />
+									Exporting...
+								</>
+							) : (
+								<>
+									<Download className="h-4 w-4" />
+									Export CSV
+								</>
+							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
 					</div>
-					<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
-						<Plus className="h-4 w-4" />
-						Add Virtual Key
-					</Button>
+					<div className="flex items-center gap-2">
+						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
+							<Download className="h-4 w-4" />
+							Export CSV
+						</Button>
+						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
+							<Plus className="h-4 w-4" />
+							Add Virtual Key
+						</Button>
+					</div>
 				</div>
 
 				{/* Toolbar: Search + Filters */}
@@ -229,11 +438,11 @@ export default function VirtualKeysTable({
 					<Table data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
-								<TableHead>Name</TableHead>
+								<TableHead><SortableHeader column="name" label="Name" /></TableHead>
 								<TableHead>Assigned To</TableHead>
 								<TableHead>Key</TableHead>
-								<TableHead>Budget</TableHead>
-								<TableHead>Status</TableHead>
+								<TableHead><SortableHeader column="budget_spent" label="Budget" /></TableHead>
+								<TableHead><SortableHeader column="status" label="Status" /></TableHead>
 								<TableHead className="text-right"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -296,21 +505,21 @@ export default function VirtualKeysTable({
 													</Button>
 												</div>
 											</TableCell>
-										<TableCell>
-											{vk.budget ? (
-												<div className="flex flex-col gap-0.5">
-													<span className={cn("font-mono text-sm", vk.budget.current_usage >= vk.budget.max_limit && "text-red-400")}>
-														{formatCurrency(vk.budget.current_usage)} / {formatCurrency(vk.budget.max_limit)}
-													</span>
-													<span className="text-muted-foreground text-xs">
-														Resets {formatResetDuration(vk.budget.reset_duration)}
-														{vk.budget.calendar_aligned && " (calendar)"}
-													</span>
-												</div>
-											) : (
-												<span className="text-muted-foreground text-sm">-</span>
-											)}
-										</TableCell>
+											<TableCell>
+												{vk.budget ? (
+													<div className="flex flex-col gap-0.5">
+														<span className={cn("font-mono text-sm", vk.budget.current_usage >= vk.budget.max_limit && "text-red-400")}>
+															{formatCurrency(vk.budget.current_usage)} / {formatCurrency(vk.budget.max_limit)}
+														</span>
+														<span className="text-muted-foreground text-xs">
+															Resets {formatResetDuration(vk.budget.reset_duration)}
+															{vk.budget.calendar_aligned && " (calendar)"}
+														</span>
+													</div>
+												) : (
+													<span className="text-muted-foreground text-sm">-</span>
+												)}
+											</TableCell>
 											<TableCell>
 												<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
 													{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
@@ -332,6 +541,7 @@ export default function VirtualKeysTable({
 															<Button
 																variant="ghost"
 																size="sm"
+																className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
 																onClick={(e) => e.stopPropagation()}
 																disabled={!hasDeleteAccess}
 																data-testid={`vk-delete-btn-${vk.name}`}
@@ -349,7 +559,7 @@ export default function VirtualKeysTable({
 															</AlertDialogHeader>
 															<AlertDialogFooter>
 																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting}>
+																<AlertDialogAction onClick={() => handleDelete(vk.id)} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
 																	{isDeleting ? "Deleting..." : "Delete"}
 																</AlertDialogAction>
 															</AlertDialogFooter>

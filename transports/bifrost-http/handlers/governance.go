@@ -345,13 +345,19 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
+	order := string(ctx.QueryArgs().Peek("order"))
+	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:     search,
 			CustomerID: customerID,
 			TeamID:     teamID,
+			SortBy:     sortBy,
+			Order:      order,
+			Export:     isExport,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
