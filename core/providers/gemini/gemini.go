@@ -288,7 +288,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(request), nil
+			return ToGeminiChatCompletionRequest(request)
 		},
 		provider.GetProviderKey())
 	if err != nil {
@@ -355,9 +355,12 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToGeminiChatCompletionRequest(request)
+			reqBody, err := ToGeminiChatCompletionRequest(request)
+			if err != nil {
+				return nil, err
+			}
 			if reqBody == nil {
-				return nil, fmt.Errorf("chat completion request is not provided or could not be converted to Gemini format")
+				return nil, fmt.Errorf("chat completion request is not provided or could not be converted to gemini format")
 			}
 			return reqBody, nil
 		},
@@ -681,9 +684,12 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := ToGeminiResponsesRequest(request)
+				reqBody, err := ToGeminiResponsesRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
-					return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
+					return nil, fmt.Errorf("responses input is not provided or could not be converted to gemini format")
 				}
 				return reqBody, nil
 			},
@@ -887,9 +893,12 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToGeminiResponsesRequest(request)
+			reqBody, err := ToGeminiResponsesRequest(request)
+			if err != nil {
+				return nil, err
+			}
 			if reqBody == nil {
-				return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
+				return nil, fmt.Errorf("responses input is not provided or could not be converted to gemini format")
 			}
 			return reqBody, nil
 		},
@@ -4238,7 +4247,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToGeminiResponsesRequest(request), nil
+				return ToGeminiResponsesRequest(request)
 			},
 			provider.GetProviderKey(),
 		)
