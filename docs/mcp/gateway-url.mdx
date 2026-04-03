@@ -122,7 +122,7 @@ Bifrost supports per-Virtual Key MCP servers, allowing you to expose different t
 
 ### Global Server (No Virtual Key)
 
-When `enforce_governance_header` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
+When `enforce_auth_on_inference` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
 
 ### Virtual Key-Specific Servers
 
@@ -297,12 +297,12 @@ The MCP Gateway exposes tools to external clients. Consider these security measu
 
 ### 1. Enable Virtual Key Enforcement
 
-Always enable `enforce_governance_header` in production:
+Always enable `enforce_auth_on_inference` in production:
 
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   }
 }
 ```
@@ -346,7 +346,7 @@ Consider network-level restrictions to limit which IPs can access the MCP endpoi
   <Accordion title="Virtual Key authentication failing">
     1. Ensure the Virtual Key exists and is active
     2. Check the header format (Bearer prefix for Authorization)
-    3. Verify `enforce_governance_header` setting matches your setup
+    3. Verify `enforce_auth_on_inference` setting matches your setup
   </Accordion>
 </AccordionGroup>
 

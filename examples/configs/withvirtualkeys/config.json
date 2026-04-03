@@ -9,7 +9,7 @@
         "drop_excess_requests": false,
         "enable_litellm_fallbacks": false,
         "enable_logging": true,
-        "enforce_governance_header": true,
+        "enforce_auth_on_inference": true,
         "initial_pool_size": 300,
         "log_retention_days": 365,
         "max_request_body_size_mb": 100

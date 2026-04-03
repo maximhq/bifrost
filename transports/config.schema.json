@@ -75,7 +75,7 @@
         },
         "enforce_governance_header": {
           "type": "boolean",
-          "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
+          "description": "Deprecated: use enforce_auth_on_inference"
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
