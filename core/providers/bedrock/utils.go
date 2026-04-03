@@ -1141,12 +1141,17 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 	// Using json.RawMessage avoids the map[string]interface{} round-trip
 	// that would destroy key order.
 	var input json.RawMessage
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
-		input = buf.Bytes()
+	args := strings.TrimSpace(toolCall.Function.Arguments)
+	if args == "" {
+		input = json.RawMessage("{}")
 	} else {
-		// Preserve original payload instead of silently dropping args.
-		input = json.RawMessage([]byte(toolCall.Function.Arguments))
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(args)); err == nil {
+			input = buf.Bytes()
+		} else {
+			// Preserve original payload instead of silently dropping args.
+			input = json.RawMessage([]byte(args))
+		}
 	}
 
 	return BedrockContentBlock{

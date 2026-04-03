@@ -68,7 +68,12 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				}
 
 				// Arguments is a string, not a pointer, so it's safe to access directly
-				functionArguments = toolCall.Function.Arguments
+				// Default to "{}" if empty to ensure the field is always present.
+				if toolCall.Function.Arguments == "" {
+					functionArguments = "{}"
+				} else {
+					functionArguments = toolCall.Function.Arguments
+				}
 
 				cohereToolCall := CohereToolCall{
 					ID:   toolCall.ID,
