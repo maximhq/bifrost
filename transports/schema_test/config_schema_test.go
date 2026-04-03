@@ -564,3 +564,103 @@ func TestSchemaAllowedOriginsWildcard(t *testing.T) {
 		}
 	})
 }
+
+func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
+	schema := loadSchema(t)
+
+	stsFields := []string{"role_arn", "external_id", "session_name"}
+	for _, field := range stsFields {
+		t.Run("$defs/bedrock_key has "+field, func(t *testing.T) {
+			_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", field)
+			if !found {
+				t.Errorf("$defs/bedrock_key bedrock_key_config is missing '%s' — BedrockKeyConfig Go struct defines this field for STS AssumeRole", field)
+			}
+		})
+	}
+
+	t.Run("$defs/bedrock_key has batch_s3_config", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", "batch_s3_config")
+		if !found {
+			t.Error("$defs/bedrock_key bedrock_key_config is missing 'batch_s3_config' — BedrockKeyConfig Go struct defines this field for batch operations")
+		}
+	})
+
+	t.Run("bedrock config with STS fields validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "cross-account",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-west-2",
+								"role_arn": "arn:aws:iam::123456789012:role/BedrockAccessRole",
+								"session_name": "bifrost-cross-account",
+								"external_id": "my-external-id"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with STS AssumeRole fields should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with batch_s3_config validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "batch-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"batch_s3_config": {
+									"buckets": [
+										{"bucket_name": "my-batch-bucket", "prefix": "bifrost/", "is_default": true},
+										{"bucket_name": "my-secondary-bucket"}
+									]
+								}
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with batch_s3_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with unknown fields is rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "bad-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"unknown_field": "should-fail"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("bedrock config with unknown fields should fail schema validation (additionalProperties: false)")
+		}
+	})
+}

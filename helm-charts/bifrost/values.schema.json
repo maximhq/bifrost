@@ -2376,12 +2376,54 @@
               "type": "string",
               "description": "AWS ARN"
             },
+            "role_arn": {
+              "type": "string",
+              "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for AssumeRole (can use env. prefix)"
+            },
+            "session_name": {
+              "type": "string",
+              "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
             "deployments": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
               },
               "description": "Model to deployment mappings"
+            },
+            "batch_s3_config": {
+              "type": "object",
+              "description": "S3 bucket configuration for Bedrock batch operations",
+              "properties": {
+                "buckets": {
+                  "type": "array",
+                  "description": "List of S3 bucket configurations",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "bucket_name": {
+                        "type": "string",
+                        "description": "S3 bucket name"
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "description": "S3 key prefix for batch files"
+                      },
+                      "is_default": {
+                        "type": "boolean",
+                        "description": "Whether this is the default bucket for batch operations"
+                      }
+                    },
+                    "required": ["bucket_name"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": [
@@ -2887,12 +2929,44 @@
                     "type": "string",
                     "description": "AWS ARN"
                   },
+                  "role_arn": {
+                    "type": "string",
+                    "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                  },
+                  "external_id": {
+                    "type": "string",
+                    "description": "External ID for AssumeRole (can use env. prefix)"
+                  },
+                  "session_name": {
+                    "type": "string",
+                    "description": "Role session name for AssumeRole (can use env. prefix)"
+                  },
                   "deployments": {
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
                     },
                     "description": "Model to deployment mappings"
+                  },
+                  "batch_s3_config": {
+                    "type": "object",
+                    "description": "S3 bucket configuration for Bedrock batch operations",
+                    "properties": {
+                      "buckets": {
+                        "type": "array",
+                        "description": "List of S3 bucket configurations",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "bucket_name": { "type": "string", "description": "S3 bucket name" },
+                            "prefix": { "type": "string", "description": "S3 key prefix for batch files" },
+                            "is_default": { "type": "boolean", "description": "Whether this is the default bucket for batch operations" }
+                          },
+                          "required": ["bucket_name"],
+                          "additionalProperties": false
+                        }
+                      }
+                    }
                   }
                 },
                 "additionalProperties": false
