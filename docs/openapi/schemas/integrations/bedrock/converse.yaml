@@ -332,10 +332,12 @@ BedrockStreamEvent:
       type: object
     additionalModelResponseFields:
       type: object
-    invokeModelRawChunk:
-      type: string
-      format: byte
-      description: Raw bytes for legacy invoke stream
+    invokeModelRawChunks:
+      type: array
+      items:
+        type: string
+        format: byte
+      description: Raw bytes for legacy invoke stream. Multiple chunks are needed when a single Bifrost event maps to multiple Anthropic SSE events (e.g., Completed → message_delta + message_stop).
 
 BedrockContentBlockDelta:
   type: object

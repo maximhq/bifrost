@@ -2,3 +2,4 @@
 - fix: rename config field `enforce_governance_header` to `enforce_auth_on_inference`
   > **Breaking change:** update any configuration files that use `enforce_governance_header` to `enforce_auth_on_inference`
 - fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
+- fix: Bedrock integration - add passthrough for streaming endpoints to avoid conversion bugs [@tefimov](https://github.com/tefimov)

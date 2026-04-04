@@ -15,7 +15,10 @@ import (
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("mustMarshalJSON: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -40,7 +43,10 @@ func jsonEqual(t *testing.T, expected, actual json.RawMessage, msgAndArgs ...int
 // mustMarshalToolParams marshals ToolFunctionParameters to json.RawMessage,
 // matching the conversion code path for deterministic output.
 func mustMarshalToolParams(params *schemas.ToolFunctionParameters) json.RawMessage {
-	b, _ := json.Marshal(params)
+	b, err := json.Marshal(params)
+	if err != nil {
+		panic("mustMarshalToolParams: " + err.Error())
+	}
 	return json.RawMessage(b)
 }
 
@@ -3641,7 +3647,7 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 	}
 
 	type bedrockChunk struct {
-		InvokeModelRawChunk []byte `json:"invokeModelRawChunk"`
+		InvokeModelRawChunks [][]byte `json:"invokeModelRawChunks"`
 	}
 
 	var stopCount int
@@ -3655,9 +3661,10 @@ func TestToBedrockInvokeMessagesStreamResponse_NoDuplicateContentBlockStop(t *te
 		require.NoError(t, err)
 		var chunk bedrockChunk
 		require.NoError(t, json.Unmarshal(raw, &chunk))
-		if len(chunk.InvokeModelRawChunk) > 0 &&
-			strings.Contains(string(chunk.InvokeModelRawChunk), "content_block_stop") {
-			stopCount++
+		for _, rawChunk := range chunk.InvokeModelRawChunks {
+			if strings.Contains(string(rawChunk), "content_block_stop") {
+				stopCount++
+			}
 		}
 	}
 
