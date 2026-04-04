@@ -63,6 +63,9 @@ function getMessage(log?: LogEntry) {
 	if (obj === "image_edit" || obj === "image_edit_stream" || obj === "image_variation") {
 		return "Image file";
 	}
+	if (log?.content_summary) {
+		return log.content_summary;
+	}
 	return "";
 }
 

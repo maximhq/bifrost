@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	defaultUploadWorkers   = 10
-	defaultUploadQueueSize = 5000
+	defaultUploadWorkers      = 10
+	defaultUploadQueueSize    = 5000
+	maxContentSummaryBytes    = 2048
 )
 
 // uploadWork represents an async S3 upload job.
@@ -93,18 +95,38 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	}
 
 	// Mark the DB row as having an object. Use a fresh context so that a slow
-	// Put doesn't starve the DB update of its deadline.
-	dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer dbCancel()
-	if err := h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true}); err != nil {
-		h.logger.Warn("objectstore: failed to set has_object for log %s: %v", work.logID, err)
+	// Put doesn't starve the DB update of its deadline. Retry up to 3 times
+	// with exponential backoff to avoid orphaning the uploaded object.
+	for attempt := 0; attempt < 3; attempt++ {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+		dbCancel()
+		if err == nil {
+			return
+		}
+		h.logger.Warn("objectstore: failed to set has_object for log %s (attempt %d/3): %v", work.logID, attempt+1, err)
+		if attempt < 2 {
+			time.Sleep(time.Duration(1<<attempt) * time.Second) // 1s, 2s backoff
+		}
 	}
+}
+
+// isPayloadEmpty returns true when every value in the payload map is empty.
+// Skipping uploads for empty payloads avoids wasted S3 PUTs (e.g. initial
+// "processing" entries that carry no input/output data yet).
+func isPayloadEmpty(payload map[string]string) bool {
+	for _, v := range payload {
+		if v != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
 // the job is dropped to prevent S3 slowness from cascading.
 func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string) {
-	if h.closed.Load() {
+	if h.closed.Load() || isPayloadEmpty(payload) {
 		return
 	}
 	// Recover from send-on-closed-channel panic: Close() may interleave
@@ -136,6 +158,36 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 
 // --- Intercepted methods ---
 
+// prepareDBEntry builds the lightweight DB entry by extracting the content
+// summary, trimming input history to the last user message, and clearing
+// payload fields. Must be called after SerializeFields() populates the
+// Parsed fields.
+func prepareDBEntry(dbEntry *Log) {
+	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
+
+	// Content summary: extract text from the found user message.
+	// Falls back to BuildInputContentSummary for non-chat inputs (speech, image, etc.).
+	if idx >= 0 {
+		dbEntry.ContentSummary = extractChatMessageText(&dbEntry.InputHistoryParsed[idx])
+	} else {
+		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
+	}
+	// Bound content summary to prevent large prompts from bloating the DB row.
+	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
+
+	// Serialize last user message before ClearPayload zeros everything.
+	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	var lastUserMessage string
+	if idx >= 0 {
+		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+	}
+
+	ClearPayload(dbEntry)
+
+	// Restore last user message so list queries can display it without S3.
+	dbEntry.InputHistory = lastUserMessage
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -144,8 +196,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-	ClearPayload(&dbEntry)
+	prepareDBEntry(&dbEntry)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -162,8 +213,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-	ClearPayload(&dbEntry)
+	prepareDBEntry(&dbEntry)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -190,8 +240,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
-		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-		ClearPayload(&dbEntry)
+		prepareDBEntry(&dbEntry)
 		dbEntries[i] = &dbEntry
 		uploads = append(uploads, pendingUpload{
 			logID:     entry.ID,
@@ -220,20 +269,25 @@ func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) 
 	if err != nil {
 		return nil, err
 	}
-	if !log.HasObject {
-		return log, nil
+	h.hydrateLog(ctx, log)
+	return log, nil
+}
+
+// hydrateLog fetches the offloaded payload from object storage and merges it
+// back into the Log struct. It is a no-op when HasObject is false.
+func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log) {
+	if log == nil || !log.HasObject {
+		return
 	}
-	// Fetch payload from object storage.
 	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
 	data, err := h.objects.Get(ctx, key)
 	if err != nil {
-		h.logger.Warn("objectstore: failed to fetch payload for log %s: %v", id, err)
-		return log, nil // Graceful degradation
+		h.logger.Warn("objectstore: failed to fetch payload for log %s: %v", log.ID, err)
+		return // Graceful degradation
 	}
 	if mergeErr := MergePayloadFromJSON(log, data); mergeErr != nil {
-		h.logger.Warn("objectstore: failed to merge payload for log %s: %v", id, mergeErr)
+		h.logger.Warn("objectstore: failed to merge payload for log %s: %v", log.ID, mergeErr)
 	}
-	return log, nil
 }
 
 func (h *HybridLogStore) Update(ctx context.Context, id string, entry any) error {
@@ -243,8 +297,10 @@ func (h *HybridLogStore) Update(ctx context.Context, id string, entry any) error
 }
 
 func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
-	// Best-effort: try to find the log first to build the S3 key.
-	log, _ := h.inner.FindByID(ctx, id)
+	log, findErr := h.inner.FindByID(ctx, id)
+	if findErr != nil && !errors.Is(findErr, ErrNotFound) {
+		return findErr
+	}
 	if err := h.inner.DeleteLog(ctx, id); err != nil {
 		return err
 	}
@@ -261,7 +317,10 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	// Collect keys for S3 deletion before removing from DB.
 	var keys []string
 	for _, id := range ids {
-		log, _ := h.inner.FindByID(ctx, id)
+		log, findErr := h.inner.FindByID(ctx, id)
+		if findErr != nil && !errors.Is(findErr, ErrNotFound) {
+			return findErr
+		}
 		if log != nil && log.HasObject {
 			keys = append(keys, ObjectKey(h.prefix, log.Timestamp, log.ID))
 		}
@@ -285,7 +344,18 @@ func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, 
 func (h *HybridLogStore) Close(ctx context.Context) error {
 	h.closed.Store(true)
 	close(h.uploadQueue)
-	h.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		h.logger.Warn("objectstore: shutdown cancelled before upload queue drained: %v", ctx.Err())
+		// Still wait for workers to finish so we don't close dependencies mid-flight.
+		<-done
+	}
 	if err := h.objects.Close(); err != nil {
 		h.logger.Warn("objectstore: error closing object store: %v", err)
 	}
@@ -304,11 +374,35 @@ func (h *HybridLogStore) Ping(ctx context.Context) error {
 }
 
 func (h *HybridLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
-	return h.inner.FindFirst(ctx, query, fields...)
+	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
+	if needsHydration && len(fields) > 0 {
+		fields = ensureHydrationFields(fields)
+	}
+	log, err := h.inner.FindFirst(ctx, query, fields...)
+	if err != nil {
+		return nil, err
+	}
+	if needsHydration {
+		h.hydrateLog(ctx, log)
+	}
+	return log, nil
 }
 
 func (h *HybridLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
-	return h.inner.FindAll(ctx, query, fields...)
+	needsHydration := len(fields) == 0 || fieldsNeedHydration(fields)
+	if needsHydration && len(fields) > 0 {
+		fields = ensureHydrationFields(fields)
+	}
+	logs, err := h.inner.FindAll(ctx, query, fields...)
+	if err != nil {
+		return nil, err
+	}
+	if needsHydration {
+		for _, log := range logs {
+			h.hydrateLog(ctx, log)
+		}
+	}
+	return logs, nil
 }
 
 func (h *HybridLogStore) FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error) {
@@ -369,6 +463,14 @@ func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]
 
 func (h *HybridLogStore) Flush(ctx context.Context, since time.Time) error {
 	return h.inner.Flush(ctx, since)
+}
+
+func (h *HybridLogStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {
+	return h.inner.IsLogEntryPresent(ctx, id)
+}
+
+func (h *HybridLogStore) GetDistinctAliases(ctx context.Context) ([]string, error) {
+	return h.inner.GetDistinctAliases(ctx)
 }
 
 func (h *HybridLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {

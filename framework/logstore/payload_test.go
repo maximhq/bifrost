@@ -24,6 +24,8 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		SpeechInput:             `{"input":"text"}`,
 		TranscriptionInput:      `{"file":"test.mp3"}`,
 		ImageGenerationInput:    `{"prompt":"cat"}`,
+		ImageEditInput:          `{"prompt":"edit cat"}`,
+		ImageVariationInput:     `{"image":"base64img"}`,
 		VideoGenerationInput:    `{"prompt":"dog"}`,
 		SpeechOutput:            `{"audio":"base64"}`,
 		TranscriptionOutput:     `{"text":"hello"}`,

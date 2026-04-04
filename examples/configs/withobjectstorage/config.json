@@ -4,9 +4,10 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "logs.db"
+      "path": "../../examples/configs/withobjectstorage/logs.db"
     },
     "object_storage": {
+      "type": "s3",
       "bucket": "env.AWS_S3_BUCKET",
       "region": "env.AWS_REGION",
       "access_key_id": "env.AWS_ACCESS_KEY_ID",
