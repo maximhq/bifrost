@@ -1122,10 +1122,14 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName          *schemas.EnvVar `json:"admin_username"`
-	AdminPassword          *schemas.EnvVar `json:"admin_password"`
-	IsEnabled              bool            `json:"is_enabled"`
-	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
+	AdminUserName          *schemas.EnvVar          `json:"admin_username"`
+	AdminPassword          *schemas.EnvVar          `json:"admin_password"`
+	IsEnabled              bool                     `json:"is_enabled"`
+	DisableAuthOnInference bool                     `json:"disable_auth_on_inference"`
+	EnabledMethods         []string                 `json:"enabled_methods,omitempty"`
+	GoogleSSOConfig        *schemas.GoogleSSOConfig `json:"google_sso_config,omitempty"`
+	SAMLConfig             *schemas.SAMLConfig      `json:"saml_config,omitempty"`
+	DefaultRole            string                   `json:"default_role,omitempty"`
 }
 
 // ConfigMap maps provider names to their configurations.

@@ -3120,12 +3120,69 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	if username == nil || password == nil {
 		return nil, nil
 	}
-	return &AuthConfig{
+
+	authConfig := &AuthConfig{
 		AdminUserName:          schemas.NewEnvVar(*username),
 		AdminPassword:          schemas.NewEnvVar(*password),
 		IsEnabled:              isEnabled,
 		DisableAuthOnInference: disableAuthOnInference,
-	}, nil
+	}
+
+	// Read enabled auth methods
+	var enabledMethodsJSON *string
+	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigEnabledAuthMethodsKey).Select("value").Scan(&enabledMethodsJSON).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if enabledMethodsJSON != nil && *enabledMethodsJSON != "" {
+		if err := json.Unmarshal([]byte(*enabledMethodsJSON), &authConfig.EnabledMethods); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal enabled_auth_methods: %w", err)
+		}
+	}
+
+	// Read Google SSO config
+	var googleSSOJSON *string
+	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigGoogleSSOConfigKey).Select("value").Scan(&googleSSOJSON).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if googleSSOJSON != nil && *googleSSOJSON != "" {
+		var googleSSO schemas.GoogleSSOConfig
+		if err := json.Unmarshal([]byte(*googleSSOJSON), &googleSSO); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal google_sso_config: %w", err)
+		}
+		authConfig.GoogleSSOConfig = &googleSSO
+	}
+
+	// Read SAML config
+	var samlJSON *string
+	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigSAMLConfigKey).Select("value").Scan(&samlJSON).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if samlJSON != nil && *samlJSON != "" {
+		var samlConfig schemas.SAMLConfig
+		if err := json.Unmarshal([]byte(*samlJSON), &samlConfig); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal saml_config: %w", err)
+		}
+		authConfig.SAMLConfig = &samlConfig
+	}
+
+	// Read default role
+	var defaultRole *string
+	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigDefaultRoleKey).Select("value").Scan(&defaultRole).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if defaultRole != nil {
+		authConfig.DefaultRole = *defaultRole
+	}
+
+	return authConfig, nil
 }
 
 // UpdateAuthConfig updates the auth configuration in the database.
@@ -3155,6 +3212,59 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		}).Error; err != nil {
 			return err
 		}
+
+		// Save enabled auth methods
+		if config.EnabledMethods != nil {
+			enabledMethodsJSON, err := json.Marshal(config.EnabledMethods)
+			if err != nil {
+				return fmt.Errorf("failed to marshal enabled_auth_methods: %w", err)
+			}
+			if err := tx.Save(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigEnabledAuthMethodsKey,
+				Value: string(enabledMethodsJSON),
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Save Google SSO config
+		if config.GoogleSSOConfig != nil {
+			googleSSOJSON, err := json.Marshal(config.GoogleSSOConfig)
+			if err != nil {
+				return fmt.Errorf("failed to marshal google_sso_config: %w", err)
+			}
+			if err := tx.Save(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigGoogleSSOConfigKey,
+				Value: string(googleSSOJSON),
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Save SAML config
+		if config.SAMLConfig != nil {
+			samlConfigJSON, err := json.Marshal(config.SAMLConfig)
+			if err != nil {
+				return fmt.Errorf("failed to marshal saml_config: %w", err)
+			}
+			if err := tx.Save(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigSAMLConfigKey,
+				Value: string(samlConfigJSON),
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		// Save default role
+		if config.DefaultRole != "" {
+			if err := tx.Save(&tables.TableGovernanceConfig{
+				Key:   tables.ConfigDefaultRoleKey,
+				Value: config.DefaultRole,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 }

@@ -10,6 +10,10 @@ const (
 	ConfigProxyKey                  = "proxy_config"
 	ConfigRestartRequiredKey        = "restart_required"
 	ConfigHeaderFilterKey           = "header_filter_config"
+	ConfigEnabledAuthMethodsKey     = "enabled_auth_methods"
+	ConfigGoogleSSOConfigKey        = "google_sso_config"
+	ConfigSAMLConfigKey             = "saml_config"
+	ConfigDefaultRoleKey            = "default_role"
 )
 
 // RestartRequiredConfig represents the restart required configuration
