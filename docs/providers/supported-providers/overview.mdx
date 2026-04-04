@@ -195,6 +195,7 @@ Bifrost can optionally return the raw request that was sent to the provider and 
 **Configuration options:**
 - **[Go SDK Provider Configuration](../../quickstart/go-sdk/provider-configuration)** - Configure `SendBackRawResponse` and other provider settings
 - **[Gateway Provider Configuration](../../quickstart/gateway/provider-configuration)** - Configure `send_back_raw_response` via API, UI, or config file
+- **[OTEL Observability](../../features/observability/otel)** - Raw payloads are automatically included as OTEL span attributes when capture is enabled
 
 <Note>
 Enabling raw request/response may increase response payload size and has minimal performance impact. Use it selectively in debugging/testing environments or when you need audit trails.
