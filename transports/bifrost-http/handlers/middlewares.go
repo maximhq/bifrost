@@ -574,6 +574,7 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	}
 	whitelistedPrefixes := []string{
 		"/api/oauth/callback",
+		"/api/auth/sso/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||

@@ -1037,6 +1037,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if sessionHandler != nil {
 		sessionHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	// SSO handlers
+	googleSSOHandler := handlers.NewGoogleSSOHandler(s.Config.ConfigStore)
+	googleSSOHandler.RegisterRoutes(s.Router, middlewares...)
+	samlHandler := handlers.NewSAMLHandler(s.Config.ConfigStore)
+	samlHandler.RegisterRoutes(s.Router, middlewares...)
 	if promptsHandler != nil {
 		promptsHandler.RegisterRoutes(s.Router, middlewares...)
 	}

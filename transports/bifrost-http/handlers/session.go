@@ -73,10 +73,30 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 			hasValidToken = true
 		}
 	}
-	SendJSON(ctx, map[string]any{
+	response := map[string]any{
 		"is_auth_enabled": authConfig.IsEnabled,
 		"has_valid_token": hasValidToken,
-	})
+	}
+
+	// Include SSO method information so the frontend knows which login flows are available.
+	if len(authConfig.EnabledMethods) > 0 {
+		response["enabled_methods"] = authConfig.EnabledMethods
+	} else if authConfig.IsEnabled {
+		response["enabled_methods"] = []string{"password"}
+	}
+
+	if authConfig.GoogleSSOConfig != nil {
+		response["google_sso"] = map[string]string{
+			"login_url": "/api/auth/sso/google/login",
+		}
+	}
+	if authConfig.SAMLConfig != nil {
+		response["saml"] = map[string]string{
+			"login_url": "/api/auth/sso/saml/login",
+		}
+	}
+
+	SendJSON(ctx, response)
 }
 
 // login handles POST /api/session/login - Login a user
