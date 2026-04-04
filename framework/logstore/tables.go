@@ -131,6 +131,7 @@ type Log struct {
 	Metadata               *string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
 	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
+	HasObject              bool      `gorm:"default:false" json:"-"` // True when payload is stored in object storage
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -434,8 +435,11 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
-	// Build content summary for search
-	l.ContentSummary = l.BuildContentSummary()
+	// Build content summary for search.
+	// Skip if already set (e.g., by the hybrid log store which builds input-only summaries).
+	if l.ContentSummary == "" {
+		l.ContentSummary = l.BuildContentSummary()
+	}
 
 	return nil
 }

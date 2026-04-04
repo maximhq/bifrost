@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/objectstore"
 )
 
 // LogStoreType represents the type of log store.
@@ -80,19 +81,49 @@ type LogStore interface {
 }
 
 // NewLogStore creates a new log store based on the configuration.
+// When ObjectStorage is configured, the returned store is wrapped with a
+// HybridLogStore that offloads payloads to S3-compatible object storage.
 func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (LogStore, error) {
+	var inner LogStore
+	var err error
+
 	switch config.Type {
 	case LogStoreTypeSQLite:
 		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
-			return newSqliteLogStore(ctx, sqliteConfig, logger)
+			inner, err = newSqliteLogStore(ctx, sqliteConfig, logger)
+		} else {
+			return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 		}
-		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	case LogStoreTypePostgres:
 		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
-			return newPostgresLogStore(ctx, postgresConfig, logger)
+			inner, err = newPostgresLogStore(ctx, postgresConfig, logger)
+		} else {
+			return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 		}
-		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	default:
 		return nil, fmt.Errorf("unsupported log store type: %s", config.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Optionally wrap with hybrid decorator for object storage offloading.
+	if config.ObjectStorage != nil {
+		if config.ObjectStorage.Bucket.GetValue() == "" || config.ObjectStorage.Region.GetValue() == "" {
+			_ = inner.Close(ctx)
+			return nil, fmt.Errorf("object storage bucket and region must be defined")
+		}
+		objStore, objErr := objectstore.NewS3ObjectStore(ctx, config.ObjectStorage, logger)
+		if objErr != nil {
+			_ = inner.Close(ctx)
+			return nil, fmt.Errorf("failed to create object store: %w", objErr)
+		}
+		if err := objStore.Ping(ctx); err != nil {
+			_ = objStore.Close()
+			_ = inner.Close(ctx)
+			return nil, fmt.Errorf("failed to ping object store: %w", err)
+		}
+		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger), nil
+	}
+	return inner, nil
 }

@@ -203,6 +203,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2063,5 +2066,39 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn) error {
 		}
 	}
 
+	return nil
+}
+
+// migrationAddHasObjectColumn adds the has_object boolean column to the logs table.
+// Used by the hybrid log store to track whether a log's payload is stored in object storage.
+func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.AddColumn(&Log{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.DropColumn(&Log{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding has_object column: %s", err.Error())
+	}
 	return nil
 }
