@@ -151,11 +151,11 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	}
 
 	// Mistral only accepts reasoning_effort values "none" or "high".
-	// Map any other values (e.g. "low", "medium") to "high" to avoid 422 errors.
+	// Drop unsupported values (e.g. "low", "medium") instead of coercing.
 	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
 		effort := *req.ChatParameters.Reasoning.Effort
 		if effort != "none" && effort != "high" {
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr("high")
+			req.ChatParameters.Reasoning.Effort = nil
 		}
 	}
 }
