@@ -107,6 +107,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 	if accResult == nil {
 		return nil
 	}
+	ttft := accResult.TimeToFirstToken
 	// Determine StreamType based on the response content
 	streamType := streaming.StreamTypeChat
 	if accResult.AudioOutput != nil {
@@ -126,7 +127,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 		Data: &streaming.AccumulatedData{
 			Status:              accResult.Status,
 			Latency:             accResult.Latency,
-			TimeToFirstToken:    accResult.TimeToFirstToken,
+			TimeToFirstToken:    &ttft,
 			OutputMessage:       accResult.OutputMessage,
 			OutputMessages:      accResult.OutputMessages,
 			TokenUsage:          accResult.TokenUsage,

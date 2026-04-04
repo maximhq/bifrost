@@ -400,6 +400,11 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 
 	tempEntry := &logstore.Log{}
 	updates["latency"] = float64(streamResponse.Data.Latency)
+	if streamResponse.Data.TimeToFirstToken != nil {
+		// TTFT is only available for streaming responses.
+		// For non-streaming requests, this field is intentionally left nil.
+		updates["time_to_first_token"] = float64(*streamResponse.Data.TimeToFirstToken)
+	}
 
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
@@ -410,6 +415,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 
 	// Update token usage if provided
 	if streamResponse.Data.TokenUsage != nil {
+		// tokens_per_second is intentionally computed only at finalization
+		// in PostLLMHook and is not populated during intermediate streaming updates.
+		// This avoids inconsistent partial metrics during streaming.
 		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
 		needsSerialization = true
 	}
@@ -540,6 +548,12 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	entry.Status = "success"
 	latF := float64(streamResponse.Data.Latency)
 	entry.Latency = &latF
+	if streamResponse.Data.TimeToFirstToken != nil {
+		// TTFT is only available for streaming responses.
+		// For non-streaming requests, this field is intentionally left nil.
+		ttft := float64(*streamResponse.Data.TimeToFirstToken)
+		entry.TimeToFirstToken = &ttft
+	}
 
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
@@ -596,6 +610,61 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			entry.RawResponse = *streamResponse.Data.RawResponse
 		}
 	}
+}
+
+// computeTokensPerSecond computes the derived throughput metric from completion tokens and latency.
+//
+// Design note:
+// tokens_per_second is computed at write-time to ensure consistency
+// across logs, APIs, and aggregations. It may also be computed during
+// deferred usage updates when token usage arrives asynchronously.
+// This avoids repeated computation at query-time while preserving a
+// single lifecycle contract for persisted metrics.
+//
+// Additional benefits of write-time derivation:
+// - avoid repeated computation during aggregation queries
+// - enable future indexing or pre-aggregation optimizations
+//
+// Lifecycle:
+//   - Called from PostLLMHook after output fields are finalized.
+//   - Not called from intermediate streaming update paths.
+//   - Deferred usage updates use the same helper formula.
+//
+// Formula:
+//   - tokens_per_second = completion_tokens / (latency_ms / 1000.0)
+//
+// Constraints:
+//   - completion_tokens > 0
+//   - latency_ms > 0
+func computeTokensPerSecond(completionTokens int, latencyMs float64) (float64, bool) {
+	if completionTokens <= 0 || latencyMs <= 0 {
+		return 0, false
+	}
+	return float64(completionTokens) / (latencyMs / 1000.0), true
+}
+
+// computeTPSIfMissing computes and sets tokens_per_second on the entry
+// only if it hasn't been set already. This enforces single-source computation:
+// TPS is computed once at finalization (PostLLMHook), and deferred updates
+// only fill in the gap when token usage wasn't available at that point.
+//
+// Used by both applyPerformanceMetricsToEntry and scheduleDeferredUsageUpdate.
+func computeTPSIfMissing(entry *logstore.Log, completionTokens int, latencyMs float64) {
+	if entry == nil || entry.TokensPerSecond != nil {
+		return
+	}
+	if tps, ok := computeTokensPerSecond(completionTokens, latencyMs); ok {
+		entry.TokensPerSecond = &tps
+	}
+}
+
+// applyPerformanceMetricsToEntry computes derived performance metrics for a finalized log entry.
+// Uses computeTPSIfMissing to enforce single-source TPS computation.
+func applyPerformanceMetricsToEntry(entry *logstore.Log) {
+	if entry == nil || entry.Latency == nil {
+		return
+	}
+	computeTPSIfMissing(entry, entry.CompletionTokens, *entry.Latency)
 }
 
 // isPassthroughErrorResponse returns true when the result is a passthrough
