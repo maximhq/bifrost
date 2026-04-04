@@ -57,7 +57,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
 		},
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: strPtr("I'm fine, thanks!")},
@@ -126,7 +126,7 @@ func TestHybrid_BatchCreateIfNotExists(t *testing.T) {
 			Status:    "success",
 			Object:    "chat.completion",
 			InputHistoryParsed: []schemas.ChatMessage{
-				{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 			},
 		}
 		require.NoError(t, entries[i].SerializeFields())
@@ -178,7 +178,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
 	}
 	require.NoError(t, entry.SerializeFields())
@@ -191,8 +191,11 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	found, err := hybrid.FindByID(ctx, "degrade-1")
 	require.NoError(t, err, "FindByID should succeed even when S3 fails")
 	assert.True(t, found.HasObject)
-	// Payload fields should be empty (S3 fetch failed), but no error returned.
-	assert.Empty(t, found.InputHistory, "payload should be empty when S3 fails")
+	// When S3 fails, the DB data is returned. The DB retains the last message
+	// in input_history for list views, so it won't be empty.
+	assert.NotEmpty(t, found.InputHistory, "last message should be retained in DB")
+	// But other payload fields (output_message, params, etc.) should be empty.
+	assert.Empty(t, found.OutputMessage, "output should be empty when S3 fails")
 }
 
 func TestHybrid_PutFailureDropsUpload(t *testing.T) {
@@ -212,7 +215,7 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
 	}
 	require.NoError(t, entry.SerializeFields())
@@ -306,7 +309,7 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &inputText}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputText}},
 		},
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: &outputText},

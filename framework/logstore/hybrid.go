@@ -101,10 +101,22 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	}
 }
 
+// isPayloadEmpty returns true when every value in the payload map is empty.
+// Skipping uploads for empty payloads avoids wasted S3 PUTs (e.g. initial
+// "processing" entries that carry no input/output data yet).
+func isPayloadEmpty(payload map[string]string) bool {
+	for _, v := range payload {
+		if v != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
 // the job is dropped to prevent S3 slowness from cascading.
 func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string) {
-	if h.closed.Load() {
+	if h.closed.Load() || isPayloadEmpty(payload) {
 		return
 	}
 	// Recover from send-on-closed-channel panic: Close() may interleave
@@ -136,6 +148,34 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 
 // --- Intercepted methods ---
 
+// prepareDBEntry builds the lightweight DB entry by extracting the content
+// summary, trimming input history to the last user message, and clearing
+// payload fields. Must be called after SerializeFields() populates the
+// Parsed fields.
+func prepareDBEntry(dbEntry *Log) {
+	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
+
+	// Content summary: extract text from the found user message.
+	// Falls back to BuildInputContentSummary for non-chat inputs (speech, image, etc.).
+	if idx >= 0 {
+		dbEntry.ContentSummary = extractChatMessageText(&dbEntry.InputHistoryParsed[idx])
+	} else {
+		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
+	}
+
+	// Serialize last user message before ClearPayload zeros everything.
+	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	var lastUserMessage string
+	if idx >= 0 {
+		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+	}
+
+	ClearPayload(dbEntry)
+
+	// Restore last user message so list queries can display it without S3.
+	dbEntry.InputHistory = lastUserMessage
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
@@ -144,8 +184,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-	ClearPayload(&dbEntry)
+	prepareDBEntry(&dbEntry)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -162,8 +201,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
-	dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-	ClearPayload(&dbEntry)
+	prepareDBEntry(&dbEntry)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -190,8 +228,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
-		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
-		ClearPayload(&dbEntry)
+		prepareDBEntry(&dbEntry)
 		dbEntries[i] = &dbEntry
 		uploads = append(uploads, pendingUpload{
 			logID:     entry.ID,

@@ -4,9 +4,17 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.14
+**Latest Version:** 2.0.15
 
 ## Changelog
+
+### v2.0.15
+
+- Added object storage support (S3/GCS) for offloading log payloads from the database
+- Added `storage.logsStore.objectStorage` configuration with S3 and GCS backend support
+- Added object storage credential injection from Kubernetes secrets (`existingSecret`)
+- Added `object_storage` schema to `config.schema.json` under `logs_store`
+- Updated deployment and stateful templates with object storage secret env vars
 
 ### v2.0.14
 

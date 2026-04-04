@@ -2,11 +2,11 @@ package logstore
 
 import (
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // payloadFields lists the DB column names of large TEXT fields that are
@@ -255,64 +255,98 @@ func MarshalPayload(payload map[string]string) ([]byte, error) {
 	return sonic.Marshal(payload)
 }
 
-// BuildInputContentSummary extracts searchable text from input-only fields.
-// This is used in hybrid mode instead of BuildContentSummary (which includes output).
+// BuildInputContentSummary extracts the last user message text from input fields.
+// This is used in hybrid mode for the content_summary column, which powers
+// full-text search and serves as a display fallback in the log list table.
+// Only the last message is kept — the full conversation history lives in
+// object storage and is merged back on FindByID.
 func (l *Log) BuildInputContentSummary() string {
-	var parts []string
-
-	// Input messages (chat completions)
-	for _, msg := range l.InputHistoryParsed {
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-				parts = append(parts, *msg.Content.ContentStr)
-			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range msg.Content.ContentBlocks {
-					if block.Text != nil && *block.Text != "" {
-						parts = append(parts, *block.Text)
-					}
-				}
-			}
+	// Chat completions: last user message
+	if idx := findLastUserMessageIndex(l.InputHistoryParsed); idx >= 0 {
+		if text := extractChatMessageText(&l.InputHistoryParsed[idx]); text != "" {
+			return text
 		}
 	}
 
-	// Responses input history
-	if l.ResponsesInputHistoryParsed != nil {
-		for _, msg := range l.ResponsesInputHistoryParsed {
-			if msg.Content != nil {
-				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					parts = append(parts, *msg.Content.ContentStr)
-				} else if msg.Content.ContentBlocks != nil {
-					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							parts = append(parts, *block.Text)
-						}
-					}
-				}
-			}
-			if msg.ResponsesReasoning != nil {
-				for _, summary := range msg.ResponsesReasoning.Summary {
-					parts = append(parts, summary.Text)
-				}
+	// Responses API: last user message
+	for i := len(l.ResponsesInputHistoryParsed) - 1; i >= 0; i-- {
+		if l.ResponsesInputHistoryParsed[i].Role != nil && *l.ResponsesInputHistoryParsed[i].Role == schemas.ResponsesInputMessageRoleUser {
+			if text := extractResponsesMessageText(&l.ResponsesInputHistoryParsed[i]); text != "" {
+				return text
 			}
 		}
 	}
 
 	// Speech input
 	if l.SpeechInputParsed != nil && l.SpeechInputParsed.Input != "" {
-		parts = append(parts, l.SpeechInputParsed.Input)
+		return l.SpeechInputParsed.Input
 	}
 
 	// Image generation input prompt
 	if l.ImageGenerationInputParsed != nil && l.ImageGenerationInputParsed.Prompt != "" {
-		parts = append(parts, l.ImageGenerationInputParsed.Prompt)
+		return l.ImageGenerationInputParsed.Prompt
 	}
 
 	// Video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
-		parts = append(parts, l.VideoGenerationInputParsed.Prompt)
+		return l.VideoGenerationInputParsed.Prompt
 	}
 
-	return strings.Join(parts, " ")
+	return ""
+}
+
+// extractChatMessageText returns the text content from a ChatMessage.
+// It prefers ContentStr; falls back to the last text ContentBlock.
+func extractChatMessageText(msg *schemas.ChatMessage) string {
+	if msg.Content == nil {
+		return ""
+	}
+	if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+		return *msg.Content.ContentStr
+	}
+	if msg.Content.ContentBlocks != nil {
+		var lastText string
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				lastText = *block.Text
+			}
+		}
+		return lastText
+	}
+	return ""
+}
+
+// extractResponsesMessageText returns the text content from a ResponsesMessage.
+// It prefers ContentStr; falls back to the last text ContentBlock.
+func extractResponsesMessageText(msg *schemas.ResponsesMessage) string {
+	if msg.Content == nil {
+		return ""
+	}
+	if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+		return *msg.Content.ContentStr
+	}
+	if msg.Content.ContentBlocks != nil {
+		var lastText string
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				lastText = *block.Text
+			}
+		}
+		return lastText
+	}
+	return ""
+}
+
+// findLastUserMessageIndex returns the index of the last ChatMessage with
+// role "user", or -1 if none exists. Used by both BuildInputContentSummary
+// and prepareDBEntry to avoid scanning the slice twice.
+func findLastUserMessageIndex(msgs []schemas.ChatMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == schemas.ChatMessageRoleUser {
+			return i
+		}
+	}
+	return -1
 }
 
 // BuildTags creates the S3 object tag map from a Log's index fields.

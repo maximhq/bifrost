@@ -443,6 +443,7 @@ export interface LogEntry {
 	routing_rule?: RoutingRule;
 	input_history: ChatMessage[];
 	responses_input_history: ResponsesMessage[];
+	content_summary?: string;
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];

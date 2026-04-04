@@ -109,11 +109,7 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 
 	// Optionally wrap with hybrid decorator for object storage offloading.
 	if config.ObjectStorage != nil {
-		if config.ObjectStorage.Bucket.GetValue() == "" || config.ObjectStorage.Region.GetValue() == "" {
-			_ = inner.Close(ctx)
-			return nil, fmt.Errorf("object storage bucket and region must be defined")
-		}
-		objStore, objErr := objectstore.NewS3ObjectStore(ctx, config.ObjectStorage, logger)
+		objStore, objErr := objectstore.NewObjectStore(ctx, config.ObjectStorage, logger)
 		if objErr != nil {
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to create object store: %w", objErr)

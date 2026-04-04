@@ -868,6 +868,95 @@
               }
             }
           ]
+        },
+        "object_storage": {
+          "type": "object",
+          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["s3", "gcs"],
+              "description": "Object storage backend type"
+            },
+            "bucket": {
+              "type": "string",
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Key prefix for stored objects (default: bifrost)",
+              "default": "bifrost"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Enable gzip compression for stored objects. Default: false",
+              "default": false
+            }
+          },
+          "required": ["type", "bucket"],
+          "if": {
+            "properties": { "type": { "const": "s3" } }
+          },
+          "then": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "region": {
+                "type": "string",
+                "description": "AWS region. Supports env var reference"
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+              },
+              "access_key_id": {
+                "type": "string",
+                "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
+              },
+              "secret_access_key": {
+                "type": "string",
+                "description": "AWS secret access key. Supports env var reference"
+              },
+              "session_token": {
+                "type": "string",
+                "description": "AWS session token for STS temporary credentials. Supports env var reference"
+              },
+              "role_arn": {
+                "type": "string",
+                "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
+              },
+              "force_path_style": {
+                "type": "boolean",
+                "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
+                "default": false
+              },
+              "compress": true
+            },
+            "dependentRequired": {
+              "access_key_id": ["secret_access_key"],
+              "secret_access_key": ["access_key_id"],
+              "session_token": ["access_key_id", "secret_access_key"]
+            },
+            "additionalProperties": false
+          },
+          "else": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "project_id": {
+                "type": "string",
+                "description": "GCP project ID. Supports env var reference"
+              },
+              "credentials_json": {
+                "type": "string",
+                "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
+              },
+              "compress": true
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
