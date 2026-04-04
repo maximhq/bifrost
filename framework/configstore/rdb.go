@@ -3299,6 +3299,16 @@ func (s *RDBConfigStore) FlushSessions(ctx context.Context) error {
 	return s.db.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.SessionsTable{}).Error
 }
 
+// GetUserByID retrieves a user by their ID.
+func (s *RDBConfigStore) GetUserByID(ctx context.Context, id string) (*tables.TableUser, error) {
+	var user tables.TableUser
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&user)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &user, nil
+}
+
 // ExecuteTransaction executes a transaction.
 func (s *RDBConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return s.db.WithContext(ctx).Transaction(fn)

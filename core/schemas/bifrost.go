@@ -222,6 +222,8 @@ const (
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
+	BifrostContextKeyUserRole                            BifrostContextKey = "bifrost-user-role"          // string (user role from SSO - set by auth middleware)
+	BifrostContextKeyAuthProvider                        BifrostContextKey = "bifrost-auth-provider"      // string (auth provider e.g. "google", "saml", "password" - set by auth middleware)
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"

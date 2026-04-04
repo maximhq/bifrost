@@ -15,6 +15,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -487,15 +488,30 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 }
 
 // validateSession checks if a session token is valid
-func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, token string) bool {
+func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, token string) (*tables.SessionsTable, bool) {
 	session, err := store.GetSession(context.Background(), token)
 	if err != nil || session == nil {
-		return false
+		return nil, false
 	}
 	if session.ExpiresAt.Before(time.Now()) {
-		return false
+		return nil, false
 	}
-	return true
+	return session, true
+}
+
+// setUserContext loads the user from the store (if the session has a UserID) and
+// attaches user info to the request context.
+func setUserContext(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, session *tables.SessionsTable) {
+	if session == nil || session.UserID == "" {
+		return
+	}
+	user, err := store.GetUserByID(context.Background(), session.UserID)
+	if err != nil || user == nil {
+		return
+	}
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, user.ID)
+	ctx.SetUserValue(schemas.BifrostContextKeyUserRole, user.Role)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthProvider, user.AuthProvider)
 }
 
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
@@ -571,9 +587,15 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/session/login",
 		"/api/oauth/callback",
 		"/health",
+		"/api/auth/sso/google/login",
+		"/api/auth/sso/google/callback",
+		"/api/auth/sso/saml/login",
+		"/api/auth/sso/saml/acs",
+		"/api/auth/sso/saml/metadata",
 	}
 	whitelistedPrefixes := []string{
 		"/api/oauth/callback",
+		"/api/auth/sso/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -630,10 +652,13 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 						ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
 						if ticket != "" && m.wsTicketStore != nil {
 							sessionToken := m.wsTicketStore.Consume(ticket)
-							if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
-								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
-								next(ctx)
-								return
+							if sessionToken != "" {
+								if session, ok := validateSession(ctx, m.store, sessionToken); ok {
+									ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
+									setUserContext(ctx, m.store, session)
+									next(ctx)
+									return
+								}
 							}
 							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 							return
@@ -641,8 +666,9 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 						// Fallback: legacy ?token= param (for backward compatibility)
 						token := string(ctx.Request.URI().QueryArgs().Peek("token"))
 						if token != "" {
-							if validateSession(ctx, m.store, token) {
+							if session, ok := validateSession(ctx, m.store, token); ok {
 								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+								setUserContext(ctx, m.store, session)
 								next(ctx)
 								return
 							}
@@ -651,10 +677,13 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 						}
 						// Fallback: cookie-based WS auth
 						cookieToken := string(ctx.Request.Header.Cookie("token"))
-						if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
-							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
-							next(ctx)
-							return
+						if cookieToken != "" {
+							if session, ok := validateSession(ctx, m.store, cookieToken); ok {
+								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
+								setUserContext(ctx, m.store, session)
+								next(ctx)
+								return
+							}
 						}
 						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 						return
@@ -663,10 +692,13 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// Cookie-based auth fallback: if no Authorization header, check for the HTTPOnly session cookie.
 				// This supports the dashboard which relies on cookies instead of localStorage tokens.
 				cookieToken := string(ctx.Request.Header.Cookie("token"))
-				if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
-					ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
-					next(ctx)
-					return
+				if cookieToken != "" {
+					if session, ok := validateSession(ctx, m.store, cookieToken); ok {
+						ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
+						setUserContext(ctx, m.store, session)
+						next(ctx)
+						return
+					}
 				}
 				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 				return
@@ -716,7 +748,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// Checking bearer auth for dashboard calls
 			if scheme == "Bearer" {
 				// Verify the session
-				if !validateSession(ctx, m.store, token) {
+				session, valid := validateSession(ctx, m.store, token)
+				if !valid {
 					// Here we will check if its the base64 of username:password
 					// This is for backward compatibility with the old auth system
 					decodedBytes, err := base64.StdEncoding.DecodeString(token)
@@ -753,6 +786,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				}
 				// setting up session in the request
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+				setUserContext(ctx, m.store, session)
 				// Continue with the next handler
 				next(ctx)
 				return

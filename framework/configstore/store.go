@@ -216,6 +216,9 @@ type ConfigStore interface {
 	DeleteSession(ctx context.Context, token string) error
 	FlushSessions(ctx context.Context) error
 
+	// User CRUD
+	GetUserByID(ctx context.Context, id string) (*tables.TableUser, error)
+
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
