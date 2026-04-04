@@ -124,7 +124,9 @@ func TestInMemoryObjectStore_SimulateErrors(t *testing.T) {
 	}
 	store.PutErr = nil
 
-	_ = store.Put(ctx, "key", []byte("data"), nil)
+	if err := store.Put(ctx, "key", []byte("data"), nil); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	store.GetErr = fmt.Errorf("simulated get error")
 	if _, err := store.Get(ctx, "key"); err == nil {
 		t.Fatal("expected error from Get")

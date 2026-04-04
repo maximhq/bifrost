@@ -2199,7 +2199,7 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB) error {
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while adding has_object column: %s", err.Error())
+		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
 
 	}
 	return nil
@@ -2309,7 +2309,7 @@ func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
 	}})
 	err := m.Migrate()
 	if err != nil {
-		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
+		return fmt.Errorf("error while adding has_object column: %s", err.Error())
 	}
 	return nil
 }

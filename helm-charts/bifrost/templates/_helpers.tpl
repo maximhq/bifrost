@@ -300,6 +300,9 @@ false
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}
+{{- if .Values.bifrost.client.routingChainMaxDepth }}
+{{- $_ := set $client "routing_chain_max_depth" .Values.bifrost.client.routingChainMaxDepth }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Framework */ -}}
@@ -570,6 +573,64 @@ false
 {{- else }}
 {{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
+{{- end }}
+{{- /* Object Storage for log payloads */ -}}
+{{- if and .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled }}
+{{- $os := .Values.storage.logsStore.objectStorage }}
+{{- $osConfig := dict "type" $os.type "bucket" $os.bucket }}
+{{- if $os.prefix }}
+{{- $_ := set $osConfig "prefix" $os.prefix }}
+{{- end }}
+{{- if $os.compress }}
+{{- $_ := set $osConfig "compress" true }}
+{{- end }}
+{{- if eq $os.type "s3" }}
+{{- if $os.region }}
+{{- $_ := set $osConfig "region" $os.region }}
+{{- end }}
+{{- if $os.endpoint }}
+{{- $_ := set $osConfig "endpoint" $os.endpoint }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- if $os.accessKeyIdKey }}
+{{- $_ := set $osConfig "access_key_id" "env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID" }}
+{{- end }}
+{{- if $os.secretAccessKeyKey }}
+{{- $_ := set $osConfig "secret_access_key" "env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY" }}
+{{- end }}
+{{- if $os.sessionTokenKey }}
+{{- $_ := set $osConfig "session_token" "env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN" }}
+{{- end }}
+{{- $_ := set $osConfig "role_arn" "env.BIFROST_OBJECT_STORAGE_ROLE_ARN" }}
+{{- else }}
+{{- if $os.accessKeyId }}
+{{- $_ := set $osConfig "access_key_id" $os.accessKeyId }}
+{{- end }}
+{{- if $os.secretAccessKey }}
+{{- $_ := set $osConfig "secret_access_key" $os.secretAccessKey }}
+{{- end }}
+{{- if $os.sessionToken }}
+{{- $_ := set $osConfig "session_token" $os.sessionToken }}
+{{- end }}
+{{- if $os.roleArn }}
+{{- $_ := set $osConfig "role_arn" $os.roleArn }}
+{{- end }}
+{{- end }}
+{{- if $os.forcePathStyle }}
+{{- $_ := set $osConfig "force_path_style" true }}
+{{- end }}
+{{- end }}
+{{- if eq $os.type "gcs" }}
+{{- if $os.projectId }}
+{{- $_ := set $osConfig "project_id" $os.projectId }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "credentials_json" "env.BIFROST_OBJECT_STORAGE_CREDENTIALS_JSON" }}
+{{- else if $os.credentialsJson }}
+{{- $_ := set $osConfig "credentials_json" $os.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
@@ -931,6 +992,31 @@ false
 {{- end }}
 {{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key }}
 {{- $_ := set $config "audit_logs" $auditLogs }}
+{{- end }}
+{{- end }}
+{{- /* Large Payload Optimization */ -}}
+{{- if .Values.bifrost.largePayloadOptimization }}
+{{- $lpo := dict }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "enabled" }}
+{{- $_ := set $lpo "enabled" .Values.bifrost.largePayloadOptimization.enabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "requestThresholdBytes" }}
+{{- $_ := set $lpo "request_threshold_bytes" .Values.bifrost.largePayloadOptimization.requestThresholdBytes }}
+{{- end }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "responseThresholdBytes" }}
+{{- $_ := set $lpo "response_threshold_bytes" .Values.bifrost.largePayloadOptimization.responseThresholdBytes }}
+{{- end }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "prefetchSizeBytes" }}
+{{- $_ := set $lpo "prefetch_size_bytes" .Values.bifrost.largePayloadOptimization.prefetchSizeBytes }}
+{{- end }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "maxPayloadBytes" }}
+{{- $_ := set $lpo "max_payload_bytes" .Values.bifrost.largePayloadOptimization.maxPayloadBytes }}
+{{- end }}
+{{- if hasKey .Values.bifrost.largePayloadOptimization "truncatedLogBytes" }}
+{{- $_ := set $lpo "truncated_log_bytes" .Values.bifrost.largePayloadOptimization.truncatedLogBytes }}
+{{- end }}
+{{- if $lpo }}
+{{- $_ := set $config "large_payload_optimization" $lpo }}
 {{- end }}
 {{- end }}
 {{- /* WebSocket Config */ -}}

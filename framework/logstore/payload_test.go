@@ -24,6 +24,8 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		SpeechInput:             `{"input":"text"}`,
 		TranscriptionInput:      `{"file":"test.mp3"}`,
 		ImageGenerationInput:    `{"prompt":"cat"}`,
+		ImageEditInput:          `{"prompt":"edit cat"}`,
+		ImageVariationInput:     `{"image":"base64img"}`,
 		VideoGenerationInput:    `{"prompt":"dog"}`,
 		SpeechOutput:            `{"audio":"base64"}`,
 		TranscriptionOutput:     `{"text":"hello"}`,
@@ -88,7 +90,7 @@ func TestBuildInputContentSummary(t *testing.T) {
 	content := "What is the weather?"
 	log := &Log{
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: strPtr("It's sunny")},

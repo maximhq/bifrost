@@ -394,6 +394,12 @@
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers."
+            },
+            "routingChainMaxDepth": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum depth for routing rule chain evaluation",
+              "default": 10
             }
           },
           "additionalProperties": false
@@ -1176,12 +1182,6 @@
                       "required": ["weight"]
                     }
                   },
-                  "provider": {
-                    "type": "string"
-                  },
-                  "model": {
-                    "type": "string"
-                  },
                   "fallbacks": {
                     "type": "array",
                     "items": {
@@ -1662,6 +1662,41 @@
             }
           }
         },
+        "largePayloadOptimization": {
+          "type": "object",
+          "description": "Large payload streaming optimization configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "requestThresholdBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10485760
+            },
+            "responseThresholdBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10485760
+            },
+            "prefetchSizeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 65536
+            },
+            "maxPayloadBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 524288000
+            },
+            "truncatedLogBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1048576
+            }
+          }
+        },
         "websocket": {
           "type": "object",
           "description": "Optional tuning for the WebSocket gateway (Responses API WebSocket Mode, Realtime API)",
@@ -1792,6 +1827,81 @@
             "maxOpenConns": {
               "type": "integer",
               "minimum": 2
+            },
+            "objectStorage": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["s3", "gcs"]
+                },
+                "bucket": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "compress": {
+                  "type": "boolean"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "accessKeyId": {
+                  "type": "string"
+                },
+                "secretAccessKey": {
+                  "type": "string"
+                },
+                "sessionToken": {
+                  "type": "string"
+                },
+                "roleArn": {
+                  "type": "string"
+                },
+                "forcePathStyle": {
+                  "type": "boolean"
+                },
+                "projectId": {
+                  "type": "string"
+                },
+                "credentialsJson": {
+                  "type": "string"
+                },
+                "existingSecret": {
+                  "type": "string"
+                },
+                "accessKeyIdKey": {
+                  "type": "string"
+                },
+                "secretAccessKeyKey": {
+                  "type": "string"
+                },
+                "sessionTokenKey": {
+                  "type": "string"
+                },
+                "roleArnKey": {
+                  "type": "string"
+                },
+                "credentialsJsonKey": {
+                  "type": "string"
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": { "const": true }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["type", "bucket"]
+              }
             }
           }
         }

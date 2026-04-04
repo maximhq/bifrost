@@ -37,10 +37,16 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 	return hybrid, inner, objStore
 }
 
-func waitForUploads(h *HybridLogStore) {
-	// Give upload workers a moment to process queued work.
-	// This is a test helper; in production, Close() drains the queue.
-	time.Sleep(200 * time.Millisecond)
+func waitForUploads(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if done() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for upload state")
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
@@ -57,7 +63,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
 		},
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: strPtr("I'm fine, thanks!")},
@@ -70,7 +76,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
 
 	// Verify object was uploaded.
 	assert.Equal(t, 1, objStore.Len(), "expected 1 object in store")
@@ -87,7 +93,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	assert.Contains(t, found.ContentSummary, "Hello, how are you?")
 }
 
-func TestHybrid_ProcessingStatusSkipsUpload(t *testing.T) {
+func TestHybrid_EmptyPayloadSkipsUpload(t *testing.T) {
 	hybrid, _, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -104,10 +110,10 @@ func TestHybrid_ProcessingStatusSkipsUpload(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return len(hybrid.uploadQueue) == 0 })
 
-	// No upload for "processing" status.
-	assert.Equal(t, 0, objStore.Len(), "processing entries should not be uploaded")
+	// No upload when all payload fields are empty (e.g. initial "processing" entries).
+	assert.Equal(t, 0, objStore.Len(), "empty-payload entries should not be uploaded")
 }
 
 func TestHybrid_BatchCreateIfNotExists(t *testing.T) {
@@ -126,7 +132,7 @@ func TestHybrid_BatchCreateIfNotExists(t *testing.T) {
 			Status:    "success",
 			Object:    "chat.completion",
 			InputHistoryParsed: []schemas.ChatMessage{
-				{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 			},
 		}
 		require.NoError(t, entries[i].SerializeFields())
@@ -135,7 +141,7 @@ func TestHybrid_BatchCreateIfNotExists(t *testing.T) {
 	err := hybrid.BatchCreateIfNotExists(ctx, entries)
 	require.NoError(t, err)
 
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return objStore.Len() == 3 })
 	assert.Equal(t, 3, objStore.Len())
 }
 
@@ -178,12 +184,12 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
 
 	// Simulate S3 failure.
 	objStore.GetErr = assert.AnError
@@ -191,8 +197,11 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	found, err := hybrid.FindByID(ctx, "degrade-1")
 	require.NoError(t, err, "FindByID should succeed even when S3 fails")
 	assert.True(t, found.HasObject)
-	// Payload fields should be empty (S3 fetch failed), but no error returned.
-	assert.Empty(t, found.InputHistory, "payload should be empty when S3 fails")
+	// When S3 fails, the DB data is returned. The DB retains the last message
+	// in input_history for list views, so it won't be empty.
+	assert.NotEmpty(t, found.InputHistory, "last message should be retained in DB")
+	// But other payload fields (output_message, params, etc.) should be empty.
+	assert.Empty(t, found.OutputMessage, "output should be empty when S3 fails")
 }
 
 func TestHybrid_PutFailureDropsUpload(t *testing.T) {
@@ -212,12 +221,12 @@ func TestHybrid_PutFailureDropsUpload(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &content}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
 		},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
 
 	// Upload should have been dropped.
 	assert.Equal(t, 0, objStore.Len(), "no object should be stored when Put fails")
@@ -245,7 +254,7 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
 	assert.Equal(t, 1, objStore.Len())
 
 	err := hybrid.DeleteLog(ctx, "del-1")
@@ -279,7 +288,7 @@ func TestHybrid_Tags(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(hybrid)
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
 
 	key := ObjectKey("test", ts, "tag-1")
 	tags := objStore.GetTags(key)
@@ -306,7 +315,7 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 		Status:    "success",
 		Object:    "chat.completion",
 		InputHistoryParsed: []schemas.ChatMessage{
-			{Content: &schemas.ChatMessageContent{ContentStr: &inputText}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputText}},
 		},
 		OutputMessageParsed: &schemas.ChatMessage{
 			Content: &schemas.ChatMessageContent{ContentStr: &outputText},

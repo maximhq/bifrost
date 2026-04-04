@@ -208,6 +208,7 @@ bifrost:
     # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
+    # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
 
   # Framework configuration
   framework:
@@ -490,13 +491,15 @@ bifrost:
       #   name: "Route to Azure"
       #   description: "Route GPT requests to Azure"
       #   enabled: true
-      #   cel_expression: "request.model.startsWith('gpt-')"
-      #   provider: "azure"
-      #   model: ""                # Empty means use original model
+      #   cel_expression: "model.startsWith('gpt-')"
+      #   targets:
+      #     - provider: "azure"
+      #       model: ""              # Empty means use original model
+      #       weight: 1.0
       #   fallbacks: ["openai"]
-      #   scope: "global"          # Options: global, team, customer, virtual_key
-      #   scope_id: ""             # Required for non-global scopes
-      #   priority: 0              # Lower = evaluated first
+      #   scope: "global"           # Options: global, team, customer, virtual_key
+      #   scope_id: ""              # Required for non-global scopes
+      #   priority: 0               # Lower = evaluated first
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -594,6 +597,25 @@ bifrost:
     disabled: false
     hmacKey: ""
 
+  # Large payload optimization - streams large payloads without full materialization
+  # largePayloadOptimization:
+  #   enabled: false
+  #   requestThresholdBytes: 10485760      # 10MB
+  #   responseThresholdBytes: 10485760     # 10MB
+  #   prefetchSizeBytes: 65536             # 64KB
+  #   maxPayloadBytes: 524288000           # 500MB
+  #   truncatedLogBytes: 1048576           # 1MB
+
+  # WebSocket gateway configuration (Responses API, Realtime API)
+  # websocket:
+  #   maxConnectionsPerUser: 100
+  #   transcriptBufferSize: 100
+  #   pool:
+  #     maxIdlePerKey: 50
+  #     maxTotalConnections: 1000
+  #     idleTimeoutSeconds: 600
+  #     maxConnectionLifetimeSeconds: 7200
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
@@ -625,6 +647,37 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+
+    # Object storage for offloading large log payloads (optional)
+    # When enabled, request/response payloads are stored in S3/GCS
+    # while the DB keeps only lightweight index data for fast analytics.
+    objectStorage:
+      enabled: false
+      # type: s3        # Options: s3, gcs
+      # bucket: ""      # Bucket name
+      # prefix: bifrost # Key prefix for stored objects
+      # compress: false  # Enable gzip compression for stored objects
+
+      # S3 configuration (when type is s3)
+      # region: us-east-1
+      # endpoint: ""         # Custom endpoint for MinIO/R2
+      # accessKeyId: ""      # Leave empty to use default AWS credential chain
+      # secretAccessKey: ""  # (instance role, env vars, shared credentials, etc.)
+      # sessionToken: ""     # AWS STS session token (optional)
+      # roleArn: ""          # AWS IAM role ARN to assume via STS (works with static creds or instance role)
+      # forcePathStyle: false # Set true for MinIO
+
+      # GCS configuration (when type is gcs)
+      # projectId: ""
+      # credentialsJson: ""  # Service account JSON, omit for default credentials
+
+      # Use existing Kubernetes secret for credentials
+      # existingSecret: ""
+      # accessKeyIdKey: "access-key-id"
+      # secretAccessKeyKey: "secret-access-key"
+      # sessionTokenKey: "session-token"
+      # roleArnKey: "role-arn"
+      # credentialsJsonKey: "credentials-json"
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:

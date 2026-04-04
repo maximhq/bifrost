@@ -67,6 +67,8 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 			{ name: "speech", label: "Speech" },
 			{ name: "transcription", label: "Transcription" },
 			{ name: "count_tokens", label: "Count Tokens" },
+			{ name: "rerank", label: "Rerank" },
+			{ name: "video_generation", label: "Video Generation" },
 		],
 		description: "Filter rules by the type of API request (chat, text, embeddings, images, audio, etc.)",
 	},
