@@ -1,3 +1,4 @@
+import type { AuthMethodsResponse } from "@/lib/types/sso";
 import { baseApi, clearAuthStorage } from "./baseApi";
 
 export interface LoginRequest {
@@ -23,6 +24,13 @@ export const sessionApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Check if auth is enabled
 		isAuthEnabled: builder.query<IsAuthEnabledResponse, void>({
+			query: () => ({
+				url: "/session/is-auth-enabled",
+				method: "GET",
+			}),
+		}),
+		// Get available auth methods (SSO, password, etc.)
+		authMethods: builder.query<AuthMethodsResponse, void>({
 			query: () => ({
 				url: "/session/is-auth-enabled",
 				method: "GET",
@@ -58,4 +66,4 @@ export const sessionApi = baseApi.injectEndpoints({
 	}),
 });
 
-export const { useIsAuthEnabledQuery, useLoginMutation, useLogoutMutation } = sessionApi;
+export const { useIsAuthEnabledQuery, useAuthMethodsQuery, useLoginMutation, useLogoutMutation } = sessionApi;

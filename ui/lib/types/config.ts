@@ -2,6 +2,7 @@
 
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { EnvVar } from "./schemas";
+import type { GoogleSSOConfig, SAMLConfig } from "./sso";
 
 // Known provider names - all supported standard providers
 export type KnownProvider = (typeof KnownProvidersNames)[number];
@@ -400,6 +401,10 @@ export interface AuthConfig {
 	admin_password: EnvVar;
 	is_enabled: boolean;
 	disable_auth_on_inference?: boolean;
+	enabled_methods?: string[];
+	google_sso_config?: GoogleSSOConfig;
+	saml_config?: SAMLConfig;
+	default_role?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)

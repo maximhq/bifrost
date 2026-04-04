@@ -12,3 +12,4 @@ export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./sessionApi";
+export * from "./usersApi";
