@@ -12,6 +12,9 @@ export interface LoginResponse {
 export interface IsAuthEnabledResponse {
 	is_auth_enabled: boolean;
 	has_valid_token: boolean;
+	enabled_methods?: string[];
+	google_sso?: { login_url: string };
+	saml?: { login_url: string };
 }
 
 export interface LogoutResponse {
