@@ -224,6 +224,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRequestIDColumnToMCPToolLogs(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2195,43 +2198,9 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
-		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
-	}
-	return nil
-}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding has_object column: %s", err.Error())
 
-// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
-func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
-	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
-	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "logs_add_image_variation_input_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_variation_input") {
-				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_variation_input") {
-				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}})
-	err := m.Migrate()
-	if err != nil {
-		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
 	}
 	return nil
 }
@@ -2304,6 +2273,77 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
+
+	}
+	return nil
+}
+
+// migrationAddHasObjectColumn adds the has_object boolean column to the logs table.
+// Used by the hybrid log store to track whether a log's payload is stored in object storage.
+func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.AddColumn(&Log{}, "has_object"); err != nil {
+
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.DropColumn(&Log{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
+func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_variation_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
 	}
 	return nil
 }
