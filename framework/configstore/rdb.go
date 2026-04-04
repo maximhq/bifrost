@@ -3601,3 +3601,87 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 	}
 	return &config, nil
 }
+
+// GetUserByID retrieves a user by ID.
+func (s *RDBConfigStore) GetUserByID(ctx context.Context, id string) (*tables.TableUser, error) {
+	var user tables.TableUser
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&user)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get user by id: %w", result.Error)
+	}
+	return &user, nil
+}
+
+// GetUserByEmail retrieves a user by email.
+func (s *RDBConfigStore) GetUserByEmail(ctx context.Context, email string) (*tables.TableUser, error) {
+	var user tables.TableUser
+	result := s.db.WithContext(ctx).Where("email = ?", email).First(&user)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get user by email: %w", result.Error)
+	}
+	return &user, nil
+}
+
+// GetUsersPaginated retrieves users with pagination and optional search.
+func (s *RDBConfigStore) GetUsersPaginated(ctx context.Context, params UsersQueryParams) ([]tables.TableUser, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableUser{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(email) LIKE ? OR LOWER(name) LIKE ?", search, search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var users []tables.TableUser
+	if err := baseQuery.
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Offset(offset).
+		Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+	return users, totalCount, nil
+}
+
+// CreateUser creates a new user.
+func (s *RDBConfigStore) CreateUser(ctx context.Context, user *tables.TableUser) error {
+	return s.db.WithContext(ctx).Create(user).Error
+}
+
+// UpdateUser updates an existing user.
+func (s *RDBConfigStore) UpdateUser(ctx context.Context, user *tables.TableUser) error {
+	return s.db.WithContext(ctx).Save(user).Error
+}
+
+// DeleteUser deletes a user by ID.
+func (s *RDBConfigStore) DeleteUser(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableUser{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete user: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

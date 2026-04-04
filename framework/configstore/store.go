@@ -62,6 +62,13 @@ type CustomersQueryParams struct {
 	Search string
 }
 
+// UsersQueryParams holds pagination, filtering, and search parameters for user queries.
+type UsersQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -215,6 +222,14 @@ type ConfigStore interface {
 	CreateSession(ctx context.Context, session *tables.SessionsTable) error
 	DeleteSession(ctx context.Context, token string) error
 	FlushSessions(ctx context.Context) error
+
+	// User CRUD
+	GetUserByID(ctx context.Context, id string) (*tables.TableUser, error)
+	GetUserByEmail(ctx context.Context, email string) (*tables.TableUser, error)
+	GetUsersPaginated(ctx context.Context, params UsersQueryParams) ([]tables.TableUser, int64, error)
+	CreateUser(ctx context.Context, user *tables.TableUser) error
+	UpdateUser(ctx context.Context, user *tables.TableUser) error
+	DeleteUser(ctx context.Context, id string) error
 
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)

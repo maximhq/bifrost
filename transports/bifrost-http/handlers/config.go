@@ -526,6 +526,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
+		// Validate SSO config fields
+		if err := validateSSOConfig(payload.AuthConfig); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+
 		if payload.AuthConfig.IsEnabled {
 			// Initialize nil pointers to empty EnvVar to prevent nil-pointer dereference
 			if payload.AuthConfig.AdminUserName == nil {
@@ -861,6 +867,49 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 
 	if len(foundSecurityHeaders) > 0 {
 		return fmt.Errorf("the following headers are not allowed to be configured: %s. These headers are security headers and are always blocked", strings.Join(foundSecurityHeaders, ", "))
+	}
+
+	return nil
+}
+
+// validateSSOConfig validates SSO-related fields in the auth config.
+func validateSSOConfig(authConfig *configstore.AuthConfig) error {
+	if authConfig == nil {
+		return nil
+	}
+	// Validate enabled methods
+	for _, method := range authConfig.EnabledMethods {
+		switch method {
+		case "password", "google_sso", "saml":
+			// valid
+		default:
+			return fmt.Errorf("invalid auth method: %s", method)
+		}
+	}
+
+	// Validate Google SSO config if enabled
+	if slices.Contains(authConfig.EnabledMethods, "google_sso") {
+		if authConfig.GoogleSSOConfig == nil ||
+			authConfig.GoogleSSOConfig.ClientID == nil ||
+			authConfig.GoogleSSOConfig.ClientID.GetValue() == "" {
+			return fmt.Errorf("Google SSO requires client_id")
+		}
+		if authConfig.GoogleSSOConfig.ClientSecret == nil ||
+			authConfig.GoogleSSOConfig.ClientSecret.GetValue() == "" {
+			return fmt.Errorf("Google SSO requires client_secret")
+		}
+	}
+
+	// Validate SAML config if enabled
+	if slices.Contains(authConfig.EnabledMethods, "saml") {
+		if authConfig.SAMLConfig == nil {
+			return fmt.Errorf("SAML requires configuration")
+		}
+		hasMetadata := authConfig.SAMLConfig.MetadataURL != ""
+		hasManual := authConfig.SAMLConfig.IdPSSOURL != "" && authConfig.SAMLConfig.IdPCertificate != ""
+		if !hasMetadata && !hasManual {
+			return fmt.Errorf("SAML requires either metadata_url or manual IdP configuration (idp_sso_url + idp_certificate)")
+		}
 	}
 
 	return nil

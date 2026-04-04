@@ -1120,12 +1120,30 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GoogleSSOConfig holds configuration for Google SSO authentication.
+type GoogleSSOConfig struct {
+	ClientID     *schemas.EnvVar `json:"client_id"`
+	ClientSecret *schemas.EnvVar `json:"client_secret"`
+}
+
+// SAMLConfig holds configuration for SAML authentication.
+type SAMLConfig struct {
+	MetadataURL    string `json:"metadata_url,omitempty"`
+	IdPSSOURL      string `json:"idp_sso_url,omitempty"`
+	IdPCertificate string `json:"idp_certificate,omitempty"`
+	EntityID       string `json:"entity_id,omitempty"`
+}
+
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
 	AdminUserName          *schemas.EnvVar `json:"admin_username"`
 	AdminPassword          *schemas.EnvVar `json:"admin_password"`
 	IsEnabled              bool            `json:"is_enabled"`
 	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
+	EnabledMethods         []string        `json:"enabled_methods,omitempty"`
+	GoogleSSOConfig        *GoogleSSOConfig `json:"google_sso_config,omitempty"`
+	SAMLConfig             *SAMLConfig      `json:"saml_config,omitempty"`
+	AllowedDomains         []string        `json:"allowed_domains,omitempty"`
 }
 
 // ConfigMap maps provider names to their configurations.
