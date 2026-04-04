@@ -1,0 +1,17 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "logs.db"
+    },
+    "object_storage": {
+      "bucket": "env.AWS_S3_BUCKET",
+      "region": "env.AWS_REGION",
+      "access_key_id": "env.AWS_ACCESS_KEY_ID",
+      "secret_access_key": "env.AWS_SECRET_ACCESS_KEY",
+      "prefix": "logs"
+    }
+  }
+}

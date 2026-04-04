@@ -215,6 +215,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAliasColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -260,7 +263,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
 			updateSQL := `
-				UPDATE logs 
+				UPDATE logs
 				SET object_type = CASE object_type
 					WHEN 'chat.completion' THEN 'chat_completion'
 					WHEN 'text.completion' THEN 'text_completion'
@@ -277,7 +280,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 				WHERE object_type IN (
 					'chat.completion', 'text.completion', 'list',
 					'audio.speech', 'audio.transcription', 'chat.completion.chunk',
-					'audio.speech.chunk', 'audio.transcription.chunk', 
+					'audio.speech.chunk', 'audio.transcription.chunk',
 					'response', 'response.completion.chunk'
 				)`
 
@@ -293,7 +296,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 
 			// Use a single CASE statement for efficient bulk rollback
 			rollbackSQL := `
-				UPDATE logs 
+				UPDATE logs
 				SET object_type = CASE object_type
 					WHEN 'chat_completion' THEN 'chat.completion'
 					WHEN 'text_completion' THEN 'text.completion'
@@ -791,17 +794,17 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 
 			updateSQL := `
 				UPDATE logs
-				SET "timestamp" = strftime('%Y-%m-%dT%H:%M:%S', "timestamp", 'utc') || '.' || 
+				SET "timestamp" = strftime('%Y-%m-%dT%H:%M:%S', "timestamp", 'utc') || '.' ||
                     CAST(CAST(strftime('%f', "timestamp") * 1000 AS INTEGER) % 1000 AS TEXT) || 'Z'
-				WHERE 
-					"timestamp" NOT LIKE '%Z' 
+				WHERE
+					"timestamp" NOT LIKE '%Z'
 					AND "timestamp" NOT LIKE '%+00%';
 				UPDATE logs
-				SET created_at = strftime('%Y-%m-%dT%H:%M:%S', created_at, 'utc') || '.' || 
-                    CAST(CAST(strftime('%f', created_at) * 1000 AS INTEGER) % 1000 AS TEXT) || 
+				SET created_at = strftime('%Y-%m-%dT%H:%M:%S', created_at, 'utc') || '.' ||
+                    CAST(CAST(strftime('%f', created_at) * 1000 AS INTEGER) % 1000 AS TEXT) ||
                     'Z'
-				WHERE 
-					created_at NOT LIKE '%Z' 
+				WHERE
+					created_at NOT LIKE '%Z'
 					AND created_at NOT LIKE '%+00%';
 				`
 
@@ -2110,43 +2113,9 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	}})
-	err := m.Migrate()
-	if err != nil {
-		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
-	}
-	return nil
-}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding has_object column: %s", err.Error())
 
-// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
-func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
-	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
-	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "logs_add_image_variation_input_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&Log{}, "image_variation_input") {
-				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&Log{}, "image_variation_input") {
-				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-	}})
-	err := m.Migrate()
-	if err != nil {
-		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
 	}
 	return nil
 }
@@ -2219,6 +2188,77 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
+
+	}
+	return nil
+}
+
+// migrationAddHasObjectColumn adds the has_object boolean column to the logs table.
+// Used by the hybrid log store to track whether a log's payload is stored in object storage.
+func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.AddColumn(&Log{}, "has_object"); err != nil {
+
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.DropColumn(&Log{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
+func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_variation_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
 	}
 	return nil
 }

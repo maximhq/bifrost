@@ -4,24 +4,28 @@ package logstore
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/maximhq/bifrost/framework/objectstore"
 )
 
 // Config represents the configuration for the logs store.
 type Config struct {
-	Enabled       bool         `json:"enabled"`
-	Type          LogStoreType `json:"type"`
-	RetentionDays int          `json:"retention_days"`
-	Config        any          `json:"config"`
+	Enabled       bool                `json:"enabled"`
+	Type          LogStoreType        `json:"type"`
+	RetentionDays int                 `json:"retention_days"`
+	Config        any                 `json:"config"`
+	ObjectStorage *objectstore.Config `json:"object_storage,omitempty"`
 }
 
 // UnmarshalJSON is the custom unmarshal logic for Config
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled       bool            `json:"enabled"`
-		Type          LogStoreType    `json:"type"`
-		Config        json.RawMessage `json:"config"` // Keep as raw JSON
-		RetentionDays int             `json:"retention_days"`
+		Enabled       bool                `json:"enabled"`
+		Type          LogStoreType        `json:"type"`
+		Config        json.RawMessage     `json:"config"` // Keep as raw JSON
+		RetentionDays int                 `json:"retention_days"`
+		ObjectStorage *objectstore.Config `json:"object_storage,omitempty"`
 	}
 
 	var temp TempConfig
@@ -33,6 +37,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Enabled = temp.Enabled
 	c.Type = temp.Type
 	c.RetentionDays = temp.RetentionDays
+	c.ObjectStorage = temp.ObjectStorage
 	if !temp.Enabled {
 		c.Config = nil
 		return nil
