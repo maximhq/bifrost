@@ -1,0 +1,179 @@
+---
+title: "Fireworks"
+description: "Fireworks API conversion guide covering native chat, responses, completions, embeddings, streaming, and Fireworks-specific parameter handling"
+icon: "sparkles"
+---
+
+## Overview
+
+Fireworks is an **OpenAI-compatible provider** in Bifrost with native support for:
+- **Chat Completions** via `/v1/chat/completions`
+- **Responses API** via `/v1/responses`
+- **Text Completions** via `/v1/completions`
+- **Embeddings** via `/v1/embeddings`
+- **Streaming** for chat, responses, and completions
+- **Tool calling** for chat and responses
+
+Unless noted below, Fireworks follows the standard OpenAI-compatible request and response behavior described in [OpenAI](./openai).
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | ❌ | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Images | ❌ | ❌ | - |
+| Speech / Transcription | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+| Count Tokens | ❌ | ❌ | - |
+
+<Note>
+Fireworks Responses support is **native** in Bifrost. Requests are sent to Fireworks’ `/v1/responses` endpoint directly, so fields such as `previous_response_id`, `max_tool_calls`, and `store` are preserved.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+Fireworks chat completions use the standard OpenAI-compatible wire format.
+
+## Fireworks-specific handling
+
+- `prediction` is preserved and forwarded.
+- Bifrost maps `prompt_cache_key` to Fireworks `prompt_cache_isolation_key` for chat-completion cache isolation.
+- Assistant `reasoning_content` is preserved for Fireworks chat-completion models that support reasoning history.
+
+## Filtered Parameters
+
+For Fireworks chat completions, Bifrost removes or rewrites a small set of OpenAI-specific fields before sending the request upstream:
+
+- `prompt_cache_key` is mapped to Fireworks `prompt_cache_isolation_key`
+- `prompt_cache_retention` is removed
+- `verbosity` is removed
+- `store` is removed
+- `web_search_options` is removed
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fireworks/accounts/fireworks/models/deepseek-v3p2",
+    "messages": [
+      {"role": "user", "content": "Reply with exactly: fireworks ok"}
+    ]
+  }'
+```
+
+---
+
+# 2. Responses API
+
+Fireworks Responses use the native Fireworks endpoint:
+
+```text
+/v1/responses
+```
+
+This preserves Responses-only fields and semantics, including:
+- `previous_response_id`
+- `max_tool_calls`
+- `store`
+- native responses streaming
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fireworks/accounts/fireworks/models/deepseek-v3p2",
+    "input": [
+      {"role": "user", "content": "Reply with exactly: responses ok"}
+    ],
+    "max_tool_calls": 2
+  }'
+```
+
+For continuation requests, Fireworks also supports `previous_response_id`.
+
+---
+
+# 3. Text Completions
+
+Fireworks text completions are sent to the native completions endpoint:
+
+```text
+/v1/completions
+```
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fireworks/accounts/fireworks/models/deepseek-v3p2",
+    "prompt": "In fruits, A is for apple and B is for"
+  }'
+```
+
+For Fireworks text completions, Bifrost extracts `prompt_cache_key` from `extra_params` and maps it to Fireworks `prompt_cache_isolation_key`.
+
+---
+
+# 4. Embeddings
+
+Fireworks embeddings are sent to:
+
+```text
+/v1/embeddings
+```
+
+Embedding-capable models may be different from chat/completions models.
+
+## Example
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fireworks/nomic-ai/nomic-embed-text-v1.5",
+    "input": "embedding test"
+  }'
+```
+
+Fireworks documents additional embedding-specific fields such as `prompt_template`, `return_logits`, and `normalize`. This page describes the standard embeddings flow currently covered by Bifrost.
+
+---
+
+# 5. Unsupported Features
+
+The following operations are still unsupported by the Fireworks provider in Bifrost:
+
+| Feature | Status |
+|---------|--------|
+| Image generation / editing / variations | ❌ |
+| Speech / TTS | ❌ |
+| Transcription / STT | ❌ |
+| Files | ❌ |
+| Batch | ❌ |
+| Count tokens | ❌ |
+| Rerank | ❌ |
+
+---
+
+# 6. Caveats
+
+<Accordion title="Prompt Caching Semantics">
+For Fireworks chat completions, Bifrost maps `prompt_cache_key` to Fireworks `prompt_cache_isolation_key`, which is the Fireworks body field for cache isolation. Fireworks also accepts the header form `x-prompt-cache-isolation-key`. For text completions, Bifrost extracts `prompt_cache_key` from `extra_params` and maps it to the same Fireworks body field. If you need Fireworks session-affinity behavior, pass `user`, configure `x-session-affinity` in provider extra headers, or send it through the HTTP gateway via `x-bf-eh-x-session-affinity`. Live cache-hit behavior remains model and deployment dependent.
+</Accordion>
+
+<Accordion title="Reasoning History">
+Bifrost preserves assistant `reasoning_content` for Fireworks chat models that support reasoning history. Fireworks-specific reasoning controls such as `reasoning_history` are not given special typed handling in this provider page.
+</Accordion>

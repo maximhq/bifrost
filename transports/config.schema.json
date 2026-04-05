@@ -246,6 +246,9 @@
         },
         "huggingface": {
           "$ref": "#/$defs/provider"
+        },
+        "fireworks": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true

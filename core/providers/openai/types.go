@@ -26,6 +26,9 @@ type OpenAITextCompletionRequest struct {
 	schemas.TextCompletionParameters
 	Stream *bool `json:"stream,omitempty"`
 
+	// PromptCacheIsolationKey is the Fireworks completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -75,6 +78,9 @@ type OpenAIChatRequest struct {
 
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
 
 	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
@@ -245,11 +251,12 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	// Unmarshal the request-specific fields directly
 	type baseFields struct {
-		Model     string          `json:"model"`
-		Messages  []OpenAIMessage `json:"messages"`
-		Stream    *bool           `json:"stream,omitempty"`
-		MaxTokens *int            `json:"max_tokens,omitempty"`
-		Fallbacks []string        `json:"fallbacks,omitempty"`
+		Model                   string          `json:"model"`
+		Messages                []OpenAIMessage `json:"messages"`
+		Stream                  *bool           `json:"stream,omitempty"`
+		MaxTokens               *int            `json:"max_tokens,omitempty"`
+		PromptCacheIsolationKey *string         `json:"prompt_cache_isolation_key,omitempty"`
+		Fallbacks               []string        `json:"fallbacks,omitempty"`
 	}
 	var base baseFields
 	if err := sonic.Unmarshal(data, &base); err != nil {
@@ -259,6 +266,7 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.Messages = base.Messages
 	req.Stream = base.Stream
 	req.MaxTokens = base.MaxTokens
+	req.PromptCacheIsolationKey = base.PromptCacheIsolationKey
 	req.Fallbacks = base.Fallbacks
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)

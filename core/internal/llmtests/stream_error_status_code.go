@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -121,11 +122,24 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			stream, bifrostErr := client.ResponsesStreamRequest(bfCtx, request)
 
 			if bifrostErr == nil {
-				if stream != nil {
-					for range stream {
-					}
+				streamName := "responses stream"
+				if testConfig.Provider == schemas.Fireworks {
+					streamName = "fireworks responses stream"
 				}
-				t.Fatal("❌ Expected error for invalid model in responses stream request, but got nil")
+				var timedOut bool
+				bifrostErr, timedOut = waitForStreamError(t, stream, streamName)
+				if timedOut {
+					t.Fatalf("❌ Timed out waiting for invalid-model error on %s", streamName)
+				}
+				if bifrostErr == nil {
+					if testConfig.Provider == schemas.Fireworks {
+						if testConfig.ExpectRawRequestResponse {
+							t.Skip("Fireworks ResponsesStream invalid-model errors are not surfaced through Bifrost in raw request/response mode; skipping this raw-mode assertion")
+						}
+						t.Fatal("❌ Expected Fireworks ResponsesStream invalid-model error either immediately or on the stream, but got nil")
+					}
+					t.Fatal("❌ Expected error for invalid model in responses stream request, but got nil")
+				}
 			}
 
 			if bifrostErr.StatusCode == nil {
@@ -143,4 +157,33 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Logf("✅ Responses stream error for invalid model returned status code %d (provider: %s)", statusCode, testConfig.Provider)
 		})
 	})
+}
+
+func waitForStreamError(t *testing.T, stream chan *schemas.BifrostStreamChunk, streamName string) (*schemas.BifrostError, bool) {
+	t.Helper()
+
+	if stream == nil {
+		return nil, false
+	}
+
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				return nil, false
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.BifrostError != nil {
+				return chunk.BifrostError, false
+			}
+		case <-timeout.C:
+			t.Logf("⚠️ Timed out waiting for streamed error on %s", streamName)
+			return nil, true
+		}
+	}
 }

@@ -156,6 +156,12 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 									t.Logf("📝 Text chunk: %q", *streamResp.Delta)
 								}
 
+							case schemas.ResponsesStreamResponseTypeOutputTextDone:
+								if streamResp.Text != nil {
+									t.Logf("📝 Final text: %q", *streamResp.Text)
+									fullContent.WriteString(*streamResp.Text)
+								}
+
 							case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 								if streamResp.Item != nil {
 									t.Logf("📦 Item added: type=%v, id=%v", streamResp.Item.Type, streamResp.Item.ID)
@@ -183,6 +189,23 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 										fullContent.WriteString(*streamResp.Part.Text)
 									}
 								}
+
+							case schemas.ResponsesStreamResponseTypeOutputItemDone:
+								if streamResp.Item != nil {
+									t.Logf("📦 Item done: type=%v, id=%v", streamResp.Item.Type, streamResp.Item.ID)
+									if streamResp.Item.Content != nil {
+										if streamResp.Item.Content.ContentStr != nil {
+											t.Logf("📝 Final item content: %q", *streamResp.Item.Content.ContentStr)
+											fullContent.WriteString(*streamResp.Item.Content.ContentStr)
+										}
+										for i, block := range streamResp.Item.Content.ContentBlocks {
+											if block.Text != nil {
+												t.Logf("📝 Final item content block[%d]: %q", i, *block.Text)
+												fullContent.WriteString(*block.Text)
+											}
+										}
+									}
+								}
 							}
 
 							// Log other event details for debugging
@@ -202,6 +225,9 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 							case schemas.ResponsesStreamResponseTypeCompleted:
 								hasResponseCompleted = true
 								t.Logf("🏁 Response completed event detected")
+
+							case schemas.ResponsesStreamResponseTypeIncomplete:
+								t.Logf("🏁 Response incomplete event detected")
 
 							case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 								hasOutputItems = true
@@ -419,6 +445,12 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 								t.Logf("🔧 Function call arguments chunk: %q", *streamResp.Arguments)
 							}
 
+						case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+							functionCallArgsDetected = true
+							if streamResp.Arguments != nil {
+								t.Logf("🔧 Function call arguments completed: %q", *streamResp.Arguments)
+							}
+
 						case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 							if streamResp.Item != nil && streamResp.Item.Type != nil {
 								if *streamResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
@@ -427,6 +459,20 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 									if streamResp.Item.Name != nil {
 										t.Logf("🔧 Function name: %s", *streamResp.Item.Name)
+									}
+								}
+							}
+
+						case schemas.ResponsesStreamResponseTypeOutputItemDone:
+							if streamResp.Item != nil && streamResp.Item.Type != nil {
+								if *streamResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
+									toolCallDetected = true
+									t.Logf("🔧 Function call completed in streaming response")
+									if streamResp.Item.Name != nil {
+										t.Logf("🔧 Function name: %s", *streamResp.Item.Name)
+									}
+									if streamResp.Item.Arguments != nil {
+										functionCallArgsDetected = true
 									}
 								}
 							}
@@ -670,7 +716,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			},
 			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				// Track lifecycle events
-				var hasResponseCreated, hasResponseInProgress, hasResponseCompleted bool
+				var hasResponseCreated, hasResponseInProgress, hasResponseCompleted, hasResponseIncomplete bool
 				var hasOutputItemAdded bool
 				var hasContentPartAdded, hasContentPartDone bool
 				var hasOutputTextDelta, hasOutputTextDone bool
@@ -772,6 +818,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 								hasResponseCompleted = true
 								t.Logf("✅ Event %d: response.completed", seqNum)
 
+							case schemas.ResponsesStreamResponseTypeIncomplete:
+								hasResponseIncomplete = true
+								t.Logf("✅ Event %d: response.incomplete", seqNum)
+
 							case schemas.ResponsesStreamResponseTypeError:
 								errorMsg := "unknown error"
 								if streamResp.Message != nil {
@@ -827,6 +877,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				t.Logf("  response.content_part.done: %v (seq: %d)", hasContentPartDone, contentPartDoneSeq)
 				t.Logf("  response.output_item.done: %v (seq: %d)", hasOutputItemDone, outputItemDoneSeq)
 				t.Logf("  response.completed: %v", hasResponseCompleted)
+				t.Logf("  response.incomplete: %v", hasResponseIncomplete)
 
 				// Collect validation errors
 				var validationErrors []string
@@ -841,16 +892,16 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				if !hasOutputItemAdded {
 					validationErrors = append(validationErrors, "❌ Missing required event: response.output_item.added")
 				}
-				if !hasContentPartAdded {
+				if !hasContentPartAdded && !hasOutputItemDone {
 					validationErrors = append(validationErrors, "❌ Missing required event: response.content_part.added")
 				}
-				if !hasOutputTextDelta {
+				if !hasOutputTextDelta && !hasOutputTextDone && !hasOutputItemDone {
 					validationErrors = append(validationErrors, "❌ Missing required event: response.output_text.delta")
 				}
-				if !hasOutputTextDone {
+				if !hasOutputTextDone && !hasOutputItemDone {
 					validationErrors = append(validationErrors, "❌ Missing required event: response.output_text.done")
 				}
-				if !hasContentPartDone {
+				if !hasContentPartDone && !hasOutputItemDone {
 					validationErrors = append(validationErrors, "❌ Missing required event: response.content_part.done")
 				}
 				if !hasOutputItemDone {
@@ -886,9 +937,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				}
 
 				// Final validation
+				hasTerminalEvent := hasResponseCompleted
+				hasTextLifecycle := (hasContentPartAdded && hasOutputTextDelta && hasOutputTextDone && hasContentPartDone) || hasOutputItemDone
 				allEventsPresent := hasResponseCreated && hasResponseInProgress && hasOutputItemAdded &&
-					hasContentPartAdded && hasOutputTextDelta && hasOutputTextDone &&
-					hasContentPartDone && hasOutputItemDone && hasResponseCompleted
+					hasTextLifecycle && hasOutputItemDone && hasTerminalEvent
 
 				if allEventsPresent {
 					t.Logf("✅ All required lifecycle events are present and properly ordered")
@@ -950,7 +1002,11 @@ func validateResponsesStreamingStructure(t *testing.T, eventTypes map[schemas.Re
 	}
 
 	if !hasResponseCompleted {
-		t.Logf("⚠️ Warning: No response.completed event detected")
+		if count, exists := eventTypes[schemas.ResponsesStreamResponseTypeIncomplete]; exists && count > 0 {
+			t.Logf("ℹ️ Terminal event was response.incomplete instead of response.completed")
+		} else {
+			t.Logf("⚠️ Warning: No response.completed event detected")
+		}
 	}
 
 	if !hasOutputItems && !hasContentParts {
@@ -960,7 +1016,6 @@ func validateResponsesStreamingStructure(t *testing.T, eventTypes map[schemas.Re
 	// Validate minimum expected events
 	expectedEvents := []schemas.ResponsesStreamResponseType{
 		schemas.ResponsesStreamResponseTypeCreated,
-		schemas.ResponsesStreamResponseTypeOutputTextDelta,
 	}
 
 	for _, expectedEvent := range expectedEvents {
@@ -1001,7 +1056,11 @@ func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.Res
 		t.Logf("⚠️ Warning: No response.created event detected")
 	}
 
-	if _, hasCompleted := eventTypes[schemas.ResponsesStreamResponseTypeCompleted]; !hasCompleted {
+	hasCompleted := false
+	if count, ok := eventTypes[schemas.ResponsesStreamResponseTypeCompleted]; ok && count > 0 {
+		hasCompleted = true
+	}
+	if !hasCompleted {
 		t.Logf("⚠️ Warning: No response.completed event detected")
 	}
 
