@@ -2,8 +2,10 @@
 package schemas
 
 import (
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
@@ -257,6 +259,10 @@ const (
 	AttrNumberOfRetries = "gen_ai.number_of_retries"
 	AttrFallbackIndex   = "gen_ai.fallback_index"
 
+	// AttrGenAIDimensionPrefix is the prefix for dynamic request dimensions from x-bf-dim-* / x-bf-prom-* headers.
+	// Full keys are AttrGenAIDimensionPrefix + SanitizeDimensionLabel(name). Distinct from AttrDimensions (embeddings).
+	AttrGenAIDimensionPrefix = "gen_ai.dimension."
+
 	// Responses API Request Attributes
 	AttrPromptCacheKey      = "gen_ai.request.prompt_cache_key"
 	AttrReasoningEffort     = "gen_ai.request.reasoning_effort"
@@ -352,3 +358,29 @@ const (
 	AttrFileAfter          = "gen_ai.file.after"
 	AttrFileOrder          = "gen_ai.file.order"
 )
+
+// AttrBifrostDimensionPrefix is deprecated: use AttrGenAIDimensionPrefix. Values are gen_ai.dimension.* (not bifrost.dimension.*).
+const AttrBifrostDimensionPrefix = AttrGenAIDimensionPrefix
+
+// SanitizeDimensionLabel normalizes a header suffix for use in OTEL attribute keys:
+// lowercased; letters, digits, '.', '-', '_' kept; other runes become '_'; empty becomes "dimension".
+func SanitizeDimensionLabel(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	s := b.String()
+	if s == "" {
+		return "dimension"
+	}
+	return s
+}
+
+// DimensionAttrKey returns the OpenTelemetry span attribute key for a request dimension label.
+func DimensionAttrKey(label string) string {
+	return AttrGenAIDimensionPrefix + SanitizeDimensionLabel(label)
+}

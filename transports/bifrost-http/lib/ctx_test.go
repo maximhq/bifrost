@@ -226,3 +226,27 @@ func TestConvertToBifrostContext_NilMatcher(t *testing.T) {
 		t.Error("expected custom-header to be forwarded with nil matcher")
 	}
 }
+
+func TestConvertToBifrostContext_RequestDimensionsMerge(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-prom-team", "from-prom")
+	ctx.Request.Header.Set("x-bf-dim-team", "from-dim")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, false, nil)
+	defer cancel()
+
+	dimMap, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestDimensions).(map[string]string)
+	if !ok || dimMap == nil {
+		t.Fatal("expected BifrostContextKeyRequestDimensions map")
+	}
+	if dimMap["team"] != "from-dim" {
+		t.Errorf("team: want from-dim (dim overrides prom), got %q", dimMap["team"])
+	}
+	if dimMap["environment"] != "prod" {
+		t.Errorf("environment: got %q", dimMap["environment"])
+	}
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKey("team")).(string); !ok {
+		t.Error("expected legacy BifrostContextKey(team) from x-bf-prom-team")
+	}
+}

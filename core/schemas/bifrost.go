@@ -219,6 +219,7 @@ const (
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
+	BifrostContextKeyRequestDimensions                   BifrostContextKey = "bifrost-request-dimensions"                      // map[string]string (x-bf-dim-* / x-bf-prom-* merged; dim wins on conflict — for OTEL spans and metrics)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"

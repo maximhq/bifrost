@@ -12,7 +12,7 @@ Bifrost provides built-in telemetry and monitoring capabilities through Promethe
 - **Prometheus Integration** - Native metrics collection at `/metrics` endpoint
 - **Comprehensive Tracking** - Success/error rates, token usage, costs, and cache performance
 - **Custom Labels** - Configurable dimensions for detailed analysis
-- **Dynamic Headers** - Runtime label injection via `x-bf-prom-*` headers
+- **Dynamic Headers** - Runtime label injection via `x-bf-dim-*` (preferred) or `x-bf-prom-*` headers for Prometheus; the same dimensions are attached to OpenTelemetry traces and OTEL metrics when those plugins are enabled
 - **Cost Monitoring** - Real-time tracking of AI provider costs in USD
 - **Cache Analytics** - Direct and semantic cache hit tracking
 - **Async Collection** - Zero-latency impact on request processing
@@ -199,26 +199,32 @@ curl -X PATCH http://localhost:8080/config \
 
 ### Dynamic Label Injection
 
-Add custom label values at runtime using `x-bf-prom-*` headers:
+Add custom label values at runtime using dimension headers. **Prefer `x-bf-dim-*`** for a single convention across Prometheus (`/metrics`), OpenTelemetry traces, and the OTEL plugin metrics push. **`x-bf-prom-*`** remains supported for existing setups.
 
 ```bash
-# Add custom labels to specific requests
+# Preferred: x-bf-dim-* (same semantics as legacy x-bf-prom-* for metrics)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "x-bf-prom-team: engineering" \
-  -H "x-bf-prom-environment: production" \
-  -H "x-bf-prom-organization: my-org" \
-  -H "x-bf-prom-project: my-project" \
+  -H "x-bf-dim-team: engineering" \
+  -H "x-bf-dim-environment: production" \
+  -H "x-bf-dim-organization: my-org" \
+  -H "x-bf-dim-project: my-project" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-**Header Format:**
-- Prefix: `x-bf-prom-`
-- Label name: Any string after the prefix
-- Value: String value for the label
+If you send both `x-bf-dim-<name>` and `x-bf-prom-<name>` for the same label, **`x-bf-dim-*` wins**.
+
+**Header format**
+- Prefix: `x-bf-dim-` or `x-bf-prom-`
+- Label name: Suffix after the prefix (normalized for OTEL span attributes under `gen_ai.dimension.<name>`)
+- Value: String used as the label value and span attribute value
+
+**OpenTelemetry:** LLM and retry spans include these dimensions as attributes. High-cardinality labels increase trace and metric cardinality—use the same caution as with Prometheus `custom_labels`.
+
+**Note:** Register label names in `prometheus_labels` / custom labels config so Prometheus vectors include those label slots; OTEL traces do not require that registration.
 
 ---
 

@@ -35,10 +35,10 @@ const (
 // preserving important header values for monitoring and tracing purposes.
 //
 // The function processes several types of special headers:
-// 1. Prometheus Headers (x-bf-prom-*):
-//   - All headers prefixed with 'x-bf-prom-' are copied to the context
-//   - The prefix is stripped and the remainder becomes the context key
-//   - Example: 'x-bf-prom-latency' becomes 'latency' in the context
+// 1. Request dimension headers (x-bf-dim-* and x-bf-prom-*):
+//   - Preferred: 'x-bf-dim-<name>' — merged into BifrostContextKeyRequestDimensions (map[string]string) for OTEL traces/metrics
+//   - Legacy: 'x-bf-prom-<name>' — same merge; also sets BifrostContextKey(<name>) for backward compatibility; Prometheus /metrics still reads headers
+//   - If the same logical name appears in both, x-bf-dim-* wins
 //
 // 2. Maxim Tracing Headers (x-bf-maxim-*):
 //   - Specifically handles 'x-bf-maxim-traceID' and 'x-bf-maxim-generationID'
@@ -141,6 +141,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	maximTags := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
+	// Dimension headers: merged after the header pass (x-bf-dim overrides x-bf-prom on same sanitized key)
+	promDims := make(map[string]string)
+	dimDims := make(map[string]string)
 	// Security denylist of header names that should never be accepted (case-insensitive)
 	// This denylist is always enforced regardless of user configuration
 	securityDenylist := map[string]bool{
@@ -152,8 +155,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		"transfer-encoding":   true,
 
 		// prevent auth/key overrides via x-bf-eh-*
-		"x-api-key":      true,
-		"x-goog-api-key": true,
+		"x-api-key":       true,
+		"x-goog-api-key":  true,
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
@@ -171,7 +174,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
-		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
+			sk := schemas.SanitizeDimensionLabel(labelName)
+			dimDims[sk] = string(value)
+			return true
+		}
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok && labelName != "" {
+			sk := schemas.SanitizeDimensionLabel(labelName)
+			promDims[sk] = string(value)
 			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			return true
 		}
@@ -400,6 +410,17 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 		}
 		return true
 	})
+
+	if len(promDims) > 0 || len(dimDims) > 0 {
+		merged := make(map[string]string, len(promDims)+len(dimDims))
+		for k, v := range promDims {
+			merged[k] = v
+		}
+		for k, v := range dimDims {
+			merged[k] = v
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestDimensions, merged)
+	}
 
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {

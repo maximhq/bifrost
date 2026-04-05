@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -523,6 +525,23 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("customer_id", customerID),
 		attribute.String("customer_name", customerName),
 	}
+}
+
+// AppendBifrostDimensionMetricAttrs appends gen_ai.dimension.* string attributes from span attrs to metric key-values.
+func AppendBifrostDimensionMetricAttrs(spanAttrs map[string]any, base []attribute.KeyValue) []attribute.KeyValue {
+	if spanAttrs == nil {
+		return base
+	}
+	prefix := schemas.AttrGenAIDimensionPrefix
+	for k, v := range spanAttrs {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if s, ok := v.(string); ok && s != "" {
+			base = append(base, attribute.String(k, s))
+		}
+	}
+	return base
 }
 
 // BuildHTTPAttributes builds common HTTP metric attributes
