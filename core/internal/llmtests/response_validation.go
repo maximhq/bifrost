@@ -2308,51 +2308,55 @@ func logValidationResults(t *testing.T, result ValidationResult, scenarioName st
 	}
 }
 
-// countLogicalChoicesInResponsesAPI counts logical choices in Responses API format
-// Groups related messages (text + tool calls) as one logical choice to match Chat Completions API behavior
+// countLogicalChoicesInResponsesAPI collapses a native Responses output array
+// into the single logical assistant turn expected by shared llmtests.
 func countLogicalChoicesInResponsesAPI(messages []schemas.ResponsesMessage) int {
 	if len(messages) == 0 {
 		return 0
 	}
 
-	// For tool call scenarios, we typically have:
-	// 1. Text message (ResponsesMessageTypeMessage)
-	// 2. Tool call message(s) (ResponsesMessageTypeFunctionCall)
-	// These should count as 1 logical choice
-
-	hasTextMessage := false
-	hasToolCalls := false
-	hasSeparateMessages := false
+	hasAssistantTurn := false
+	nonInputItems := 0
 
 	for _, msg := range messages {
+		if msg.Role != nil {
+			switch *msg.Role {
+			case schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+				// Native Responses output may include echoed input items; they are not model choices.
+				continue
+			}
+		}
+
+		nonInputItems++
+
 		if msg.Type != nil {
 			switch *msg.Type {
 			case schemas.ResponsesMessageTypeMessage:
-				hasTextMessage = true
-			case schemas.ResponsesMessageTypeFunctionCall:
-				hasToolCalls = true
-			case schemas.ResponsesMessageTypeReasoning, schemas.ResponsesMessageTypeRefusal:
-				hasSeparateMessages = true
+				if msg.Role == nil || *msg.Role == schemas.ResponsesInputMessageRoleAssistant {
+					hasAssistantTurn = true
+				}
+			case schemas.ResponsesMessageTypeReasoning,
+				schemas.ResponsesMessageTypeRefusal,
+				schemas.ResponsesMessageTypeFunctionCall,
+				schemas.ResponsesMessageTypeFileSearchCall,
+				schemas.ResponsesMessageTypeComputerCall,
+				schemas.ResponsesMessageTypeWebSearchCall,
+				schemas.ResponsesMessageTypeWebFetchCall,
+				schemas.ResponsesMessageTypeCodeInterpreterCall,
+				schemas.ResponsesMessageTypeLocalShellCall,
+				schemas.ResponsesMessageTypeMCPCall,
+				schemas.ResponsesMessageTypeCustomToolCall,
+				schemas.ResponsesMessageTypeImageGenerationCall,
+				schemas.ResponsesMessageTypeMCPListTools,
+				schemas.ResponsesMessageTypeMCPApprovalRequest:
+				hasAssistantTurn = true
 			}
 		}
 	}
 
-	// If we have both text and tool calls, count as 1 logical choice
-	// This matches the Chat Completions API behavior where both are in the same choice
-	if hasTextMessage && hasToolCalls {
-		return 1 + (func() int {
-			if hasSeparateMessages {
-				return 1 // Add 1 for reasoning/refusal messages
-			}
-			return 0
-		})()
-	}
-
-	// If only tool calls (no text), still count as 1 logical choice
-	if hasToolCalls && !hasTextMessage {
+	if hasAssistantTurn {
 		return 1
 	}
 
-	// If only text message(s) or other types, count actual messages
-	return len(messages)
+	return nonInputItems
 }

@@ -463,6 +463,32 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 		return ""
 	}
 
+	// Prefer assistant text output over echoed user/system input items.
+	for _, output := range response.Output {
+		if output.Role == nil || *output.Role != schemas.ResponsesInputMessageRoleAssistant {
+			continue
+		}
+		if output.Type != nil && *output.Type != schemas.ResponsesMessageTypeMessage {
+			continue
+		}
+		if output.Content != nil {
+			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
+				return *output.Content.ContentStr
+			} else if output.Content.ContentBlocks != nil {
+				var builder strings.Builder
+				for _, block := range output.Content.ContentBlocks {
+					if block.Text != nil {
+						builder.WriteString(*block.Text)
+					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
+				}
+			}
+		}
+	}
+
 	for _, output := range response.Output {
 		// Check for regular content first
 		if output.Content != nil {

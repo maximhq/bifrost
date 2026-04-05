@@ -3,6 +3,8 @@ package openai
 import (
 	"testing"
 
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -169,6 +171,101 @@ func TestToOpenAIChatRequest_CachingDeterminism(t *testing.T) {
 
 	if string(jsonA) != string(jsonB) {
 		t.Errorf("caching broken: same schema produced different JSON\nA: %s\nB: %s", jsonA, jsonB)
+	}
+}
+
+func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	cacheKey := "cache-key-1"
+	reasoning := "step by step"
+	predictionContent := "fireworks ok"
+	userContent := "Reply with exactly: fireworks ok"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Fireworks,
+		Model:    "accounts/fireworks/models/deepseek-v3p2",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &userContent,
+				},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &predictionContent,
+				},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			PromptCacheKey: &cacheKey,
+			Prediction: &schemas.ChatPrediction{
+				Type:    "content",
+				Content: predictionContent,
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.PromptCacheIsolationKey == nil || *result.PromptCacheIsolationKey != cacheKey {
+		t.Fatalf("expected prompt_cache_isolation_key %q, got %v", cacheKey, result.PromptCacheIsolationKey)
+	}
+	if result.PromptCacheKey != nil {
+		t.Fatalf("expected prompt_cache_key to be stripped, got %v", *result.PromptCacheKey)
+	}
+	if result.Prediction == nil || result.Prediction.Content != predictionContent {
+		t.Fatalf("expected prediction to be preserved, got %#v", result.Prediction)
+	}
+	if len(result.Messages) != 2 || result.Messages[1].OpenAIChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with OpenAI assistant payload, got %#v", result.Messages)
+	}
+	if result.Messages[1].OpenAIChatAssistantMessage.Reasoning == nil || *result.Messages[1].OpenAIChatAssistantMessage.Reasoning != reasoning {
+		t.Fatalf("expected assistant reasoning_content %q, got %#v", reasoning, result.Messages[1].OpenAIChatAssistantMessage)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, bifrostReq), nil
+		},
+		schemas.Fireworks,
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled request body: %v", err)
+	}
+	if got, ok := jsonMap["prompt_cache_isolation_key"].(string); !ok || got != cacheKey {
+		t.Fatalf("expected prompt_cache_isolation_key %q in wire payload, got %#v", cacheKey, jsonMap["prompt_cache_isolation_key"])
+	}
+	if _, ok := jsonMap["prompt_cache_key"]; ok {
+		t.Fatalf("expected prompt_cache_key to be absent from wire payload, got %#v", jsonMap["prompt_cache_key"])
+	}
+
+	messages, ok := jsonMap["messages"].([]interface{})
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected 2 messages in wire payload, got %#v", jsonMap["messages"])
+	}
+	assistantMessage, ok := messages[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected assistant message object, got %#v", messages[1])
+	}
+	if got, ok := assistantMessage["reasoning_content"].(string); !ok || got != reasoning {
+		t.Fatalf("expected reasoning_content %q in assistant payload, got %#v", reasoning, assistantMessage["reasoning_content"])
 	}
 }
 

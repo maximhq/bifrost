@@ -26,6 +26,9 @@ type OpenAITextCompletionRequest struct {
 	schemas.TextCompletionParameters
 	Stream *bool `json:"stream,omitempty"`
 
+	// PromptCacheIsolationKey is the Fireworks completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -75,6 +78,9 @@ type OpenAIChatRequest struct {
 
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// PromptCacheIsolationKey is the Fireworks chat-completions field for cache isolation.
+	PromptCacheIsolationKey *string `json:"prompt_cache_isolation_key,omitempty"`
 
 	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
