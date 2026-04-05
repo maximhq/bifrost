@@ -293,6 +293,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keySelector:    config.KeySelector,
 		oauth2Provider: config.OAuth2Provider,
 		logger:         config.Logger,
+		kvStore:        config.KVStore,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
