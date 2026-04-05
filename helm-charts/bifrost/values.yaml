@@ -621,6 +621,37 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
 
+    # Object storage for offloading large log payloads (optional)
+    # When enabled, request/response payloads are stored in S3/GCS
+    # while the DB keeps only lightweight index data for fast analytics.
+    objectStorage:
+      enabled: false
+      # type: s3        # Options: s3, gcs
+      # bucket: ""      # Bucket name
+      # prefix: bifrost # Key prefix for stored objects
+      # compress: false  # Enable gzip compression for stored objects
+
+      # S3 configuration (when type is s3)
+      # region: us-east-1
+      # endpoint: ""         # Custom endpoint for MinIO/R2
+      # accessKeyId: ""      # Leave empty to use default AWS credential chain
+      # secretAccessKey: ""  # (instance role, env vars, shared credentials, etc.)
+      # sessionToken: ""     # AWS STS session token (optional)
+      # roleArn: ""          # AWS IAM role ARN to assume via STS (works with static creds or instance role)
+      # forcePathStyle: false # Set true for MinIO
+
+      # GCS configuration (when type is gcs)
+      # projectId: ""
+      # credentialsJson: ""  # Service account JSON, omit for default credentials
+
+      # Use existing Kubernetes secret for credentials
+      # existingSecret: ""
+      # accessKeyIdKey: "access-key-id"
+      # secretAccessKeyKey: "secret-access-key"
+      # sessionTokenKey: "session-token"
+      # roleArnKey: "role-arn"
+      # credentialsJsonKey: "credentials-json"
+
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:
   # Deploy PostgreSQL as part of this chart
