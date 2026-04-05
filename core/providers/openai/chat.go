@@ -167,6 +167,15 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		req.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
 		req.ToolChoice.ChatToolChoiceStruct = nil
 	}
+
+	// Mistral only accepts reasoning_effort values "none" or "high".
+	// Drop unsupported values (e.g. "low", "medium") instead of coercing.
+	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
+		effort := *req.ChatParameters.Reasoning.Effort
+		if effort != "none" && effort != "high" {
+			req.ChatParameters.Reasoning.Effort = nil
+		}
+	}
 }
 
 // applyXAICompatibility applies xAI-specific transformations to the request
