@@ -781,6 +781,48 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(`{}`), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(normalized))
+}
+
+func TestToolFunctionParameters_ExplicitEmptyObjectWhitespacePreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(` { } `), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(normalized))
+}
+
+func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(`{"type":"object","properties":{}}`), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
+}
+
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
 // serialization for file search filters.
 func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {
