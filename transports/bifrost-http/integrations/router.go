@@ -2291,9 +2291,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
+		// Separate defers ensure each cleanup runs even if an earlier one panics (LIFO order)
+		defer reader.Done()
+		defer schemas.ReleaseHTTPRequest(httpReq)
 		defer func() {
-			schemas.ReleaseHTTPRequest(httpReq)
-			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
