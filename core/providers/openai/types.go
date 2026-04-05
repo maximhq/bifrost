@@ -251,11 +251,12 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	// Unmarshal the request-specific fields directly
 	type baseFields struct {
-		Model     string          `json:"model"`
-		Messages  []OpenAIMessage `json:"messages"`
-		Stream    *bool           `json:"stream,omitempty"`
-		MaxTokens *int            `json:"max_tokens,omitempty"`
-		Fallbacks []string        `json:"fallbacks,omitempty"`
+		Model                   string          `json:"model"`
+		Messages                []OpenAIMessage `json:"messages"`
+		Stream                  *bool           `json:"stream,omitempty"`
+		MaxTokens               *int            `json:"max_tokens,omitempty"`
+		PromptCacheIsolationKey *string         `json:"prompt_cache_isolation_key,omitempty"`
+		Fallbacks               []string        `json:"fallbacks,omitempty"`
 	}
 	var base baseFields
 	if err := sonic.Unmarshal(data, &base); err != nil {
@@ -265,6 +266,7 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.Messages = base.Messages
 	req.Stream = base.Stream
 	req.MaxTokens = base.MaxTokens
+	req.PromptCacheIsolationKey = base.PromptCacheIsolationKey
 	req.Fallbacks = base.Fallbacks
 
 	// Unmarshal ChatParameters (which has its own custom unmarshaller)

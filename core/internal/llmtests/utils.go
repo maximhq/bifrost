@@ -490,6 +490,32 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 	}
 
 	for _, output := range response.Output {
+		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeReasoning {
+			if output.ResponsesReasoning != nil && output.ResponsesReasoning.Summary != nil {
+				var builder strings.Builder
+				for _, summaryBlock := range output.ResponsesReasoning.Summary {
+					if summaryBlock.Text != "" {
+						if builder.Len() > 0 {
+							builder.WriteString("\n\n")
+						}
+						builder.WriteString(summaryBlock.Text)
+					}
+				}
+				content := builder.String()
+				if content != "" {
+					return content
+				}
+			}
+		}
+
+		// Skip echoed user/system/developer input items
+		if output.Role != nil {
+			switch *output.Role {
+			case schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+				continue
+			}
+		}
+
 		// Check for regular content first
 		if output.Content != nil {
 			if output.Content.ContentStr != nil && *output.Content.ContentStr != "" {
@@ -508,24 +534,6 @@ func GetResponsesContent(response *schemas.BifrostResponsesResponse) string {
 			}
 		}
 
-		// Check for reasoning content in summary field
-		if output.Type != nil && *output.Type == schemas.ResponsesMessageTypeReasoning {
-			if output.ResponsesReasoning != nil && output.ResponsesReasoning.Summary != nil {
-				var builder strings.Builder
-				for _, summaryBlock := range output.ResponsesReasoning.Summary {
-					if summaryBlock.Text != "" {
-						if builder.Len() > 0 {
-							builder.WriteString("\n\n")
-						}
-						builder.WriteString(summaryBlock.Text)
-					}
-				}
-				content := builder.String()
-				if content != "" {
-					return content
-				}
-			}
-		}
 	}
 
 	return ""

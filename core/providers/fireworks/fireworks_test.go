@@ -165,7 +165,7 @@ func fireworksModelSupportsTextCompletions(t *testing.T, client *bifrost.Bifrost
 			PromptStr: &prompt,
 		},
 		Params: &schemas.TextCompletionParameters{
-			MaxTokens: bifrost.Ptr(8),
+			MaxTokens: schemas.Ptr(8),
 		},
 	})
 	if bifrostErr != nil {

@@ -126,7 +126,11 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				if testConfig.Provider == schemas.Fireworks {
 					streamName = "fireworks responses stream"
 				}
-				bifrostErr = waitForStreamError(t, stream, streamName)
+				var timedOut bool
+				bifrostErr, timedOut = waitForStreamError(t, stream, streamName)
+				if timedOut {
+					t.Fatalf("❌ Timed out waiting for invalid-model error on %s", streamName)
+				}
 				if bifrostErr == nil {
 					if testConfig.Provider == schemas.Fireworks {
 						if testConfig.ExpectRawRequestResponse {
@@ -155,11 +159,11 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	})
 }
 
-func waitForStreamError(t *testing.T, stream chan *schemas.BifrostStreamChunk, streamName string) *schemas.BifrostError {
+func waitForStreamError(t *testing.T, stream chan *schemas.BifrostStreamChunk, streamName string) (*schemas.BifrostError, bool) {
 	t.Helper()
 
 	if stream == nil {
-		return nil
+		return nil, false
 	}
 
 	timeout := time.NewTimer(10 * time.Second)
@@ -169,17 +173,17 @@ func waitForStreamError(t *testing.T, stream chan *schemas.BifrostStreamChunk, s
 		select {
 		case chunk, ok := <-stream:
 			if !ok {
-				return nil
+				return nil, false
 			}
 			if chunk == nil {
 				continue
 			}
 			if chunk.BifrostError != nil {
-				return chunk.BifrostError
+				return chunk.BifrostError, false
 			}
 		case <-timeout.C:
 			t.Logf("⚠️ Timed out waiting for streamed error on %s", streamName)
-			return nil
+			return nil, true
 		}
 	}
 }
