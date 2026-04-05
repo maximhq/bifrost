@@ -70,3 +70,21 @@ func TestChooserUpdateShortcutRequestsUpdate(t *testing.T) {
 		t.Fatal("expected y to request update when update is available")
 	}
 }
+
+func TestEmptyModelsMessageForCodexShowsConfigHint(t *testing.T) {
+	m := newChooserModel(ChooserConfig{
+		Harnesses: []HarnessOption{{ID: "codex", Label: "Codex CLI", Installed: true}},
+	})
+	m.phase = phaseModel
+	m.harnessIdx = 0
+
+	next, _ := m.Update(modelsMsg{models: nil, err: nil})
+	got := next.(chooserModel)
+
+	if !strings.Contains(got.loadErr, "Codex") {
+		t.Fatalf("expected codex-specific hint, got %q", got.loadErr)
+	}
+	if !strings.Contains(got.loadErr, "config.toml") {
+		t.Fatalf("expected config.toml hint, got %q", got.loadErr)
+	}
+}
