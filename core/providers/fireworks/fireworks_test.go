@@ -78,47 +78,60 @@ func resolveFireworksModels(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	requestedTextModel := normalizeFireworksModelID(os.Getenv("FIREWORKS_TEXT_MODEL"))
 	requestedEmbeddingModel := normalizeFireworksModelID(os.Getenv("FIREWORKS_EMBEDDING_MODEL"))
 
-	chatModel := ""
-	textModel := ""
-	embeddingModel := ""
+	chatModel := requestedChatModel
+	textModel := requestedTextModel
+	embeddingModel := requestedEmbeddingModel
 
-	pageToken := ""
-	for page := 0; page < 5; page++ {
-		req := &schemas.BifrostListModelsRequest{
-			Provider:  schemas.Fireworks,
-			PageSize:  200,
-			PageToken: pageToken,
-		}
-
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		resp, bifrostErr := client.ListModelsRequest(bfCtx, req)
-		if bifrostErr != nil {
-			t.Fatalf("Failed to list Fireworks models for test discovery: %v", llmtests.GetErrorMessage(bifrostErr))
-		}
-
-		if chatModel == "" {
-			chatModel = pickFireworksChatModel(resp.Data)
-		}
-		if textModel == "" {
-			// Fireworks text completions currently reuse the chat-capable model pool;
-			textModel = pickFireworksChatModel(resp.Data)
-		}
-		if embeddingModel == "" {
-			embeddingModel = pickFireworksEmbeddingModel(resp.Data)
-		}
-
-		if chatModel != "" && textModel != "" && embeddingModel != "" {
-			break
-		}
-		if resp.NextPageToken == "" {
-			break
-		}
-		pageToken = resp.NextPageToken
+	if requestedChatModel != "" {
+		t.Logf("Using FIREWORKS_CHAT_MODEL=%q override", requestedChatModel)
+	}
+	if requestedTextModel != "" {
+		t.Logf("Using FIREWORKS_TEXT_MODEL=%q override", requestedTextModel)
+	}
+	if requestedEmbeddingModel != "" {
+		t.Logf("Using FIREWORKS_EMBEDDING_MODEL=%q override", requestedEmbeddingModel)
 	}
 
-	chatModel = selectFireworksModel(t, "chat", requestedChatModel, chatModel)
-	textModel = selectFireworksModel(t, "text", requestedTextModel, textModel)
-	embeddingModel = selectFireworksModel(t, "embedding", requestedEmbeddingModel, embeddingModel)
+	if chatModel == "" || textModel == "" || embeddingModel == "" {
+		pageToken := ""
+		for page := 0; page < 5; page++ {
+			req := &schemas.BifrostListModelsRequest{
+				Provider:  schemas.Fireworks,
+				PageSize:  200,
+				PageToken: pageToken,
+			}
+
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			resp, bifrostErr := client.ListModelsRequest(bfCtx, req)
+			if bifrostErr != nil {
+				if chatModel == "" {
+					t.Fatalf("Failed to list Fireworks models for test discovery: %v", llmtests.GetErrorMessage(bifrostErr))
+				}
+				t.Logf("Fireworks model discovery failed: %v", llmtests.GetErrorMessage(bifrostErr))
+				break
+			}
+
+			if chatModel == "" {
+				chatModel = pickFireworksChatModel(resp.Data)
+			}
+			if textModel == "" {
+				// Fireworks text completions currently reuse the chat-capable model pool;
+				// a later probe verifies that the selected model accepts /v1/completions.
+				textModel = pickFireworksChatModel(resp.Data)
+			}
+			if embeddingModel == "" {
+				embeddingModel = pickFireworksEmbeddingModel(resp.Data)
+			}
+
+			if chatModel != "" && textModel != "" && embeddingModel != "" {
+				break
+			}
+			if resp.NextPageToken == "" {
+				break
+			}
+			pageToken = resp.NextPageToken
+		}
+	}
 
 	if chatModel == "" {
 		t.Fatal("Unable to discover a Fireworks chat model from /v1/models; set FIREWORKS_CHAT_MODEL to override")
@@ -139,18 +152,6 @@ func resolveFireworksModels(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	}
 
 	return chatModel, textModel, embeddingModel
-}
-
-// selectFireworksModel prefers an explicit env override and otherwise falls back to a discovered model.
-func selectFireworksModel(t *testing.T, modelType, requestedModel, discoveredModel string) string {
-	t.Helper()
-
-	if requestedModel != "" {
-		t.Logf("Using FIREWORKS_%s_MODEL=%q override", strings.ToUpper(modelType), requestedModel)
-		return requestedModel
-	}
-
-	return discoveredModel
 }
 
 // fireworksModelSupportsTextCompletions validates that the selected model actually accepts Fireworks /v1/completions.
