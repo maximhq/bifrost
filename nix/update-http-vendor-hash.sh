@@ -10,7 +10,7 @@ trap 'rm -f "$build_log"' EXIT
 
 nix build -L ..#bifrost-http |& tee "$build_log"
 
-hash_value="$(rg -o "got:\s+\S+" "$build_log" | sed -E 's/^got:\s+//' | tail -n 1)"
+hash_value="$(grep -oE "got:[[:space:]]+[^[:space:]]+" "$build_log" | sed -E 's/^got:[[:space:]]+//' | tail -n 1)"
 
 if [ -z "$hash_value" ]; then
   echo "failed to detect vendorHash from build log" >&2
