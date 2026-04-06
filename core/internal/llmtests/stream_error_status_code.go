@@ -123,26 +123,24 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 			if bifrostErr == nil {
 				streamName := "responses stream"
-				if testConfig.Provider == schemas.Fireworks {
-					streamName = "fireworks responses stream"
-				}
 				var timedOut bool
 				bifrostErr, timedOut = waitForStreamError(t, stream, streamName)
 				if timedOut {
 					t.Fatalf("❌ Timed out waiting for invalid-model error on %s", streamName)
 				}
 				if bifrostErr == nil {
-					if testConfig.Provider == schemas.Fireworks {
-						if testConfig.ExpectRawRequestResponse {
-							t.Skip("Fireworks ResponsesStream invalid-model errors are not surfaced through Bifrost in raw request/response mode; skipping this raw-mode assertion")
-						}
-						t.Fatal("❌ Expected Fireworks ResponsesStream invalid-model error either immediately or on the stream, but got nil")
-					}
 					t.Fatal("❌ Expected error for invalid model in responses stream request, but got nil")
 				}
 			}
 
 			if bifrostErr.StatusCode == nil {
+				if testConfig.Provider == schemas.Fireworks &&
+					bifrostErr.Type != nil &&
+					*bifrostErr.Type == string(schemas.ResponsesStreamResponseTypeFailed) {
+					t.Logf("ℹ️ Fireworks surfaced invalid-model failure as response.failed without an HTTP status code. Error: %s",
+						GetErrorMessage(bifrostErr))
+					return
+				}
 				t.Fatalf("❌ BifrostError.StatusCode is nil for provider %s responses stream — provider status code was not propagated. Error: %s",
 					testConfig.Provider, GetErrorMessage(bifrostErr))
 			}

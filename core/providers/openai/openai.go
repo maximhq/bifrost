@@ -1814,6 +1814,28 @@ func HandleOpenAIResponsesStreaming(
 					return
 				}
 
+				// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
+				// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
+				if response.Type == schemas.ResponsesStreamResponseTypeFailed {
+					bifrostErr := &schemas.BifrostError{
+						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
+						IsBifrostError: false,
+						Error:          &schemas.ErrorField{},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ResponsesStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}
+					if response.Response != nil && response.Response.Error != nil {
+						bifrostErr.Error.Message = response.Response.Error.Message
+						bifrostErr.Error.Code = &response.Response.Error.Code
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+					return
+				}
+
 				response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 				response.ExtraFields.Provider = providerName
 				response.ExtraFields.ModelRequested = request.Model
