@@ -263,6 +263,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.whitelistedRoutes }}
+{{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
+{{- end }}
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}

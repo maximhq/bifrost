@@ -373,6 +373,13 @@
               },
               "description": "Headers to capture in log metadata"
             },
+            "whitelistedRoutes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Routes that bypass auth middleware"
+            },
             "hideDeletedVirtualKeysInFilters": {
               "type": "boolean",
               "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data"

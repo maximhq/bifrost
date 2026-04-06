@@ -15390,12 +15390,13 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 
 // enterpriseSchemaPaths are schema paths that exist only in enterprise version
 var enterpriseSchemaPaths = map[string]bool{
-	"$schema":              true,
-	"audit_logs":           true,
-	"cluster_config":       true,
-	"saml_config":          true,
-	"load_balancer_config": true,
-	"guardrails_config":    true,
+	"$schema":                    true,
+	"audit_logs":                 true,
+	"cluster_config":             true,
+	"saml_config":                true,
+	"load_balancer_config":       true,
+	"guardrails_config":          true,
+	"large_payload_optimization": true,
 }
 
 // excludedGoFields are Go struct fields that should not be in the schema (internal use only)
@@ -15751,12 +15752,13 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// Enterprise-only features: These fields exist in the JSON schema for documentation
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
-		"$schema":              true,
-		"audit_logs":           true,
-		"cluster_config":       true,
-		"saml_config":          true,
-		"load_balancer_config": true,
-		"guardrails_config":    true,
+		"$schema":                      true,
+		"audit_logs":                   true,
+		"cluster_config":               true,
+		"saml_config":                  true,
+		"load_balancer_config":         true,
+		"guardrails_config":            true,
+		"large_payload_optimization":   true,
 	}
 
 	schema := loadJSONSchema(t)

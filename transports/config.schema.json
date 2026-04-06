@@ -139,6 +139,13 @@
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         },
+        "whitelisted_routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
+        },
         "hide_deleted_virtual_keys_in_filters": {
           "type": "boolean",
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
