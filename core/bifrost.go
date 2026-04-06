@@ -100,11 +100,8 @@ type ProviderQueue struct {
 	closeOnce     sync.Once
 }
 
+// DynamicWorkerScaling dynamically scales the worker up and down based on the no. of reqeusts in the providerQueue.
 func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue) {
-	//TODO: Also see what this means for the updateprovider function .. that they have ...
-	//TODO: maybe you might need to change that there also .. shutdown THIS go routine .. and start a new one
-	//TODO: Add checks that ensure that concurrency is not greater than max workers limit that the user sends from the UI and is also
-	//TODO: not less than the min workers.
 	providerName := provider.GetProviderKey()
 	defer func() {
 		if waitGroupValue, ok := bifrost.waitGroups.Load(providerName); ok {
@@ -118,7 +115,6 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 	waitGroupValue, _ := bifrost.waitGroups.Load(providerName)
 	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
 	for {
-		//TODO: Add check here .. for this go routine to shutdown when bifrost is shutting down..
 		select {
 		case <-ticker.C:
 			bifrost.logger.Debug("Starting Dynamic Worker Scaling Check happening in the background for provider: %s", providerName)
@@ -136,6 +132,7 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 					continue
 				}
 				step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
+				//double the step size if above 90% queue utilization.
 				if float64(capacity) >= 90.0 {
 					step *= 2
 				}
@@ -144,7 +141,6 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 				if targetWorkers > config.ConcurrencyAndBufferSize.MaxWorkers {
 					targetWorkers = config.ConcurrencyAndBufferSize.MaxWorkers
 				}
-				//TODO: Implement additional functionality that when the no. of workers is more than max workers by some bug or error ... stop the difference.
 				numWorkersToAdd := targetWorkers - int(pq.ActiveWorkers.Load())
 				for i := 0; i < numWorkersToAdd; i++ {
 					currentWaitGroup.Add(1)
@@ -3781,6 +3777,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
 	// Create ProviderQueue with lifecycle management
 	bifrost.logger.Debug("config is", config.ConcurrencyAndBufferSize)
+
+	//config checks before enabling dynamic scaling and intialising the Provider Queue.
 	if config.ConcurrencyAndBufferSize.DynamicScaling {
 		disableScaling := false
 		if config.ConcurrencyAndBufferSize.MaxWorkers <= 0 || config.ConcurrencyAndBufferSize.MinWorkers <= 0 || config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold <= 0 {
