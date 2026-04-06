@@ -1,10 +1,10 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Parameter } from "./types";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import FieldLabel from "./fieldLabel";
+import { Parameter } from "./types";
 
 interface Props {
 	field: Parameter;
@@ -98,7 +98,7 @@ const StringInput = (props: {
 		<div className="relative w-full gap-1">
 			<Input
 				tabIndex={10}
-				className="ml-auto h-[35px] w-full"
+				className="ml-auto h-8 w-full"
 				value={props.value}
 				placeholder=""
 				disabled={props.disabled}

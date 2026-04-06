@@ -12,7 +12,6 @@
 		"lint": "next lint"
 	},
 	"dependencies": {
-		"@base-ui/react": "1.2.0",
 		"@bprogress/next": "3.2.12",
 		"@dnd-kit/helpers": "0.3.2",
 		"@dnd-kit/react": "0.3.2",
