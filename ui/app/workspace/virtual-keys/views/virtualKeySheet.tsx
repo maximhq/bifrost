@@ -310,7 +310,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			provider: provider,
 			weight: "" as string | number, // Default empty string = excluded from weighted routing until user sets a weight
 			allowed_models: ["*"],
-			key_ids: [],
+			key_ids: ["*"],
 		};
 
 		form.setValue("providerConfigs", [...providerConfigs, newConfig], { shouldDirty: true });
@@ -392,6 +392,14 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 							? null
 							: parseFloat(config.weight)
 						: config.weight,
+			budgets: config.budgets
+				? config.budgets
+						.filter((b) => normalizeNumericField(b.max_limit) !== undefined)
+						.map((b) => ({
+							max_limit: normalizeNumericField(b.max_limit)!,
+							reset_duration: b.reset_duration || "1M",
+						}))
+				: undefined,
 			rate_limit: (() => {
 				const tokenMaxLimit = normalizeNumericField(config.rate_limit?.token_max_limit);
 				const requestMaxLimit = normalizeNumericField(config.rate_limit?.request_max_limit);

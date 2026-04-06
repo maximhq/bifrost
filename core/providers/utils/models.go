@@ -155,13 +155,15 @@ type aliasMatch struct {
 	value string
 }
 
-// resolveModelID returns all alias entries whose VALUE matches modelID using the pipeline's MatchFns.
+// resolveModelID returns all alias entries whose VALUE matches modelID using the pipeline's MatchFns,
+// plus the raw model ID itself as an additional entry so both the alias key and the original model
+// name appear in the list-models output.
 // Results are sorted by alias key (case-insensitive) for deterministic ordering.
 //
-// If one or more aliases match → returns one aliasMatch per matching alias key.
+// If one or more aliases match → returns one aliasMatch per matching alias key, plus the raw ID.
 //
 //	Example: modelID="gpt-4-turbo", aliases={"my-gpt4":"gpt-4-turbo","gpt4-alias":"gpt-4-turbo"}
-//	  → [{key:"gpt4-alias", value:"gpt-4-turbo"}, {key:"my-gpt4", value:"gpt-4-turbo"}]
+//	  → [{key:"gpt-4-turbo", value:""}, {key:"gpt4-alias", value:"gpt-4-turbo"}, {key:"my-gpt4", value:"gpt-4-turbo"}]
 //
 // If no alias matches → returns a single entry with the original model ID and no alias value.
 //
@@ -177,6 +179,8 @@ func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 	if len(candidates) == 0 {
 		return []aliasMatch{{key: modelID, value: ""}}
 	}
+	// Also include the raw model ID so both the alias key and the original name appear in output.
+	candidates = append(candidates, aliasMatch{key: modelID, value: ""})
 	sort.Slice(candidates, func(i, j int) bool {
 		return strings.ToLower(candidates[i].key) < strings.ToLower(candidates[j].key)
 	})
@@ -206,8 +210,9 @@ func (p *ListModelsPipeline) resolveModelID(modelID string) []aliasMatch {
 //	  FilterModel("gpt-3.5")     → []  (not in allowlist)
 //
 //	allowedModels=*, aliases={"my-gpt4":"gpt-4-turbo","gpt4-alias":"gpt-4-turbo"}, blacklist=[]
-//	  FilterModel("gpt-4-turbo") → [{ResolvedID:"gpt4-alias", AliasValue:"gpt-4-turbo"},
-//	                                {ResolvedID:"my-gpt4",    AliasValue:"gpt-4-turbo"}]
+//	  FilterModel("gpt-4-turbo") → [{ResolvedID:"gpt-4-turbo", AliasValue:""},
+//	                                {ResolvedID:"gpt4-alias",  AliasValue:"gpt-4-turbo"},
+//	                                {ResolvedID:"my-gpt4",     AliasValue:"gpt-4-turbo"}]
 //
 //	allowedModels=["gpt-3.5"], aliases={}, blacklist=[]
 //	  FilterModel("gpt-3.5")     → [{ResolvedID:"gpt-3.5", AliasValue:""}]
