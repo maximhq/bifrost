@@ -35,6 +35,7 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// schemaKeyFromTableKey converts a database key to a schema key.
 func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
 		ID:                 dbKey.KeyID,
@@ -59,6 +60,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	}
 }
 
+// tableKeyFromSchemaKey converts a schema key to a database key.
 func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tables.TableKey, error) {
 	dbKey := tables.TableKey{
 		Provider:           provider.Name,
@@ -175,13 +177,10 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 	if err == nil {
 		return nil
 	}
-
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrNotFound
 	}
-
 	errMsg := err.Error()
-
 	// Check for unique constraint violations
 	// SQLite format: "UNIQUE constraint failed: table_name.column_name"
 	// PostgreSQL format: "ERROR: duplicate key value violates unique constraint"
@@ -914,7 +913,6 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 	} else {
 		txDB = s.db
 	}
-
 	var dbProvider tables.TableProvider
 	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -922,16 +920,13 @@ func (s *RDBConfigStore) CreateProviderKey(ctx context.Context, provider schemas
 		}
 		return err
 	}
-
 	dbKey, err := tableKeyFromSchemaKey(dbProvider, key)
 	if err != nil {
 		return err
 	}
-
 	if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
-
 	return nil
 }
 
@@ -1787,35 +1782,31 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		txDB = s.db.Begin()
 		localTx = true
 	}
-
 	// Mark plugin as custom if path is not empty
 	if plugin.Path != nil && strings.TrimSpace(*plugin.Path) != "" {
 		plugin.IsCustom = true
 	} else {
 		plugin.IsCustom = false
 	}
-
 	if err := txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", plugin.Name).Error; err != nil {
 		if localTx {
 			txDB.Rollback()
 		}
 		return err
 	}
-
 	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
 		if localTx {
 			txDB.Rollback()
 		}
 		return s.parseGormError(err)
 	}
-
 	if localTx {
 		return txDB.Commit().Error
 	}
-
 	return nil
 }
 
+// DeletePlugin deletes a plugin from the database.
 func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1828,6 +1819,7 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 
 // GOVERNANCE METHODS
 
+// GetRedactedVirtualKeys retrieves redacted virtual keys from the database.
 func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {
 	var virtualKeys []tables.TableVirtualKey
 
@@ -1845,6 +1837,7 @@ func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []strin
 	return virtualKeys, nil
 }
 
+// preloadCustomerRelations preloads the customer relations for a virtual key.
 func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 	relation := func(name string) string {
 		if prefix == "" {
@@ -1852,7 +1845,6 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		}
 		return prefix + name
 	}
-
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Budget")).
@@ -1860,16 +1852,16 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		Preload(relation("VirtualKeys"))
 }
 
+// preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
 func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
-	db = db.Preload("Team").Preload("Team.Customer")
-
-	db = db.Preload("Customer")
-
 	return db.
-		Preload("Budget").
+		Preload("Team").
+		Preload("Team.Customer").
+		Preload("Customer").
+		Preload("Budgets").
 		Preload("RateLimit").
 		Preload("ProviderConfigs").
-		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.Budgets").
 		Preload("ProviderConfigs.RateLimit").
 		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
@@ -1878,6 +1870,7 @@ func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 		Preload("MCPConfigs.MCPClient")
 }
 
+// preloadVirtualKeyDetailRelations preloads the detail relationships for a virtual key.
 func preloadVirtualKeyDetailRelations(db *gorm.DB) *gorm.DB {
 	return preloadCustomerRelations(preloadVirtualKeyBaseRelations(db), "Customer.")
 }
@@ -1964,7 +1957,6 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
 	query := preloadVirtualKeyBaseRelations(s.db.WithContext(ctx))
-
 	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
 	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1982,6 +1974,7 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	return &virtualKey, nil
 }
 
+// CreateVirtualKey creates a new virtual key in the database.
 func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1995,6 +1988,7 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	return nil
 }
 
+// UpdateVirtualKey updates an existing virtual key in the database.
 func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -2095,32 +2089,25 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 			return err
 		}
 
-		// Collect budget and rate limit IDs from provider configs before deletion
-		var providerConfigBudgetIDs []string
+		// Delete provider config resources before deleting the configs themselves
 		var providerConfigRateLimitIDs []string
 		for _, pc := range virtualKey.ProviderConfigs {
 			// Delete the keys join table entries
 			if err := tx.WithContext(ctx).Exec("DELETE FROM governance_virtual_key_provider_config_keys WHERE table_virtual_key_provider_config_id = ?", pc.ID).Error; err != nil {
 				return err
 			}
-			// Collect budget and rate limit IDs for deletion after provider config
-			if pc.BudgetID != nil {
-				providerConfigBudgetIDs = append(providerConfigBudgetIDs, *pc.BudgetID)
+			// Delete budgets owned by this provider config
+			if err := tx.WithContext(ctx).Where("provider_config_id = ?", pc.ID).Delete(&tables.TableBudget{}).Error; err != nil {
+				return err
 			}
 			if pc.RateLimitID != nil {
 				providerConfigRateLimitIDs = append(providerConfigRateLimitIDs, *pc.RateLimitID)
 			}
 		}
 
-		// Delete all provider configs associated with the virtual key first
+		// Delete all provider configs associated with the virtual key
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
-		}
-		// Now delete the collected budgets and rate limits
-		for _, budgetID := range providerConfigBudgetIDs {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", budgetID).Error; err != nil {
-				return err
-			}
 		}
 		for _, rateLimitID := range providerConfigRateLimitIDs {
 			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", rateLimitID).Error; err != nil {
@@ -2131,8 +2118,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
-		// Delete the budget associated with the virtual key
-		budgetID := virtualKey.BudgetID
+		// Delete budgets owned by this virtual key
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
+			return err
+		}
 		rateLimitID := virtualKey.RateLimitID
 		// Delete the virtual key
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
@@ -2140,11 +2129,6 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 				return ErrNotFound
 			}
 			return err
-		}
-		if budgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-				return err
-			}
 		}
 		// Delete the rate limit associated with the virtual key
 		if rateLimitID != nil {
@@ -2343,18 +2327,15 @@ func (s *RDBConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id 
 		}
 		return err
 	}
-	// Store the budget and rate limit IDs before deleting
-	budgetID := providerConfig.BudgetID
+	// Store the rate limit ID before deleting
 	rateLimitID := providerConfig.RateLimitID
-	// Delete the provider config first
-	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "id = ?", id).Error; err != nil {
+	// Delete budgets owned by this provider config
+	if err := txDB.WithContext(ctx).Where("provider_config_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 		return err
 	}
-	// Delete the budget if it exists
-	if budgetID != nil {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
-			return err
-		}
+	// Delete the provider config
+	if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyProviderConfig{}, "id = ?", id).Error; err != nil {
+		return err
 	}
 	// Delete the rate limit if it exists
 	if rateLimitID != nil {
@@ -3178,6 +3159,7 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 	return modelConfigs, nil
 }
 
+// GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
 	baseQuery := s.db.WithContext(ctx).Model(&tables.TableModelConfig{})
 

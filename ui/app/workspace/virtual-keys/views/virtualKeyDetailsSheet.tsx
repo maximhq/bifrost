@@ -30,7 +30,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
 	const isExhausted =
 		// VK-level budget exhausted
-		(virtualKey.budget?.current_usage && virtualKey.budget?.max_limit && virtualKey.budget.current_usage >= virtualKey.budget.max_limit) ||
+		(virtualKey.budgets?.some((b) => b.current_usage >= b.max_limit)) ||
 		// VK-level rate limits exhausted
 		(virtualKey.rate_limit?.token_current_usage &&
 			virtualKey.rate_limit?.token_max_limit &&
@@ -148,38 +148,42 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													</div>
 												</div>
 
-												{/* Provider Budget */}
-												{config.budget && (
+												{/* Provider Budgets */}
+												{config.budgets && config.budgets.length > 0 && (
 													<>
 														<DottedSeparator />
 														<div className="space-y-2">
-															<h4 className="text-sm font-medium">Provider Budget</h4>
-															<div className="grid grid-cols-3 items-center gap-4">
-																<span className="text-muted-foreground text-sm">Usage</span>
-																<div className="col-span-2">
-																	<div className="flex items-center gap-2">
-																		<span className="font-mono text-sm">
-																			{formatCurrency(config.budget.current_usage)} / {formatCurrency(config.budget.max_limit)}
-																		</span>
-																		<Badge
-																			variant={config.budget.current_usage >= config.budget.max_limit ? "destructive" : "default"}
-																			className="text-xs"
-																		>
-																			{Math.round((config.budget.current_usage / config.budget.max_limit) * 100)}%
-																		</Badge>
+															<h4 className="text-sm font-medium">Provider Budgets</h4>
+															{config.budgets.map((b, bIdx) => (
+																<div key={bIdx} className="space-y-1">
+																	<div className="grid grid-cols-3 items-center gap-4">
+																		<span className="text-muted-foreground text-sm">Usage</span>
+																		<div className="col-span-2">
+																			<div className="flex items-center gap-2">
+																				<span className="font-mono text-sm">
+																					{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+																				</span>
+																				<Badge
+																					variant={getUsageVariant(calculateUsagePercentage(b.current_usage, b.max_limit))}
+																					className="text-xs"
+																				>
+																					{calculateUsagePercentage(b.current_usage, b.max_limit)}%
+																				</Badge>
+																			</div>
+																		</div>
+																	</div>
+																	<div className="grid grid-cols-3 items-center gap-4">
+																		<span className="text-muted-foreground text-sm">Reset Period</span>
+																		<div className="col-span-2 text-sm">{parseResetPeriod(b.reset_duration)}{virtualKey.calendar_aligned && " (calendar)"}</div>
+																	</div>
+																	<div className="grid grid-cols-3 items-center gap-4">
+																		<span className="text-muted-foreground text-sm">Last Reset</span>
+																		<div className="col-span-2 text-sm">
+																			{formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}
+																		</div>
 																	</div>
 																</div>
-															</div>
-															<div className="grid grid-cols-3 items-center gap-4">
-																<span className="text-muted-foreground text-sm">Reset Period</span>
-																<div className="col-span-2 text-sm">{parseResetPeriod(config.budget.reset_duration)}</div>
-															</div>
-															<div className="grid grid-cols-3 items-center gap-4">
-																<span className="text-muted-foreground text-sm">Last Reset</span>
-																<div className="col-span-2 text-sm">
-																	{formatDistanceToNow(new Date(config.budget.last_reset), { addSuffix: true })}
-																</div>
-															</div>
+															))}
 														</div>
 													</>
 												)}
@@ -343,36 +347,38 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 					<div className="space-y-4">
 						<h3 className="font-semibold">Budget Information</h3>
 
-						{virtualKey.budget ? (
+						{virtualKey.budgets && virtualKey.budgets.length > 0 ? (
 							<div className="space-y-3">
-								<div className="grid grid-cols-3 items-center gap-4">
-									<span className="text-muted-foreground text-sm">Usage</span>
-									<div className="col-span-2">
-										<div className="flex items-center gap-2">
-											<span className="font-mono text-sm">
-												{formatCurrency(virtualKey.budget.current_usage)} / {formatCurrency(virtualKey.budget.max_limit)}
-											</span>
-											<Badge
-												variant={virtualKey.budget.current_usage >= virtualKey.budget.max_limit ? "destructive" : "default"}
-												className="text-xs"
-											>
-												{Math.round((virtualKey.budget.current_usage / virtualKey.budget.max_limit) * 100)}%
-											</Badge>
+								{virtualKey.budgets.map((b, bIdx) => (
+									<div key={bIdx} className="space-y-1">
+										<div className="grid grid-cols-3 items-center gap-4">
+											<span className="text-muted-foreground text-sm">Usage</span>
+											<div className="col-span-2">
+												<div className="flex items-center gap-2">
+													<span className="font-mono text-sm">
+														{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+													</span>
+													<Badge
+														variant={getUsageVariant(calculateUsagePercentage(b.current_usage, b.max_limit))}
+														className="text-xs"
+													>
+														{calculateUsagePercentage(b.current_usage, b.max_limit)}%
+													</Badge>
+												</div>
+											</div>
+										</div>
+										<div className="grid grid-cols-3 items-center gap-4">
+											<span className="text-muted-foreground text-sm">Reset Period</span>
+											<div className="col-span-2 text-sm">{parseResetPeriod(b.reset_duration)}{virtualKey.calendar_aligned && " (calendar)"}</div>
+										</div>
+										<div className="grid grid-cols-3 items-center gap-4">
+											<span className="text-muted-foreground text-sm">Last Reset</span>
+											<div className="col-span-2 text-sm">
+												{formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}
+											</div>
 										</div>
 									</div>
-								</div>
-
-								<div className="grid grid-cols-3 items-center gap-4">
-									<span className="text-muted-foreground text-sm">Reset Period</span>
-									<div className="col-span-2 text-sm">{parseResetPeriod(virtualKey.budget.reset_duration)}</div>
-								</div>
-
-								<div className="grid grid-cols-3 items-center gap-4">
-									<span className="text-muted-foreground text-sm">Last Reset</span>
-									<div className="col-span-2 text-sm">
-										{formatDistanceToNow(new Date(virtualKey.budget.last_reset), { addSuffix: true })}
-									</div>
-								</div>
+								))}
 							</div>
 						) : (
 							<p className="text-muted-foreground text-sm">No budget limits configured</p>

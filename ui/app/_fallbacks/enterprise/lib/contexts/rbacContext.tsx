@@ -27,6 +27,7 @@ export enum RbacResource {
 	PIIRedactor = "PIIRedactor",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
+	AccessProfiles = "AccessProfiles",
 }
 
 // RBAC Operation Names (must match backend definitions)

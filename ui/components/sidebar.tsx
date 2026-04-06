@@ -7,6 +7,7 @@ import {
 	BoxIcon,
 	BugIcon,
 	Building,
+	Building2,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircleDollarSign,
@@ -255,14 +256,15 @@ const SidebarItemView = ({
 				tooltip={item.title}
 				data-testid={`nav-button-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
 				data-nav-url={!hasSubItems ? item.url : undefined}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-					? "bg-sidebar-accent text-accent-foreground border-primary/20"
-					: isActive || isAnySubItemActive
-						? "bg-sidebar-accent text-primary border-primary/20"
-						: item.hasAccess
-							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-					} `}
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+					isHighlighted
+						? "bg-sidebar-accent text-accent-foreground border-primary/20"
+						: isActive || isAnySubItemActive
+							? "bg-sidebar-accent text-primary border-primary/20"
+							: item.hasAccess
+								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+				} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
 				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
 				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
@@ -305,14 +307,15 @@ const SidebarItemView = ({
 								<SidebarMenuSubButton
 									data-testid={`nav-submenu-toggle-${subItem.title.toLowerCase().replace(/\s+/g, "-")}`}
 									data-nav-url={subItemHref}
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-										? "bg-sidebar-accent text-accent-foreground"
-										: isSubItemActive
-											? "bg-sidebar-accent text-primary font-medium"
-											: subItem.hasAccess === false
-												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-										}`}
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+										isSubItemHighlighted
+											? "bg-sidebar-accent text-accent-foreground"
+											: isSubItemActive
+												? "bg-sidebar-accent text-primary font-medium"
+												: subItem.hasAccess === false
+													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+									}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
 									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
@@ -401,6 +404,7 @@ export default function AppSidebar() {
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
@@ -412,6 +416,7 @@ export default function AppSidebar() {
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
@@ -585,6 +590,13 @@ export default function AppSidebar() {
 						hasAccess: hasTeamsAccess,
 					},
 					{
+						title: "Business Units",
+						url: "/workspace/governance/business-units",
+						icon: Building2,
+						description: "Manage business units",
+						hasAccess: hasBusinessUnitsAccess,
+					},
+					{
 						title: "Customers",
 						url: "/workspace/governance/customers",
 						icon: WalletCards,
@@ -604,6 +616,13 @@ export default function AppSidebar() {
 						icon: UserRoundCheck,
 						description: "User roles and permissions",
 						hasAccess: hasRbacAccess,
+					},
+					{
+						title: "Access Profiles",
+						url: "/workspace/governance/access-profiles",
+						icon: ShieldCheck,
+						description: "Manage access profiles for roles",
+						hasAccess: hasAccessProfilesAccess,
 					},
 					{
 						title: "Audit Logs",
@@ -653,31 +672,31 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-						subItems: [
-							{
-								title: "Prompts",
-								url: "/workspace/prompt-repo/prompts",
-								icon: SquareTerminal,
-								description: "Manage prompts",
-								hasAccess: hasPromptRepositoryAccess,
-								tag: "Beta",
-							},
-							{
-								title: "Deployments",
-								url: "/workspace/prompt-repo/deployments",
-								icon: Router,
-								description: "Manage deployment",
-								hasAccess: hasPromptDeploymentStrategyAccess,
-							},
-						],
-					},
-				]
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+							subItems: [
+								{
+									title: "Prompts",
+									url: "/workspace/prompt-repo/prompts",
+									icon: SquareTerminal,
+									description: "Manage prompts",
+									hasAccess: hasPromptRepositoryAccess,
+									tag: "Beta",
+								},
+								{
+									title: "Deployments",
+									url: "/workspace/prompt-repo/deployments",
+									icon: Router,
+									description: "Manage deployment",
+									hasAccess: hasPromptDeploymentStrategyAccess,
+								},
+							],
+						},
+					]
 				: []),
 			{
 				title: "Evals",
@@ -717,14 +736,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 					{
 						title: "API Keys",
@@ -754,6 +773,7 @@ export default function AppSidebar() {
 			hasAuditLogsAccess,
 			hasCustomersAccess,
 			hasTeamsAccess,
+			hasBusinessUnitsAccess,
 			hasRbacAccess,
 			hasVirtualKeysAccess,
 			hasGovernanceAccess,
@@ -765,6 +785,7 @@ export default function AppSidebar() {
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
 			hasPromptDeploymentStrategyAccess,
+			hasAccessProfilesAccess,
 			isDbConnected,
 		],
 	);
