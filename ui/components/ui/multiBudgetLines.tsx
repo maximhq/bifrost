@@ -6,7 +6,7 @@ import { Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 export interface BudgetLineEntry {
-	max_limit: string;
+	max_limit?: number;
 	reset_duration: string;
 }
 
@@ -44,16 +44,22 @@ export default function MultiBudgetLines({
 		// Pick the first unused duration, falling back to the first option value
 		const usedSet = new Set(lines.map((l) => l.reset_duration));
 		const available = options.find((o) => !usedSet.has(o.value));
-		onChange([...lines, { max_limit: "", reset_duration: available?.value ?? options[0]?.value ?? "" }]);
+		onChange([...lines, { max_limit: undefined, reset_duration: available?.value ?? options[0]?.value ?? "" }]);
 	}
 
 	function removeLine(index: number) {
 		onChange(lines.filter((_, i) => i !== index));
 	}
 
-	function updateLine(index: number, field: keyof BudgetLineEntry, value: string) {
+	function updateMaxLimit(index: number, value: number | undefined) {
 		const updated = [...lines];
-		updated[index] = { ...updated[index], [field]: value };
+		updated[index] = { ...updated[index], max_limit: value };
+		onChange(updated);
+	}
+
+	function updateResetDuration(index: number, value: string) {
+		const updated = [...lines];
+		updated[index] = { ...updated[index], reset_duration: value };
 		onChange(updated);
 	}
 
@@ -93,8 +99,8 @@ export default function MultiBudgetLines({
 									label="Maximum Spend (USD)"
 									value={line.max_limit}
 									selectValue={line.reset_duration}
-									onChangeNumber={(value) => updateLine(index, "max_limit", value)}
-									onChangeSelect={(value) => updateLine(index, "reset_duration", value)}
+									onChangeNumber={(value) => updateMaxLimit(index, value)}
+									onChangeSelect={(value) => updateResetDuration(index, value)}
 									options={options}
 								/>
 							</div>

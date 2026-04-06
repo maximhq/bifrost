@@ -65,26 +65,14 @@ interface VirtualKeySheetProps {
 const providerConfigSchema = z.object({
 	id: z.number().optional(),
 	provider: z.string().min(1, "Provider is required"),
-	weight: z
-		.union([
-			z.literal("").transform(() => undefined as undefined),
-			z
-				.string()
-				.transform((v) => {
-					const n = Number.parseFloat(v);
-					return Number.isNaN(n) ? undefined : n;
-				})
-				.pipe(z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional()),
-			z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1"),
-		])
-		.optional(),
+	weight: z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional(),
 	allowed_models: z.array(z.string()).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
 	budgets: z
 		.array(
 			z.object({
-				max_limit: z.string().optional(),
+				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
 			}),
 		)
@@ -92,9 +80,9 @@ const providerConfigSchema = z.object({
 	// Provider-level rate limits
 	rate_limit: z
 		.object({
-			token_max_limit: z.string().optional(),
+			token_max_limit: z.number().int().nonnegative().optional(),
 			token_reset_duration: z.string().optional(),
-			request_max_limit: z.string().optional(),
+			request_max_limit: z.number().int().nonnegative().optional(),
 			request_reset_duration: z.string().optional(),
 		})
 		.optional(),
@@ -122,16 +110,16 @@ const formSchema = z
 		budgets: z
 			.array(
 				z.object({
-					max_limit: z.string(),
+					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
 				}),
 			)
 			.optional(),
 		// Token limits
-		tokenMaxLimit: z.string().optional(),
+		tokenMaxLimit: z.number().int().nonnegative().optional(),
 		tokenResetDuration: z.string().optional(),
 		// Request limits
-		requestMaxLimit: z.string().optional(),
+		requestMaxLimit: z.number().int().nonnegative().optional(),
 		requestResetDuration: z.string().optional(),
 	})
 	.refine(
@@ -198,24 +186,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				virtualKey?.provider_configs?.map((config) => ({
 					id: config.id,
 					provider: config.provider,
-					weight: config.weight ?? "",
+					weight: config.weight ?? undefined,
 					allowed_models: config.allowed_models,
 					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
 					budgets: config.budgets?.map((b) => ({
-						max_limit: String(b.max_limit),
+						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit:
-									config.rate_limit.token_max_limit === undefined || config.rate_limit.token_max_limit === null
-										? undefined
-										: String(config.rate_limit.token_max_limit),
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
 								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit:
-									config.rate_limit.request_max_limit === undefined || config.rate_limit.request_max_limit === null
-										? undefined
-										: String(config.rate_limit.request_max_limit),
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
 								request_reset_duration: config.rate_limit.request_reset_duration,
 							}
 						: undefined,
@@ -232,12 +214,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			isActive: virtualKey?.is_active ?? true,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
-					? virtualKey.budgets.map((b) => ({ max_limit: String(b.max_limit ?? ""), reset_duration: b.reset_duration ?? "1M" }))
+					? virtualKey.budgets.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration ?? "1M" }))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
-			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ? String(virtualKey.rate_limit.token_max_limit) : "",
+			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: virtualKey?.rate_limit?.token_reset_duration || "1h",
-			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ? String(virtualKey.rate_limit.request_max_limit) : "",
+			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ?? undefined,
 			requestResetDuration: virtualKey?.rate_limit?.request_reset_duration || "1h",
 		},
 	});
@@ -296,7 +278,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 	// Calendar alignment is VK-wide: show toggle if any budget has a max_limit and supports alignment
 	const hasAnyAlignableBudget =
-		watchedBudgets && watchedBudgets.length > 0 && watchedBudgets.some((b) => b.max_limit && supportsCalendarAlignment(b.reset_duration || "1M"));
+		watchedBudgets &&
+		watchedBudgets.length > 0 &&
+		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
 
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
@@ -308,7 +292,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 		const newConfig = {
 			provider: provider,
-			weight: "" as string | number, // Default empty string = excluded from weighted routing until user sets a weight
+			weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
 			allowed_models: ["*"],
 			key_ids: ["*"],
 		};
@@ -375,41 +359,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	};
 
 	const clearVirtualKeyRateLimits = () => {
-		form.setValue("tokenMaxLimit", "", { shouldDirty: true });
+		form.setValue("tokenMaxLimit", undefined, { shouldDirty: true });
 		form.setValue("tokenResetDuration", "1h", { shouldDirty: true });
-		form.setValue("requestMaxLimit", "", { shouldDirty: true });
+		form.setValue("requestMaxLimit", undefined, { shouldDirty: true });
 		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
 	};
 
 	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight:
-				config.weight === undefined || config.weight === null
-					? null
-					: typeof config.weight === "string"
-						? Number.isNaN(parseFloat(config.weight))
-							? null
-							: parseFloat(config.weight)
-						: config.weight,
-			budgets: config.budgets
-				? config.budgets
-						.filter((b) => normalizeNumericField(b.max_limit) !== undefined)
-						.map((b) => ({
-							max_limit: normalizeNumericField(b.max_limit)!,
-							reset_duration: b.reset_duration || "1M",
-						}))
-				: undefined,
+			budgets: config.budgets?.filter((b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined),
+			weight: config.weight ?? null,
 			rate_limit: (() => {
-				const tokenMaxLimit = normalizeNumericField(config.rate_limit?.token_max_limit);
-				const requestMaxLimit = normalizeNumericField(config.rate_limit?.request_max_limit);
-				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
-				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				const hasTokenMaxLimit = config.rate_limit?.token_max_limit !== undefined;
+				const hasRequestMaxLimit = config.rate_limit?.request_max_limit !== undefined;
 				if (hasTokenMaxLimit || hasRequestMaxLimit) {
 					return {
-						token_max_limit: tokenMaxLimit ?? null,
+						token_max_limit: config.rate_limit?.token_max_limit ?? null,
 						token_reset_duration: hasTokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
-						request_max_limit: requestMaxLimit ?? null,
+						request_max_limit: config.rate_limit?.request_max_limit ?? null,
 						request_reset_duration: hasRequestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
 					};
 				}
@@ -422,13 +390,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				return undefined;
 			})(),
 		}));
-	};
-
-	// Normalize numeric fields to ensure they are numbers or undefined
-	const normalizeNumericField = (value: string | undefined): number | undefined => {
-		if (value === undefined || value === "") return undefined;
-		const num = parseFloat(value);
-		return isNaN(num) ? undefined : num;
 	};
 
 	// Handle form submission
@@ -455,13 +416,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				};
 
 				// Add budgets if enabled
-				const validBudgets = (data.budgets || []).filter((b) => normalizeNumericField(b.max_limit) !== undefined);
+				const validBudgets = (data.budgets || []).filter(
+					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
-					updateData.budgets = validBudgets.map((b) => ({
-						max_limit: normalizeNumericField(b.max_limit)!,
-						reset_duration: b.reset_duration || "1M",
-					}));
+					updateData.budgets = validBudgets;
 					updateData.calendar_aligned = data.budgetCalendarAligned;
 				} else if (hadBudget) {
 					updateData.budgets = [];
@@ -469,17 +429,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
 				const hadRateLimit = !!virtualKey.rate_limit;
-				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
-				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
+				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
 				const hasRateLimit = hasTokenMaxLimit || hasRequestMaxLimit;
 				if (hasRateLimit) {
 					updateData.rate_limit = {
-						token_max_limit: tokenMaxLimit ?? null,
+						token_max_limit: data.tokenMaxLimit ?? null,
 						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : null,
-						request_max_limit: requestMaxLimit ?? null,
+						request_max_limit: data.requestMaxLimit ?? null,
 						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : null,
 					};
 				} else if (hadRateLimit) {
@@ -501,25 +459,22 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				};
 
 				// Add budgets if enabled
-				const validBudgets = (data.budgets || []).filter((b) => normalizeNumericField(b.max_limit) !== undefined);
+				const validBudgets = (data.budgets || []).filter(
+					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+				);
 				if (validBudgets.length > 0) {
-					createData.budgets = validBudgets.map((b) => ({
-						max_limit: normalizeNumericField(b.max_limit)!,
-						reset_duration: b.reset_duration || "1M",
-					}));
+					createData.budgets = validBudgets;
 					createData.calendar_aligned = data.budgetCalendarAligned;
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
-				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
-				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				const hasTokenMaxLimit = data.tokenMaxLimit !== undefined;
+				const hasRequestMaxLimit = data.requestMaxLimit !== undefined;
 				if (hasTokenMaxLimit || hasRequestMaxLimit) {
 					createData.rate_limit = {
-						token_max_limit: tokenMaxLimit,
+						token_max_limit: data.tokenMaxLimit,
 						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : undefined,
-						request_max_limit: requestMaxLimit,
+						request_max_limit: data.requestMaxLimit,
 						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : undefined,
 					};
 				}
@@ -709,34 +664,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 														</AccordionTrigger>
 														<AccordionContent className="flex flex-col gap-4 px-1 text-balance">
 															<div className="flex w-full items-start gap-2">
-																<div className="w-1/4 space-y-2">
-																	<Label className="text-sm font-medium">Weight</Label>
-																	<Input
+																<div className="w-1/4">
+																	<NumberAndSelect
+																		id={`vk-weight-${index}`}
+																		label="Weight"
+																		labelClassName="text-sm font-medium"
 																		placeholder="Exclude from routing"
-																		className="h-10 w-full"
-																		data-testid={`vk-weight-input-${index}`}
-																		value={config.weight ?? ""}
-																		onChange={(e) => {
-																			const inputValue = e.target.value;
-																			// Allow empty string, numbers, and partial decimal inputs like "0."
-																			if (inputValue === "" || !isNaN(parseFloat(inputValue)) || inputValue.endsWith(".")) {
-																				handleUpdateProviderConfig(index, "weight", inputValue);
-																			}
-																		}}
-																		onBlur={(e) => {
-																			const inputValue = e.target.value.trim();
-																			if (inputValue === "") {
-																				handleUpdateProviderConfig(index, "weight", "");
-																			} else {
-																				const num = parseFloat(inputValue);
-																				if (!isNaN(num)) {
-																					handleUpdateProviderConfig(index, "weight", String(num));
-																				} else {
-																					handleUpdateProviderConfig(index, "weight", "");
-																				}
-																			}
-																		}}
-																		type="text"
+																		inputClassName="h-[38px] w-full"
+																		dataTestId={`vk-weight-input-${index}`}
+																		value={config.weight}
+																		onChangeNumber={(value) => handleUpdateProviderConfig(index, "weight", value)}
 																	/>
 																</div>
 																<div className="w-3/4 space-y-2">
@@ -923,7 +860,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																lines={
 																	config.budgets && config.budgets.length > 0
 																		? config.budgets.map((b) => ({
-																				max_limit: String(b.max_limit ?? ""),
+																				max_limit: b.max_limit,
 																				reset_duration: b.reset_duration || "1M",
 																			}))
 																		: []
@@ -951,7 +888,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	id={`providerTokenLimit-${index}`}
 																	labelClassName="font-normal"
 																	label="Maximum Tokens"
-																	value={config.rate_limit?.token_max_limit || ""}
+																	value={config.rate_limit?.token_max_limit}
 																	selectValue={config.rate_limit?.token_reset_duration || "1h"}
 																	onChangeNumber={(value) => {
 																		const currentRateLimit = config.rate_limit || {};
@@ -974,7 +911,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	id={`providerRequestLimit-${index}`}
 																	labelClassName="font-normal"
 																	label="Maximum Requests"
-																	value={config.rate_limit?.request_max_limit || ""}
+																	value={config.rate_limit?.request_max_limit}
 																	selectValue={config.rate_limit?.request_reset_duration || "1h"}
 																	onChangeNumber={(value) => {
 																		const currentRateLimit = config.rate_limit || {};
@@ -1242,9 +1179,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
 											<AlertDialogDescription>
 												Enabling calendar alignment will reset all budget usage for this virtual key to{" "}
-												<span className="font-semibold">$0.00</span> and snap each budget&apos;s reset date to the start of its
-												current period (e.g. start of day, week, month, or year). The usage reset to $0.00 cannot be undone, but
-												calendar alignment can be turned off later. This will take effect when you save.
+												<span className="font-semibold">$0.00</span> and snap each budget&apos;s reset date to the start of its current
+												period (e.g. start of day, week, month, or year). The usage reset to $0.00 cannot be undone, but calendar alignment
+												can be turned off later. This will take effect when you save.
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
@@ -1289,7 +1226,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												id="tokenMaxLimit"
 												labelClassName="font-normal"
 												label="Maximum Tokens"
-												value={field.value || ""}
+												value={field.value}
 												selectValue={form.watch("tokenResetDuration") || "1h"}
 												onChangeNumber={(value) => {
 													field.onChange(value);
@@ -1311,7 +1248,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												id="requestMaxLimit"
 												labelClassName="font-normal"
 												label="Maximum Requests"
-												value={field.value || ""}
+												value={field.value}
 												selectValue={form.watch("requestResetDuration") || "1h"}
 												onChangeNumber={(value) => {
 													field.onChange(value);

@@ -5916,8 +5916,23 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 	// a transaction, so we disable it before the migrator opens its transaction.
 	// This only affects SQLite — Postgres supports ALTER TABLE ADD CONSTRAINT natively.
 	if db.Dialector.Name() == "sqlite" {
-		db.Exec("PRAGMA foreign_keys = OFF")
-		defer db.Exec("PRAGMA foreign_keys = ON")
+		// PRAGMA foreign_keys is per-connection in SQLite. Pin the pool to a single
+		// connection so the PRAGMA and the migration transaction share the same one.
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(0) // restore default
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_multi_budget_tables migration: %s", err.Error())
