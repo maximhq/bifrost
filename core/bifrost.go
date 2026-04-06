@@ -161,13 +161,11 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 				if targetWorkers < config.ConcurrencyAndBufferSize.MinWorkers {
 					targetWorkers = config.ConcurrencyAndBufferSize.MinWorkers
 				}
-				//TODO: Implement additional functionality that when the no. of workers is less than min workers by some bug or error ... stop the difference.
 				numWorkersToSubtract := int(pq.ActiveWorkers.Load()) - targetWorkers
 			outer:
 				for i := 0; i < numWorkersToSubtract; i++ {
 					select {
 					case pq.quit <- struct{}{}:
-						bifrost.logger.Debug("removing a worker")
 						pq.ActiveWorkers.Add(-1)
 					default:
 						break outer
@@ -3776,7 +3774,6 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
 	// Create ProviderQueue with lifecycle management
-	bifrost.logger.Debug("config is", config.ConcurrencyAndBufferSize)
 
 	//config checks before enabling dynamic scaling and intialising the Provider Queue.
 	if config.ConcurrencyAndBufferSize.DynamicScaling {
