@@ -1,1 +1,1 @@
-- feat: Adds image generation logging support
+- feat: add image generation request support

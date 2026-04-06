@@ -87,7 +87,7 @@ is_ci() {
 find_available_port() {
   local start_port="${1:-8089}"
   local port=$start_port
-  
+
   while [ $port -lt $((start_port + 100)) ]; do
     if ! lsof -i ":$port" >/dev/null 2>&1; then
       echo "$port"
@@ -95,7 +95,7 @@ find_available_port() {
     fi
     port=$((port + 1))
   done
-  
+
   # Fallback to a random high port
   echo $((RANDOM % 10000 + 50000))
 }
@@ -103,16 +103,16 @@ find_available_port() {
 # Cleanup function
 cleanup() {
   local exit_code=$?
-  
+
   log_info "Cleaning up..."
-  
+
   # Kill bifrost if running
   if [ -n "${BIFROST_PID:-}" ]; then
     log_info "Stopping bifrost (PID: $BIFROST_PID)..."
     kill "$BIFROST_PID" 2>/dev/null || true
     wait "$BIFROST_PID" 2>/dev/null || true
   fi
-  
+
   # Also kill any bifrost processes on our port
   if [ -n "${BIFROST_PORT:-}" ]; then
     local pids
@@ -122,13 +122,13 @@ cleanup() {
       echo "$pids" | xargs kill 2>/dev/null || true
     fi
   fi
-  
+
   # Remove temp directory
   if [ -n "${TEMP_DIR:-}" ] && [ -d "$TEMP_DIR" ]; then
     log_info "Removing temp directory: $TEMP_DIR"
     rm -rf "$TEMP_DIR"
   fi
-  
+
   exit $exit_code
 }
 trap cleanup EXIT
@@ -145,23 +145,23 @@ wait_for_bifrost() {
   local log_file="$1"
   local max_wait="${2:-60}"
   local elapsed=0
-  
+
   while [ $elapsed -lt $max_wait ]; do
     if grep -q "successfully started bifrost" "$log_file" 2>/dev/null; then
       return 0
     fi
-    
+
     # Check if process is still running
     if [ -n "${BIFROST_PID:-}" ] && ! kill -0 "$BIFROST_PID" 2>/dev/null; then
       log_error "Bifrost process died unexpectedly"
       cat "$log_file" 2>/dev/null || true
       return 1
     fi
-    
+
     sleep 1
     elapsed=$((elapsed + 1))
   done
-  
+
   log_error "Bifrost failed to start within ${max_wait}s"
   cat "$log_file" 2>/dev/null || true
   return 1
@@ -174,7 +174,7 @@ stop_bifrost() {
     kill "$BIFROST_PID" 2>/dev/null || true
     wait "$BIFROST_PID" 2>/dev/null || true
     BIFROST_PID=""
-    
+
     # Wait for port to be released
     local max_wait=10
     local elapsed=0
@@ -186,7 +186,7 @@ stop_bifrost() {
       sleep 1
       elapsed=$((elapsed + 1))
     done
-    
+
     # Force kill anything still on the port
     local pids
     pids=$(lsof -t -i ":$BIFROST_PORT" 2>/dev/null || true)
@@ -212,16 +212,16 @@ check_postgres_available() {
 
 ensure_postgres_running() {
   local compose_file="$REPO_ROOT/.github/workflows/configs/docker-compose.yml"
-  
+
   if [ ! -f "$compose_file" ]; then
     log_error "Docker compose file not found: $compose_file"
     return 1
   fi
-  
+
   # Always ensure docker-compose postgres is running (not some other postgres)
   log_info "Ensuring docker-compose PostgreSQL is running..."
   docker compose -f "$compose_file" up -d postgres
-  
+
   # Wait for postgres to be ready via docker exec
   log_info "Waiting for PostgreSQL to be ready..."
   local max_wait=30
@@ -234,12 +234,12 @@ ensure_postgres_running() {
     sleep 1
     elapsed=$((elapsed + 1))
   done
-  
+
   if [ $elapsed -ge $max_wait ]; then
     log_error "PostgreSQL container failed to start within ${max_wait}s"
     return 1
   fi
-  
+
   # Also verify we can connect from localhost (port mapping works)
   log_info "Verifying localhost connectivity on port $POSTGRES_PORT..."
   elapsed=0
@@ -258,31 +258,31 @@ ensure_postgres_running() {
     sleep 1
     elapsed=$((elapsed + 1))
   done
-  
+
   log_warn "Could not verify localhost connectivity, but container is running - proceeding"
   return 0
 }
 
 reset_postgres_database() {
   log_info "Resetting PostgreSQL database: $POSTGRES_DB"
-  
+
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     log_error "Could not find any postgres container"
     return 1
   fi
-  
+
   log_info "Using postgres container: $container"
-  
+
   # First, terminate any existing connections to the database
   log_info "Terminating existing connections..."
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d postgres \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$POSTGRES_DB' AND pid <> pg_backend_pid();" \
     2>/dev/null || true
-  
+
   # Now drop and recreate
   log_info "Dropping and recreating database..."
   if ! docker exec "$container" \
@@ -291,14 +291,14 @@ reset_postgres_database() {
       log_error "Failed to drop database"
       return 1
   fi
-  
+
   if ! docker exec "$container" \
     psql -U "$POSTGRES_USER" -d postgres \
     -c "CREATE DATABASE $POSTGRES_DB;"; then
       log_error "Failed to create database"
       return 1
   fi
-  
+
   log_info "Database reset complete"
   return 0
 }
@@ -306,34 +306,34 @@ reset_postgres_database() {
 get_postgres_container() {
   local compose_file="$REPO_ROOT/.github/workflows/configs/docker-compose.yml"
   local container
-  
+
   # First try docker-compose container
   container=$(docker compose -f "$compose_file" ps -q postgres 2>/dev/null || true)
-  
+
   if [ -z "$container" ]; then
     # Fallback: find container by name pattern (prefer configs-postgres)
     container=$(docker ps -q --filter "name=configs-postgres" 2>/dev/null | head -1 || true)
   fi
-  
+
   if [ -z "$container" ]; then
     # Last resort: any postgres container with port 5432 mapped
     container=$(docker ps --filter "publish=5432" -q 2>/dev/null | head -1 || true)
   fi
-  
+
   echo "$container"
 }
 
 run_postgres_sql() {
   local sql="$1"
-  
+
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     log_error "PostgreSQL container not found"
     return 1
   fi
-  
+
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     -c "$sql" 2>/dev/null
@@ -341,15 +341,15 @@ run_postgres_sql() {
 
 run_postgres_sql_file() {
   local sql_file="$1"
-  
+
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     log_error "PostgreSQL container not found"
     return 1
   fi
-  
+
   docker exec -i "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$sql_file" 2>/dev/null
 }
@@ -358,12 +358,12 @@ get_postgres_table_count() {
   local table="$1"
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     echo "0"
     return
   fi
-  
+
   local result
   result=$(docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
@@ -377,7 +377,7 @@ get_postgres_table_count() {
 
 reset_sqlite_database() {
   local db_path="$1"
-  
+
   log_info "Resetting SQLite database: $db_path"
   rm -f "$db_path"
   return 0
@@ -386,24 +386,24 @@ reset_sqlite_database() {
 run_sqlite_sql() {
   local db_path="$1"
   local sql="$2"
-  
+
   if ! command -v sqlite3 >/dev/null 2>&1; then
     log_error "sqlite3 not found"
     return 1
   fi
-  
+
   sqlite3 "$db_path" "$sql" 2>/dev/null
 }
 
 run_sqlite_sql_file() {
   local db_path="$1"
   local sql_file="$2"
-  
+
   if ! command -v sqlite3 >/dev/null 2>&1; then
     log_error "sqlite3 not found"
     return 1
   fi
-  
+
   sqlite3 "$db_path" < "$sql_file" 2>/dev/null
 }
 
@@ -422,7 +422,7 @@ get_sqlite_table_count() {
 generate_faker_sql() {
   local db_type="$1"  # postgres or sqlite
   local output_file="$2"
-  
+
   local now
   local future
   local past
@@ -435,7 +435,7 @@ generate_faker_sql() {
     future="datetime('now', '+1 hour')"
     past="datetime('now', '-1 day')"
   fi
-  
+
   cat > "$output_file" << EOF
 -- Faker data for migration tests
 -- Generated for: $db_type
@@ -461,21 +461,21 @@ ON CONFLICT DO NOTHING;
 
 -- governance_rate_limits (flexible duration format with token_* and request_* columns)
 INSERT INTO governance_rate_limits (id, token_max_limit, token_reset_duration, token_current_usage, token_last_reset, request_max_limit, request_reset_duration, request_current_usage, request_last_reset, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('ratelimit-migration-test-1', 10000, '1m', 500, $now, 100, '1m', 10, $now, 'ratelimit-hash-001', $now, $now),
   ('ratelimit-migration-test-2', 50000, '1d', 2500, $now, 500, '1d', 50, $now, 'ratelimit-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_customers (with budget_id, rate_limit_id, and config_hash)
 INSERT INTO governance_customers (id, name, budget_id, rate_limit_id, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('customer-migration-test-1', 'Migration Test Customer One', 'budget-migration-test-1', 'ratelimit-migration-test-1', 'customer-hash-001', $now, $now),
   ('customer-migration-test-2', 'Migration Test Customer Two', NULL, NULL, 'customer-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_teams (with customer_id, budget_id, rate_limit_id, profile, config, claims, config_hash)
 INSERT INTO governance_teams (id, name, customer_id, budget_id, rate_limit_id, profile, config, claims, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('team-migration-test-1', 'Migration Test Team Alpha', 'customer-migration-test-1', 'budget-migration-test-2', 'ratelimit-migration-test-2', '{"role": "admin"}', '{"setting": "value"}', '{"claim1": "val1"}', 'team-hash-001', $now, $now),
   ('team-migration-test-2', 'Migration Test Team Beta', NULL, NULL, NULL, NULL, NULL, NULL, 'team-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
@@ -528,7 +528,7 @@ ON CONFLICT DO NOTHING;
 
 -- governance_config (key-value config table)
 INSERT INTO governance_config (key, value)
-VALUES 
+VALUES
   ('migration_test_key_1', 'migration_test_value_1'),
   ('migration_test_key_2', 'migration_test_value_2')
 ON CONFLICT DO NOTHING;
@@ -546,7 +546,7 @@ ON CONFLICT DO NOTHING;
 
 -- governance_model_configs (model-level governance configuration)
 INSERT INTO governance_model_configs (id, model_name, provider, budget_id, rate_limit_id, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('model-config-migration-test-1', 'gpt-4', 'openai', 'budget-migration-test-1', 'ratelimit-migration-test-1', 'model-config-hash-001', $now, $now),
   ('model-config-migration-test-2', 'claude-3-opus', 'anthropic', NULL, NULL, 'model-config-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
@@ -586,14 +586,14 @@ ON CONFLICT DO NOTHING;
 
 -- config_env_keys (no FK but tracks env vars)
 INSERT INTO config_env_keys (env_var, provider, key_type, config_path, key_id, created_at)
-VALUES 
+VALUES
   ('OPENAI_API_KEY', 'openai', 'api_key', 'providers.openai.keys[0]', 'key-migration-uuid-001', $now),
   ('ANTHROPIC_API_KEY', 'anthropic', 'api_key', 'providers.anthropic.keys[0]', 'key-migration-uuid-002', $now)
 ON CONFLICT DO NOTHING;
 
 -- config_plugins (with path and config_hash)
 INSERT INTO config_plugins (name, enabled, config_json, version, is_custom, path, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('migration-test-plugin', true, '{"setting1": "value1", "setting2": 42}', 1, false, '/path/to/plugin', 'plugin-hash-001', $now, $now)
 ON CONFLICT DO NOTHING;
 
@@ -602,14 +602,14 @@ ON CONFLICT DO NOTHING;
 
 -- governance_virtual_keys (with all columns including description, is_active, team_id, customer_id, budget_id, rate_limit_id, config_hash)
 INSERT INTO governance_virtual_keys (id, name, description, value, is_active, team_id, customer_id, budget_id, rate_limit_id, config_hash, created_at, updated_at)
-VALUES 
+VALUES
   ('vk-migration-test-1', 'Migration Test Virtual Key 1', 'Test virtual key for migration', 'vk-migration-fake-value-001', true, 'team-migration-test-1', NULL, 'budget-migration-test-1', 'ratelimit-migration-test-1', 'vk-hash-001', $now, $now),
   ('vk-migration-test-2', 'Migration Test Virtual Key 2', 'Another test virtual key', 'vk-migration-fake-value-002', true, NULL, 'customer-migration-test-2', NULL, NULL, 'vk-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- governance_virtual_key_provider_configs (references virtual_keys - with all columns)
 INSERT INTO governance_virtual_key_provider_configs (virtual_key_id, provider, weight, allowed_models, budget_id, rate_limit_id)
-VALUES 
+VALUES
   ('vk-migration-test-1', 'openai', 0.7, '["gpt-4"]', NULL, NULL),
   ('vk-migration-test-2', 'anthropic', 0.3, '[]', 'budget-migration-test-2', 'ratelimit-migration-test-2')
 ON CONFLICT DO NOTHING;
@@ -632,7 +632,7 @@ ON CONFLICT DO NOTHING;
 
 -- sessions (id is auto-increment integer, not a string)
 INSERT INTO sessions (token, expires_at, created_at, updated_at)
-VALUES 
+VALUES
   ('session-migration-token-fake-123', $future, $now, $now),
   ('session-migration-token-fake-456', $future, $now, $now)
 ON CONFLICT DO NOTHING;
@@ -673,7 +673,7 @@ ON CONFLICT DO NOTHING;
 
 -- mcp_tool_logs (with all columns including virtual_key_id, virtual_key_name)
 INSERT INTO mcp_tool_logs (id, llm_request_id, timestamp, tool_name, server_label, virtual_key_id, virtual_key_name, arguments, result, error_details, latency, cost, status, created_at)
-VALUES 
+VALUES
   ('mcp-log-migration-001', 'log-migration-test-001', $past, 'migration_test_tool_alpha', 'test-server-1', 'vk-migration-test-1', 'Migration Test Virtual Key 1', '{"arg1":"value1"}', '{"result":"success"}', '', 150.5, 0.001, 'success', $past),
   ('mcp-log-migration-002', NULL, $past, 'migration_test_tool_beta', 'test-server-2', NULL, NULL, '{"arg2":"value2"}', '', '{"message":"Tool failed"}', 75.25, NULL, 'error', $past)
 ON CONFLICT DO NOTHING;
@@ -1205,6 +1205,34 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_providers SET open_ai_config_json = '{\"disable_store\":false}' WHERE name = 'openai';" >> "$output_file"
     echo "UPDATE config_providers SET open_ai_config_json = '' WHERE name = 'anthropic';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.20 columns - governance_model_pricing model capability metadata
+  # -------------------------------------------------------------------------
+
+  # governance_model_pricing.context_length (added in v1.4.20)
+  if column_exists_postgres "governance_model_pricing" "context_length"; then
+    echo "UPDATE governance_model_pricing SET context_length = 128000 WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET context_length = 200000 WHERE id = 2;" >> "$output_file"
+  fi
+
+  # governance_model_pricing.max_input_tokens (added in v1.4.20)
+  if column_exists_postgres "governance_model_pricing" "max_input_tokens"; then
+    echo "UPDATE governance_model_pricing SET max_input_tokens = 128000 WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET max_input_tokens = 200000 WHERE id = 2;" >> "$output_file"
+  fi
+
+  # governance_model_pricing.max_output_tokens (added in v1.4.20)
+  if column_exists_postgres "governance_model_pricing" "max_output_tokens"; then
+    echo "UPDATE governance_model_pricing SET max_output_tokens = 4096 WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET max_output_tokens = 4096 WHERE id = 2;" >> "$output_file"
+  fi
+
+  # governance_model_pricing.architecture (added in v1.4.20 - JSON serialized)
+  if column_exists_postgres "governance_model_pricing" "architecture"; then
+    echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1671,6 +1699,34 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE config_providers SET open_ai_config_json = '{\"disable_store\":false}' WHERE name = 'openai';" >> "$output_file"
       echo "UPDATE config_providers SET open_ai_config_json = '' WHERE name = 'anthropic';" >> "$output_file"
     fi
+
+    # -------------------------------------------------------------------------
+    # v1.4.20 columns - governance_model_pricing model capability metadata
+    # -------------------------------------------------------------------------
+
+    # governance_model_pricing.context_length (added in v1.4.20)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "context_length"; then
+      echo "UPDATE governance_model_pricing SET context_length = 128000 WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET context_length = 200000 WHERE id = 2;" >> "$output_file"
+    fi
+
+    # governance_model_pricing.max_input_tokens (added in v1.4.20)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "max_input_tokens"; then
+      echo "UPDATE governance_model_pricing SET max_input_tokens = 128000 WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET max_input_tokens = 200000 WHERE id = 2;" >> "$output_file"
+    fi
+
+    # governance_model_pricing.max_output_tokens (added in v1.4.20)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "max_output_tokens"; then
+      echo "UPDATE governance_model_pricing SET max_output_tokens = 4096 WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET max_output_tokens = 4096 WHERE id = 2;" >> "$output_file"
+    fi
+
+    # governance_model_pricing.architecture (added in v1.4.20 - JSON serialized)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "architecture"; then
+      echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
+    fi
   fi
 }
 
@@ -1706,19 +1762,19 @@ column_exists_postgres() {
   local column="$2"
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     return 1
   fi
-  
+
   local count
   count=$(docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
-    -c "SELECT COUNT(*) FROM information_schema.columns 
-        WHERE table_name = '$table' 
+    -c "SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_name = '$table'
         AND column_name = '$column'
         AND table_schema = 'public';" 2>/dev/null)
-  
+
   [ "$count" = "1" ]
 }
 
@@ -1727,27 +1783,27 @@ column_exists_postgres() {
 generate_mcp_clients_insert_postgres() {
   local now="$1"
   local output_file="$2"
-  
+
   # Core columns that always exist in config_mcp_clients
   local cols="client_id, name, is_code_mode_client, connection_type, connection_string, stdio_config_json, tools_to_execute_json, tools_to_auto_execute_json, headers_json, is_ping_available, config_hash, created_at, updated_at"
   local vals="'mcp-migration-test-001', 'migration-test-mcp-server', false, 'sse', 'http://mcp-server:8080', NULL, '[\"tool1\", \"tool2\"]', '[]', '{}', true, 'mcp-hash-001', $now, $now"
-  
+
   # Add optional columns if they exist in the schema
   if column_exists_postgres "config_mcp_clients" "tool_pricing_json"; then
     cols="$cols, tool_pricing_json"
     vals="$vals, '{\"tool1\": 0.001, \"tool2\": 0.002}'"
   fi
-  
+
   if column_exists_postgres "config_mcp_clients" "tool_sync_interval"; then
     cols="$cols, tool_sync_interval"
     vals="$vals, 5"
   fi
-  
+
   if column_exists_postgres "config_mcp_clients" "auth_type"; then
     cols="$cols, auth_type"
     vals="$vals, 'oauth'"
   fi
-  
+
   if column_exists_postgres "config_mcp_clients" "oauth_config_id"; then
     cols="$cols, oauth_config_id"
     vals="$vals, 'oauth-config-migration-test-001'"
@@ -1758,7 +1814,7 @@ generate_mcp_clients_insert_postgres() {
     cols="$cols, encryption_status"
     vals="$vals, 'plain_text'"
   fi
-  
+
   # Append the dynamic INSERT to the output file
   echo "" >> "$output_file"
   echo "-- config_mcp_clients (MCP server configurations - dynamically generated based on schema)" >> "$output_file"
@@ -1770,16 +1826,16 @@ get_postgres_auto_increment_columns() {
   local table="$1"
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     return
   fi
-  
+
   # Find columns with SERIAL/BIGSERIAL or identity columns
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
-    -c "SELECT column_name FROM information_schema.columns 
-        WHERE table_name = '$table' 
+    -c "SELECT column_name FROM information_schema.columns
+        WHERE table_name = '$table'
         AND table_schema = 'public'
         AND (column_default LIKE 'nextval%' OR is_identity = 'YES');" 2>/dev/null
 }
@@ -1789,48 +1845,48 @@ validate_faker_column_coverage_postgres() {
   local faker_sql="$1"
   local version="$2"
   local temp_dir="$3"
-  
+
   log_info "Validating faker column coverage for $version schema..."
-  
+
   # Tables to skip (system/tracking tables)
   local skip_tables="gorp_migrations schema_migrations"
-  
+
   # Extract faker columns to a temp file
   local faker_cols_file="$temp_dir/faker_columns.txt"
   extract_faker_columns "$faker_sql" "$faker_cols_file"
-  
+
   local failed=0
   local missing_report=""
-  
+
   # Get all tables from the database
   local tables
   tables=$(get_postgres_tables)
-  
+
   for table in $tables; do
     # Skip system tables
     if [[ " $skip_tables " == *" $table "* ]]; then
       continue
     fi
-    
+
     # Get columns that faker inserts for this table
     local faker_cols
     faker_cols=$(grep "^${table}:" "$faker_cols_file" 2>/dev/null | cut -d: -f2 | tr ',' '\n' | sort -u)
-    
+
     # If faker doesn't insert into this table at all, that's a problem
     if [ -z "$faker_cols" ]; then
       missing_report="${missing_report}\n  Table '$table': NO FAKER DATA - table not covered by faker SQL"
       failed=1
       continue
     fi
-    
+
     # Get all columns from the database schema
     local db_cols
     db_cols=$(get_postgres_columns "$table")
-    
+
     # Get auto-increment columns (these don't need faker coverage)
     local auto_cols
     auto_cols=$(get_postgres_auto_increment_columns "$table")
-    
+
     # Check each DB column
     local missing_cols=""
     for col in $db_cols; do
@@ -1838,7 +1894,7 @@ validate_faker_column_coverage_postgres() {
       if echo "$auto_cols" | grep -q "^${col}$"; then
         continue
       fi
-      
+
       # Check if faker covers this column
       if ! echo "$faker_cols" | grep -q "^${col}$"; then
         if [ -z "$missing_cols" ]; then
@@ -1848,13 +1904,13 @@ validate_faker_column_coverage_postgres() {
         fi
       fi
     done
-    
+
     if [ -n "$missing_cols" ]; then
       missing_report="${missing_report}\n  Table '$table': $missing_cols"
       failed=1
     fi
   done
-  
+
   if [ $failed -eq 1 ]; then
     log_error "Faker SQL missing coverage for columns in $version schema:"
     echo -e "$missing_report" | while read -r line; do
@@ -1865,7 +1921,7 @@ validate_faker_column_coverage_postgres() {
     log_error "Migration tests require all columns in the older schema to have test data coverage."
     return 1
   fi
-  
+
   log_info "Faker column coverage validation passed for $version schema"
   return 0
 }
@@ -1874,22 +1930,22 @@ validate_faker_column_coverage_postgres() {
 get_sqlite_columns() {
   local db_path="$1"
   local table="$2"
-  
+
   if [ ! -f "$db_path" ]; then
     return
   fi
-  
+
   sqlite3 "$db_path" "PRAGMA table_info($table);" 2>/dev/null | cut -d'|' -f2
 }
 
 # Get SQLite tables
 get_sqlite_tables() {
   local db_path="$1"
-  
+
   if [ ! -f "$db_path" ]; then
     return
   fi
-  
+
   sqlite3 "$db_path" "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;" 2>/dev/null
 }
 
@@ -1897,11 +1953,11 @@ get_sqlite_tables() {
 get_sqlite_auto_increment_columns() {
   local db_path="$1"
   local table="$2"
-  
+
   if [ ! -f "$db_path" ]; then
     return
   fi
-  
+
   # In SQLite, INTEGER PRIMARY KEY columns are auto-increment
   sqlite3 "$db_path" "PRAGMA table_info($table);" 2>/dev/null | \
     awk -F'|' '$3 == "INTEGER" && $6 == "1" {print $2}'
@@ -1912,14 +1968,14 @@ column_exists_sqlite() {
   local db_path="$1"
   local table="$2"
   local column="$3"
-  
+
   if [ ! -f "$db_path" ]; then
     return 1
   fi
-  
+
   local count
   count=$(sqlite3 "$db_path" "PRAGMA table_info($table);" 2>/dev/null | grep -c "^[0-9]*|${column}|") || count=0
-  
+
   [ "$count" -ge "1" ]
 }
 
@@ -1929,39 +1985,39 @@ generate_mcp_clients_insert_sqlite() {
   local now="$1"
   local output_file="$2"
   local config_db="$3"
-  
+
   # Check if the table exists in the database
   if [ ! -f "$config_db" ]; then
     return
   fi
-  
+
   local table_exists
   table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='config_mcp_clients';" 2>/dev/null || echo "0")
-  
+
   if [ "$table_exists" != "1" ]; then
     return
   fi
-  
+
   # Core columns that always exist in config_mcp_clients
   local cols="client_id, name, is_code_mode_client, connection_type, connection_string, stdio_config_json, tools_to_execute_json, tools_to_auto_execute_json, headers_json, is_ping_available, config_hash, created_at, updated_at"
   local vals="'mcp-migration-test-001', 'migration-test-mcp-server', 0, 'sse', 'http://mcp-server:8080', NULL, '[\"tool1\", \"tool2\"]', '[]', '{}', 1, 'mcp-hash-001', $now, $now"
-  
+
   # Add optional columns if they exist in the schema
   if column_exists_sqlite "$config_db" "config_mcp_clients" "tool_pricing_json"; then
     cols="$cols, tool_pricing_json"
     vals="$vals, '{\"tool1\": 0.001, \"tool2\": 0.002}'"
   fi
-  
+
   if column_exists_sqlite "$config_db" "config_mcp_clients" "tool_sync_interval"; then
     cols="$cols, tool_sync_interval"
     vals="$vals, 5"
   fi
-  
+
   if column_exists_sqlite "$config_db" "config_mcp_clients" "auth_type"; then
     cols="$cols, auth_type"
     vals="$vals, 'oauth'"
   fi
-  
+
   if column_exists_sqlite "$config_db" "config_mcp_clients" "oauth_config_id"; then
     cols="$cols, oauth_config_id"
     vals="$vals, 'oauth-config-migration-test-001'"
@@ -1972,7 +2028,7 @@ generate_mcp_clients_insert_sqlite() {
     cols="$cols, encryption_status"
     vals="$vals, 'plain_text'"
   fi
-  
+
   # Append the dynamic INSERT to the output file
   echo "" >> "$output_file"
   echo "-- config_mcp_clients (MCP server configurations - dynamically generated based on schema)" >> "$output_file"
@@ -2212,57 +2268,57 @@ validate_faker_column_coverage_sqlite() {
   local temp_dir="$3"
   local config_db="$4"
   local logs_db="$5"
-  
+
   log_info "Validating faker column coverage for $version schema (SQLite)..."
-  
+
   # Tables to skip (system/tracking tables)
   local skip_tables="gorp_migrations schema_migrations"
-  
+
   # Extract faker columns to a temp file
   local faker_cols_file="$temp_dir/faker_columns.txt"
   extract_faker_columns "$faker_sql" "$faker_cols_file"
-  
+
   local failed=0
   local missing_report=""
-  
+
   # Check both config and logs databases
   for db_path in "$config_db" "$logs_db"; do
     if [ ! -f "$db_path" ]; then
       continue
     fi
-    
+
     local db_name
     db_name=$(basename "$db_path")
-    
+
     # Get all tables from the database
     local tables
     tables=$(get_sqlite_tables "$db_path")
-    
+
     for table in $tables; do
       # Skip system tables
       if [[ " $skip_tables " == *" $table "* ]]; then
         continue
       fi
-      
+
       # Get columns that faker inserts for this table
       local faker_cols
       faker_cols=$(grep "^${table}:" "$faker_cols_file" 2>/dev/null | cut -d: -f2 | tr ',' '\n' | sort -u)
-      
+
       # If faker doesn't insert into this table at all, that's a problem
       if [ -z "$faker_cols" ]; then
         missing_report="${missing_report}\n  Table '$table' ($db_name): NO FAKER DATA - table not covered by faker SQL"
         failed=1
         continue
       fi
-      
+
       # Get all columns from the database schema
       local db_cols
       db_cols=$(get_sqlite_columns "$db_path" "$table")
-      
+
       # Get auto-increment columns
       local auto_cols
       auto_cols=$(get_sqlite_auto_increment_columns "$db_path" "$table")
-      
+
       # Check each DB column
       local missing_cols=""
       for col in $db_cols; do
@@ -2270,7 +2326,7 @@ validate_faker_column_coverage_sqlite() {
         if echo "$auto_cols" | grep -q "^${col}$"; then
           continue
         fi
-        
+
         # Check if faker covers this column
         if ! echo "$faker_cols" | grep -q "^${col}$"; then
           if [ -z "$missing_cols" ]; then
@@ -2280,14 +2336,14 @@ validate_faker_column_coverage_sqlite() {
           fi
         fi
       done
-      
+
       if [ -n "$missing_cols" ]; then
         missing_report="${missing_report}\n  Table '$table' ($db_name): $missing_cols"
         failed=1
       fi
     done
   done
-  
+
   if [ $failed -eq 1 ]; then
     log_error "Faker SQL missing coverage for columns in $version schema:"
     echo -e "$missing_report" | while read -r line; do
@@ -2298,7 +2354,7 @@ validate_faker_column_coverage_sqlite() {
     log_error "Migration tests require all columns in the older schema to have test data coverage."
     return 1
   fi
-  
+
   log_info "Faker column coverage validation passed for $version schema (SQLite)"
   return 0
 }
@@ -2311,11 +2367,11 @@ validate_faker_column_coverage_sqlite() {
 get_postgres_tables() {
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     return
   fi
-  
+
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
     -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;" 2>/dev/null
@@ -2326,11 +2382,11 @@ get_postgres_columns() {
   local table="$1"
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     return
   fi
-  
+
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A \
     -c "SELECT column_name FROM information_schema.columns WHERE table_name = '$table' AND table_schema = 'public' ORDER BY ordinal_position;" 2>/dev/null
@@ -2342,25 +2398,25 @@ dump_postgres_table() {
   local output_file="$2"
   local container
   container=$(get_postgres_container)
-  
+
   if [ -z "$container" ]; then
     return 1
   fi
-  
+
   # Get column list
   local columns
   columns=$(get_postgres_columns "$table" | tr '\n' ',' | sed 's/,$//')
-  
+
   if [ -z "$columns" ]; then
     echo "# Table $table does not exist" > "$output_file"
     return 0
   fi
-  
+
   # Export data as CSV (header + data), sorted by first column for consistent ordering
   docker exec "$container" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -F'|' \
     -c "SELECT $columns FROM $table ORDER BY 1;" 2>/dev/null > "$output_file"
-  
+
   # Prepend column header
   local tmp_file="${output_file}.tmp"
   echo "# COLUMNS: $columns" > "$tmp_file"
@@ -2371,31 +2427,31 @@ dump_postgres_table() {
 # Capture snapshot of all tables
 capture_postgres_snapshot() {
   local snapshot_dir="$1"
-  
+
   mkdir -p "$snapshot_dir"
-  
+
   log_info "Capturing database snapshot..."
-  
+
   local tables
   tables=$(get_postgres_tables)
-  
+
   # Save table list
   echo "$tables" > "$snapshot_dir/tables.txt"
-  
+
   local table_count=0
   for table in $tables; do
     # Skip migration tracking tables
     if [[ "$table" == "gorp_migrations" ]] || [[ "$table" == "schema_migrations" ]]; then
       continue
     fi
-    
+
     dump_postgres_table "$table" "$snapshot_dir/${table}.csv"
     local row_count
     row_count=$(get_postgres_table_count "$table")
     log_info "  Captured $table: $row_count rows"
     table_count=$((table_count + 1))
   done
-  
+
   log_info "Snapshot captured: $table_count tables"
 }
 
@@ -2403,19 +2459,19 @@ capture_postgres_snapshot() {
 compare_postgres_snapshots() {
   local before_dir="$1"
   local after_dir="$2"
-  
+
   log_info "Comparing data before and after migration..."
-  
+
   local failed=0
   local checked=0
   local new_cols_count=0
-  
+
   # Tables to skip entirely (system/tracking tables that change during migration)
   local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing"
-  
+
   # Columns to ignore when comparing (these are expected to change during migration)
   # - updated_at: timestamps are updated when records are touched
-  # - config_hash: recomputed when config is synced  
+  # - config_hash: recomputed when config is synced
   # - created_at: some migrations reset this to default (known issue, tracked separately)
   # - models_json: migrations add default empty array
   # - weight: migrations add default value
@@ -2426,52 +2482,52 @@ compare_postgres_snapshots() {
   # - status, description: key validation runs after migration, updating these fields
   #   for invalid/test keys (e.g., status becomes "list_models_failed")
   local ignore_columns="updated_at config_hash created_at models_json weight allowed_models network_config_json concurrency_buffer_json proxy_config_json custom_provider_config_json budget_id rate_limit_id status description"
-  
+
   # Get tables from before snapshot
   if [ ! -f "$before_dir/tables.txt" ]; then
     log_error "Before snapshot not found!"
     return 1
   fi
-  
+
   local before_tables
   before_tables=$(cat "$before_dir/tables.txt")
-  
+
   for table in $before_tables; do
     # Skip system/tracking tables
     if [[ " $skip_tables " == *" $table "* ]]; then
       log_info "  Skipping $table (system table)"
       continue
     fi
-    
+
     local before_file="$before_dir/${table}.csv"
     local after_file="$after_dir/${table}.csv"
-    
+
     if [ ! -f "$before_file" ]; then
       continue
     fi
-    
+
     # Check if table still exists after migration
     if [ ! -f "$after_file" ]; then
       log_error "Table $table missing after migration!"
       failed=1
       continue
     fi
-    
+
     # Get before columns
     local before_columns
     before_columns=$(head -1 "$before_file" | sed 's/^# COLUMNS: //')
-    
-    # Get after columns  
+
+    # Get after columns
     local after_columns
     after_columns=$(head -1 "$after_file" | sed 's/^# COLUMNS: //')
-    
+
     # Check that all before columns still exist (new columns are OK)
     # Columns that are intentionally renamed during migration should be excluded
     # routing_engine_used -> routing_engines_used (v1.4.7)
     # output_cost_per_image_above_512_and_512_pixels_and_premium_imag (PG-truncated) -> output_cost_per_image_above_512x512_pixels_premium
     # output_cost_per_image_above_512_and_512_pixels_and_premium_image (SQLite full) -> output_cost_per_image_above_512x512_pixels_premium
     local renamed_columns="routing_engine_used output_cost_per_image_above_512_and_512_pixels_and_premium_imag output_cost_per_image_above_512_and_512_pixels_and_premium_image"
-    
+
     # Columns that are intentionally dropped during migration should be excluded
     # enable_governance (dropped in v1.4.8) - applies to all tables
     local dropped_columns="enable_governance"
@@ -2479,10 +2535,10 @@ compare_postgres_snapshots() {
     if [ "$table" = "routing_rules" ]; then
       dropped_columns="$dropped_columns provider model"
     fi
-    
+
     local before_col_array
     IFS=',' read -ra before_col_array <<< "$before_columns"
-    
+
     local missing_cols=""
     for col in "${before_col_array[@]}"; do
       # Skip columns that are intentionally renamed during migration
@@ -2497,42 +2553,42 @@ compare_postgres_snapshots() {
         missing_cols="$missing_cols $col"
       fi
     done
-    
+
     if [ -n "$missing_cols" ]; then
       log_error "Table $table: columns dropped after migration:$missing_cols"
       failed=1
       continue
     fi
-    
+
     # Check row count
     local before_rows
     local after_rows
     before_rows=$(tail -n +2 "$before_file" | wc -l | tr -d ' ')
     after_rows=$(tail -n +2 "$after_file" | wc -l | tr -d ' ')
-    
+
     if [ "$before_rows" -ne "$after_rows" ]; then
       log_error "Table $table: row count changed! Before: $before_rows, After: $after_rows"
       failed=1
       continue
     fi
-    
+
     # Skip empty tables
     if [ "$before_rows" -eq 0 ]; then
       log_info "  Table $table: 0 rows (empty)"
       checked=$((checked + 1))
       continue
     fi
-    
+
     # Check if new columns were added (this is OK)
     if [ "$before_columns" != "$after_columns" ]; then
       new_cols_count=$((new_cols_count + 1))
     fi
-    
+
     # Build column indices for comparison - map before column positions to after positions
     # This allows us to compare only the columns that existed before migration
     local after_col_array
     IFS=',' read -ra after_col_array <<< "$after_columns"
-    
+
     # Create index mapping: for each before column, find its position in after columns
     local col_map=""
     local compare_cols=""
@@ -2543,7 +2599,7 @@ compare_postgres_snapshots() {
         col_idx=$((col_idx + 1))
         continue
       fi
-      
+
       # Find this column in after_columns
       local after_idx=1
       for after_col in "${after_col_array[@]}"; do
@@ -2556,18 +2612,18 @@ compare_postgres_snapshots() {
       done
       col_idx=$((col_idx + 1))
     done
-    
+
     # Guard: skip if no comparable columns (all columns were ignored or not matched)
     if [ -z "$col_map" ]; then
       log_info "  Table $table: no comparable columns (all ignored or unmatched), skipping data comparison"
       checked=$((checked + 1))
       continue
     fi
-    
+
     # Extract comparable data from before file (using before column positions)
     local before_comparable="$before_dir/${table}_comparable.txt"
     local after_comparable="$after_dir/${table}_comparable.txt"
-    
+
     # Build cut command for before columns
     local before_cut_cols=""
     for mapping in $col_map; do
@@ -2578,8 +2634,8 @@ compare_postgres_snapshots() {
         before_cut_cols="$before_cut_cols,$before_idx"
       fi
     done
-    
-    # Build cut command for after columns  
+
+    # Build cut command for after columns
     local after_cut_cols=""
     for mapping in $col_map; do
       local after_idx="${mapping##*:}"
@@ -2589,16 +2645,16 @@ compare_postgres_snapshots() {
         after_cut_cols="$after_cut_cols,$after_idx"
       fi
     done
-    
+
     # Extract and sort data for comparison
     tail -n +2 "$before_file" | cut -d'|' -f"$before_cut_cols" | sort > "$before_comparable"
     tail -n +2 "$after_file" | cut -d'|' -f"$after_cut_cols" | sort > "$after_comparable"
-    
+
     # Compare the extracted data
     if ! diff -q "$before_comparable" "$after_comparable" > /dev/null 2>&1; then
       log_error "Table $table: data values changed after migration!"
       log_error "  Compared columns:$compare_cols"
-      
+
       # Show first difference
       local diff_output
       diff_output=$(diff "$before_comparable" "$after_comparable" | head -10)
@@ -2606,23 +2662,23 @@ compare_postgres_snapshots() {
       echo "$diff_output" | while read -r line; do
         log_error "    $line"
       done
-      
+
       failed=1
       rm -f "$before_comparable" "$after_comparable"
       continue
     fi
-    
+
     rm -f "$before_comparable" "$after_comparable"
-    
+
     log_info "  Table $table: $before_rows rows ✓ (verified ${#before_col_array[@]} columns)"
     checked=$((checked + 1))
   done
-  
+
   log_info "Comparison complete: $checked tables checked"
   if [ "$new_cols_count" -gt 0 ]; then
     log_info "  $new_cols_count tables have new columns added (OK - schema expansion)"
   fi
-  
+
   return $failed
 }
 
@@ -2633,18 +2689,18 @@ compare_postgres_snapshots() {
 validate_postgres_data() {
   local before_snapshot="$1"
   local after_snapshot="$2"
-  
+
   compare_postgres_snapshots "$before_snapshot" "$after_snapshot"
 }
 
 validate_sqlite_data() {
   local config_db="$1"
   local logs_db="$2"
-  
+
   log_info "Validating SQLite data integrity..."
-  
+
   local failed=0
-  
+
   # Check config store tables
   if [ -f "$config_db" ]; then
     # Required tables
@@ -2660,7 +2716,7 @@ validate_sqlite_data() {
       fi
     done
   fi
-  
+
   # Check log store tables
   if [ -f "$logs_db" ]; then
     local log_tables=("logs")
@@ -2675,7 +2731,7 @@ validate_sqlite_data() {
       fi
     done
   fi
-  
+
   return $failed
 }
 
@@ -2687,26 +2743,26 @@ run_postgres_migration_tests() {
   log_info "=========================================="
   log_info "Running PostgreSQL Migration Tests"
   log_info "=========================================="
-  
+
   # Check prerequisites
   if ! check_postgres_available; then
     log_warn "Skipping PostgreSQL tests - Docker not available"
     return 0
   fi
-  
+
   # Find an available port for bifrost
   BIFROST_PORT=$(find_available_port 8089)
   log_info "Using port $BIFROST_PORT for bifrost"
-  
+
   if ! ensure_postgres_running; then
     log_error "Failed to start PostgreSQL"
     return 1
   fi
-  
+
   # Create temp directory
   TEMP_DIR=$(mktemp -d)
   log_info "Using temp directory: $TEMP_DIR"
-  
+
   # Create config file for PostgreSQL
   local config_file="$TEMP_DIR/config.json"
   cat > "$config_file" << EOF
@@ -2738,11 +2794,11 @@ run_postgres_migration_tests() {
   }
 }
 EOF
-  
+
   # Generate faker SQL
   local faker_sql="$TEMP_DIR/faker.sql"
   generate_faker_sql "postgres" "$faker_sql"
-  
+
   # Build current version ONCE before testing
   log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
@@ -2757,96 +2813,96 @@ EOF
     return 1
   fi
   log_info "Current version built successfully: $current_binary"
-  
+
   # Get previous versions
   local versions
   versions=$(get_previous_versions "$VERSIONS_TO_TEST")
-  
+
   if [ -z "$versions" ]; then
     log_warn "No previous versions found, skipping version-based migration tests"
     versions="latest"
   fi
-  
+
   log_info "Testing versions: $(echo $versions | tr '\n' ' ')"
-  
+
   # Test each version
   for version in $versions; do
     log_info "------------------------------------------"
     log_info "Testing migration from version: $version"
     log_info "------------------------------------------"
-    
+
     # Create snapshot directories for this version
     local before_snapshot="$TEMP_DIR/snapshot-before-$version"
     local after_snapshot="$TEMP_DIR/snapshot-after-$version"
-    
+
     # Reset database
     if ! reset_postgres_database; then
       log_error "Failed to reset database for version $version"
       exit 1
     fi
-    
+
     # Start bifrost with this version using npx
     local server_log="$TEMP_DIR/server-$version.log"
     log_info "Starting bifrost $version via npx..."
-    
+
     npx @maximhq/bifrost --transport-version "$version" \
       --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$server_log" 2>&1 &
     BIFROST_PID=$!
-    
+
     if ! wait_for_bifrost "$server_log" 120; then
       log_error "Failed to start bifrost $version"
       cat "$server_log" 2>/dev/null || true
       stop_bifrost
       exit 1
     fi
-    
+
     log_info "Bifrost $version started successfully"
-    
+
     # Stop bifrost (schema is now created)
     stop_bifrost
-    
+
     # Create version-specific faker SQL with dynamic config_mcp_clients INSERT
     local version_faker_sql="$TEMP_DIR/faker-$version.sql"
     cp "$faker_sql" "$version_faker_sql"
     append_dynamic_mcp_clients_insert "postgres" "$version_faker_sql"
-    
+
     # Validate faker column coverage against older version's schema
     if ! validate_faker_column_coverage_postgres "$version_faker_sql" "$version" "$TEMP_DIR"; then
       log_error "Faker column coverage validation failed for $version"
       return 1
     fi
-    
+
     # Insert faker data
     log_info "Inserting faker data..."
     if ! run_postgres_sql_file "$version_faker_sql"; then
       log_warn "Some faker data inserts may have failed (tables might not exist in this version)"
     fi
-    
+
     # STEP 3: Capture snapshot BEFORE migration (after inserting faker data)
     log_info "Capturing pre-migration snapshot..."
     capture_postgres_snapshot "$before_snapshot"
-    
+
     # Now run current version to test migration
     log_info "Running current version to test migration..."
-    
+
     # Start current version (already built)
     local current_log="$TEMP_DIR/server-current-$version.log"
     "$current_binary" --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$current_log" 2>&1 &
     BIFROST_PID=$!
-    
+
     if ! wait_for_bifrost "$current_log" 120; then
       log_error "Current version failed to start after migrating from $version"
       cat "$current_log"
       stop_bifrost
       return 1
     fi
-    
+
     log_info "Current version started successfully after migration from $version"
-    
+
     # Wait a moment to ensure all migrations are fully committed to DB
     # The "successfully started" log means server is listening, but async operations may still be completing
     sleep 2
-    
+
     # Verify the server is actually responding before we capture snapshot
     local health_check_attempts=0
     while [ $health_check_attempts -lt 10 ]; do
@@ -2857,32 +2913,32 @@ EOF
       sleep 1
       health_check_attempts=$((health_check_attempts + 1))
     done
-    
+
     # Fail fast if health check never succeeded
     if [ $health_check_attempts -ge 10 ]; then
       log_error "Health check failed: server did not respond on /health after 10 attempts"
       stop_bifrost
       return 1
     fi
-    
+
     # Stop current version before taking snapshot
     stop_bifrost
-    
+
     # STEP 4: Capture snapshot AFTER migration
     log_info "Capturing post-migration snapshot..."
     capture_postgres_snapshot "$after_snapshot"
-    
+
     # STEP 5: Compare snapshots - validate all data is intact
     if ! validate_postgres_data "$before_snapshot" "$after_snapshot"; then
       log_error "Data validation failed after migration from $version"
       stop_bifrost
       return 1
     fi
-    
+
     stop_bifrost
     log_info "Migration from $version: SUCCESS"
   done
-  
+
   log_info "=========================================="
   log_info "PostgreSQL Migration Tests: PASSED"
   log_info "=========================================="
@@ -2897,24 +2953,24 @@ run_sqlite_migration_tests() {
   log_info "=========================================="
   log_info "Running SQLite Migration Tests"
   log_info "=========================================="
-  
+
   # Check if sqlite3 is available
   if ! command -v sqlite3 >/dev/null 2>&1; then
     log_warn "sqlite3 not found, skipping SQLite tests"
     return 0
   fi
-  
+
   # Find an available port for bifrost
   BIFROST_PORT=$(find_available_port 8089)
   log_info "Using port $BIFROST_PORT for bifrost"
-  
+
   # Create temp directory
   TEMP_DIR=$(mktemp -d)
   log_info "Using temp directory: $TEMP_DIR"
-  
+
   local config_db="$TEMP_DIR/config.db"
   local logs_db="$TEMP_DIR/logs.db"
-  
+
   # Create config file for SQLite
   local config_file="$TEMP_DIR/config.json"
   cat > "$config_file" << EOF
@@ -2936,11 +2992,11 @@ run_sqlite_migration_tests() {
   }
 }
 EOF
-  
+
   # Generate faker SQL
   local faker_sql="$TEMP_DIR/faker.sql"
   generate_faker_sql "sqlite" "$faker_sql"
-  
+
   # Build current version ONCE before testing
   log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
@@ -2955,59 +3011,59 @@ EOF
     return 1
   fi
   log_info "Current version built successfully: $current_binary"
-  
+
   # Get previous versions
   local versions
   versions=$(get_previous_versions "$VERSIONS_TO_TEST")
-  
+
   if [ -z "$versions" ]; then
     log_warn "No previous versions found, skipping version-based migration tests"
     versions="latest"
   fi
-  
+
   log_info "Testing versions: $(echo $versions | tr '\n' ' ')"
-  
+
   # Test each version
   for version in $versions; do
     log_info "------------------------------------------"
     log_info "Testing migration from version: $version"
     log_info "------------------------------------------"
-    
+
     # Reset databases
     reset_sqlite_database "$config_db"
     reset_sqlite_database "$logs_db"
-    
+
     # Start bifrost with this version using npx
     local server_log="$TEMP_DIR/server-$version.log"
     log_info "Starting bifrost $version via npx..."
-    
+
     npx @maximhq/bifrost --transport-version "$version" \
       --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$server_log" 2>&1 &
     BIFROST_PID=$!
-    
+
     if ! wait_for_bifrost "$server_log" 120; then
       log_error "Failed to start bifrost $version"
       cat "$server_log" 2>/dev/null || true
       stop_bifrost
       exit 1
     fi
-    
+
     log_info "Bifrost $version started successfully"
-    
+
     # Stop bifrost (schema is now created)
     stop_bifrost
-    
+
     # Create version-specific faker SQL with dynamic config_mcp_clients INSERT
     local version_faker_sql="$TEMP_DIR/faker-$version.sql"
     cp "$faker_sql" "$version_faker_sql"
     append_dynamic_mcp_clients_insert "sqlite" "$version_faker_sql" "$config_db"
-    
+
     # Validate faker column coverage against older version's schema
     if ! validate_faker_column_coverage_sqlite "$version_faker_sql" "$version" "$TEMP_DIR" "$config_db" "$logs_db"; then
       log_error "Faker column coverage validation failed for $version"
       return 1
     fi
-    
+
     # Insert faker data into config store
     log_info "Inserting faker data..."
     if [ -f "$config_db" ]; then
@@ -3016,38 +3072,38 @@ EOF
     if [ -f "$logs_db" ]; then
       run_sqlite_sql_file "$logs_db" "$version_faker_sql" 2>/dev/null || true
     fi
-    
+
     # Now run current version to test migration
     log_info "Running current version to test migration..."
-    
+
     # Start current version (already built)
     local current_log="$TEMP_DIR/server-current-$version.log"
     "$current_binary" --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$current_log" 2>&1 &
     BIFROST_PID=$!
-    
+
     if ! wait_for_bifrost "$current_log" 120; then
       log_error "Current version failed to start after migrating from $version"
       cat "$current_log"
       stop_bifrost
       return 1
     fi
-    
+
     log_info "Current version started successfully after migration from $version"
-    
+
     # Stop server before reading SQLite databases to avoid locks
     stop_bifrost
     sleep 2
-    
+
     # Validate data
     if ! validate_sqlite_data "$config_db" "$logs_db"; then
       log_error "Data validation failed after migration from $version"
       cat "$current_log"
       return 1
     fi
-    
+
     log_info "Migration from $version: SUCCESS"
   done
-  
+
   log_info "=========================================="
   log_info "SQLite Migration Tests: PASSED"
   log_info "=========================================="
@@ -3065,9 +3121,9 @@ main() {
   log_info "Database type: $DB_TYPE"
   log_info "Versions to test: $VERSIONS_TO_TEST"
   log_info ""
-  
+
   local exit_code=0
-  
+
   case "$DB_TYPE" in
     postgres)
       run_postgres_migration_tests || exit_code=$?
@@ -3085,7 +3141,7 @@ main() {
       exit 1
       ;;
   esac
-  
+
   if [ $exit_code -eq 0 ]; then
     log_info "=========================================="
     log_info "All Migration Tests: PASSED"
@@ -3095,7 +3151,7 @@ main() {
     log_error "Migration Tests: FAILED"
     log_error "=========================================="
   fi
-  
+
   exit $exit_code
 }
 

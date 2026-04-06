@@ -1,1 +1,5 @@
-fix: increases buffer size for custom plugin installs from URLs
+- feat: add Fireworks AI provider support (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add sorting and CSV export to virtual keys table
+- feat: allow path whitelisting from security config
+- fix: increase buffer size for custom plugin installs from URLs
+- fix: add retry mechanism to model catalog pricing sync lock

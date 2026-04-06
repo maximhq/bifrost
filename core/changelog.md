@@ -1,6 +1,8 @@
-- fix: thinking budget validation for Gemini models with model-specific ranges
-- fix: add empty arguments guard in Bedrock utils, defaulting to `{}` to prevent JSON parsing issues
-- feat: add Fireworks AI as a first-class provider [@ivanetchart](https://github.com/ivanetchart)
-[fix]: bedrock streaming - retry retryable AWS exceptions (503/429/500) by classifying them as IsBifrostError:false [@KTS-o7](https://github.com/KTS-o7)
-- fix: bedrock streaming - retry stale/closed connections by classifying transport errors as IsBifrostError:false [@KTS-o7](https://github.com/KTS-o7)
-- fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
+- feat: add Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: allow path whitelisting from security config
+- fix: bedrock streaming - retry retryable AWS exceptions (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: bedrock streaming - retry stale/closed-connection errors (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: thinking budget validation for Gemini models
+- fix: add empty arguments guard in Bedrock utils
+- fix: case-insensitive lookup in merge beta headers
+- fix: LLM validation fixes
