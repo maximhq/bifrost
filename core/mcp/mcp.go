@@ -103,7 +103,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		}
 	}
 
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, logger)
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, oauth2Provider, logger)
 
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {

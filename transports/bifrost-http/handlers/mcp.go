@@ -27,6 +27,11 @@ type MCPManager interface {
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary access
+	// token and discovers available tools. The connection is closed after verification.
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+	// SetClientTools updates the tool map for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 }
 
 // MCPHandler manages HTTP requests for MCP tool operations
@@ -378,7 +383,92 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Check if OAuth flow is needed
+	// Handle per-user OAuth: admin does a test OAuth login to verify the configuration.
+	// Uses the same pending_oauth pattern as server-level OAuth, but on completion we
+	// verify the connection, discover tools, save the client, and discard the admin's token.
+	if req.AuthType == "per_user_oauth" {
+		if req.OauthConfig == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'per_user_oauth'")
+			return
+		}
+
+		if req.OauthConfig.ClientID == "" && req.ConnectionString.GetValue() == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
+			return
+		}
+
+		scheme := "http"
+		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+			scheme = "https"
+		}
+		host := string(ctx.Host())
+		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+
+		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
+			ClientID:        req.OauthConfig.ClientID,
+			ClientSecret:    req.OauthConfig.ClientSecret,
+			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
+			TokenURL:        req.OauthConfig.TokenURL,
+			RegistrationURL: req.OauthConfig.RegistrationURL,
+			RedirectURI:     redirectURI,
+			Scopes:          req.OauthConfig.Scopes,
+			ServerURL:       req.ConnectionString.GetValue(),
+		})
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+			return
+		}
+
+		toolSyncInterval := mcp.DefaultToolSyncInterval
+		if req.ToolSyncInterval != 0 {
+			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+		} else {
+			config, err := h.store.ConfigStore.GetClientConfig(ctx)
+			if err == nil && config != nil {
+				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+			}
+		}
+
+		isPingAvailable := true
+		if req.IsPingAvailable != nil {
+			isPingAvailable = *req.IsPingAvailable
+		}
+
+		pendingConfig := schemas.MCPClientConfig{
+			ID:                 req.ClientID,
+			Name:               req.Name,
+			IsCodeModeClient:   req.IsCodeModeClient,
+			IsPingAvailable:    &isPingAvailable,
+			ToolSyncInterval:   toolSyncInterval,
+			ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:   req.ConnectionString,
+			StdioConfig:        req.StdioConfig,
+			AuthType:           schemas.MCPAuthTypePerUserOauth,
+			OauthConfigID:      &flowInitiation.OauthConfigID,
+			ToolsToExecute:     req.ToolsToExecute,
+			ToolsToAutoExecute: req.ToolsToAutoExecute,
+			ToolPricing:        req.ToolPricing,
+			Headers:            req.Headers,
+		}
+
+		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
+			logger.Error(fmt.Sprintf("[Add MCP Client] Failed to store pending MCP client: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store pending MCP client: %v", err))
+			return
+		}
+
+		SendJSON(ctx, map[string]any{
+			"status":          "pending_oauth",
+			"message":         "Test OAuth configuration: please authorize to verify the setup. This login is only used to verify connectivity and discover available tools — it will not be saved.",
+			"oauth_config_id": flowInitiation.OauthConfigID,
+			"authorize_url":   flowInitiation.AuthorizeURL,
+			"expires_at":      flowInitiation.ExpiresAt,
+			"mcp_client_id":   req.ClientID,
+		})
+		return
+	}
+
+	// Check if server-level OAuth flow is needed
 	if req.AuthType == "oauth" {
 		if req.OauthConfig == nil {
 			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'oauth'")
@@ -933,7 +1023,57 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Creating MCP client config in config store
+	// Handle per-user OAuth completion: verify connection with admin's temp token,
+	// discover tools, create client (without persistent connection), discard token.
+	if mcpClientConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
+		// Get admin's temporary access token for verification
+		accessToken, err := h.oauthHandler.GetAccessToken(ctx, oauthConfigID)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get admin access token for verification: %v", err))
+			return
+		}
+		// Always clean up admin's temp token and pending config, even on failure
+		defer h.oauthHandler.RevokeToken(ctx, oauthConfigID)
+		defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
+
+		// Verify connection and discover tools using admin's temp token
+		tools, toolNameMapping, err := h.mcpManager.VerifyPerUserOAuthConnection(ctx, mcpClientConfig, accessToken)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
+			return
+		}
+
+		// Persist MCP client config in config store
+		if h.store.ConfigStore != nil {
+			if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
+				return
+			}
+		}
+
+		// Add MCP client to manager (skips connection for per_user_oauth)
+		if err := h.mcpManager.AddMCPClient(ctx, mcpClientConfig); err != nil {
+			// Clean up DB entry on failure
+			if h.store.ConfigStore != nil {
+				h.store.ConfigStore.DeleteMCPClientConfig(ctx, mcpClientConfig.ID)
+			}
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
+			return
+		}
+
+		// Set discovered tools on the client
+		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
+
+		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
+		SendJSON(ctx, map[string]any{
+			"status":      "success",
+			"message":     fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools)),
+			"tools_count": len(tools),
+		})
+		return
+	}
+
+	// Standard server-level OAuth completion
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))

@@ -3589,6 +3589,43 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	return bifrost.MCPManager.ReconnectClient(id)
 }
 
+// VerifyPerUserOAuthConnection delegates to the MCP manager to verify an MCP
+// server using a temporary access token and discover available tools. The
+// connection is closed after verification. If the MCP manager is not yet
+// initialized, it is lazily created (same as AddMCPClient).
+func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error) {
+	// Ensure MCP manager is initialized (lazy init, same pattern as AddMCPClient)
+	if bifrost.MCPManager == nil {
+		bifrost.mcpInitOnce.Do(func() {
+			mcpConfig := schemas.MCPConfig{
+				ClientConfigs: []*schemas.MCPClientConfig{},
+			}
+			mcpConfig.PluginPipelineProvider = func() interface{} {
+				return bifrost.getPluginPipeline()
+			}
+			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			}
+			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
+		})
+	}
+	if bifrost.MCPManager == nil {
+		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+	}
+	return bifrost.MCPManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+}
+
+// SetClientTools delegates to the MCP manager to update the tool map for an
+// existing MCP client.
+func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping)
+	}
+}
+
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
 // Pass the current value of disableAutoToolInject whenever only other fields

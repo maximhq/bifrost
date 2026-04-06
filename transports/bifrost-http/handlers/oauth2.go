@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 
@@ -59,7 +60,47 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Complete OAuth flow
+	// Try per-user OAuth runtime flow first (state from oauth_user_sessions table).
+	// This handles the case where an end-user authenticates during inference.
+	sessionToken, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(context.Background(), state, code)
+	if perUserErr != nil && !errors.Is(perUserErr, schemas.ErrOAuth2NotPerUserSession) {
+		// Real per-user error (not "state not found") — don't fall through to admin flow
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Per-user OAuth flow failed: %v", perUserErr))
+		return
+	}
+	if perUserErr == nil && sessionToken != "" {
+		// Per-user runtime OAuth flow completed — show session token
+		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetContentType("text/html")
+		ctx.SetBodyString(fmt.Sprintf(`
+			<!DOCTYPE html>
+			<html>
+			<head>
+				<title>OAuth Success</title>
+				<script>
+					if (window.opener) {
+						window.opener.postMessage({ type: 'oauth_success', session_token: %s }, window.location.origin);
+						window.close();
+					}
+				</script>
+			</head>
+			<body>
+				<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
+					<div style="text-align: center;">
+						<h1>Authorization Successful</h1>
+						<p>Your MCP session token:</p>
+						<code style="background: #f0f0f0; padding: 8px 16px; border-radius: 4px; font-size: 14px; word-break: break-all; display: block; margin: 16px 0;">%s</code>
+						<p style="color: #666; font-size: 13px;">Include this token in the <code>X-Bifrost-MCP-Session</code> header of your requests.</p>
+					</div>
+				</div>
+			</body>
+			</html>
+		`, jsEscapeString(sessionToken), html.EscapeString(sessionToken)))
+		return
+	}
+
+	// Fall through to standard OAuth flow (handles both admin test logins for
+	// per_user_oauth setup and regular server-level OAuth).
 	if err := h.oauthProvider.CompleteOAuthFlow(context.Background(), state, code); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth flow completion failed: %v", err))
 		return
@@ -86,7 +127,7 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		<body>
 			<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
 				<div style="text-align: center;">
-					<h1>✓ Authorization Successful</h1>
+					<h1>Authorization Successful</h1>
 					<p id="message">This window will close automatically...</p>
 				</div>
 			</div>
@@ -245,7 +286,25 @@ func (h *OAuthHandler) GetPendingMCPClientByState(state string) (*schemas.MCPCli
 	return h.oauthProvider.GetPendingMCPClientByState(state)
 }
 
-// RemovePendingMCPClient removes a pending MCP client after OAuth completion
+// RemovePendingMCPClient removes a pending MCP client after OAuth completion.
 func (h *OAuthHandler) RemovePendingMCPClient(oauthConfigID string) error {
 	return h.oauthProvider.RemovePendingMCPClient(oauthConfigID)
+}
+
+// GetAccessToken retrieves the access token for a given oauth_config_id.
+// Used during per-user OAuth setup to get the admin's temporary token for verification.
+func (h *OAuthHandler) GetAccessToken(ctx context.Context, oauthConfigID string) (string, error) {
+	return h.oauthProvider.GetAccessToken(ctx, oauthConfigID)
+}
+
+// jsEscapeString returns a JSON-encoded string (with quotes) safe for embedding in JavaScript.
+func jsEscapeString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// RevokeToken revokes the OAuth token for a given oauth_config_id.
+// Used during per-user OAuth setup to discard the admin's temporary token after verification.
+func (h *OAuthHandler) RevokeToken(ctx context.Context, oauthConfigID string) error {
+	return h.oauthProvider.RevokeToken(ctx, oauthConfigID)
 }

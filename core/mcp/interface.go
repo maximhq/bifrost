@@ -3,6 +3,8 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -59,6 +61,14 @@ type MCPManagerInterface interface {
 
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
+
+	// VerifyPerUserOAuthConnection creates a temporary MCP connection using a
+	// test access token to verify connectivity and discover tools. The connection
+	// is closed after verification.
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
+
+	// SetClientTools updates the tool map and name mapping for an existing client.
+	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 
 	// Tool Registration
 	// RegisterTool registers a local tool with the MCP server

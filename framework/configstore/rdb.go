@@ -3910,3 +3910,301 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 	}
 	return &config, nil
 }
+
+// ---------- Per-User OAuth Session CRUD ----------
+
+// GetOauthUserSessionByID retrieves a per-user OAuth session by its ID
+func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
+	var session tables.TableOauthUserSession
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user session: %w", result.Error)
+	}
+	return &session, nil
+}
+
+// GetOauthUserSessionByState retrieves a per-user OAuth session by its state token
+func (s *RDBConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+	var session tables.TableOauthUserSession
+	result := s.db.WithContext(ctx).Where("state = ?", state).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user session by state: %w", result.Error)
+	}
+	return &session, nil
+}
+
+// ClaimOauthUserSessionByState atomically claims a pending per-user OAuth session by its state token.
+// Returns nil if the session doesn't exist or has already been claimed by another request.
+func (s *RDBConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
+	var session tables.TableOauthUserSession
+	result := s.db.WithContext(ctx).Where("state = ? AND status = ?", state, "pending").First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to claim oauth user session by state: %w", result.Error)
+	}
+	// Atomically transition from "pending" to "claiming" to prevent concurrent claims
+	updateResult := s.db.WithContext(ctx).Model(&tables.TableOauthUserSession{}).
+		Where("id = ? AND status = ?", session.ID, "pending").
+		Update("status", "claiming")
+	if updateResult.Error != nil {
+		return nil, fmt.Errorf("failed to claim oauth user session: %w", updateResult.Error)
+	}
+	if updateResult.RowsAffected == 0 {
+		return nil, nil // Another request already claimed this session
+	}
+	session.Status = "claiming"
+	return &session, nil
+}
+
+// GetOauthUserSessionBySessionToken retrieves a per-user OAuth session by its Bifrost session token (hashed lookup)
+func (s *RDBConfigStore) GetOauthUserSessionBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserSession, error) {
+	var session tables.TableOauthUserSession
+	tokenHash := encrypt.HashSHA256(sessionToken)
+	result := s.db.WithContext(ctx).Where("session_token_hash = ?", tokenHash).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user session by session token: %w", result.Error)
+	}
+	return &session, nil
+}
+
+// CreateOauthUserSession creates a new per-user OAuth session
+func (s *RDBConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	result := s.db.WithContext(ctx).Create(session)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth user session: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthUserSession updates an existing per-user OAuth session
+func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+	result := s.db.WithContext(ctx).Save(session)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth user session: %w", result.Error)
+	}
+	return nil
+}
+
+// ---------- Per-User OAuth Token CRUD ----------
+
+// GetOauthUserTokenBySessionToken retrieves a per-user OAuth token by its Bifrost session token
+// GetOauthUserTokenByIdentity looks up an upstream OAuth token by user identity and MCP client.
+// Priority: userID > virtualKeyID > sessionToken (fallback for anonymous users).
+func (s *RDBConfigStore) GetOauthUserTokenByIdentity(ctx context.Context, virtualKeyID, userID, sessionToken, mcpClientID string) (*tables.TableOauthUserToken, error) {
+	var token tables.TableOauthUserToken
+	var result *gorm.DB
+
+	if userID != "" {
+		result = s.db.WithContext(ctx).Where("user_id = ? AND mcp_client_id = ?", userID, mcpClientID).First(&token)
+	} else if virtualKeyID != "" {
+		result = s.db.WithContext(ctx).Where("virtual_key_id = ? AND mcp_client_id = ?", virtualKeyID, mcpClientID).First(&token)
+	} else if sessionToken != "" {
+		result = s.db.WithContext(ctx).Where("session_token = ? AND mcp_client_id = ?", sessionToken, mcpClientID).First(&token)
+	} else {
+		return nil, nil
+	}
+
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user token by identity: %w", result.Error)
+	}
+	return &token, nil
+}
+
+func (s *RDBConfigStore) GetOauthUserTokenBySessionToken(ctx context.Context, sessionToken string) (*tables.TableOauthUserToken, error) {
+	var token tables.TableOauthUserToken
+	tokenHash := encrypt.HashSHA256(sessionToken)
+	result := s.db.WithContext(ctx).Where("session_token_hash = ?", tokenHash).First(&token)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth user token by session token: %w", result.Error)
+	}
+	return &token, nil
+}
+
+// CreateOauthUserToken creates a new per-user OAuth token
+func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	result := s.db.WithContext(ctx).Create(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth user token: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthUserToken updates an existing per-user OAuth token
+func (s *RDBConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableOauthUserToken) error {
+	result := s.db.WithContext(ctx).Save(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth user token: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthUserToken deletes a per-user OAuth token by its ID
+func (s *RDBConfigStore) DeleteOauthUserToken(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthUserToken{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete oauth user token: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthUserTokensByMCPClient deletes all per-user OAuth tokens for a specific MCP client
+func (s *RDBConfigStore) DeleteOauthUserTokensByMCPClient(ctx context.Context, mcpClientID string) error {
+	result := s.db.WithContext(ctx).Where("mcp_client_id = ?", mcpClientID).Delete(&tables.TableOauthUserToken{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete oauth user tokens for mcp client: %w", result.Error)
+	}
+	return nil
+}
+
+// ---------- Per-User OAuth Authorization Server CRUD ----------
+
+// GetPerUserOAuthClientByClientID retrieves a dynamically registered OAuth client by its client_id.
+func (s *RDBConfigStore) GetPerUserOAuthClientByClientID(ctx context.Context, clientID string) (*tables.TablePerUserOAuthClient, error) {
+	var client tables.TablePerUserOAuthClient
+	result := s.db.WithContext(ctx).Where("client_id = ?", clientID).First(&client)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get per-user oauth client: %w", result.Error)
+	}
+	return &client, nil
+}
+
+// CreatePerUserOAuthClient creates a new dynamically registered OAuth client.
+func (s *RDBConfigStore) CreatePerUserOAuthClient(ctx context.Context, client *tables.TablePerUserOAuthClient) error {
+	result := s.db.WithContext(ctx).Create(client)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create per-user oauth client: %w", result.Error)
+	}
+	return nil
+}
+
+// GetPerUserOAuthSessionByAccessToken retrieves a Bifrost-issued session by its access token.
+func (s *RDBConfigStore) GetPerUserOAuthSessionByAccessToken(ctx context.Context, accessToken string) (*tables.TablePerUserOAuthSession, error) {
+	var session tables.TablePerUserOAuthSession
+	tokenHash := encrypt.HashSHA256(accessToken)
+	result := s.db.WithContext(ctx).Where("access_token_hash = ?", tokenHash).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get per-user oauth session: %w", result.Error)
+	}
+	return &session, nil
+}
+
+// GetPerUserOAuthSessionByID retrieves a Bifrost-issued session by its ID.
+func (s *RDBConfigStore) GetPerUserOAuthSessionByID(ctx context.Context, id string) (*tables.TablePerUserOAuthSession, error) {
+	var session tables.TablePerUserOAuthSession
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get per-user oauth session by id: %w", result.Error)
+	}
+	return &session, nil
+}
+
+// CreatePerUserOAuthSession creates a new Bifrost-issued OAuth session.
+func (s *RDBConfigStore) CreatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
+	result := s.db.WithContext(ctx).Create(session)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create per-user oauth session: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdatePerUserOAuthSession updates a Bifrost-issued OAuth session (e.g., to attach user identity).
+func (s *RDBConfigStore) UpdatePerUserOAuthSession(ctx context.Context, session *tables.TablePerUserOAuthSession) error {
+	result := s.db.WithContext(ctx).Save(session)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update per-user oauth session: %w", result.Error)
+	}
+	return nil
+}
+
+// DeletePerUserOAuthSession deletes a Bifrost-issued OAuth session by ID.
+func (s *RDBConfigStore) DeletePerUserOAuthSession(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TablePerUserOAuthSession{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete per-user oauth session: %w", result.Error)
+	}
+	return nil
+}
+
+// GetPerUserOAuthCodeByCode retrieves an authorization code record.
+func (s *RDBConfigStore) GetPerUserOAuthCodeByCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
+	var codeRecord tables.TablePerUserOAuthCode
+	codeHash := encrypt.HashSHA256(code)
+	result := s.db.WithContext(ctx).Where("code_hash = ?", codeHash).First(&codeRecord)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get per-user oauth code: %w", result.Error)
+	}
+	return &codeRecord, nil
+}
+
+// CreatePerUserOAuthCode creates a new authorization code record.
+func (s *RDBConfigStore) CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
+	result := s.db.WithContext(ctx).Create(code)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create per-user oauth code: %w", result.Error)
+	}
+	return nil
+}
+
+// ClaimPerUserOAuthCode atomically marks an authorization code as used.
+// Returns the code record if successfully claimed, nil if already used or not found.
+func (s *RDBConfigStore) ClaimPerUserOAuthCode(ctx context.Context, code string) (*tables.TablePerUserOAuthCode, error) {
+	codeHash := encrypt.HashSHA256(code)
+	var codeRecord tables.TablePerUserOAuthCode
+	result := s.db.WithContext(ctx).Where("code_hash = ? AND used = ?", codeHash, false).First(&codeRecord)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find per-user oauth code: %w", result.Error)
+	}
+	// Atomically mark as used
+	updateResult := s.db.WithContext(ctx).Model(&tables.TablePerUserOAuthCode{}).
+		Where("id = ? AND used = ?", codeRecord.ID, false).
+		Update("used", true)
+	if updateResult.Error != nil {
+		return nil, fmt.Errorf("failed to claim per-user oauth code: %w", updateResult.Error)
+	}
+	if updateResult.RowsAffected == 0 {
+		return nil, nil // Another request already claimed it
+	}
+	codeRecord.Used = true
+	return &codeRecord, nil
+}
+
+// UpdatePerUserOAuthCode updates an authorization code record (e.g., marking as used).
+func (s *RDBConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error {
+	result := s.db.WithContext(ctx).Save(code)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update per-user oauth code: %w", result.Error)
+	}
+	return nil
+}

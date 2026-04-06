@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -284,6 +285,8 @@ func (a *AgentModeExecutor) executeAgent(
 			wg := sync.WaitGroup{}
 			wg.Add(len(autoExecutableTools))
 			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
+			var authRequiredErr *schemas.MCPUserOAuthRequiredError
+			var authRequiredOnce sync.Once
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
@@ -295,6 +298,15 @@ func (a *AgentModeExecutor) executeAgent(
 
 					mcpResponse, toolErr := executeToolFunc(ctx, mcpRequest)
 					if toolErr != nil {
+						// Check if this is a per-user OAuth auth-required error
+						var oauthErr *schemas.MCPUserOAuthRequiredError
+						if errors.As(toolErr, &oauthErr) {
+							authRequiredOnce.Do(func() {
+								authRequiredErr = oauthErr
+							})
+							channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+							return
+						}
 						a.logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
@@ -310,6 +322,23 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 			wg.Wait()
 			close(channelToolResults)
+
+			// If any tool required per-user OAuth, stop the agent loop and return the error
+			if authRequiredErr != nil {
+				statusCode := 401
+				errType := "mcp_auth_required"
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: authRequiredErr.Message,
+						Type:    &errType,
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						MCPAuthRequired: authRequiredErr,
+					},
+				}
+			}
 
 			// Collect tool results
 			executedToolResults = make([]*schemas.ChatMessage, 0, len(autoExecutableTools))

@@ -62,6 +62,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		authorizeUrl: string;
 		oauthConfigId: string;
 		mcpClientId: string;
+		isPerUserOauth?: boolean;
 	} | null>(null);
 	const { toast } = useToast();
 
@@ -176,7 +177,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			: []),
 
 		// OAuth validation
-		...(form.auth_type === "oauth"
+		...((form.auth_type === "oauth" || form.auth_type === "per_user_oauth")
 			? [
 				// Client ID is optional if provider supports dynamic registration (RFC 7591)
 				// URLs are optional (will be discovered), but if provided must be valid
@@ -230,7 +231,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					}
 					: undefined,
 			oauth_config:
-				form.auth_type === "oauth"
+				(form.auth_type === "oauth" || form.auth_type === "per_user_oauth")
 					? {
 						client_id: form.oauth_config?.client_id || "", // Can be empty for dynamic registration
 						client_secret: form.oauth_config?.client_secret || undefined,
@@ -256,6 +257,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: response.mcp_client_id,
+					isPerUserOauth: form.auth_type === "per_user_oauth",
 				});
 			} else {
 				setIsLoading(false);
@@ -401,6 +403,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										<SelectItem value="none" data-testid="auth-type-none">None</SelectItem>
 										<SelectItem value="headers" data-testid="auth-type-headers">Headers</SelectItem>
 										<SelectItem value="oauth" data-testid="auth-type-oauth">OAuth 2.0</SelectItem>
+										<SelectItem value="per_user_oauth" data-testid="auth-type-per-user-oauth">Per-User OAuth 2.0</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -418,7 +421,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 								</div>
 							)}
 
-							{form.auth_type === "oauth" && (
+							{(form.auth_type === "oauth" || form.auth_type === "per_user_oauth") && (
 								<>
 									<div className="space-y-2">
 										<div className="flex items-center gap-2">
@@ -606,6 +609,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
+					isPerUserOauth={oauthFlow.isPerUserOauth}
 				/>
 			)}
 		</Sheet>
