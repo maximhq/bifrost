@@ -35,6 +35,7 @@ var AsyncPathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/async/images/edits":         schemas.ImageEditRequest,
 	"/v1/async/images/variations":    schemas.ImageVariationRequest,
 	"/v1/async/rerank":               schemas.RerankRequest,
+	"/v1/async/ocr":                  schemas.OCRRequest,
 }
 
 // RegisterAsyncRequestTypeMiddleware handles exact path matching for non-parameterized routes
@@ -79,6 +80,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.POST("/v1/async/images/edits", lib.ChainMiddlewares(h.asyncImageEdit, baseMiddlewares...))
 	r.POST("/v1/async/images/variations", lib.ChainMiddlewares(h.asyncImageVariation, baseMiddlewares...))
 	r.POST("/v1/async/rerank", lib.ChainMiddlewares(h.asyncRerank, baseMiddlewares...))
+	r.POST("/v1/async/ocr", lib.ChainMiddlewares(h.asyncOCR, baseMiddlewares...))
 
 	// Async job retrieval endpoints
 	r.GET("/v1/async/completions/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.TextCompletionRequest), middlewares...))
@@ -91,6 +93,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.GET("/v1/async/images/edits/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageEditRequest), middlewares...))
 	r.GET("/v1/async/images/variations/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageVariationRequest), middlewares...))
 	r.GET("/v1/async/rerank/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.RerankRequest), middlewares...))
+	r.GET("/v1/async/ocr/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.OCRRequest), middlewares...))
 }
 
 // --- Async submission handlers ---
@@ -453,6 +456,39 @@ func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
 			return h.client.RerankRequest(bgCtx, bifrostReq)
 		},
 		schemas.RerankRequest,
+	)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		return
+	}
+	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
+}
+
+// asyncOCR handles POST /v1/async/ocr
+func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
+	_, bifrostReq, err := prepareOCRRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
+	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
+
+	job, err := h.executor.SubmitJob(
+		virtualKeyValue,
+		resultTTL,
+		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+			return h.client.OCRRequest(bgCtx, bifrostReq)
+		},
+		schemas.OCRRequest,
 	)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
