@@ -6,6 +6,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,10 @@ import (
 
 const (
 	PluginName = "logging"
+	// logMetadataSnapshotKey is the context key for a shallow copy of log metadata from PreLLMHook (x-bf-lh-*, configured headers).
+	// Defined here so the logging plugin does not require a newer core module than go.mod's require line.
+	// Value must stay stable if ever moved to core/schemas.
+	logMetadataSnapshotKey schemas.BifrostContextKey = "bifrost-log-metadata-snapshot"
 )
 
 // LogOperation represents the type of logging operation
@@ -227,7 +232,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
+	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -383,6 +388,18 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 	return metadata
 }
 
+// resolveLogMetadataForMCP returns metadata for MCP tool logs: prefer live request headers,
+// else fall back to the snapshot from the latest PreLLMHook on this context (agent mode).
+func (p *LoggerPlugin) resolveLogMetadataForMCP(ctx *schemas.BifrostContext) map[string]interface{} {
+	if meta := p.captureLoggingHeaders(ctx); meta != nil {
+		return maps.Clone(meta)
+	}
+	if snap, ok := ctx.Value(logMetadataSnapshotKey).(map[string]interface{}); ok && len(snap) > 0 {
+		return maps.Clone(snap)
+	}
+	return nil
+}
+
 // PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
@@ -514,6 +531,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Metadata = make(map[string]interface{})
 		}
 		initialData.Metadata["isAsyncRequest"] = true
+	}
+
+	// Snapshot for MCP tool logs: headers map may not be present on ctx during nested MCP execution.
+	if initialData.Metadata != nil {
+		ctx.SetValue(logMetadataSnapshotKey, maps.Clone(initialData.Metadata))
 	}
 
 	// Queue the log creation message (non-blocking) - Using sync.Pool
@@ -895,6 +917,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
+	// Resolve before the async goroutine so we do not race on shared context / header maps.
+	mcpMetadata := p.resolveLogMetadataForMCP(ctx)
+
 	go func() {
 		entry := &logstore.MCPToolLog{
 			ID:          requestID,
@@ -921,8 +946,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			entry.ArgumentsParsed = arguments
 		}
 
-		// Capture configured logging headers and x-bf-lh-* headers into metadata
-		entry.MetadataParsed = p.captureLoggingHeaders(ctx)
+		entry.MetadataParsed = mcpMetadata
 
 		if err := p.store.CreateMCPToolLog(p.ctx, entry); err != nil {
 			p.logger.Warn("Failed to insert initial MCP tool log entry for request %s: %v", requestID, err)
