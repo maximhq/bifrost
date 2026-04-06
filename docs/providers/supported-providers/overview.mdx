@@ -23,6 +23,7 @@ The following table summarizes which operations are supported by each provider v
 | Cerebras (`cerebras/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Cohere (`cohere/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Elevenlabs (`elevenlabs/<model>`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Fireworks (`fireworks/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Gemini (`gemini/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Groq (`groq/<model>`) | ✅ | 🟡 | 🟡 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Hugging Face (`huggingface/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -55,7 +56,7 @@ We do not promote using such fallbacks, since text completions and chat completi
 Notes:
 - "Models" refers to the list models operation (`/v1/models`).
 - "Text" refers to the classic text completion interface (`/v1/completions`).
-- "Responses" refers to the OpenAI-style Responses API (`/v1/responses`). Non-OpenAI providers map this to their native chat API under the hood.
+- "Responses" refers to the OpenAI-style Responses API (`/v1/responses`). Depending on the provider, Bifrost either uses a native responses endpoint or maps to an equivalent chat API.
 - Reranking (`/v1/rerank`) is currently supported for Cohere, Bedrock, Vertex AI, and vLLM. See each provider page for model-specific requirements.
 - "Images" refers to the Image Generation API (`/v1/images/generations`).
 - "Image Edit" refers to the Image Edit API (`/v1/images/edits`).

@@ -130,6 +130,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -233,6 +234,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -308,6 +310,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -520,6 +523,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -594,6 +598,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
@@ -694,6 +699,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -794,6 +800,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -902,6 +909,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
