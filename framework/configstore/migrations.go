@@ -5910,6 +5910,15 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			return nil
 		},
 	}})
+	// SQLite workaround: GORM's CreateConstraint rebuilds the table via DROP+RENAME
+	// inside a transaction. The DROP fails when other tables have FKs pointing at the
+	// target table and foreign_keys is ON. PRAGMA foreign_keys cannot be changed inside
+	// a transaction, so we disable it before the migrator opens its transaction.
+	// This only affects SQLite — Postgres supports ALTER TABLE ADD CONSTRAINT natively.
+	if db.Dialector.Name() == "sqlite" {
+		db.Exec("PRAGMA foreign_keys = OFF")
+		defer db.Exec("PRAGMA foreign_keys = ON")
+	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_multi_budget_tables migration: %s", err.Error())
 	}
