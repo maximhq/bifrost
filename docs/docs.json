@@ -215,7 +215,8 @@
                 "group": "Prompt Repository",
                 "icon": "folder",
                 "pages": [
-                  "features/prompt-repository/playground"
+                  "features/prompt-repository/playground",
+                  "features/prompt-repository/prompts-plugin"
                 ]
               },
               {
