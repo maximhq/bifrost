@@ -221,6 +221,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ResponsesOutput) +
 		len(log.EmbeddingOutput) +
 		len(log.RerankOutput) +
+		len(log.OCROutput) +
 		len(log.Params) +
 		len(log.Tools) +
 		len(log.ToolCalls) +
