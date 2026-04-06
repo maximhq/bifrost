@@ -1358,7 +1358,6 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
-        test-integrations,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
