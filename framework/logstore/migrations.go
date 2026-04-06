@@ -203,6 +203,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOCROutputColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2063,5 +2066,39 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn) error {
 		}
 	}
 
+	return nil
+}
+
+// migrationAddOCROutputColumn adds the ocr_output column to the logs table.
+func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_ocr_output_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "ocr_output") {
+				if err := migrator.AddColumn(&Log{}, "ocr_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "ocr_output") {
+				if err := migrator.DropColumn(&Log{}, "ocr_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding ocr output column: %s", err.Error())
+	}
 	return nil
 }

@@ -99,6 +99,7 @@ type Log struct {
 	ResponsesOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
 	EmbeddingOutput        string    `gorm:"type:text" json:"-"` // JSON serialized embedding response data
 	RerankOutput           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
+	OCROutput              string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostOCRResponse
 	Params                 string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools                  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
 	ToolCalls              string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
@@ -148,6 +149,7 @@ type Log struct {
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
 	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
+	OCROutputParsed             *schemas.BifrostOCRResponse             `gorm:"-" json:"ocr_output,omitempty"`
 	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
 	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
@@ -261,6 +263,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.RerankOutput = string(data)
+		}
+	}
+
+	if l.OCROutputParsed != nil {
+		if data, err := sonic.Marshal(l.OCROutputParsed); err != nil {
+			return err
+		} else {
+			l.OCROutput = string(data)
 		}
 	}
 
@@ -481,6 +491,13 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.RerankOutputParsed = nil
+		}
+	}
+
+	if l.OCROutput != "" {
+		if err := sonic.Unmarshal([]byte(l.OCROutput), &l.OCROutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.OCROutputParsed = nil
 		}
 	}
 
@@ -983,6 +1000,15 @@ func (l *Log) BuildContentSummary() string {
 		for _, result := range l.RerankOutputParsed {
 			if result.Document != nil && result.Document.Text != "" {
 				parts = append(parts, result.Document.Text)
+			}
+		}
+	}
+
+	// Add OCR output content
+	if l.OCROutputParsed != nil {
+		for _, page := range l.OCROutputParsed.Pages {
+			if page.Markdown != "" {
+				parts = append(parts, page.Markdown)
 			}
 		}
 	}
