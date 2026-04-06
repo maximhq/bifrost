@@ -11,11 +11,12 @@ import (
 
 // mockInMemoryStore is a test double for InMemoryStore.
 type mockInMemoryStore struct {
-	allowAllClients map[string]string // clientID → clientName
+	allowAllClients     map[string]string // clientID → clientName
+	configuredProviders map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
 func (m *mockInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	return nil
+	return m.configuredProviders
 }
 
 func (m *mockInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[string]string {

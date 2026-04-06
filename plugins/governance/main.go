@@ -551,19 +551,29 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	if !hasModel {
 		// For genai integration, model is present in URL path instead of the request body
 		if isGeminiPath {
-			modelValue = req.CaseInsensitivePathParamLookup("model")
+			// Prefer context value set by a routing rule (format: "provider/model:suffix")
+			if ctxModel, ok := ctx.Value("model").(string); ok && ctxModel != "" {
+				modelValue = ctxModel
+			} else {
+				modelValue = req.CaseInsensitivePathParamLookup("model")
+			}
 		} else if isBedrockPath {
 			// For bedrock integration, model is present in URL path as modelId
-			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
-			if rawModelID == "" {
-				return body, nil
+			// Prefer context value set by a routing rule (format: "provider/model")
+			if ctxModelID, ok := ctx.Value("modelId").(string); ok && ctxModelID != "" {
+				modelValue = ctxModelID
+			} else {
+				rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+				if rawModelID == "" {
+					return body, nil
+				}
+				// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
+				decoded, err := url.PathUnescape(rawModelID)
+				if err != nil {
+					decoded = rawModelID
+				}
+				modelValue = decoded
 			}
-			// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
-			decoded, err := url.PathUnescape(rawModelID)
-			if err != nil {
-				decoded = rawModelID
-			}
-			modelValue = decoded
 		} else {
 			return body, nil
 		}

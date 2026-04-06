@@ -1,6 +1,7 @@
 - feat: add support for chaining routing rules
 - feat: add routing tree UI to better visualize routing rules
 - feat: add model alias — keys now support a top-level `aliases` field mapping any model name to a provider-specific identifier (Azure deployment names, Bedrock inference profile ARNs, Vertex endpoints, Replicate model slugs, fine-tuned model IDs, etc.). The original model name is preserved and returned alongside the resolved identifier in every response. Breaking changes: see below.
+- fix: preseve routing rule targets for genai and bedrock paths for vk level provider load balancing
 
 <Warning>
 **This release contains 4 breaking changes** related to model aliasing. See the [v1.5.0 Migration Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) for full before/after examples and migration instructions.
