@@ -12570,6 +12570,91 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	t.Log("✓ All dashboard-added entities preserved on reload")
 }
 
+// TestSQLite_Governance_PricingOverrides_Reconciliation tests that pricing overrides
+// defined in config.json are properly reconciled on reload (create, update, preserve).
+func TestSQLite_Governance_PricingOverrides_Reconciliation(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		PricingOverrides: []tables.TablePricingOverride{
+			{
+				ID:        "po-1",
+				Name:      "Override One",
+				ScopeKind: "global",
+				MatchType: "exact",
+				Pattern:   "gpt-4",
+				RequestTypes: []schemas.RequestType{
+					schemas.ChatCompletionRequest,
+				},
+			},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+
+	// First load: pricing override should be created in the DB
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+
+	gov1, err := config1.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after first load: %v", err)
+	}
+	if len(gov1.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after first load, got %d", len(gov1.PricingOverrides))
+	}
+	if gov1.PricingOverrides[0].ID != "po-1" {
+		t.Errorf("Expected pricing override ID 'po-1', got '%s'", gov1.PricingOverrides[0].ID)
+	}
+	if gov1.PricingOverrides[0].ConfigHash == "" {
+		t.Error("Pricing override hash not set after first load")
+	}
+	config1.Close(ctx)
+
+	// Second load (unchanged config): should NOT fail with duplicate key error
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed (duplicate key bug): %v", err)
+	}
+
+	gov2, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after second load: %v", err)
+	}
+	if len(gov2.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after second load, got %d", len(gov2.PricingOverrides))
+	}
+	config2.Close(ctx)
+
+	// Third load (updated config): should update the existing override, not create a duplicate
+	configData.Governance.PricingOverrides[0].Pattern = "gpt-4o"
+	createConfigFile(t, tempDir, configData)
+
+	config3, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(ctx)
+
+	gov3, err := config3.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get governance config after third load: %v", err)
+	}
+	if len(gov3.PricingOverrides) != 1 {
+		t.Fatalf("Expected 1 pricing override after update, got %d", len(gov3.PricingOverrides))
+	}
+	if gov3.PricingOverrides[0].Pattern != "gpt-4o" {
+		t.Errorf("Pricing override pattern not updated: got '%s', want 'gpt-4o'", gov3.PricingOverrides[0].Pattern)
+	}
+
+	t.Log("✓ Pricing overrides reconciliation works correctly (create, idempotent reload, update)")
+}
+
 // ===================================================================================
 // RUNTIME VS MIGRATION HASH PARITY TESTS (SQLite Integration)
 // ===================================================================================

@@ -385,7 +385,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		return true // continue iteration
 	})
 	routingRules := make(map[string]*configstoreTables.TableRoutingRule)
-	gs.routingRules.Range(func(key, value interface{}) bool {
+	gs.routingRules.Range(func(key, value any) bool {
 		rules, ok := value.([]*configstoreTables.TableRoutingRule)
 		if !ok || rules == nil {
 			return true // continue
@@ -399,7 +399,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		return true // continue iteration
 	})
 	var modelConfigsList []*configstoreTables.TableModelConfig
-	gs.modelConfigs.Range(func(key, value interface{}) bool {
+	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
 			return true // continue

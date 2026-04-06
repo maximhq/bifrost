@@ -440,7 +440,6 @@ export interface ImageVariationInput {
 	image: { image: string | null }; // image bytes null when stripped by large-payload threshold
 }
 
-
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
@@ -452,6 +451,13 @@ export interface LogEntry {
 	number_of_retries: number;
 	fallback_index: number;
 	selected_key_id: string;
+	team_name?: string;
+	team_id?: string;
+	customer_name?: string;
+	customer_id?: string;
+	business_unit_id?: string;
+	business_unit_name?: string;
+	user_id?: string;
 	virtual_key_id?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
@@ -520,6 +526,10 @@ export interface LogFilters {
 	missing_cost_only?: boolean;
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
+	user_ids?: string[];
+	team_ids?: string[];
+	customer_ids?: string[];
+	business_unit_ids?: string[];
 }
 
 export interface Pagination {
@@ -1056,6 +1066,25 @@ export interface ModelRankingEntry {
 
 export interface ModelRankingsResponse {
 	rankings: ModelRankingEntry[];
+}
+
+export interface UserRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface UserRankingEntry {
+	user_id: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: UserRankingTrend;
+}
+
+export interface UserRankingsResponse {
+	rankings: UserRankingEntry[];
 }
 
 // Date utility functions for URL state management

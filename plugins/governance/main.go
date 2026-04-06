@@ -335,7 +335,7 @@ func (p *GovernancePlugin) GetName() string {
 func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference bool) {
 	p.cfgMutex.Lock()
 	defer p.cfgMutex.Unlock()
-	p.isVkMandatory = bifrost.Ptr(enforceAuthOnInference)
+	p.isVkMandatory = new(enforceAuthOnInference)
 }
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
@@ -388,6 +388,22 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		virtualKey, ok = p.store.GetVirtualKey(*virtualKeyValue)
 		if !ok || virtualKey == nil || !virtualKey.IsActive {
 			return nil, nil
+		}
+	}
+
+	// Attaching team and customer based on the virtual key
+	if virtualKey != nil {
+		if virtualKey.TeamID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
+		}
+		if virtualKey.Team != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		}
+		if virtualKey.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
+		}
+		if virtualKey.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
 		}
 	}
 
@@ -472,6 +488,22 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 			return nil, nil
 		}
 		virtualKey = vk
+	}
+
+	// Attaching team and customer based on the virtual key
+	if virtualKey != nil {
+		if virtualKey.TeamID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *virtualKey.TeamID)
+		}
+		if virtualKey.Team != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, virtualKey.Team.Name)
+		}
+		if virtualKey.CustomerID != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *virtualKey.CustomerID)
+		}
+		if virtualKey.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, virtualKey.Customer.Name)
+		}
 	}
 
 	// Apply routing rules (read-only: decisions still affect downstream evaluation)

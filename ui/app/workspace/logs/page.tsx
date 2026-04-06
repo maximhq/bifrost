@@ -87,6 +87,10 @@ export default function LogsPage() {
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			routing_rule_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			routing_engine_used: parseAsArrayOf(parseAsString).withDefault([]),
+			user_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			team_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			customer_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			business_unit_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			content_search: parseAsString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -196,6 +200,10 @@ export default function LogsPage() {
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
 			routing_engine_used: urlState.routing_engine_used,
+			user_ids: urlState.user_ids,
+			team_ids: urlState.team_ids,
+			customer_ids: urlState.customer_ids,
+			business_unit_ids: urlState.business_unit_ids,
 			content_search: urlState.content_search,
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
@@ -212,7 +220,9 @@ export default function LogsPage() {
 		[
 			urlState.providers, urlState.models, urlState.aliases, urlState.status, urlState.objects,
 			urlState.selected_key_ids, urlState.virtual_key_ids, urlState.routing_rule_ids,
-			urlState.routing_engine_used, urlState.content_search,
+			urlState.routing_engine_used,
+			urlState.user_ids, urlState.team_ids, urlState.customer_ids, urlState.business_unit_ids,
+			urlState.content_search,
 			urlState.start_time, urlState.end_time,
 			urlState.missing_cost_only, urlState.metadata_filters,
 		],
@@ -248,6 +258,10 @@ export default function LogsPage() {
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -660,6 +674,18 @@ export default function LogsPage() {
 
 	// Helper function to check if a log matches the current filters
 	const matchesFilters = (log: LogEntry, filters: LogFilters, applyTimeFilters = true): boolean => {
+		if (filters.user_ids?.length) {
+			if (!log.user_id || !filters.user_ids.includes(log.user_id)) return false;
+		}
+		if (filters.team_ids?.length) {
+			if (!log.team_id || !filters.team_ids.includes(log.team_id)) return false;
+		}
+		if (filters.customer_ids?.length) {
+			if (!log.customer_id || !filters.customer_ids.includes(log.customer_id)) return false;
+		}
+		if (filters.business_unit_ids?.length) {
+			if (!log.business_unit_id || !filters.business_unit_ids.includes(log.business_unit_id)) return false;
+		}
 		if (filters.missing_cost_only && typeof log.cost === "number" && log.cost > 0) {
 			return false;
 		}

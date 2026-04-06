@@ -261,7 +261,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.PassthroughRequestBody) +
 		len(log.PassthroughResponseBody) +
 		len(log.ContentSummary) +
-		len(log.CacheDebug) +		
+		len(log.CacheDebug) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -351,6 +351,10 @@ func applyOutputFieldsToEntry(
 	selectedKeyID, selectedKeyName string,
 	virtualKeyID, virtualKeyName string,
 	routingRuleID, routingRuleName string,
+	teamID, teamName string,
+	customerID, customerName string,
+	userID string,
+	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
 ) {
@@ -367,6 +371,27 @@ func applyOutputFieldsToEntry(
 	}
 	if routingRuleName != "" {
 		entry.RoutingRuleName = &routingRuleName
+	}
+	if teamID != "" {
+		entry.TeamID = &teamID
+	}
+	if teamName != "" {
+		entry.TeamName = &teamName
+	}
+	if customerID != "" {
+		entry.CustomerID = &customerID
+	}
+	if customerName != "" {
+		entry.CustomerName = &customerName
+	}
+	if userID != "" {
+		entry.UserID = &userID
+	}
+	if businessUnitID != "" {
+		entry.BusinessUnitID = &businessUnitID
+	}
+	if businessUnitName != "" {
+		entry.BusinessUnitName = &businessUnitName
 	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries

@@ -215,6 +215,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAliasColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddGovernanceContextColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateMatViewsWithGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2038,6 +2044,26 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_alias",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_alias ON logs(alias)",
 	},
+	{
+		table: "logs",
+		name:  "idx_logs_team_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_team_id ON logs(team_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_customer_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_customer_id ON logs(customer_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_user_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_user_id ON logs(user_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_business_unit_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_business_unit_id ON logs(business_unit_id)",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -2219,6 +2245,81 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGovernanceContextColumns adds user_id, team_id, team_name, customer_id, customer_name,
+// business_unit_id, business_unit_name columns to the logs table.
+func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"user_id", "team_id", "team_name", "customer_id", "customer_name", "business_unit_id", "business_unit_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_governance_context_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding governance context columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateMatViewsWithGovernanceColumns drops and recreates materialized views
+// so they include the new governance context columns (user_id, team_id, customer_id, business_unit_id).
+// The views are recreated by ensureMatViews on startup, so we just need to drop the old ones.
+func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	// Materialized views are PostgreSQL-only; skip on other dialects
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_matviews_with_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, view := range []string{"mv_logs_hourly", "mv_logs_filterdata"} {
+				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
+					return fmt.Errorf("failed to drop %s: %w", view, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed — ensureMatViews will recreate on next startup
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while recreating matviews with governance columns: %s", err.Error())
 	}
 	return nil
 }

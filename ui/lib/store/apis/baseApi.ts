@@ -163,6 +163,7 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"AccessProfiles",
+		"BusinessUnits",
 	],
 	endpoints: () => ({}),
 });

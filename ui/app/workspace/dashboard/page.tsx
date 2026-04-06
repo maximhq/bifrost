@@ -43,6 +43,7 @@ import { MCPTab } from "./components/mcpTab";
 import { ModelRankingsTab } from "./components/modelRankingsTab";
 import { OverviewTab } from "./components/overviewTab";
 import { ProviderUsageTab } from "./components/providerUsageTab";
+import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTab";
 
 // Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
@@ -670,6 +671,9 @@ export default function DashboardPage() {
 					<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
 						MCP usage
 					</TabsTrigger>
+					<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
+						User Rankings
+					</TabsTrigger>
 				</TabsList>
 
 				{/* Overview Tab */}
@@ -765,6 +769,11 @@ export default function DashboardPage() {
 						onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
 						onMcpCostChartToggle={handleMcpCostChartToggle}
 					/>
+				</TabsContent>
+
+				{/* User Rankings Tab (Enterprise) */}
+				<TabsContent value="user-rankings">
+					<UserRankingsTab />
 				</TabsContent>
 			</Tabs>
 		</div>

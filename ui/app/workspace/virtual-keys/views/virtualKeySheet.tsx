@@ -528,7 +528,12 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden px-4 pb-8" data-testid="vk-sheet">
+			<SheetContent
+				className="flex w-full flex-col overflow-x-hidden px-4 pb-8"
+				data-testid="vk-sheet-content"
+				onInteractOutside={(e) => e.preventDefault()}
+				onEscapeKeyDown={(e) => e.preventDefault()}
+			>
 				<SheetHeader className="flex flex-col items-start px-3 pt-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>

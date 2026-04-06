@@ -57,6 +57,18 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.user_ids && filters.user_ids.length > 0) {
+		params.user_ids = filters.user_ids.join(",");
+	}
+	if (filters.team_ids && filters.team_ids.length > 0) {
+		params.team_ids = filters.team_ids.join(",");
+	}
+	if (filters.customer_ids && filters.customer_ids.length > 0) {
+		params.customer_ids = filters.customer_ids.join(",");
+	}
+	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
+		params.business_unit_ids = filters.business_unit_ids.join(",");
+	}
 	if (filters.metadata_filters) {
 		for (const [key, value] of Object.entries(filters.metadata_filters)) {
 			params[`metadata_${key}`] = value;

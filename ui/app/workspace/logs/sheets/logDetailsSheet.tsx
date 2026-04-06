@@ -30,6 +30,7 @@ import {
 import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
 import { ChevronDown, ChevronUp, Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
+import Link from "next/link";
 import moment from "moment";
 import { useEffect, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -293,9 +294,7 @@ export function LogDetailSheet({
 										}
 									/>
 									{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={displayLog.model} />}
-									{!isContainer && displayLog.alias && (
-										<LogEntryDetailsView className="w-full" label="Alias" value={displayLog.alias} />
-									)}
+									{!isContainer && displayLog.alias && <LogEntryDetailsView className="w-full" label="Alias" value={displayLog.alias} />}
 									<LogEntryDetailsView
 										className="w-full"
 										label="Type"
@@ -311,6 +310,50 @@ export function LogDetailSheet({
 									/>
 									{displayLog.selected_key && (
 										<LogEntryDetailsView className="w-full" label="Selected Key" value={displayLog.selected_key.name} />
+									)}
+									{displayLog.team_id && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Team"
+											value={
+												<Link href={`/workspace/logs?team_ids=${encodeURIComponent(displayLog.team_id)}`} className="text-blue-600 hover:underline dark:text-blue-400" data-testid="logdetails-team-link">
+													{displayLog.team_name || displayLog.team_id}
+												</Link>
+											}
+										/>
+									)}
+									{displayLog.customer_id && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Customer"
+											value={
+												<Link href={`/workspace/logs?customer_ids=${encodeURIComponent(displayLog.customer_id)}`} className="text-blue-600 hover:underline dark:text-blue-400" data-testid="logdetails-customer-link">
+													{displayLog.customer_name || displayLog.customer_id}
+												</Link>
+											}
+										/>
+									)}
+									{displayLog.business_unit_id && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Business Unit"
+											value={
+												<Link href={`/workspace/logs?business_unit_ids=${encodeURIComponent(displayLog.business_unit_id)}`} className="text-blue-600 hover:underline dark:text-blue-400" data-testid="logdetails-business-unit-link">
+													{displayLog.business_unit_name || displayLog.business_unit_id}
+												</Link>
+											}
+										/>
+									)}
+									{displayLog.user_id && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="User"
+											value={
+												<Link href={`/workspace/logs?user_ids=${encodeURIComponent(displayLog.user_id)}`} className="text-blue-600 hover:underline dark:text-blue-400" data-testid="logdetails-user-link">
+													{displayLog.user_id}
+												</Link>
+											}
+										/>
 									)}
 									{displayLog.number_of_retries > 0 && (
 										<LogEntryDetailsView className="w-full" label="Number of Retries" value={displayLog.number_of_retries} />

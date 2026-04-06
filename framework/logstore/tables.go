@@ -37,6 +37,10 @@ type SearchFilters struct {
 	SelectedKeyIDs    []string          `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs     []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs    []string          `json:"routing_rule_ids,omitempty"`
+	TeamIDs           []string          `json:"team_ids,omitempty"`
+	CustomerIDs       []string          `json:"customer_ids,omitempty"`
+	UserIDs           []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs   []string          `json:"business_unit_ids,omitempty"`
 	RoutingEngineUsed []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	StartTime         *time.Time        `json:"start_time,omitempty"`
 	EndTime           *time.Time        `json:"end_time,omitempty"`
@@ -95,6 +99,13 @@ type Log struct {
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_id" json:"user_id"`
+	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_id" json:"team_id"`
+	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
+	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_id" json:"customer_id"`
+	CustomerName            *string   `gorm:"type:varchar(255)" json:"customer_name"`
+	BusinessUnitID          *string   `gorm:"type:varchar(255);index:idx_logs_business_unit_id" json:"business_unit_id"`
+	BusinessUnitName        *string   `gorm:"type:varchar(255)" json:"business_unit_name"`
 	InputHistory            string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory   string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
@@ -1198,6 +1209,87 @@ type ProviderLatencyHistogramResult struct {
 	Providers         []string                         `json:"providers"`
 }
 
+// HistogramDimension represents a column that can be used as a grouping dimension in histograms
+type HistogramDimension string
+
+const (
+	DimensionProvider     HistogramDimension = "provider"
+	DimensionTeam         HistogramDimension = "team_id"
+	DimensionCustomer     HistogramDimension = "customer_id"
+	DimensionUser         HistogramDimension = "user_id"
+	DimensionBusinessUnit HistogramDimension = "business_unit_id"
+)
+
+// ValidHistogramDimensions is the set of allowed dimension values
+var ValidHistogramDimensions = map[HistogramDimension]bool{
+	DimensionProvider:     true,
+	DimensionTeam:         true,
+	DimensionCustomer:     true,
+	DimensionUser:         true,
+	DimensionBusinessUnit: true,
+}
+
+// Dimension-level histogram types (generic version of Provider histograms)
+
+// DimensionCostHistogramBucket represents a single time bucket for dimension-grouped cost data
+type DimensionCostHistogramBucket struct {
+	Timestamp   time.Time          `json:"timestamp"`
+	TotalCost   float64            `json:"total_cost"`
+	ByDimension map[string]float64 `json:"by_dimension"`
+}
+
+// DimensionCostHistogramResult represents the dimension cost histogram query result
+type DimensionCostHistogramResult struct {
+	Buckets           []DimensionCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension             `json:"dimension"`
+	DimensionValues   []string                       `json:"dimension_values"`
+}
+
+// DimensionTokenStats represents token statistics for a single dimension value
+type DimensionTokenStats struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
+// DimensionTokenHistogramBucket represents a single time bucket for dimension-grouped token data
+type DimensionTokenHistogramBucket struct {
+	Timestamp   time.Time                      `json:"timestamp"`
+	ByDimension map[string]DimensionTokenStats `json:"by_dimension"`
+}
+
+// DimensionTokenHistogramResult represents the dimension token histogram query result
+type DimensionTokenHistogramResult struct {
+	Buckets           []DimensionTokenHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                           `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension              `json:"dimension"`
+	DimensionValues   []string                        `json:"dimension_values"`
+}
+
+// DimensionLatencyStats represents latency statistics for a single dimension value
+type DimensionLatencyStats struct {
+	AvgLatency    float64 `json:"avg_latency"`
+	P90Latency    float64 `json:"p90_latency"`
+	P95Latency    float64 `json:"p95_latency"`
+	P99Latency    float64 `json:"p99_latency"`
+	TotalRequests int64   `json:"total_requests"`
+}
+
+// DimensionLatencyHistogramBucket represents a single time bucket for dimension-grouped latency data
+type DimensionLatencyHistogramBucket struct {
+	Timestamp   time.Time                        `json:"timestamp"`
+	ByDimension map[string]DimensionLatencyStats `json:"by_dimension"`
+}
+
+// DimensionLatencyHistogramResult represents the dimension latency histogram query result
+type DimensionLatencyHistogramResult struct {
+	Buckets           []DimensionLatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                             `json:"bucket_size_seconds"`
+	Dimension         HistogramDimension                `json:"dimension"`
+	DimensionValues   []string                          `json:"dimension_values"`
+}
+
 // MCPHistogramBucket represents a single time bucket for MCP tool call volume
 type MCPHistogramBucket struct {
 	Timestamp time.Time `json:"timestamp"`
@@ -1266,4 +1358,31 @@ type ModelRankingWithTrend struct {
 // ModelRankingResult is the response for the model rankings endpoint.
 type ModelRankingResult struct {
 	Rankings []ModelRankingWithTrend `json:"rankings"`
+}
+
+// UserRankingEntry represents a single user's usage statistics.
+type UserRankingEntry struct {
+	UserID        string  `json:"user_id"`
+	TotalRequests int64   `json:"total_requests"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`
+}
+
+// UserRankingTrend represents the percentage change compared to the previous period.
+type UserRankingTrend struct {
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	TokensTrend       float64 `json:"tokens_trend"`
+	CostTrend         float64 `json:"cost_trend"`
+}
+
+// UserRankingWithTrend combines ranking entry with trend data.
+type UserRankingWithTrend struct {
+	UserRankingEntry
+	Trend UserRankingTrend `json:"trend"`
+}
+
+// UserRankingResult is the response for the user rankings endpoint.
+type UserRankingResult struct {
+	Rankings []UserRankingWithTrend `json:"rankings"`
 }

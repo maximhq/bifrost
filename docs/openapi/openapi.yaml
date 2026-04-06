@@ -553,6 +553,22 @@ paths:
     $ref: './paths/management/users.yaml#/users'
   /api/users/{id}:
     $ref: './paths/management/users.yaml#/users-by-id'
+  /api/users/me/permissions:
+    $ref: './paths/management/users.yaml#/users-me-permissions'
+  /api/users/{id}/role:
+    $ref: './paths/management/users.yaml#/users-role'
+  /api/users/{id}/teams:
+    $ref: './paths/management/users.yaml#/users-teams'
+
+  # Teams
+  /api/teams:
+    $ref: './paths/management/users.yaml#/teams'
+  /api/teams/{id}:
+    $ref: './paths/management/users.yaml#/teams-by-id'
+  /api/teams/{id}/members:
+    $ref: './paths/management/users.yaml#/team-members'
+  /api/teams/{id}/members/{userId}:
+    $ref: './paths/management/users.yaml#/team-member-by-id'
 
   # Session
   /api/session/login:

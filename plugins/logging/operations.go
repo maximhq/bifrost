@@ -840,6 +840,68 @@ func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 	return keyPairResultsToKeyPairs(results)
 }
 
+// GetAvailableTeams returns all unique team ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableTeams(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "team_id", "team_name")
+	if err != nil {
+		p.logger.Error("failed to get available teams: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableCustomers returns all unique customer ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableCustomers(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "customer_id", "customer_name")
+	if err != nil {
+		p.logger.Error("failed to get available customers: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableUsers returns all unique user IDs from logs.
+// Both ID and Name are set to user_id since users don't have a separate name column.
+func (p *LoggerPlugin) GetAvailableUsers(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "user_id", "user_id")
+	if err != nil {
+		p.logger.Error("failed to get available users: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
+func (p *LoggerPlugin) GetAvailableBusinessUnits(ctx context.Context) []KeyPair {
+	results, err := p.store.GetDistinctKeyPairs(ctx, "business_unit_id", "business_unit_name")
+	if err != nil {
+		p.logger.Error("failed to get available business units: %v", err)
+		return []KeyPair{}
+	}
+	return keyPairResultsToKeyPairs(results)
+}
+
+// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
+	return p.store.GetDimensionCostHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionTokenHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error) {
+	return p.store.GetDimensionTokenHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+// Delegates to the underlying log store which uses materialized views on PostgreSQL for performance.
+func (p *LoggerPlugin) GetDimensionLatencyHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error) {
+	return p.store.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
 // GetAvailableRoutingEngines returns all unique routing engine types used in logs.
 // Uses DISTINCT to avoid loading all rows when only unique values are needed.
 func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string {

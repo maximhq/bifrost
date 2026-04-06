@@ -78,8 +78,29 @@ type LogManager interface {
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
 
+	// GetAvailableTeams returns all unique team ID-Name pairs from logs
+	GetAvailableTeams(ctx context.Context) []KeyPair
+
+	// GetAvailableCustomers returns all unique customer ID-Name pairs from logs
+	GetAvailableCustomers(ctx context.Context) []KeyPair
+
+	// GetAvailableUsers returns all unique user IDs from logs
+	GetAvailableUsers(ctx context.Context) []KeyPair
+
+	// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs
+	GetAvailableBusinessUnits(ctx context.Context) []KeyPair
+
 	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
 	GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error)
+
+	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension
+	GetDimensionCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error)
+
+	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension
+	GetDimensionTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error)
+
+	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension
+	GetDimensionLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error)
 
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
@@ -237,6 +258,50 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+// GetAvailableTeams returns all unique team ID-Name pairs from logs.
+func (p *PluginLogManager) GetAvailableTeams(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableTeams(ctx)
+}
+
+// GetAvailableCustomers returns all unique customer ID-Name pairs from logs.
+func (p *PluginLogManager) GetAvailableCustomers(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableCustomers(ctx)
+}
+
+// GetAvailableUsers returns all unique user IDs from logs.
+func (p *PluginLogManager) GetAvailableUsers(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableUsers(ctx)
+}
+
+// GetAvailableBusinessUnits returns all unique business unit ID-Name pairs from logs.
+func (p *PluginLogManager) GetAvailableBusinessUnits(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableBusinessUnits(ctx)
+}
+
+// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionCostHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionCostHistogram(ctx, *filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionTokenHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionTokenHistogram(ctx, *filters, bucketSizeSeconds, dimension)
+}
+
+// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
+func (p *PluginLogManager) GetDimensionLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64, dimension logstore.HistogramDimension) (*logstore.DimensionLatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetDimensionLatencyHistogram(ctx, *filters, bucketSizeSeconds, dimension)
 }
 
 func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error) {

@@ -144,8 +144,11 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))
 		} else {
 			logger.Info("logstore: materialized views are ready")
+			// Signal that matviews are ready for query use. Until this point,
+			// canUseMatView() returns false so all queries use raw tables.
+			d.matViewsReady.Store(true)
 		}
-		startMatViewRefresher(context.Background(), db, 30*time.Second, logger)
+		startMatViewRefresher(context.Background(), db, 30*time.Second, logger, &d.matViewsReady)
 	}()
 
 	return d, nil
