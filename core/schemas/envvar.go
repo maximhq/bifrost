@@ -262,6 +262,17 @@ func (e *EnvVar) IsFromEnv() bool {
 	return e.FromEnv
 }
 
+// IsSet returns true if the EnvVar has a resolved value or an environment variable reference.
+// This should be used instead of GetValue() != "" when checking whether a field was configured,
+// because env var references may have an empty Val before resolution (e.g., when the env var
+// is not available in the current environment).
+func (e *EnvVar) IsSet() bool {
+	if e == nil {
+		return false
+	}
+	return e.Val != "" || e.EnvVar != ""
+}
+
 // GetValue returns the value.
 func (e *EnvVar) GetValue() string {
 	if e == nil {

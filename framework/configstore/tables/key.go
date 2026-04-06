@@ -130,7 +130,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	// shared pointer, the caller's in-memory config is silently corrupted.
 	// See: TestBeforeSave_DoesNotMutateSharedProviderConfigs
 	if k.AzureKeyConfig != nil {
-		if k.AzureKeyConfig.Endpoint.GetValue() != "" {
+		if k.AzureKeyConfig.Endpoint.IsSet() {
 			ep := k.AzureKeyConfig.Endpoint
 			k.AzureEndpoint = &ep
 		} else {
@@ -179,25 +179,25 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.AzureScopesJSON = nil
 	}
 	if k.VertexKeyConfig != nil {
-		if k.VertexKeyConfig.ProjectID.GetValue() != "" {
+		if k.VertexKeyConfig.ProjectID.IsSet() {
 			pid := k.VertexKeyConfig.ProjectID
 			k.VertexProjectID = &pid
 		} else {
 			k.VertexProjectID = nil
 		}
-		if k.VertexKeyConfig.ProjectNumber.GetValue() != "" {
+		if k.VertexKeyConfig.ProjectNumber.IsSet() {
 			pn := k.VertexKeyConfig.ProjectNumber
 			k.VertexProjectNumber = &pn
 		} else {
 			k.VertexProjectNumber = nil
 		}
-		if k.VertexKeyConfig.Region.GetValue() != "" {
+		if k.VertexKeyConfig.Region.IsSet() {
 			vr := k.VertexKeyConfig.Region
 			k.VertexRegion = &vr
 		} else {
 			k.VertexRegion = nil
 		}
-		if k.VertexKeyConfig.AuthCredentials.GetValue() != "" {
+		if k.VertexKeyConfig.AuthCredentials.IsSet() {
 			ac := k.VertexKeyConfig.AuthCredentials
 			k.VertexAuthCredentials = &ac
 		} else {
@@ -210,14 +210,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexAuthCredentials = nil
 	}
 	if k.BedrockKeyConfig != nil {
-		if k.BedrockKeyConfig.AccessKey.GetValue() != "" {
+		if k.BedrockKeyConfig.AccessKey.IsSet() {
 			// Copy to avoid encrypting the shared BedrockKeyConfig through the pointer
 			ak := k.BedrockKeyConfig.AccessKey
 			k.BedrockAccessKey = &ak
 		} else {
 			k.BedrockAccessKey = nil
 		}
-		if k.BedrockKeyConfig.SecretKey.GetValue() != "" {
+		if k.BedrockKeyConfig.SecretKey.IsSet() {
 			// Copy to avoid encrypting the shared BedrockKeyConfig through the pointer
 			sk := k.BedrockKeyConfig.SecretKey
 			k.BedrockSecretKey = &sk
@@ -298,7 +298,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if k.VLLMKeyConfig != nil {
-		if k.VLLMKeyConfig.URL.GetValue() != "" {
+		if k.VLLMKeyConfig.URL.IsSet() {
 			u := k.VLLMKeyConfig.URL // Value-copy to prevent shared pointer mutation
 			k.VLLMUrl = &u
 		} else {
@@ -322,14 +322,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.ReplicateUseDeploymentsEndpoint = nil
 	}
 
-	if k.OllamaKeyConfig != nil && k.OllamaKeyConfig.URL.GetValue() != "" {
+	if k.OllamaKeyConfig != nil && k.OllamaKeyConfig.URL.IsSet() {
 		u := k.OllamaKeyConfig.URL
 		k.OllamaUrl = &u
 	} else {
 		k.OllamaUrl = nil
 	}
 
-	if k.SGLKeyConfig != nil && k.SGLKeyConfig.URL.GetValue() != "" {
+	if k.SGLKeyConfig != nil && k.SGLKeyConfig.URL.IsSet() {
 		u := k.SGLKeyConfig.URL
 		k.SGLUrl = &u
 	} else {
@@ -522,7 +522,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.UseForBatchAPI = &useForBatchAPI
 	}
 	// Reconstruct Azure config if fields are present
-	if k.AzureEndpoint != nil {
+	if k.AzureEndpoint != nil || k.AzureAPIVersion != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
 		var scopes []string
 		if k.AzureScopesJSON != nil && *k.AzureScopesJSON != "" {
 			if err := json.Unmarshal([]byte(*k.AzureScopesJSON), &scopes); err != nil {

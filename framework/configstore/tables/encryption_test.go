@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -1723,4 +1724,259 @@ func TestPostgres_EncryptedColumns_AreText(t *testing.T) {
 				"column %s should be text", col)
 		})
 	}
+}
+
+// ============================================================================
+// Env-var-reference persistence regression tests
+//
+// These tests guard against a class of bugs where BeforeSave used GetValue() != ""
+// to decide whether to persist a config field. When a field was set via env var
+// reference (e.g. "env.AZURE_ENDPOINT") and the env var was not set on the server,
+// GetValue() would return "" and the field — including the env reference — would be
+// dropped from the DB. On the next reload the entire provider-specific config block
+// could vanish.
+//
+// IsSet() (which checks both Val and EnvVar) is the correct check, and AfterFind
+// reconstruction must consider all fields in the config, not just one.
+// ============================================================================
+
+// TestTableKey_VertexUnresolvedEnvVar_RoundTrip verifies that a Vertex key configured
+// with an env var reference for ProjectID survives the BeforeSave/AfterFind round-trip
+// even when the env var is NOT set on the server (so the resolved Val is empty).
+func TestTableKey_VertexUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	// Make sure the env var is NOT set so the resolved Val is empty.
+	require.NoError(t, os.Unsetenv("FAKE_VERTEX_PROJECT_ID_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "vertex-unresolved-env",
+		ProviderID: 1,
+		Provider:   "vertex",
+		KeyID:      "vertex-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST",
+				FromEnv: true,
+			},
+			Region: *schemas.NewEnvVar("us-central1"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	// Read back through GORM (triggers AfterFind reconstruction).
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	// VertexKeyConfig must NOT be wiped — this was the original bug.
+	require.NotNil(t, found.VertexKeyConfig, "VertexKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_VERTEX_PROJECT_ID_FOR_TEST", found.VertexKeyConfig.ProjectID.EnvVar,
+		"env var reference for ProjectID lost on round-trip")
+	assert.True(t, found.VertexKeyConfig.ProjectID.FromEnv,
+		"FromEnv flag for ProjectID lost on round-trip")
+	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue(),
+		"Plain Region value should survive round-trip unchanged")
+}
+
+// TestTableKey_AzureUnresolvedEnvVar_RoundTrip verifies the same property for Azure.
+// This also exercises the broadened AfterFind reconstruction condition: when only the
+// endpoint is set (and unresolved), the entire AzureKeyConfig must still be reconstructed.
+func TestTableKey_AzureUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_AZURE_ENDPOINT_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "azure-unresolved-env",
+		ProviderID: 1,
+		Provider:   "azure",
+		KeyID:      "azure-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			Endpoint: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AZURE_ENDPOINT_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.AzureKeyConfig, "AzureKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_AZURE_ENDPOINT_FOR_TEST", found.AzureKeyConfig.Endpoint.EnvVar,
+		"env var reference for Endpoint lost on round-trip")
+	assert.True(t, found.AzureKeyConfig.Endpoint.FromEnv,
+		"FromEnv flag for Endpoint lost on round-trip")
+}
+
+// TestTableKey_AzureOnlyApiVersion_AfterFindReconstructs verifies that AzureKeyConfig
+// is reconstructed from the DB even when ONLY a non-endpoint Azure field is set.
+// Before the fix, AfterFind only checked AzureEndpoint != nil and would silently drop
+// the entire Azure config when only api_version (or any other Azure field) was present.
+func TestTableKey_AzureOnlyApiVersion_AfterFindReconstructs(t *testing.T) {
+	db := setupTestDB(t)
+
+	apiVersion := schemas.NewEnvVar("2024-10-21")
+	key := &TableKey{
+		Name:       "azure-only-apiversion",
+		ProviderID: 1,
+		Provider:   "azure",
+		KeyID:      "azure-apiver-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		AzureKeyConfig: &schemas.AzureKeyConfig{
+			// No endpoint, no client id — only api_version.
+			APIVersion: apiVersion,
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.AzureKeyConfig,
+		"AzureKeyConfig should be reconstructed when only api_version is present")
+	require.NotNil(t, found.AzureKeyConfig.APIVersion)
+	assert.Equal(t, "2024-10-21", found.AzureKeyConfig.APIVersion.GetValue())
+}
+
+// TestTableKey_BedrockUnresolvedEnvVar_RoundTrip verifies the same property for
+// Bedrock explicit credentials.
+func TestTableKey_BedrockUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_AWS_ACCESS_KEY_FOR_TEST"))
+	require.NoError(t, os.Unsetenv("FAKE_AWS_SECRET_KEY_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-unresolved-env",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AWS_ACCESS_KEY_FOR_TEST",
+				FromEnv: true,
+			},
+			SecretKey: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_AWS_SECRET_KEY_FOR_TEST",
+				FromEnv: true,
+			},
+			Region: schemas.NewEnvVar("us-west-2"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.BedrockKeyConfig, "BedrockKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_AWS_ACCESS_KEY_FOR_TEST", found.BedrockKeyConfig.AccessKey.EnvVar,
+		"env var reference for AccessKey lost on round-trip")
+	assert.Equal(t, "env.FAKE_AWS_SECRET_KEY_FOR_TEST", found.BedrockKeyConfig.SecretKey.EnvVar,
+		"env var reference for SecretKey lost on round-trip")
+	require.NotNil(t, found.BedrockKeyConfig.Region)
+	assert.Equal(t, "us-west-2", found.BedrockKeyConfig.Region.GetValue())
+}
+
+// TestTableKey_OllamaUnresolvedEnvVar_RoundTrip and TestTableKey_SGLUnresolvedEnvVar_RoundTrip
+// verify the same property for the recently-added providers, which also use env-aware persistence.
+func TestTableKey_OllamaUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_OLLAMA_URL_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "ollama-unresolved-env",
+		ProviderID: 1,
+		Provider:   "ollama",
+		KeyID:      "ollama-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{
+			URL: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_OLLAMA_URL_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.OllamaKeyConfig, "OllamaKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_OLLAMA_URL_FOR_TEST", found.OllamaKeyConfig.URL.EnvVar)
+	assert.True(t, found.OllamaKeyConfig.URL.FromEnv)
+}
+
+func TestTableKey_SGLUnresolvedEnvVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_SGL_URL_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "sgl-unresolved-env",
+		ProviderID: 1,
+		Provider:   "sgl",
+		KeyID:      "sgl-env-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		SGLKeyConfig: &schemas.SGLKeyConfig{
+			URL: schemas.EnvVar{
+				Val:     "",
+				EnvVar:  "env.FAKE_SGL_URL_FOR_TEST",
+				FromEnv: true,
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.SGLKeyConfig, "SGLKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_SGL_URL_FOR_TEST", found.SGLKeyConfig.URL.EnvVar)
+	assert.True(t, found.SGLKeyConfig.URL.FromEnv)
+}
+
+// TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain
+// (non-env-backed) values still round-trip cleanly through the persistence layer
+// after the IsSet() change. Both branches of the BeforeSave check matter.
+func TestTableKey_VertexPlainValue_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "vertex-plain",
+		ProviderID: 1,
+		Provider:   "vertex",
+		KeyID:      "vertex-plain-uuid-1",
+		Value:      *schemas.NewEnvVar(""),
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewEnvVar("my-gcp-project"),
+			Region:    *schemas.NewEnvVar("us-central1"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.VertexKeyConfig)
+	assert.Equal(t, "my-gcp-project", found.VertexKeyConfig.ProjectID.GetValue())
+	assert.False(t, found.VertexKeyConfig.ProjectID.FromEnv)
+	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
 }

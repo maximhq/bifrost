@@ -77,15 +77,29 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
+		// Strip internal _auth_type fields before sending to API
+		const key = { ...value.key };
+		if (key.azure_key_config) {
+			const { _auth_type, ...rest } = key.azure_key_config;
+			key.azure_key_config = rest;
+		}
+		if (key.vertex_key_config) {
+			const { _auth_type, ...rest } = key.vertex_key_config;
+			key.vertex_key_config = rest;
+		}
+		if (key.bedrock_key_config) {
+			const { _auth_type, ...rest } = key.bedrock_key_config;
+			key.bedrock_key_config = rest;
+		}
 		const mutation = isEditing
 			? updateProviderKey({
 				provider: provider.name,
 				keyId: currentKey!.id,
-				key: value.key,
+				key,
 			})
 			: createProviderKey({
 				provider: provider.name,
-				key: value.key,
+				key,
 			});
 
 		mutation
@@ -116,7 +130,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 									<span>
 										<Button
 											type="submit"
-											disabled={!form.formState.isDirty || !form.formState.isValid}
+											disabled={!form.formState.isDirty}
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>

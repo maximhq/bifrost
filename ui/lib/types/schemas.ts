@@ -1,6 +1,49 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { z } from "zod";
 
+// Global error map - turns Zod's default messages into readable, human-friendly ones.
+// Individual schemas can still override by passing their own message.
+z.config({
+	customError: (issue) => {
+		if (issue.code === "invalid_type") {
+			// Field is missing / undefined
+			if (issue.input === undefined || issue.input === null) {
+				return "This field is required";
+			}
+			const expected = issue.expected;
+			const received = typeof issue.input;
+			if (expected === "number") return "Must be a valid number";
+			if (expected === "string") return "Must be a valid text value";
+			if (expected === "boolean") return "Must be true or false";
+			return `Expected ${expected}, received ${received}`;
+		}
+		if (issue.code === "too_small") {
+			if (issue.origin === "string" && issue.minimum === 1) {
+				return "This field is required";
+			}
+			if (issue.origin === "number") {
+				return `Must be at least ${issue.minimum}`;
+			}
+			if (issue.origin === "array" && issue.minimum === 1) {
+				return "At least one item is required";
+			}
+		}
+		if (issue.code === "too_big") {
+			if (issue.origin === "number") {
+				return `Must be at most ${issue.maximum}`;
+			}
+			if (issue.origin === "string") {
+				return `Must be at most ${issue.maximum} characters`;
+			}
+		}
+		if (issue.code === "invalid_format") {
+			if (issue.format === "url") return "Must be a valid URL";
+			if (issue.format === "email") return "Must be a valid email";
+		}
+		return undefined; // fall back to Zod default
+	},
+});
+
 // Base Zod schemas matching the TypeScript types
 
 // Known provider schema
@@ -19,23 +62,77 @@ export const envVarSchema = z.object({
 	from_env: z.boolean().optional(),
 });
 
+// Helper to check if an envVar field has a value or env reference
+function isEnvVarSet(v: { value?: string; env_var?: string } | undefined): boolean {
+	if (!v) return false;
+	return !!v.value?.trim() || !!v.env_var?.trim();
+}
+
 // Azure key config schema
-export const azureKeyConfigSchema = z.object({
-	endpoint: envVarSchema,
-	api_version: envVarSchema.optional(),
-	client_id: envVarSchema.optional(),
-	client_secret: envVarSchema.optional(),
-	tenant_id: envVarSchema.optional(),
-	scopes: z.array(z.string()).optional(),
-});
+export const azureKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "entra_id", "default_credential"]).optional(),
+		endpoint: envVarSchema.optional(),
+		api_version: envVarSchema.optional(),
+		client_id: envVarSchema.optional(),
+		client_secret: envVarSchema.optional(),
+		tenant_id: envVarSchema.optional(),
+		scopes: z.array(z.string()).optional(),
+	})
+	.refine((data) => isEnvVarSet(data.endpoint), {
+		message: "Endpoint is required",
+		path: ["endpoint"],
+	})
+	.refine(
+		(data) => {
+			// When using Entra ID, all three fields are required
+			if (data._auth_type === "entra_id") {
+				return isEnvVarSet(data.client_id) && isEnvVarSet(data.client_secret) && isEnvVarSet(data.tenant_id);
+			}
+			// Otherwise, if any Entra ID field is set, all three must be set
+			const hasClientId = isEnvVarSet(data.client_id);
+			const hasClientSecret = isEnvVarSet(data.client_secret);
+			const hasTenantId = isEnvVarSet(data.tenant_id);
+			const anyEntraField = hasClientId || hasClientSecret || hasTenantId;
+			if (!anyEntraField) return true;
+			return hasClientId && hasClientSecret && hasTenantId;
+		},
+		{
+			message: "Client ID, Client Secret, and Tenant ID are all required for Entra ID authentication",
+			path: ["client_id"],
+		},
+	);
 
 // Vertex key config schema
-export const vertexKeyConfigSchema = z.object({
-	project_id: envVarSchema,
-	project_number: envVarSchema.optional(),
-	region: envVarSchema,
-	auth_credentials: envVarSchema.optional(),
-});
+export const vertexKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["service_account", "service_account_json", "api_key"]).optional(),
+		project_id: envVarSchema.optional(),
+		project_number: envVarSchema.optional(),
+		region: envVarSchema.optional(),
+		auth_credentials: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.project_id), {
+		message: "Project ID is required",
+		path: ["project_id"],
+	})
+	.refine((data) => isEnvVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// When using service_account_json auth, auth_credentials is required
+			if (data._auth_type === "service_account_json") {
+				return isEnvVarSet(data.auth_credentials);
+			}
+			return true;
+		},
+		{
+			message: "Auth Credentials is required for service account JSON authentication",
+			path: ["auth_credentials"],
+		},
+	);
 
 // S3 bucket configuration for Bedrock batch operations
 export const s3BucketConfigSchema = z.object({
@@ -49,43 +146,81 @@ export const batchS3ConfigSchema = z.object({
 });
 
 // Bedrock key config schema
-export const bedrockKeyConfigSchema = z.object({
-	access_key: envVarSchema.optional(),
-	secret_key: envVarSchema.optional(),
-	session_token: envVarSchema.optional(),
-	region: envVarSchema.optional(),
-	role_arn: envVarSchema.optional(),
-	external_id: envVarSchema.optional(),
-	session_name: envVarSchema.optional(),
-	arn: envVarSchema.optional(),
-	batch_s3_config: batchS3ConfigSchema.optional(),
-});
+export const bedrockKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: envVarSchema.optional(),
+		secret_key: envVarSchema.optional(),
+		session_token: envVarSchema.optional(),
+		region: envVarSchema.optional(),
+		role_arn: envVarSchema.optional(),
+		external_id: envVarSchema.optional(),
+		session_name: envVarSchema.optional(),
+		arn: envVarSchema.optional(),
+		batch_s3_config: batchS3ConfigSchema.optional(),
+	})
+	.refine(
+		(data) => {
+			// Region is required for Bedrock
+			return isEnvVarSet(data.region);
+		},
+		{
+			message: "Region is required",
+			path: ["region"],
+		},
+	)
+	.refine(
+		(data) => {
+			// When using explicit credentials, both access_key and secret_key are required
+			if (data._auth_type === "explicit") {
+				return isEnvVarSet(data.access_key) && isEnvVarSet(data.secret_key);
+			}
+			// Otherwise, if either is set both must be set
+			const hasAccessKey = isEnvVarSet(data.access_key);
+			const hasSecretKey = isEnvVarSet(data.secret_key);
+			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
 
 // VLLM key config schema
-export const vllmKeyConfigSchema = z.object({
-	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+export const vllmKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+		model_name: z.string().trim().min(1, "Model name is required"),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
 		message: "Server URL is required",
-	}),
-	model_name: z.string().trim().min(1, "Model name is required"),
-});
+		path: ["url"],
+	});
 
 export const replicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean(),
 });
 
 // Ollama key config schema
-export const ollamaKeyConfigSchema = z.object({
-	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+export const ollamaKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
 		message: "Server URL is required",
-	}),
-});
+		path: ["url"],
+	});
 
 // SGL key config schema
-export const sglKeyConfigSchema = z.object({
-	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+export const sglKeyConfigSchema = z
+	.object({
+		url: envVarSchema.optional(),
+	})
+	.refine((data) => isEnvVarSet(data.url), {
 		message: "Server URL is required",
-	}),
-});
+		path: ["url"],
+	});
 
 // Model provider key schema
 export const modelProviderKeySchema = z
@@ -95,26 +230,24 @@ export const modelProviderKeySchema = z
 		value: envVarSchema.optional(),
 		models: z.array(z.string()).optional().default(["*"]),
 		blacklisted_models: z.array(z.string()).default([]).optional(),
-		weight: z.union([
-			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
-			z
-				.string()
-				.transform((val) => {
-					if (val === "") return 1.0;
-					const num = parseFloat(val);
-					if (isNaN(num)) {
-						throw new z.ZodError([
-							{
-								code: "custom",
-								message: "Weight must be a valid number",
-								path: ["weight"],
-							},
-						]);
-					}
-					return num;
-				})
-				.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
-		]),
+		weight: z
+			.union([z.number(), z.string()])
+			.transform((val, ctx) => {
+				if (typeof val === "number") return val;
+				if (val.trim() === "") return 1.0;
+				// Use Number() rather than parseFloat() so that strings like "0.5abc"
+				// are rejected outright instead of silently parsing to 0.5.
+				const num = Number(val);
+				if (!Number.isFinite(num)) {
+					ctx.addIssue({
+						code: "custom",
+						message: "Weight must be a valid number between 0 and 1",
+					});
+					return z.NEVER;
+				}
+				return num;
+			})
+			.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
 		aliases: z.record(z.string(), z.string()).optional(),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
@@ -128,23 +261,36 @@ export const modelProviderKeySchema = z
 	})
 	.refine(
 		(data) => {
-			// If a provider-specific key config is present, value is not required
-			if (
-				data.bedrock_key_config ||
-				data.azure_key_config ||
-				data.vertex_key_config ||
-				data.replicate_key_config ||
-				data.vllm_key_config ||
-				data.ollama_key_config ||
-				data.sgl_key_config
-			) {
+			// Providers with dedicated config that never need a top-level API key
+			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Azure requires API key only when using api_key auth
+			if (data.azure_key_config) {
+				if (data.azure_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Bedrock only requires API key when using api_key auth
+			if (data.bedrock_key_config) {
+				if (data.bedrock_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
+				return true;
+			}
+			// Vertex requires API key only when using api_key auth
+			if (data.vertex_key_config) {
+				if (data.vertex_key_config._auth_type === "api_key") {
+					return isEnvVarSet(data.value);
+				}
 				return true;
 			}
 			// Otherwise, value is required
-			return data.value?.value && data.value?.value?.length > 0;
+			return isEnvVarSet(data.value);
 		},
 		{
-			message: "Value is required",
+			message: "API Key is required",
 			path: ["value"],
 		},
 	);

@@ -11,6 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info, Plus, Trash2 } from "lucide-react";
@@ -94,48 +95,69 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	// Auth type state for Bedrock: 'iam_role', 'explicit', or 'api_key'
 	const [bedrockAuthType, setBedrockAuthType] = useState<"iam_role" | "explicit" | "api_key">("iam_role");
 
+	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
+	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isAzure) {
-			const clientId = form.getValues("key.azure_key_config.client_id")?.value;
-			const clientSecret = form.getValues("key.azure_key_config.client_secret")?.value;
-			const tenantId = form.getValues("key.azure_key_config.tenant_id")?.value;
-			const apiKey = form.getValues("key.value")?.value;
-			if (clientId || clientSecret || tenantId) {
-				setAzureAuthType("entra_id");
-			} else if (!apiKey) {
-				setAzureAuthType("default_credential");
+			const clientId = form.getValues("key.azure_key_config.client_id");
+			const clientSecret = form.getValues("key.azure_key_config.client_secret");
+			const tenantId = form.getValues("key.azure_key_config.tenant_id");
+			const apiKey = form.getValues("key.value");
+			const hasEntraField = clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
+			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			let detected: "api_key" | "entra_id" | "default_credential" = "api_key";
+			if (hasEntraField) {
+				detected = "entra_id";
+			} else if (!hasApiKey) {
+				detected = "default_credential";
 			}
+			setAzureAuthType(detected);
+			form.setValue("key.azure_key_config._auth_type", detected);
 		}
 	}, [isAzure, form]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
-		if (isBedrock) {
-			const accessKey = form.getValues("key.bedrock_key_config.access_key")?.value;
-			const secretKey = form.getValues("key.bedrock_key_config.secret_key")?.value;
+		if (isVertex) {
+			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
+			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.env_var;
 			const apiKey = form.getValues("key.value")?.value;
-			if (accessKey || secretKey) {
-				setBedrockAuthType("explicit");
-			} else if (apiKey) {
-				setBedrockAuthType("api_key");
+			const apiKeyEnv = form.getValues("key.value")?.env_var;
+			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
+			if (authCredentials || authCredentialsEnv) {
+				detected = "service_account_json";
+			} else if (apiKey || apiKeyEnv) {
+				detected = "api_key";
 			}
+			setVertexAuthType(detected);
+			form.setValue("key.vertex_key_config._auth_type", detected);
+		}
+	}, [isVertex, form]);
+
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isBedrock) {
+			const accessKey = form.getValues("key.bedrock_key_config.access_key");
+			const secretKey = form.getValues("key.bedrock_key_config.secret_key");
+			const apiKey = form.getValues("key.value");
+			const hasExplicitCreds = accessKey?.value || accessKey?.env_var || secretKey?.value || secretKey?.env_var;
+			const hasApiKey = apiKey?.value || apiKey?.env_var;
+			let detected: "iam_role" | "explicit" | "api_key" = "iam_role";
+			if (hasExplicitCreds) {
+				detected = "explicit";
+			} else if (hasApiKey) {
+				detected = "api_key";
+			}
+			setBedrockAuthType(detected);
+			form.setValue("key.bedrock_key_config._auth_type", detected);
 		}
 	}, [isBedrock, form]);
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			{isVertex && (
-				<Alert variant="default" className="-z-10">
-					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-					<AlertTitle>Authentication Methods</AlertTitle>
-					<AlertDescription>
-						You can either use service account authentication or API key authentication. Please leave API Key empty when using service
-						account authentication.
-					</AlertDescription>
-				</Alert>
-			)}
 			<div className="flex items-start gap-4">
 				<div className="flex-1">
 					<FormField
@@ -201,14 +223,14 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && !(isBedrock) && (
+			{/* Hide API Key field for providers with dedicated auth tabs */}
+			{!isAzure && !isBedrock && !isVertex && (
 				<FormField
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
+							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
 								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
@@ -377,6 +399,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							value={azureAuthType}
 							onValueChange={(v) => {
 								setAzureAuthType(v as "api_key" | "entra_id" | "default_credential");
+								form.setValue("key.azure_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
 								if (v === "entra_id" || v === "default_credential") {
 									// Clear API key when switching away from API Key
 									form.setValue("key.value", undefined, { shouldDirty: true });
@@ -391,14 +414,14 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							}}
 						>
 							<TabsList className="grid w-full grid-cols-3">
+								<TabsTrigger data-testid="apikey-azure-default-credential-tab" value="default_credential">
+									Default Credential
+								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-azure-api-key-tab" value="api_key">
 									API Key
 								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-azure-entra-id-tab" value="entra_id">
 									Entra ID (Service Principal)
-								</TabsTrigger>
-								<TabsTrigger data-testid="apikey-azure-default-credential-tab" value="default_credential">
-									Default Credential
 								</TabsTrigger>
 							</TabsList>
 						</Tabs>
@@ -538,6 +561,42 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			{isVertex && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={vertexAuthType}
+							onValueChange={(v) => {
+								setVertexAuthType(v as "service_account" | "service_account_json" | "api_key");
+								form.setValue("key.vertex_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
+								if (v === "service_account" || v === "api_key") {
+									// Clear auth credentials when switching away from service account JSON
+									form.setValue("key.vertex_key_config.auth_credentials", undefined, { shouldDirty: true });
+								}
+								if (v === "service_account" || v === "service_account_json") {
+									// Clear API key when switching away from API Key
+									form.setValue("key.value", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-3">
+								<TabsTrigger data-testid="apikey-vertex-service-account-tab" value="service_account">
+									Service Account (Attached)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-service-account-json-tab" value="service_account_json">
+									Service Account (JSON)
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-api-key-tab" value="api_key">
+									API Key
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+						{vertexAuthType === "service_account" && (
+							<p className="text-muted-foreground text-sm">
+								Uses the service account attached to your environment (GCE, GKE, Cloud Run). No credentials required.
+							</p>
+						)}
+					</div>
+
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.project_id`}
@@ -577,39 +636,57 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
-					<Alert variant="default" className="-z-10">
-						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-						<AlertTitle>Service Account Authentication</AlertTitle>
-						<AlertDescription>
-							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
-						</AlertDescription>
-					</Alert>
-					<FormField
-						control={control}
-						name={`key.vertex_key_config.auth_credentials`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Auth Credentials</FormLabel>
-								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
-								<FormControl>
-									<EnvVarInput
-										variant="textarea"
-										rows={4}
-										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-										inputClassName="font-mono text-sm"
-										{...field}
-									/>
-								</FormControl>
-								<FormMessage />
-								{isRedacted(field.value?.value ?? "") && (
-									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
-										<Info className="h-3 w-3" />
-										<span>Credentials are stored securely. Edit to update.</span>
-									</div>
-								)}
-							</FormItem>
-						)}
-					/>
+
+					{vertexAuthType === "service_account_json" && (
+						<FormField
+							control={control}
+							name={`key.vertex_key_config.auth_credentials`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Auth Credentials (Required)</FormLabel>
+									<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+									<FormControl>
+										<EnvVarInput
+											data-testid="apikey-vertex-auth-credentials-input"
+											variant="textarea"
+											rows={4}
+											placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+											inputClassName="font-mono text-sm"
+											{...field}
+										/>
+									</FormControl>
+									{isRedacted(field.value?.value ?? "") && (
+										<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+											<Info className="h-3 w-3" />
+											<span>Credentials are stored securely. Edit to update.</span>
+										</div>
+									)}
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+
+					{vertexAuthType === "api_key" && (
+						<FormField
+							control={control}
+							name={`key.value`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>API Key (Supported only for gemini and fine-tuned models)</FormLabel>
+									<FormControl>
+										<EnvVarInput
+											data-testid="apikey-vertex-api-key-input"
+											placeholder="API Key or env.MY_KEY"
+											type="text"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 				</div>
 			)}
 			{isReplicate && (
@@ -701,6 +778,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							value={bedrockAuthType}
 							onValueChange={(v) => {
 								setBedrockAuthType(v as "iam_role" | "explicit" | "api_key");
+								form.setValue("key.bedrock_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
 								if (v === "iam_role") {
 									// Clear explicit credentials and API key when switching to IAM Role
 									form.setValue("key.bedrock_key_config.access_key", undefined, { shouldDirty: true });

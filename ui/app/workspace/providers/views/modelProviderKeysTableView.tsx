@@ -173,23 +173,46 @@ export default function ModelProviderKeysTableView({ provider, className, header
 														<TooltipContent>List models working</TooltipContent>
 													</Tooltip>
 												)}
-												{key.status === "list_models_failed" && (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<button
-																type="button"
-																aria-label="Key status: list models failed"
-																data-testid={`key-status-error-${key.name}`}
-																className="inline-flex"
-															>
-																<AlertCircle aria-hidden className="text-destructive h-4 w-4 flex-shrink-0" />
-															</button>
-														</TooltipTrigger>
-														<TooltipContent className="max-w-xs break-words">
-															{key.description || "Model discovery failed for this key"}
-														</TooltipContent>
-													</Tooltip>
-												)}
+												{key.status === "list_models_failed" && (() => {
+													// Check if the failure might be due to an env var that the server couldn't resolve
+													const hasEnvVarConfig =
+														key.azure_key_config?.endpoint?.from_env ||
+														key.vertex_key_config?.project_id?.from_env ||
+														key.vertex_key_config?.region?.from_env ||
+														key.bedrock_key_config?.region?.from_env ||
+														key.vllm_key_config?.url?.from_env ||
+														key.value?.from_env;
+													const isEnvResolutionError = hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);
+
+													return isEnvResolutionError ? (
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<button type="button" aria-label="Key status: env var may not be resolved" data-testid={`key-status-warning-${key.name}`} className="inline-flex">
+																	<AlertCircle aria-hidden className="text-orange-500 h-4 w-4 flex-shrink-0" />
+																</button>
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs break-words">
+																{key.description} — verify the environment variable is set on the server
+															</TooltipContent>
+														</Tooltip>
+													) : (
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<button
+																	type="button"
+																	aria-label="Key status: list models failed"
+																	data-testid={`key-status-error-${key.name}`}
+																	className="inline-flex"
+																>
+																	<AlertCircle aria-hidden className="text-destructive h-4 w-4 flex-shrink-0" />
+																</button>
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs break-words">
+																{key.description || "Model discovery failed for this key"}
+															</TooltipContent>
+														</Tooltip>
+													);
+												})()}
 												<span className="font-mono text-sm">{key.name}</span>
 											</div>
 										</TableCell>
