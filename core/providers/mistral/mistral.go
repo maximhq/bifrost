@@ -276,6 +276,14 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
 
+	// Merge extra params into JSON payload
+	if len(mistralReq.ExtraParams) > 0 {
+		requestBody, err = providerUtils.MergeExtraParamsIntoJSON(requestBody, mistralReq.ExtraParams)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+	}
+
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

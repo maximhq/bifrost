@@ -21,11 +21,15 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 		mistralReq.ID = *req.ID
 	}
 
-	if req.Document.DocumentURL != nil {
-		mistralReq.Document.DocumentURL = *req.Document.DocumentURL
-	}
-	if req.Document.ImageURL != nil {
-		mistralReq.Document.ImageURL = *req.Document.ImageURL
+	switch req.Document.Type {
+	case schemas.OCRDocumentTypeDocumentURL:
+		if req.Document.DocumentURL != nil {
+			mistralReq.Document.DocumentURL = *req.Document.DocumentURL
+		}
+	case schemas.OCRDocumentTypeImageURL:
+		if req.Document.ImageURL != nil {
+			mistralReq.Document.ImageURL = *req.Document.ImageURL
+		}
 	}
 
 	if req.Params != nil {
@@ -39,6 +43,7 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 		mistralReq.BBoxAnnotationFormat = req.Params.BBoxAnnotationFormat
 		mistralReq.DocumentAnnotationFormat = req.Params.DocumentAnnotationFormat
 		mistralReq.DocumentAnnotationPrompt = req.Params.DocumentAnnotationPrompt
+		mistralReq.ExtraParams = req.Params.ExtraParams
 	}
 
 	return mistralReq

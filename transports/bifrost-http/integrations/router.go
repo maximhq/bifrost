@@ -1019,7 +1019,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 		}
 		if ocrResponse == nil {
-			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "bifrost response is nil after post-request callback"))
 			return
 		}
 		providerResponseHeaders = ocrResponse.ExtraFields.ProviderResponseHeaders

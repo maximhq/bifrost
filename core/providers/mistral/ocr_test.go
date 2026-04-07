@@ -550,6 +550,17 @@ func TestOCRWithMockServer(t *testing.T) {
 				authHeader := r.Header.Get("Authorization")
 				assert.Contains(t, authHeader, "Bearer")
 
+				switch body := tt.responseBody.(type) {
+				case nil:
+					// Send empty body
+				case string:
+					if body == "html_error" {
+						w.Header().Set("Content-Type", "text/html")
+					}
+				default:
+					w.Header().Set("Content-Type", "application/json")
+				}
+
 				w.WriteHeader(tt.statusCode)
 
 				switch body := tt.responseBody.(type) {
@@ -557,11 +568,13 @@ func TestOCRWithMockServer(t *testing.T) {
 					// Send empty body
 				case string:
 					if body == "html_error" {
-						w.Header().Set("Content-Type", "text/html")
 						w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
 					}
 				default:
-					responseJSON, _ := sonic.Marshal(body)
+					responseJSON, err := sonic.Marshal(body)
+					if err != nil {
+						t.Fatalf("failed to marshal response: %v", err)
+					}
 					w.Write(responseJSON)
 				}
 			}))

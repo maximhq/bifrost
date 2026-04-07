@@ -452,6 +452,13 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		} else if request.OCRRequest.Document.ImageURL != nil {
 			docRef = *request.OCRRequest.Document.ImageURL
 		}
+		// Strip query parameters to avoid logging sensitive tokens (e.g., pre-signed URLs)
+		if idx := strings.Index(docRef, "?"); idx != -1 {
+			docRef = docRef[:idx]
+		}
+		if docRef == "" {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		return []schemas.ChatMessage{
 			{
 				Role: schemas.ChatMessageRoleUser,

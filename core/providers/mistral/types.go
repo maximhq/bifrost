@@ -150,19 +150,20 @@ type MistralOCRDocument struct {
 
 // MistralOCRRequest represents a Mistral OCR API request.
 type MistralOCRRequest struct {
-	Model                    string              `json:"model"`
-	ID                       string              `json:"id,omitempty"`
-	Document                 MistralOCRDocument  `json:"document"`
-	IncludeImageBase64       *bool               `json:"include_image_base64,omitempty"`
-	Pages                    []int               `json:"pages,omitempty"`
-	ImageLimit               *int                `json:"image_limit,omitempty"`
-	ImageMinSize             *int                `json:"image_min_size,omitempty"`
-	TableFormat              *string             `json:"table_format,omitempty"`
-	ExtractHeader            *bool               `json:"extract_header,omitempty"`
-	ExtractFooter            *bool               `json:"extract_footer,omitempty"`
-	BBoxAnnotationFormat     *string             `json:"bbox_annotation_format,omitempty"`
-	DocumentAnnotationFormat *string             `json:"document_annotation_format,omitempty"`
-	DocumentAnnotationPrompt *string             `json:"document_annotation_prompt,omitempty"`
+	Model                    string                 `json:"model"`
+	ID                       string                 `json:"id,omitempty"`
+	Document                 MistralOCRDocument     `json:"document"`
+	IncludeImageBase64       *bool                  `json:"include_image_base64,omitempty"`
+	Pages                    []int                  `json:"pages,omitempty"`
+	ImageLimit               *int                   `json:"image_limit,omitempty"`
+	ImageMinSize             *int                   `json:"image_min_size,omitempty"`
+	TableFormat              *string                `json:"table_format,omitempty"`
+	ExtractHeader            *bool                  `json:"extract_header,omitempty"`
+	ExtractFooter            *bool                  `json:"extract_footer,omitempty"`
+	BBoxAnnotationFormat     *string                `json:"bbox_annotation_format,omitempty"`
+	DocumentAnnotationFormat *string                `json:"document_annotation_format,omitempty"`
+	DocumentAnnotationPrompt *string                `json:"document_annotation_prompt,omitempty"`
+	ExtraParams              map[string]interface{} `json:"-"`
 }
 
 // MistralOCRPageImage represents an extracted image in Mistral's OCR response.
