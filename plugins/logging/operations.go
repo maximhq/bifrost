@@ -81,6 +81,7 @@ func applySerializedLogUpdates(
 		}
 		if data.OCROutput != nil {
 			updates["ocr_output"] = entry.OCROutput
+			updates["content_summary"] = entry.ContentSummary
 		}
 		if data.SpeechOutput != nil {
 			updates["speech_output"] = entry.SpeechOutput
