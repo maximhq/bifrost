@@ -11,7 +11,7 @@
  * Replaces @fontsource-variable/geist and next/font/google.
  */
 @font-face {
-	font-family: "Geist";
+	font-family: Geist;
 	src: url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/Geist-Variable.woff2") format("woff2");
 	font-weight: 100 900;
@@ -20,7 +20,7 @@
 }
 
 @font-face {
-	font-family: "Geist";
+	font-family: Geist;
 	src: url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2");
 	font-weight: 100 900;
@@ -47,8 +47,8 @@
 }
 
 :root {
-	--font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-	--font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Liberation Mono", monospace;
+	--font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+	--font-geist-mono: "Geist Mono", ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Liberation Mono", monospace;
 }
 
 @theme inline {

@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/lib/utils";
 import { Handle, type HandleProps } from "@xyflow/react";
 
@@ -15,8 +13,8 @@ export function RFEdgeHandle({ className, accentColor, style, ...rest }: RFEdgeH
 	return (
 		<Handle
 			className={cn(
-				"!z-0 !pointer-events-auto",
-				"!h-[14px] !w-[14px] !min-h-[14px] !min-w-[14px]",
+				"!pointer-events-auto !z-0",
+				"!h-[14px] !min-h-[14px] !w-[14px] !min-w-[14px]",
 				"!rounded-full !border-0 !border-none !p-0 !shadow-none",
 				className,
 			)}

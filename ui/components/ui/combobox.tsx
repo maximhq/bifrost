@@ -1,5 +1,3 @@
-"use client";
-
 import { Command as CommandPrimitive } from "cmdk";
 import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
 import * as React from "react";
@@ -140,8 +138,9 @@ function ComboboxInput({
 				variant="outline"
 				role="combobox"
 				disabled={disabled}
+				data-testid="combobox-trigger-button"
 				className={cn(
-					"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 					!value && "text-muted-foreground",
 					className,
 				)}
@@ -149,23 +148,18 @@ function ComboboxInput({
 				<span className="truncate">{displayValue || placeholder || "Select..."}</span>
 				<div className="ml-2 flex shrink-0 items-center gap-1">
 					{showClear && value && (
-						<span
-							role="button"
+						<button
+							type="button"
+							aria-label="Clear selection"
+							data-testid="combobox-clear-button"
 							className="rounded-sm opacity-50 hover:opacity-100"
 							onClick={(e) => {
 								e.stopPropagation();
 								onValueChange(null);
 							}}
-							onKeyDown={(e) => {
-								if (e.key === "Enter" || e.key === " ") {
-									e.stopPropagation();
-									onValueChange(null);
-								}
-							}}
-							tabIndex={0}
 						>
 							<XIcon className="size-3.5" />
-						</span>
+						</button>
 					)}
 					{showTrigger && <ChevronDownIcon className="size-4 opacity-50" />}
 				</div>
@@ -249,18 +243,19 @@ function ComboboxItem({
 		<CommandPrimitive.Item
 			data-slot="combobox-item"
 			className={cn(
-				"data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",
+				"data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",
 				className,
 			)}
 			value={itemValue}
 			onSelect={() => {
-				if (multiple && Array.isArray(selectedValue)) {
-					const next = isSelected ? selectedValue.filter((v) => v !== itemValue) : [...selectedValue, itemValue];
+				if (multiple) {
+					const current = Array.isArray(selectedValue) ? selectedValue : [];
+					const next = isSelected ? current.filter((v) => v !== itemValue) : [...current, itemValue];
 					onValueChange(next);
-				} else {
-					onValueChange(isSelected ? null : itemValue);
-					setOpen(false);
+					return;
 				}
+				onValueChange(isSelected ? null : itemValue);
+				setOpen(false);
 			}}
 			{...props}
 		>
@@ -357,7 +352,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						aria-expanded={open}
 						disabled={disabled}
 						className={cn(
-							"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 							selectedValues.length === 0 && "text-muted-foreground",
 							className,
 						)}
@@ -369,23 +364,18 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 								selectedValues.map((val) => (
 									<Badge key={val} variant="secondary" className="text-xs">
 										{getLabel(val)}
-										<span
-											role="button"
-											tabIndex={0}
+										<button
+											type="button"
+											aria-label={`Remove ${getLabel(val)}`}
+											data-testid={`combobox-remove-${val}`}
 											className="ml-1 rounded-full opacity-50 outline-none hover:opacity-100"
 											onClick={(e) => {
 												e.stopPropagation();
 												props.onValueChange?.(selectedValues.filter((v) => v !== val));
 											}}
-											onKeyDown={(e) => {
-												if (e.key === "Enter" || e.key === " ") {
-													e.stopPropagation();
-													props.onValueChange?.(selectedValues.filter((v) => v !== val));
-												}
-											}}
 										>
 											<XIcon className="size-3" />
-										</span>
+										</button>
 									</Badge>
 								))
 							)}
@@ -412,7 +402,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 									<CommandPrimitive.Item
 										key={option.value}
 										value={option.value}
-										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm"
+										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
 										onSelect={() => {
 											const next = isSelected ? selectedValues.filter((v) => v !== option.value) : [...selectedValues, option.value];
 											props.onValueChange?.(next);
@@ -453,7 +443,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					aria-expanded={open}
 					disabled={disabled}
 					className={cn(
-						"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 						!selectedLabel && "text-muted-foreground",
 						className,
 					)}
@@ -461,25 +451,19 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					<span className="truncate">{selectedLabel || placeholder}</span>
 					<div className="ml-2 flex shrink-0 items-center gap-1">
 						{!props.hideClear && props.value && (
-							<span
-								role="button"
-								tabIndex={0}
+							<button
+								type="button"
+								aria-label="Clear selection"
+								data-testid="combobox-select-clear-button"
 								className="rounded-sm opacity-50 hover:opacity-100"
 								onClick={(e) => {
 									e.stopPropagation();
 									props.onValueChange?.(null);
 									setOpen(false);
 								}}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" || e.key === " ") {
-										e.stopPropagation();
-										props.onValueChange?.(null);
-										setOpen(false);
-									}
-								}}
 							>
 								<XIcon className="size-3.5" />
-							</span>
+							</button>
 						)}
 						<ChevronDownIcon className="size-4 opacity-50" />
 					</div>
@@ -502,7 +486,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 							<CommandPrimitive.Item
 								key={option.value}
 								value={option.value}
-								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm"
+								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
 								onSelect={() => {
 									props.onValueChange?.(option.value);
 									setOpen(false);

@@ -18,13 +18,13 @@ const AppProgressProvider = ({ children }: { children: React.ReactNode }) => {
 		const unsubBefore = router.subscribe("onBeforeLoad", () => {
 			BProgress.start();
 		});
-		const unsubResolved = router.subscribe("onResolved", () => {
+		const unsubLoad = router.subscribe("onLoad", () => {
 			BProgress.done();
 		});
 
 		return () => {
 			unsubBefore();
-			unsubResolved();
+			unsubLoad();
 		};
 	}, [router]);
 

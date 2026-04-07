@@ -28,7 +28,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 
 	const isExhausted =
 		// VK-level budget exhausted
-		(virtualKey.budgets?.some((b) => b.current_usage >= b.max_limit)) ||
+		virtualKey.budgets?.some((b) => b.current_usage >= b.max_limit) ||
 		// VK-level rate limits exhausted
 		(virtualKey.rate_limit?.token_current_usage &&
 			virtualKey.rate_limit?.token_max_limit &&
@@ -40,12 +40,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 	return (
 		<Sheet open onOpenChange={onClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl">
-				<SheetHeader className="p-0 flex flex-col items-start">
+				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{virtualKey.name}</SheetTitle>
 					<SheetDescription>{virtualKey.description || "Virtual key details and usage information"}</SheetDescription>
 				</SheetHeader>
 
-				<div className="space-y-6 ">
+				<div className="space-y-6">
 					{/* Basic Information */}
 					<div className="space-y-4">
 						<h3 className="font-semibold">Basic Information</h3>
@@ -109,10 +109,12 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 											{/* Basic Config */}
 											<div className="space-y-3">
 												<div className="grid grid-cols-3 items-start gap-4">
-													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Models</span>
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
 													<div className="col-span-2">
 														{config.allowed_models?.includes("*") ? (
-															<Badge variant="success" className="text-xs">All Models</Badge>
+															<Badge variant="success" className="text-xs">
+																All Models
+															</Badge>
 														) : config.allowed_models && config.allowed_models.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.allowed_models.map((model) => (
@@ -122,16 +124,20 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">No models (deny all)</Badge>
+															<Badge variant="destructive" className="text-xs">
+																No models (deny all)
+															</Badge>
 														)}
 													</div>
 												</div>
 
 												<div className="grid grid-cols-3 items-start gap-4">
-													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Keys</span>
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Keys</span>
 													<div className="col-span-2">
 														{config.allow_all_keys ? (
-															<Badge variant="success" className="text-xs">All Keys</Badge>
+															<Badge variant="success" className="text-xs">
+																All Keys
+															</Badge>
 														) : config.keys && config.keys.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.keys.map((key) => (
@@ -141,7 +147,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">No keys (deny all)</Badge>
+															<Badge variant="destructive" className="text-xs">
+																No keys (deny all)
+															</Badge>
 														)}
 													</div>
 												</div>
@@ -172,7 +180,10 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																	</div>
 																	<div className="grid grid-cols-3 items-center gap-4">
 																		<span className="text-muted-foreground text-sm">Reset Period</span>
-																		<div className="col-span-2 text-sm">{parseResetPeriod(b.reset_duration)}{virtualKey.calendar_aligned && " (calendar)"}</div>
+																		<div className="col-span-2 text-sm">
+																			{parseResetPeriod(b.reset_duration)}
+																			{virtualKey.calendar_aligned && " (calendar)"}
+																		</div>
 																	</div>
 																	<div className="grid grid-cols-3 items-center gap-4">
 																		<span className="text-muted-foreground text-sm">Last Reset</span>
@@ -317,7 +328,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													<TableCell>{config.mcp_client?.name || "Unknown Client"}</TableCell>
 													<TableCell>
 														{config.tools_to_execute?.includes("*") ? (
-															<Badge variant="success" className="text-xs">All Tools</Badge>
+															<Badge variant="success" className="text-xs">
+																All Tools
+															</Badge>
 														) : config.tools_to_execute && config.tools_to_execute.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.tools_to_execute.map((tool) => (
@@ -327,7 +340,9 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">No tools (deny all)</Badge>
+															<Badge variant="destructive" className="text-xs">
+																No tools (deny all)
+															</Badge>
 														)}
 													</TableCell>
 												</TableRow>
@@ -356,10 +371,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													<span className="font-mono text-sm">
 														{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
 													</span>
-													<Badge
-														variant={getUsageVariant(calculateUsagePercentage(b.current_usage, b.max_limit))}
-														className="text-xs"
-													>
+													<Badge variant={getUsageVariant(calculateUsagePercentage(b.current_usage, b.max_limit))} className="text-xs">
 														{calculateUsagePercentage(b.current_usage, b.max_limit)}%
 													</Badge>
 												</div>
@@ -367,13 +379,14 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 										</div>
 										<div className="grid grid-cols-3 items-center gap-4">
 											<span className="text-muted-foreground text-sm">Reset Period</span>
-											<div className="col-span-2 text-sm">{parseResetPeriod(b.reset_duration)}{virtualKey.calendar_aligned && " (calendar)"}</div>
+											<div className="col-span-2 text-sm">
+												{parseResetPeriod(b.reset_duration)}
+												{virtualKey.calendar_aligned && " (calendar)"}
+											</div>
 										</div>
 										<div className="grid grid-cols-3 items-center gap-4">
 											<span className="text-muted-foreground text-sm">Last Reset</span>
-											<div className="col-span-2 text-sm">
-												{formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}
-											</div>
+											<div className="col-span-2 text-sm">{formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</div>
 										</div>
 									</div>
 								))}

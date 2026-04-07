@@ -1,5 +1,3 @@
-"use client";
-
 import CompatibilityView from "../views/compatibilityView";
 
 export default function CompatibilityPage() {

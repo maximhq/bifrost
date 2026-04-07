@@ -580,3 +580,4 @@ export default function MCPLogsPage() {
 		</div>
 	);
 }
+

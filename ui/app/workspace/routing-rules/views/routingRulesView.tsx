@@ -9,7 +9,7 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { GitBranch, Plus } from "lucide-react";
-import Link from "next/link";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { RoutingRuleInfoSheet } from "./routingRuleInfoSheet";
 import { RoutingRuleSheet } from "./routingRuleSheet";
@@ -104,7 +104,7 @@ export function RoutingRulesView() {
 				</div>
 				<div className="flex items-center gap-2">
 					<Button variant="outline" size="sm" asChild className="gap-2">
-						<Link href="/workspace/routing-rules/tree">
+						<Link to="/workspace/routing-rules/tree">
 							<GitBranch className="h-4 w-4" />
 							<span className="hidden sm:inline">View Tree</span>
 						</Link>

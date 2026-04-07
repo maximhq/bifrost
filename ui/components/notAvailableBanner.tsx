@@ -19,6 +19,7 @@ const NotAvailableBanner = () => {
 								target="_blank"
 								rel="noopener noreferrer"
 								className="font-medium underline underline-offset-2"
+								data-testid="config-store-documentation-link"
 							>
 								documentation
 							</a>

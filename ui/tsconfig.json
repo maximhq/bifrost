@@ -34,8 +34,7 @@
 	},
 	"include": [
 		"**/*.ts",
-		"**/*.tsx",
-		"src/routeTree.gen.ts"
+		"**/*.tsx"
 	],
 	"exclude": [
 		"node_modules",

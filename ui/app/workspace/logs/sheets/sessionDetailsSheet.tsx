@@ -1,28 +1,27 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ProviderName } from "@/lib/constants/logs";
 import { RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
-import { useWebSocket } from "@/hooks/useWebSocket";
+import { getErrorMessage } from "@/lib/store";
 import { useGetLogSessionSummaryByIdQuery, useLazyGetLogSessionByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
-import { getErrorMessage } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import moment from "moment";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { LogMessageCell } from "../views/columns";
 
 const SESSION_LOG_PAGE_SIZE = 500;
 
-const HIGHLIGHTED_ROW = "border-l-2 border-l-sky-500 bg-sky-500/[0.08] shadow-[inset_0_0_0_1px_rgba(56,189,248,0.18)] hover:bg-sky-500/[0.24] hover:shadow-[inset_0_0_0_1px_rgba(56,189,248,0.38)] dark:hover:bg-sky-400/[0.18]";
+const HIGHLIGHTED_ROW =
+	"border-l-2 border-l-sky-500 bg-sky-500/[0.08] shadow-[inset_0_0_0_1px_rgba(56,189,248,0.18)] hover:bg-sky-500/[0.24] hover:shadow-[inset_0_0_0_1px_rgba(56,189,248,0.38)] dark:hover:bg-sky-400/[0.18]";
 
 function formatDurationFromMs(durationMs?: number) {
 	if (!durationMs || durationMs <= 0) return "0s";
@@ -87,10 +86,7 @@ export function SessionDetailsSheet({
 			{
 				label: "Logs",
 				value: (sessionSummary?.count || 0).toLocaleString(),
-				helper:
-					sessionSummary && sessionLogs.length < sessionSummary.count
-						? `(${sessionLogs.length.toLocaleString()} loaded)`
-						: undefined,
+				helper: sessionSummary && sessionLogs.length < sessionSummary.count ? `(${sessionLogs.length.toLocaleString()} loaded)` : undefined,
 			},
 			{
 				label: "Total Cost",
@@ -167,8 +163,12 @@ export function SessionDetailsSheet({
 		[onOpenChange, sessionId, sortOrder, sortSessionLogs, triggerGetSession],
 	);
 
-	useEffect(() => { fetchedCountRef.current = fetchedCount; }, [fetchedCount]);
-	useEffect(() => { totalCountRef.current = totalCount; }, [totalCount]);
+	useEffect(() => {
+		fetchedCountRef.current = fetchedCount;
+	}, [fetchedCount]);
+	useEffect(() => {
+		totalCountRef.current = totalCount;
+	}, [totalCount]);
 
 	useEffect(() => {
 		if (!open || !sessionId) {
@@ -222,7 +222,7 @@ export function SessionDetailsSheet({
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<code
-										className="text-primary hover:text-primary/80 text-sm break-all underline-offset-2 cursor-pointer hover:underline"
+										className="text-primary hover:text-primary/80 cursor-pointer text-sm break-all underline-offset-2 hover:underline"
 										onClick={() => onFilterByParentRequestId(sessionId)}
 									>
 										{sessionId}
@@ -235,7 +235,12 @@ export function SessionDetailsSheet({
 						)}
 					</div>
 					<div className="flex items-center gap-3">
-						<Button variant="outline" size="sm" data-testid="session-details-sort-btn" onClick={() => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}>
+						<Button
+							variant="outline"
+							size="sm"
+							data-testid="session-details-sort-btn"
+							onClick={() => setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))}
+						>
 							{sortOrder === "asc" ? <ArrowUp className="mr-2 h-4 w-4" /> : <ArrowDown className="mr-2 h-4 w-4" />}
 							{sortOrder === "asc" ? "Earliest first" : "Latest first"}
 						</Button>
@@ -250,7 +255,7 @@ export function SessionDetailsSheet({
 								<div
 									className={
 										card.size === "sm"
-											? "font-mono text-sm leading-5 sm:text-base break-words"
+											? "font-mono text-sm leading-5 break-words sm:text-base"
 											: "truncate font-mono text-xl font-medium sm:text-2xl"
 									}
 								>
@@ -294,10 +299,7 @@ export function SessionDetailsSheet({
 								sessionLogs.map((log) => (
 									<TableRow
 										key={log.id}
-										className={cn(
-											"cursor-pointer transition-colors",
-											log.id === highlightedLogId ? HIGHLIGHTED_ROW : "hover:bg-muted/40",
-										)}
+										className={cn("cursor-pointer transition-colors", log.id === highlightedLogId ? HIGHLIGHTED_ROW : "hover:bg-muted/40")}
 										onClick={() => onLogClick?.(log)}
 									>
 										<TableCell>
@@ -305,7 +307,7 @@ export function SessionDetailsSheet({
 										</TableCell>
 										<TableCell className="relative text-xs">
 											{log.id === highlightedLogId ? (
-												<div className="bg-background text-sky-600 dark:text-sky-300 pointer-events-none absolute -top-1.5 left-1 z-10 rounded-full border border-sky-400/45 px-1.5 py-0 text-[9px] leading-tight font-semibold tracking-wide uppercase">
+												<div className="bg-background pointer-events-none absolute -top-1.5 left-1 z-10 rounded-full border border-sky-400/45 px-1.5 py-0 text-[9px] leading-tight font-semibold tracking-wide text-sky-600 uppercase dark:text-sky-300">
 													Current
 												</div>
 											) : null}
@@ -341,7 +343,12 @@ export function SessionDetailsSheet({
 
 				{hasMore ? (
 					<div className="flex justify-center">
-						<Button variant="outline" data-testid="session-details-load-more-btn" onClick={() => loadSessionPage(fetchedCount)} disabled={loadingSession}>
+						<Button
+							variant="outline"
+							data-testid="session-details-load-more-btn"
+							onClick={() => loadSessionPage(fetchedCount)}
+							disabled={loadingSession}
+						>
 							{loadingSession ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
 							Load More
 						</Button>

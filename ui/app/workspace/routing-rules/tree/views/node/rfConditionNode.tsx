@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/lib/utils";
 import { Position } from "@xyflow/react";
 import { COND_H, COND_W, SCOPE_CONFIG, type ScopeKey } from "../constants";
@@ -16,18 +14,10 @@ export function RFConditionNode({ data }: { data: any }) {
 
 	return (
 		<div className="relative" style={{ width: COND_W, minHeight: COND_H }}>
-			<RFEdgeHandle
-				type="target"
-				position={Position.Left}
-				accentColor={accent ?? "var(--muted-foreground)"}
-			/>
-			<RFEdgeHandle
-				type="source"
-				position={Position.Right}
-				accentColor={accent ?? "var(--muted-foreground)"}
-			/>
+			<RFEdgeHandle type="target" position={Position.Left} accentColor={accent ?? "var(--muted-foreground)"} />
+			<RFEdgeHandle type="source" position={Position.Right} accentColor={accent ?? "var(--muted-foreground)"} />
 			<div
-				className="relative z-10 flex w-full overflow-hidden rounded-lg border bg-white dark:bg-card shadow-sm cursor-grab active:cursor-grabbing"
+				className="dark:bg-card relative z-10 flex w-full cursor-grab overflow-hidden rounded-lg border bg-white shadow-sm active:cursor-grabbing"
 				style={{ minHeight: COND_H, borderColor: accent }}
 			>
 				<div
@@ -36,9 +26,7 @@ export function RFConditionNode({ data }: { data: any }) {
 					aria-hidden
 				/>
 				<div className="flex min-w-0 flex-1 flex-col gap-4 px-3 py-2.5">
-					<code className="flex-1 break-all font-mono text-[12px] leading-snug text-foreground">
-						{condition}
-					</code>
+					<code className="text-foreground flex-1 font-mono text-[12px] leading-snug break-all">{condition}</code>
 					{scopes.length > 0 && (
 						<div className="flex flex-wrap gap-1">
 							{scopes.map((sc) => {

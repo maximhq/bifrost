@@ -8,25 +8,15 @@
  * own leaf node.  Nodes are draggable for exploration; nothing is editable.
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
+import { useNavigate } from "@tanstack/react-router";
 import type { Node, NodeChange } from "@xyflow/react";
-import {
-	Background,
-	BackgroundVariant,
-	Controls,
-	Panel,
-	ReactFlow,
-	useEdgesState,
-	useNodesState,
-} from "@xyflow/react";
+import { Background, BackgroundVariant, Controls, Panel, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AlertCircle, ArrowLeft, GitBranch, Info, Link2, Loader2, RotateCcw, Search } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { FIT_VIEW_PADDING, SCOPE_CONFIG, SCOPE_ORDER } from "./constants";
@@ -50,7 +40,7 @@ const edgeTypes = { rfChain: RfChainEdge };
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function RoutingTreeView() {
-	const router = useRouter();
+	const navigate = useNavigate();
 	const { data, isLoading, isError } = useGetRoutingRulesQuery({ limit: 500 });
 	const rules = data?.rules ?? [];
 
@@ -61,12 +51,15 @@ export function RoutingTreeView() {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const rfInstanceRef = useRef<any>(null);
 	const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	useEffect(() => () => { if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current); }, []);
+	useEffect(
+		() => () => {
+			if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+		},
+		[],
+	);
 
 	// Capture cookie value once on mount so re-saves don't trigger re-renders.
-	const [initialCookie] = useState<PositionCookie | undefined>(
-		() => cookies[POSITIONS_COOKIE] as PositionCookie | undefined,
-	);
+	const [initialCookie] = useState<PositionCookie | undefined>(() => cookies[POSITIONS_COOKIE] as PositionCookie | undefined);
 
 	const fingerprint = useMemo(() => computeFingerprint(rules), [rules]);
 
@@ -77,11 +70,7 @@ export function RoutingTreeView() {
 
 	// If the cookie fingerprint matches current rules, restore saved positions.
 	const { mergedNodes, positionsRestored } = useMemo(() => {
-		if (
-			initialCookie?.fingerprint === fingerprint &&
-			initialCookie?.positions &&
-			Object.keys(initialCookie.positions).length > 0
-		) {
+		if (initialCookie?.fingerprint === fingerprint && initialCookie?.positions && Object.keys(initialCookie.positions).length > 0) {
 			return {
 				mergedNodes: baseNodes.map((n) => ({
 					...n,
@@ -96,8 +85,12 @@ export function RoutingTreeView() {
 	const [nodes, setNodes, onNodesChange] = useNodesState(mergedNodes);
 	const [edges, setEdges, onEdgesChange] = useEdgesState(baseEdges);
 
-	useEffect(() => { setNodes(mergedNodes); }, [mergedNodes, setNodes]);
-	useEffect(() => { setEdges(baseEdges); }, [baseEdges, setEdges]);
+	useEffect(() => {
+		setNodes(mergedNodes);
+	}, [mergedNodes, setNodes]);
+	useEffect(() => {
+		setEdges(baseEdges);
+	}, [baseEdges, setEdges]);
 
 	// Always reflect the latest nodes in a ref so the save handler is not stale.
 	const nodesRef = useRef(nodes);
@@ -113,30 +106,36 @@ export function RoutingTreeView() {
 		}
 	}, [positionsRestored, initialCookie]);
 
-	const writeCookie = useCallback((update: Partial<Omit<PositionCookie, "fingerprint">>) => {
-		cookieDataRef.current = { ...cookieDataRef.current, ...update };
-		setCookie(POSITIONS_COOKIE, { fingerprint, ...cookieDataRef.current } satisfies PositionCookie, {
-			path: "/",
-			maxAge: 30 * 24 * 60 * 60, // 30 days
-		});
-	}, [fingerprint, setCookie]);
+	const writeCookie = useCallback(
+		(update: Partial<Omit<PositionCookie, "fingerprint">>) => {
+			cookieDataRef.current = { ...cookieDataRef.current, ...update };
+			setCookie(POSITIONS_COOKIE, { fingerprint, ...cookieDataRef.current } satisfies PositionCookie, {
+				path: "/",
+				maxAge: 30 * 24 * 60 * 60, // 30 days
+			});
+		},
+		[fingerprint, setCookie],
+	);
 
 	// Save positions to cookie when a drag ends.
-	const handleNodesChange = useCallback((changes: NodeChange[]) => {
-		onNodesChange(changes);
-		const hasDragEnd = changes.some((c) => c.type === "position" && c.dragging === false);
-		if (!hasDragEnd) return;
+	const handleNodesChange = useCallback(
+		(changes: NodeChange[]) => {
+			onNodesChange(changes);
+			const hasDragEnd = changes.some((c) => c.type === "position" && c.dragging === false);
+			if (!hasDragEnd) return;
 
-		const posMap: Record<string, { x: number; y: number }> = {};
-		for (const n of nodesRef.current) posMap[n.id] = n.position;
-		// Apply the final positions from the change events themselves (state not yet flushed).
-		for (const c of changes) {
-			if (c.type === "position" && c.dragging === false && c.position) {
-				posMap[c.id] = c.position;
+			const posMap: Record<string, { x: number; y: number }> = {};
+			for (const n of nodesRef.current) posMap[n.id] = n.position;
+			// Apply the final positions from the change events themselves (state not yet flushed).
+			for (const c of changes) {
+				if (c.type === "position" && c.dragging === false && c.position) {
+					posMap[c.id] = c.position;
+				}
 			}
-		}
-		writeCookie({ positions: posMap });
-	}, [onNodesChange, writeCookie]);
+			writeCookie({ positions: posMap });
+		},
+		[onNodesChange, writeCookie],
+	);
 
 	// Save viewport (pan + zoom) when the user stops moving.
 	const handleMoveEnd = useCallback(
@@ -194,7 +193,10 @@ export function RoutingTreeView() {
 		while (upQ.length) {
 			const id = upQ.pop()!;
 			for (const p of parentsOf.get(id) ?? []) {
-				if (!highlighted.has(p)) { highlighted.add(p); upQ.push(p); }
+				if (!highlighted.has(p)) {
+					highlighted.add(p);
+					upQ.push(p);
+				}
 			}
 		}
 
@@ -202,7 +204,10 @@ export function RoutingTreeView() {
 		while (downQ.length) {
 			const id = downQ.pop()!;
 			for (const c of childrenOf.get(id) ?? []) {
-				if (!highlighted.has(c)) { highlighted.add(c); downQ.push(c); }
+				if (!highlighted.has(c)) {
+					highlighted.add(c);
+					downQ.push(c);
+				}
 			}
 		}
 
@@ -266,7 +271,10 @@ export function RoutingTreeView() {
 		while (upQ.length) {
 			const id = upQ.pop()!;
 			for (const p of parentsOf.get(id) ?? []) {
-				if (!highlighted.has(p)) { highlighted.add(p); upQ.push(p); }
+				if (!highlighted.has(p)) {
+					highlighted.add(p);
+					upQ.push(p);
+				}
 			}
 		}
 
@@ -275,7 +283,10 @@ export function RoutingTreeView() {
 		while (downQ.length) {
 			const id = downQ.pop()!;
 			for (const c of childrenOf.get(id) ?? []) {
-				if (!highlighted.has(c)) { highlighted.add(c); downQ.push(c); }
+				if (!highlighted.has(c)) {
+					highlighted.add(c);
+					downQ.push(c);
+				}
 			}
 		}
 
@@ -313,7 +324,7 @@ export function RoutingTreeView() {
 
 	const displayEdges = useMemo(() => {
 		const h = activeHighlightIds;
-		const dimOpacity = (selectedNodeId || selectedEdgeId) ? 0.10 : 0.20;
+		const dimOpacity = selectedNodeId || selectedEdgeId ? 0.1 : 0.2;
 		if (!h) return edges;
 		const active = h.size > 0;
 		return edges.map((e) => {
@@ -334,13 +345,13 @@ export function RoutingTreeView() {
 	if (isLoading) {
 		return (
 			<div className="flex h-full items-center justify-center">
-				<Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+				<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 			</div>
 		);
 	}
 	if (isError) {
 		return (
-			<div className="flex h-full items-center justify-center gap-2 text-muted-foreground">
+			<div className="text-muted-foreground flex h-full items-center justify-center gap-2">
 				<AlertCircle className="h-5 w-5" />
 				<span className="text-sm">Failed to load routing rules</span>
 			</div>
@@ -348,10 +359,10 @@ export function RoutingTreeView() {
 	}
 	if (rules.length === 0) {
 		return (
-			<div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+			<div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3">
 				<GitBranch className="h-10 w-10 opacity-20" />
 				<p className="text-sm">No routing rules to display</p>
-				<Button variant="outline" size="sm" onClick={() => router.push("/workspace/routing-rules")}>
+				<Button variant="outline" size="sm" data-testid="routing-tree-back-empty-btn" onClick={() => navigate({ to: "/workspace/routing-rules" })}>
 					<ArrowLeft className="mr-1.5 h-4 w-4" />
 					Back to rules
 				</Button>
@@ -368,7 +379,9 @@ export function RoutingTreeView() {
 			onNodeClick={handleNodeClick}
 			onEdgeClick={handleEdgeClick}
 			onPaneClick={handlePaneClick}
-			onInit={(instance) => { rfInstanceRef.current = instance; }}
+			onInit={(instance) => {
+				rfInstanceRef.current = instance;
+			}}
 			nodeTypes={nodeTypes}
 			edgeTypes={edgeTypes}
 			fitView={!positionsRestored}
@@ -387,29 +400,32 @@ export function RoutingTreeView() {
 			<Panel position="top-left">
 				<div className="flex flex-col gap-2">
 					{/* Main toolbar */}
-					<div className="flex items-center gap-3 rounded-md border bg-white dark:bg-card px-4 py-2.5 shadow-sm">
+					<div className="dark:bg-card flex items-center gap-3 rounded-md border bg-white px-4 py-2.5 shadow-sm">
 						<Button
-							variant="ghost" size="sm" className="-ml-1 !pl-0 gap-1.5 hover:bg-transparent"
-							onClick={() => router.push("/workspace/routing-rules")}
+							variant="ghost"
+							size="sm"
+							className="-ml-1 gap-1.5 !pl-0 hover:bg-transparent"
+							data-testid="routing-tree-back-toolbar-btn"
+							onClick={() => navigate({ to: "/workspace/routing-rules" })}
 						>
 							<ArrowLeft className="h-4 w-4" />
 							Back
 						</Button>
-						<div className="h-5 w-px bg-border" />
+						<div className="bg-border h-5 w-px" />
 						<div className="flex items-center gap-2">
-							<GitBranch className="h-4 w-4 text-muted-foreground" />
-							<p className="text-sm font-semibold leading-tight text-foreground">Routing Tree</p>
-							<p className="text-[11px] text-muted-foreground">
+							<GitBranch className="text-muted-foreground h-4 w-4" />
+							<p className="text-foreground text-sm leading-tight font-semibold">Routing Tree</p>
+							<p className="text-muted-foreground text-[11px]">
 								{search
-										? highlightedIds && highlightedIds.size > 0
-											? `${matchCount} rule${matchCount !== 1 ? "s" : ""}`
-											: "no match"
-										: `${rules.length} rule${rules.length !== 1 ? "s" : ""}`}
+									? highlightedIds && highlightedIds.size > 0
+										? `${matchCount} rule${matchCount !== 1 ? "s" : ""}`
+										: "no match"
+									: `${rules.length} rule${rules.length !== 1 ? "s" : ""}`}
 							</p>
 						</div>
-						<div className="h-5 w-px bg-border" />
+						<div className="bg-border h-5 w-px" />
 						<div className="relative">
-							<Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+							<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
 							<Input
 								value={search}
 								onChange={(e) => setSearch(e.target.value)}
@@ -417,9 +433,11 @@ export function RoutingTreeView() {
 								className="h-8 w-56 pl-8 text-sm"
 							/>
 						</div>
-						<div className="h-5 w-px bg-border" />
+						<div className="bg-border h-5 w-px" />
 						<Button
-							variant="ghost" size="sm" className="gap-1.5 text-muted-foreground hover:text-foreground"
+							variant="ghost"
+							size="sm"
+							className="text-muted-foreground hover:text-foreground gap-1.5"
 							onClick={handleResetLayout}
 							title="Reset to default layout"
 							data-testid="routing-tree-reset-layout-btn"
@@ -429,19 +447,19 @@ export function RoutingTreeView() {
 						</Button>
 					</div>
 					{/* Scope + edge legend — floats below */}
-					<div className="flex items-center gap-3 rounded-md border bg-white dark:bg-card px-3 py-1.5 shadow-sm">
+					<div className="dark:bg-card flex items-center gap-3 rounded-md border bg-white px-3 py-1.5 shadow-sm">
 						{SCOPE_ORDER.map((s) => (
 							<div key={s} className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: SCOPE_CONFIG[s].color }} />
-								<span className="text-[10px] text-muted-foreground font-medium">{SCOPE_CONFIG[s].label}</span>
+								<span className="text-muted-foreground text-[10px] font-medium">{SCOPE_CONFIG[s].label}</span>
 							</div>
 						))}
-						<div className="h-3 w-px bg-border" />
+						<div className="bg-border h-3 w-px" />
 						<div className="flex items-center gap-1.5">
-							<Link2 className="h-2.5 w-2.5 text-muted-foreground" />
-							<span className="text-[10px] text-muted-foreground font-medium">Chain rule</span>
+							<Link2 className="text-muted-foreground h-2.5 w-2.5" />
+							<span className="text-muted-foreground text-[10px] font-medium">Chain rule</span>
 						</div>
-						<div className="h-3 w-px bg-border" />
+						<div className="bg-border h-3 w-px" />
 						{/* Chain edge styles — both dashed (long = static, short = dynamic); arrows at path midpoint */}
 						<div className="flex items-center gap-1.5">
 							<svg width="40" height="12" className="shrink-0" aria-hidden>
@@ -457,10 +475,13 @@ export function RoutingTreeView() {
 								/>
 								<polygon points="20,6 14,2.5 14,9.5" fill="var(--muted-foreground)" />
 							</svg>
-							<span className="text-[10px] text-muted-foreground font-medium">Static chain</span>
+							<span className="text-muted-foreground text-[10px] font-medium">Static chain</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Info className="h-2.5 w-2.5 text-muted-foreground/60 cursor-default" data-testid="routing-tree-static-chain-info-trigger" />
+									<Info
+										className="text-muted-foreground/60 h-2.5 w-2.5 cursor-default"
+										data-testid="routing-tree-static-chain-info-trigger"
+									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
 									Re-entry point is fully proven by static analysis — every condition on the path evaluated to a known value.
@@ -489,10 +510,13 @@ export function RoutingTreeView() {
 									strokeLinejoin="round"
 								/>
 							</svg>
-							<span className="text-[10px] text-muted-foreground font-medium">Dynamic chain</span>
+							<span className="text-muted-foreground text-[10px] font-medium">Dynamic chain</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Info className="h-2.5 w-2.5 text-muted-foreground/60 cursor-default" data-testid="routing-tree-dynamic-chain-info-trigger" />
+									<Info
+										className="text-muted-foreground/60 h-2.5 w-2.5 cursor-default"
+										data-testid="routing-tree-dynamic-chain-info-trigger"
+									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
 									Re-entry point is a conditional — one or more conditions on the path are not fully evaluated at build time.

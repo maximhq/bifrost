@@ -1,17 +1,15 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { RoutingRule } from "@/lib/types/routingRules";
-import { getScopeLabel } from "@/lib/utils/routingRules";
-import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { baseRoutingFields } from "@/lib/config/celFieldsRouting";
+import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { useGetTeamsQuery, useGetCustomersQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
+import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
+import { RoutingRule } from "@/lib/types/routingRules";
+import { getScopeLabel } from "@/lib/utils/routingRules";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -99,9 +97,12 @@ function ConditionRow({ rule }: { rule: RuleType }) {
 	const isParam = rule.field.startsWith("params[") || rule.field === "params";
 	const keyMatch = rule.field.match(/\["([^"]+)"\]/);
 	// Bare field (e.g. headers / params) may encode key:value in the value string
-	const bareKeyValue = !keyMatch && (isHeader || isParam) && value
-		? value.includes(":") ? { key: value.slice(0, value.indexOf(":")), val: value.slice(value.indexOf(":") + 1) } : { key: value, val: "" }
-		: null;
+	const bareKeyValue =
+		!keyMatch && (isHeader || isParam) && value
+			? value.includes(":")
+				? { key: value.slice(0, value.indexOf(":")), val: value.slice(value.indexOf(":") + 1) }
+				: { key: value, val: "" }
+			: null;
 	const keyName = keyMatch?.[1] ?? bareKeyValue?.key;
 	const displayValue = bareKeyValue !== null ? bareKeyValue.val : value;
 
@@ -149,9 +150,7 @@ function ConditionGroup({ group, depth = 0 }: { group: RuleGroupType; depth?: nu
 	const content = rules.map((rule, i) => (
 		<div key={i}>
 			{i > 0 && <CombinatorPill combinator={group.combinator} />}
-			{"combinator" in rule
-				? <ConditionGroup group={rule as RuleGroupType} depth={depth + 1} />
-				: <ConditionRow rule={rule as RuleType} />}
+			{"combinator" in rule ? <ConditionGroup group={rule as RuleGroupType} depth={depth + 1} /> : <ConditionRow rule={rule as RuleType} />}
 		</div>
 	));
 
@@ -172,12 +171,10 @@ function TargetCard({ target, index, total }: { target: RoutingRule["targets"][0
 	const weightPercent = total > 0 ? Math.round(target.weight * 100) : 0;
 
 	return (
-		<div className="rounded-lg border p-3 space-y-2">
+		<div className="space-y-2 rounded-lg border p-3">
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2.5">
-					{target.provider && (
-						<RenderProviderIcon provider={target.provider as ProviderIconType} size="sm" className="h-5 w-5 shrink-0" />
-					)}
+					{target.provider && <RenderProviderIcon provider={target.provider as ProviderIconType} size="sm" className="h-5 w-5 shrink-0" />}
 					<div className="flex flex-col">
 						<span className="text-sm font-medium">{providerLabel}</span>
 						{target.model ? (
@@ -189,7 +186,7 @@ function TargetCard({ target, index, total }: { target: RoutingRule["targets"][0
 				</div>
 				<Tooltip>
 					<TooltipTrigger asChild>
-						<div className="flex items-center gap-1.5 cursor-default">
+						<div className="flex cursor-default items-center gap-1.5">
 							<div className="bg-muted h-1.5 w-16 overflow-hidden rounded-full">
 								<div className="bg-primary h-full rounded-full transition-all" style={{ width: `${weightPercent}%` }} />
 							</div>
@@ -200,10 +197,10 @@ function TargetCard({ target, index, total }: { target: RoutingRule["targets"][0
 				</Tooltip>
 			</div>
 			{target.key_id && (
-				<div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
-					<Key className="h-3 w-3 text-muted-foreground shrink-0" />
+				<div className="bg-muted/50 flex items-center gap-1.5 rounded-md px-2 py-1">
+					<Key className="text-muted-foreground h-3 w-3 shrink-0" />
 					<span className="text-muted-foreground text-xs">Pinned key:</span>
-					<code className="font-mono text-xs truncate">{target.key_id}</code>
+					<code className="truncate font-mono text-xs">{target.key_id}</code>
 					<CopyButton value={target.key_id} label="key ID" testId="routing-rule-copy-key-id-btn" />
 				</div>
 			)}
@@ -248,16 +245,14 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl" data-testid="routing-rule-info">
 				{rule && (
 					<>
-						<SheetHeader className="p-0 flex flex-col items-start gap-1">
-							<div className="flex w-full items-center gap-2 flex-wrap">
+						<SheetHeader className="flex flex-col items-start gap-1 p-0">
+							<div className="flex w-full flex-wrap items-center gap-2">
 								<SheetTitle className="text-base">{rule.name}</SheetTitle>
-								<Badge variant={rule.enabled ? "default" : "secondary"}>
-									{rule.enabled ? "Enabled" : "Disabled"}
-								</Badge>
+								<Badge variant={rule.enabled ? "default" : "secondary"}>{rule.enabled ? "Enabled" : "Disabled"}</Badge>
 								{rule.chain_rule && (
 									<Tooltip>
 										<TooltipTrigger asChild>
-											<Badge variant="outline" className="gap-1 cursor-default">
+											<Badge variant="outline" className="cursor-default gap-1">
 												<GitMerge className="h-3 w-3" />
 												Chain Rule
 											</Badge>
@@ -268,15 +263,13 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 									</Tooltip>
 								)}
 							</div>
-							{rule.description && (
-								<SheetDescription className="text-sm mt-0.5">{rule.description}</SheetDescription>
-							)}
+							{rule.description && <SheetDescription className="mt-0.5 text-sm">{rule.description}</SheetDescription>}
 						</SheetHeader>
 
-						<div className="space-y-6 overflow-y-auto -mx-8 px-8 pb-8">
+						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">
 							{/* Overview */}
 							<div className="space-y-3">
-								<h3 className="font-semibold text-sm">Overview</h3>
+								<h3 className="text-sm font-semibold">Overview</h3>
 								<div className="grid gap-3">
 									<div className="grid grid-cols-3 items-center gap-4">
 										<span className="text-muted-foreground text-sm">Scope</span>
@@ -300,20 +293,16 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Conditions */}
 							<div className="space-y-3">
-								<h3 className="font-semibold text-sm">Conditions</h3>
-								{hasQuery ? (
-									<ConditionGroup group={rule.query!} />
-								) : (
-									<p className="text-muted-foreground text-sm">Matches all requests</p>
-								)}
+								<h3 className="text-sm font-semibold">Conditions</h3>
+								{hasQuery ? <ConditionGroup group={rule.query!} /> : <p className="text-muted-foreground text-sm">Matches all requests</p>}
 
 								{/* CEL expression */}
 								<div className="space-y-1.5">
 									<div className="flex items-center justify-between">
-										<span className="font-semibold text-sm">CEL Expression</span>
+										<span className="text-sm font-semibold">CEL Expression</span>
 										<CopyButton value={rule.cel_expression} label="expression" testId="routing-rule-copy-expression-btn" />
 									</div>
-									<code className="block w-full rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs break-all">
+									<code className="bg-muted/50 block w-full rounded-md border px-3 py-2 font-mono text-xs break-all">
 										{rule.cel_expression || <span className="text-muted-foreground italic">true</span>}
 									</code>
 								</div>
@@ -323,7 +312,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Targets */}
 							<div className="space-y-3">
-								<h3 className="font-semibold text-sm">Targets ({targets.length})</h3>
+								<h3 className="text-sm font-semibold">Targets ({targets.length})</h3>
 								{targets.length > 0 ? (
 									<div className="space-y-2">
 										{targets.map((target, i) => (
@@ -339,7 +328,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 
 							{/* Fallback Chain */}
 							<div className="space-y-3">
-								<h3 className="font-semibold text-sm">Fallback Chain</h3>
+								<h3 className="text-sm font-semibold">Fallback Chain</h3>
 								{fallbacks.length > 0 ? (
 									<FallbackChain fallbacks={fallbacks} />
 								) : (
@@ -352,16 +341,12 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange }: Props) {
 							{/* Timestamps */}
 							<div className="grid grid-cols-2 gap-4">
 								<div>
-									<p className="text-muted-foreground mb-1 text-xs font-medium uppercase tracking-wider">Created</p>
-									<span className="text-sm">
-										{formatDistanceToNow(new Date(rule.created_at), { addSuffix: true })}
-									</span>
+									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
+									<span className="text-sm">{formatDistanceToNow(new Date(rule.created_at), { addSuffix: true })}</span>
 								</div>
 								<div>
-									<p className="text-muted-foreground mb-1 text-xs font-medium uppercase tracking-wider">Last Updated</p>
-									<span className="text-sm">
-										{formatDistanceToNow(new Date(rule.updated_at), { addSuffix: true })}
-									</span>
+									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Last Updated</p>
+									<span className="text-sm">{formatDistanceToNow(new Date(rule.updated_at), { addSuffix: true })}</span>
 								</div>
 							</div>
 						</div>

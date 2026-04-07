@@ -1,5 +1,3 @@
-"use client";
-
 import { PluginLogEntry } from "@/lib/types/logs";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import moment from "moment";
@@ -50,7 +48,12 @@ function PluginSection({ name, entries }: { name: string; entries: PluginLogEntr
 
 	return (
 		<div className="rounded-md border">
-			<button data-testid={`plugin-logs-toggle-${name}`} onClick={() => setIsOpen(!isOpen)} className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm">
+			<button
+				type="button"
+				data-testid={`plugin-logs-toggle-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`}
+				onClick={() => setIsOpen(!isOpen)}
+				className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm"
+			>
 				{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
 				<span className="font-medium">{name}</span>
 				<span className="text-muted-foreground text-xs">({entries.length})</span>

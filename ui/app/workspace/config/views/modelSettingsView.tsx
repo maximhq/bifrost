@@ -1,10 +1,8 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { DefaultCoreConfig } from "@/lib/types/config";
 import { getErrorMessage, useForcePricingSyncMutation, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { DefaultCoreConfig } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
@@ -47,13 +45,7 @@ export default function ModelSettingsView() {
 			pricing_sync_interval_hours: Math.round((frameworkConfig?.pricing_sync_interval ?? 0) / 3600) || 24,
 			routing_chain_max_depth: clientConfig?.routing_chain_max_depth ?? DefaultCoreConfig.routing_chain_max_depth,
 		});
-	}, [
-		frameworkConfig?.pricing_url,
-		frameworkConfig?.pricing_sync_interval,
-		clientConfig?.routing_chain_max_depth,
-		isDirty,
-		reset,
-	]);
+	}, [frameworkConfig?.pricing_url, frameworkConfig?.pricing_sync_interval, clientConfig?.routing_chain_max_depth, isDirty, reset]);
 
 	const hasChanges = useMemo(() => {
 		if (!bifrostConfig || !isDirty) return false;
@@ -153,9 +145,7 @@ export default function ModelSettingsView() {
 								valueAsNumber: true,
 							})}
 						/>
-						{errors.pricing_sync_interval_hours && (
-							<p className="text-destructive text-sm">{errors.pricing_sync_interval_hours.message}</p>
-						)}
+						{errors.pricing_sync_interval_hours && <p className="text-destructive text-sm">{errors.pricing_sync_interval_hours.message}</p>}
 					</div>
 
 					{/* Routing Chain Max Depth */}
@@ -183,7 +173,13 @@ export default function ModelSettingsView() {
 				</div>
 
 				<div className="flex justify-end gap-2 pt-2">
-					<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || isLoading || hasChanges || !hasSettingsUpdateAccess} data-testid="pricing-force-sync-btn">
+					<Button
+						variant="outline"
+						type="button"
+						onClick={handleForceSync}
+						disabled={isForceSyncing || isLoading || hasChanges || !hasSettingsUpdateAccess}
+						data-testid="pricing-force-sync-btn"
+					>
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="model-settings-save-btn">

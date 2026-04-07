@@ -1,14 +1,21 @@
+import { createFileRoute, Outlet, useChildMatches } from "@tanstack/react-router";
 import { NoPermissionView } from "@/components/noPermissionView"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
+import LogsPage from "./page";
 
-export default function LogsLayout({ children }: { children: React.ReactNode }) {
+function RouteComponent() {
   const hasViewLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View)
+  const childMatches = useChildMatches();
   if (!hasViewLogsAccess) {
     return <NoPermissionView entity="logs" />
   }
   return (
     <div className="flex flex-col h-full">
-      {children}
+      {childMatches.length === 0 ? <LogsPage /> : <Outlet />}
     </div>
   )
 }
+
+export const Route = createFileRoute("/workspace/logs")({
+	component: RouteComponent,
+});
