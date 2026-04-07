@@ -1,7 +1,7 @@
 import { Router } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
-export default function PromptDeploymentView() {
+export default function PromptDeploymentView(_props?: { omitTitle?: boolean }) {
 	return (
 		<div className="w-full">
 			<ContactUsView

@@ -3,36 +3,54 @@
  * Create/Edit form for routing rules
  */
 
-import { useState, useEffect, useCallback } from "react";
-import { useForm } from "react-hook-form";
-import { RuleGroupType } from "react-querybuilder";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+"use client";
+
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { X, Save, Plus, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import {
-	RoutingRule,
-	RoutingRuleFormData,
-	RoutingTargetFormData,
+	Sheet,
+	SheetContent,
+	SheetDescription,
+	SheetHeader,
+	SheetTitle,
+} from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { getProviderLabel } from "@/lib/constants/logs";
+import { getErrorMessage } from "@/lib/store";
+import {
+	useGetCustomersQuery,
+	useGetTeamsQuery,
+	useGetVirtualKeysQuery,
+} from "@/lib/store/apis/governanceApi";
+import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
+import {
+	useCreateRoutingRuleMutation,
+	useGetRoutingRulesQuery,
+	useUpdateRoutingRuleMutation,
+} from "@/lib/store/apis/routingRulesApi";
+import {
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
 	ROUTING_RULE_SCOPES,
+	RoutingRule,
+	RoutingRuleFormData,
+	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
-import { useCreateRoutingRuleMutation, useUpdateRoutingRuleMutation, useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
-import { useGetVirtualKeysQuery, useGetTeamsQuery, useGetCustomersQuery } from "@/lib/store/apis/governanceApi";
-import { useGetProvidersQuery, useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
+import {
+	validateRateLimitAndBudgetRules,
+	validateRoutingRules
+} from "@/lib/utils/celConverterRouting";
+import { Plus, Save, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
-import { Suspense, lazy } from "react";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel } from "@/lib/constants/logs";
-import { Separator } from "@/components/ui/separator";
-import { getErrorMessage } from "@/lib/store";
-import { validateRoutingRules, validateRateLimitAndBudgetRules } from "@/lib/utils/celConverterRouting";
 
 interface RoutingRuleDialogProps {
 	open: boolean;
