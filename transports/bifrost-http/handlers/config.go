@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -470,16 +469,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
-		var syncDuration time.Duration
+		var syncSeconds int64
 		if frameworkConfig.PricingSyncInterval != nil {
-			syncDuration = time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
+			syncSeconds = *frameworkConfig.PricingSyncInterval
 		} else {
-			syncDuration = modelcatalog.DefaultPricingSyncInterval
+			syncSeconds = int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL:          frameworkConfig.PricingURL,
-				PricingSyncInterval: &syncDuration,
+				PricingSyncInterval: &syncSeconds,
 			},
 		}
 		// Saving framework config

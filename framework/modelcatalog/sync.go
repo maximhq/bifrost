@@ -236,8 +236,22 @@ func (mc *ModelCatalog) loadPricingFromDatabase(ctx context.Context) error {
 
 // startSyncWorker starts the background sync worker
 func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
-	// Use a ticker that checks every hour, but only sync when needed
-	mc.syncTicker = time.NewTicker(1 * time.Hour)
+	// IMPORTANT: scheduling model
+	//
+	// The sync worker wakes on a fixed ticker (syncWorkerTickerPeriod = 1h).
+	// On each wake it calls checkAndSyncPricing, which checks:
+	//
+	//   time.Since(lastSyncTimestamp) >= pricingSyncInterval
+	//
+	// This means:
+	//   • pricingSyncInterval defines the *minimum elapsed time* between syncs.
+	//   • The actual sync frequency = max(syncWorkerTickerPeriod, pricingSyncInterval).
+	//   • Setting pricingSyncInterval < 1h does NOT increase sync frequency —
+	//     the hourly ticker is the hard lower bound on check granularity.
+	//
+	// Design rationale: avoids high-frequency polling while allowing operators to
+	// tune how stale pricing data can get (e.g., 1h vs 24h vs 7d).
+	mc.syncTicker = time.NewTicker(syncWorkerTickerPeriod)
 	mc.wg.Add(1)
 	go mc.syncWorker(ctx)
 }
