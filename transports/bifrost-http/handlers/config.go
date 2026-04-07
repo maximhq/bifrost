@@ -44,7 +44,7 @@ var securityHeaders = []string{
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
-	ReloadPricingManager(ctx context.Context) error
+	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
@@ -442,7 +442,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		frameworkConfig = &configstoreTables.TableFrameworkConfig{
 			ID:                  0,
 			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
+			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds())),
 		}
 	}
 	// Handling individual nil cases
@@ -450,7 +450,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		frameworkConfig.PricingURL = bifrost.Ptr(modelcatalog.DefaultPricingURL)
 	}
 	if frameworkConfig.PricingSyncInterval == nil {
-		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds()))
+		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultSyncInterval.Seconds()))
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -484,7 +484,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if frameworkConfig.PricingSyncInterval != nil {
 			syncDuration = time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
 		} else {
-			syncDuration = modelcatalog.DefaultPricingSyncInterval
+			syncDuration = modelcatalog.DefaultSyncInterval
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
@@ -499,7 +499,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		// Reloading pricing manager
-		h.configManager.ReloadPricingManager(ctx)
+		h.configManager.UpdateSyncConfig(ctx)
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {

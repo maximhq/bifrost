@@ -4,9 +4,140 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// Default sync interval and config key
+const (
+	TokenTierAbove200K = 200000
+	TokenTierAbove128K = 128000
+)
+
+// PricingEntry represents a single model's pricing information.
+// Field names and JSON tags match the datasheet schema exactly.
+type PricingEntry struct {
+	BaseModel string `json:"base_model,omitempty"`
+	Provider  string `json:"provider"`
+	Mode      string `json:"mode"`
+
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
+
+	PricingOptions
+}
+
+// UnmarshalJSON implements json.Unmarshaler for PricingEntry.
+// It handles the special case where search_context_cost_per_query may arrive as either
+// a plain float64 or a tiered object {"search_context_size_low":…,
+// "search_context_size_medium":…, "search_context_size_high":…}.
+func (p *PricingEntry) UnmarshalJSON(data []byte) error {
+	// Type alias breaks the UnmarshalJSON recursion while keeping all other fields.
+	type PricingEntryAlias PricingEntry
+	var raw struct {
+		PricingEntryAlias
+		SearchContextCostPerQuery *struct {
+			Low    *float64 `json:"search_context_size_low"`
+			Medium *float64 `json:"search_context_size_medium"`
+			High   *float64 `json:"search_context_size_high"`
+		} `json:"search_context_cost_per_query,omitempty"`
+	}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = PricingEntry(raw.PricingEntryAlias)
+
+	// search_context_cost_per_query arrives as a tiered object – all three values are
+	// equal for non-Perplexity providers; we prefer medium, then low, then high.
+	// Perplexity always returns a pre-computed total_cost so the per-query rate is
+	// never consumed for that provider.
+	if q := raw.SearchContextCostPerQuery; q != nil {
+		switch {
+		case q.Medium != nil:
+			p.SearchContextCostPerQuery = q.Medium
+		case q.Low != nil:
+			p.SearchContextCostPerQuery = q.Low
+		case q.High != nil:
+			p.SearchContextCostPerQuery = q.High
+		}
+	}
+	return nil
+}
+
+type PricingOptions struct {
+	// Costs - Text
+	InputCostPerToken          *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken         *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches   *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches  *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority  *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerCharacter      *float64 `json:"input_cost_per_character,omitempty"`
+	// Costs - 128k Tier
+	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	// Costs - 200k Tier
+	InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+
+	// Costs - Cache
+	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputImageTokenCost                       *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+
+	// Costs - Image
+	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+	InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+	OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+	OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+	OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
+	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
+	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
+	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
+	OutputCostPerImageAutoQuality                 *float64 `json:"output_cost_per_image_auto_quality,omitempty"`
+	InputCostPerImageToken                        *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken                       *float64 `json:"output_cost_per_image_token,omitempty"`
+
+	// Costs - Audio/Video
+	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+	// Costs - Other
+	//
+	// SearchContextCostPerQuery is stored as a single float64, but the pricing datasheet
+	// represents it as a tiered object with three keys: search_context_size_low,
+	// search_context_size_medium, and search_context_size_high.  For every provider except
+	// Perplexity the three tier values are identical, so we collapse the object to its
+	// medium tier value (falling back to low then high).  Perplexity always returns a
+	// pre-computed total_cost in its usage response, so the per-query rate is never
+	// consumed for that provider; the collapsed value is therefore correct in all cases.
+	// See UnmarshalJSON below for the custom decoding logic.
+	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+}
 
 // costInput holds the extracted usage data from a BifrostResponse,
 // normalized for the pricing engine.
@@ -19,6 +150,33 @@ type costInput struct {
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
+}
+
+// GetPricingEntryForModel returns the pricing data
+func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	// Check all modes
+	for _, mode := range []schemas.RequestType{
+		schemas.TextCompletionRequest,
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
+		schemas.SpeechRequest,
+		schemas.TranscriptionRequest,
+		schemas.ImageGenerationRequest,
+		schemas.ImageEditRequest,
+		schemas.ImageVariationRequest,
+		schemas.VideoGenerationRequest,
+	} {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+	return nil
 }
 
 // CalculateCost calculates the cost of a Bifrost response.

@@ -804,7 +804,7 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParameters(ctx, modelParam)
+	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))

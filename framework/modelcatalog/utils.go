@@ -1,12 +1,53 @@
 package modelcatalog
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+const retryBackoffMin = time.Second
+
+// WithRetries runs op until it succeeds or maxRetries retries are exhausted
+// (1 initial attempt + maxRetries retries). After each failure it waits with
+// exponential backoff starting at 1 second (retryBackoffMin), capped at maxBackoff
+// when maxBackoff > 0. If maxBackoff is zero, there is no upper cap on the delay.
+func WithRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Duration, op func() (T, error)) (T, error) {
+	var zero T
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		default:
+		}
+
+		if attempt > 0 {
+			backoff := retryBackoffMin * time.Duration(1<<uint(attempt-1))
+			if maxBackoff > 0 && backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		v, err := op()
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+	}
+	return zero, lastErr
+}
 
 // makeKey creates a unique key for a model, provider, and mode for pricingData map
 func makeKey(model, provider, mode string) string { return model + "|" + provider + "|" + mode }

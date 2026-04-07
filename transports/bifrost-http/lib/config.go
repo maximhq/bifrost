@@ -2004,7 +2004,7 @@ func ResolveFrameworkPricingConfig(
 	fileConfig *framework.FrameworkConfig,
 ) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
 	defaultPricingURL := modelcatalog.DefaultPricingURL
-	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 
 	filePricingURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
@@ -2092,16 +2092,12 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 		Pricing: pricingConfig,
 	}
 
-	var pricingManager *modelcatalog.ModelCatalog
-	var err error
-
 	// Use default modelcatalog initialization when no enterprise overrides are provided
-	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
+	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
 	if err != nil {
-		logger.Error("failed to initialize pricing manager: %v", err)
-	} else {
-		config.ModelCatalog = pricingManager
+		logger.Fatal("failed to initialize pricing manager: %v", err)
 	}
+	config.ModelCatalog = pricingManager
 
 	// Initialize MCP catalog
 	// Merge file-based pricing into mcpPricingConfig (DB data already loaded above).

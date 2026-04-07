@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -13,59 +14,24 @@ import (
 	"gorm.io/gorm"
 )
 
-// checkAndSyncPricing determines if pricing data needs to be synced and performs the sync if needed.
-// It syncs pricing data in the following scenarios:
-//   - No config store available (returns early with no error)
-//   - No previous sync record exists
-//   - Previous sync timestamp is invalid/corrupted
-//   - Sync interval has elapsed since last successful sync
-func (mc *ModelCatalog) checkAndSyncPricing(ctx context.Context) error {
-	// Skip sync if no config store is available
-	if mc.configStore == nil {
-		return nil
-	}
-
-	// Determine if sync is needed and perform it
-	needsSync, reason := mc.shouldSyncPricing(ctx)
-	if needsSync {
-		mc.logger.Debug("pricing sync needed: %s", reason)
-		return mc.syncPricing(ctx)
-	}
-
-	return nil
-}
-
-// shouldSyncPricing determines if pricing data should be synced and returns the reason
-func (mc *ModelCatalog) shouldSyncPricing(ctx context.Context) (bool, string) {
-	config, err := mc.configStore.GetConfig(ctx, ConfigLastPricingSyncKey)
-	if err != nil {
-		return true, "no previous sync record found"
-	}
-
-	lastSync, err := time.Parse(time.RFC3339, config.Value)
-	if err != nil {
-		mc.logger.Warn("invalid last sync timestamp: %v", err)
-		return true, "corrupted sync timestamp"
-	}
-
-	if time.Since(lastSync) >= mc.getPricingSyncInterval() {
-		return true, "sync interval elapsed"
-	}
-
-	return false, "sync not needed"
-}
+const (
+	urlFetchMaxRetries = 3                // retries after the first attempt (4 attempts total)
+	urlFetchMaxBackoff = 10 * time.Second // cap for exponential backoff (steps start at 1s)
+)
 
 // syncPricing syncs pricing data from URL to database and updates cache
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 	mc.logger.Debug("starting pricing data synchronization for governance")
-	if mc.shouldSyncPricingFunc != nil {
-		if !mc.shouldSyncPricingFunc(ctx) {
-			mc.logger.Debug("pricing sync cancelled by custom function")
+	if mc.shouldSyncGate != nil {
+		if !mc.shouldSyncGate(ctx) {
+			mc.logger.Debug("pricing sync cancelled by custom gate")
 			return nil
 		}
 	}
 	// Load pricing data from URL
-	pricingData, err := mc.loadPricingFromURL(ctx)
+	pricingData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]PricingEntry, error) {
+		return mc.loadPricingFromURL(ctx)
+	})
 	if err != nil {
 		// Check if we have existing data in database
 		pricingRecords, pricingErr := mc.configStore.GetModelPrices(ctx)
@@ -107,16 +73,6 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 
 	if err != nil {
 		return fmt.Errorf("failed to sync pricing data to database: %w", err)
-	}
-
-	config := &configstoreTables.TableGovernanceConfig{
-		Key:   ConfigLastPricingSyncKey,
-		Value: time.Now().Format(time.RFC3339),
-	}
-
-	// Update last sync time
-	if err := mc.configStore.UpdateConfig(ctx, config); err != nil {
-		mc.logger.Warn("Failed to update last sync time: %v", err)
 	}
 
 	// Reload cache from database
@@ -185,9 +141,11 @@ func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]Pric
 	return pricingData, nil
 }
 
-// loadPricingIntoMemory loads pricing data from URL into memory cache
-func (mc *ModelCatalog) loadPricingIntoMemory(ctx context.Context) error {
-	pricingData, err := mc.loadPricingFromURL(ctx)
+// loadPricingIntoMemoryFromURL loads pricing data from URL into memory cache (when config store is not available)
+func (mc *ModelCatalog) loadPricingIntoMemoryFromURL(ctx context.Context) error {
+	pricingData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]PricingEntry, error) {
+		return mc.loadPricingFromURL(ctx)
+	})
 	if err != nil {
 		return fmt.Errorf("failed to load pricing data from URL: %w", err)
 	}
@@ -234,6 +192,33 @@ func (mc *ModelCatalog) loadPricingFromDatabase(ctx context.Context) error {
 	return nil
 }
 
+// loadModelParametersFromDatabase bulk-loads model parameters from the DB into the provider
+// utils cache (startup / ReloadFromDB). The SetCacheMissHandler path still loads one row at
+// a time on cache miss; both use the same table JSON shape.
+// Returns the number of rows loaded so callers can decide whether to background-sync from URL.
+func (mc *ModelCatalog) loadModelParametersFromDatabase(ctx context.Context) (int, error) {
+	if mc.configStore == nil {
+		return 0, nil
+	}
+
+	rows, err := mc.configStore.GetModelParameters(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load model parameters from database: %w", err)
+	}
+	if len(rows) == 0 {
+		mc.logger.Debug("no model parameters rows in database")
+		return 0, nil
+	}
+
+	paramsData := make(map[string]json.RawMessage, len(rows))
+	for _, row := range rows {
+		paramsData[row.Model] = json.RawMessage(row.Data)
+	}
+	applyModelParametersToProviderCache(paramsData)
+	mc.logger.Debug("loaded %d model parameters records from database into cache", len(rows))
+	return len(rows), nil
+}
+
 // startSyncWorker starts the background sync worker
 func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	// Use a ticker that checks every hour, but only sync when needed
@@ -243,31 +228,52 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 }
 
 // syncTick performs a single sync tick with proper lock management
+// if the last sync was more than the sync interval ago, sync pricing and model parameters in parallel
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
-	if mc.distributedLockManager == nil {
-		if err := mc.checkAndSyncPricing(ctx); err != nil {
-			mc.logger.Error("background pricing sync failed: %v", err)
+	mc.syncMu.RLock()
+	lastSync := mc.lastSyncedAt
+	interval := mc.syncInterval
+	mc.syncMu.RUnlock()
+
+	if time.Since(lastSync) >= interval {
+		lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
+		if err != nil {
+			mc.logger.Error("failed to create model catalog pricing sync lock: %v", err)
+			return
 		}
-		if err := mc.checkAndSyncModelParameters(ctx); err != nil {
-			mc.logger.Error("background model parameters sync failed: %v", err)
+		if err := lock.Lock(ctx); err != nil {
+			mc.logger.Error("failed to acquire model catalog pricing sync lock: %v", err)
+			return
 		}
-		return
-	}
-	lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
-	if err != nil {
-		mc.logger.Error("failed to create model catalog pricing sync lock: %v", err)
-		return
-	}
-	if err := lock.Lock(ctx); err != nil {
-		mc.logger.Error("failed to acquire model catalog pricing sync lock: %v", err)
-		return
-	}
-	defer lock.Unlock(ctx)
-	if err := mc.checkAndSyncPricing(ctx); err != nil {
-		mc.logger.Error("background pricing sync failed: %v", err)
-	}
-	if err := mc.checkAndSyncModelParameters(ctx); err != nil {
-		mc.logger.Error("background model parameters sync failed: %v", err)
+		defer lock.Unlock(ctx)
+		// Sync pricing and model parameters in parallel
+		var wg sync.WaitGroup
+		var pricingErr, paramsErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := mc.syncPricing(ctx); err != nil {
+				mc.logger.Error("background pricing sync failed: %v", err)
+				pricingErr = err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := mc.syncModelParameters(ctx); err != nil {
+				mc.logger.Error("background model parameters sync failed: %v", err)
+				paramsErr = err
+			}
+		}()
+		wg.Wait()
+
+		if pricingErr == nil && paramsErr == nil {
+			if mc.afterSyncHook != nil {
+				mc.afterSyncHook(ctx)
+			}
+			mc.syncMu.Lock()
+			mc.lastSyncedAt = time.Now()
+			mc.syncMu.Unlock()
+		}
 	}
 }
 
@@ -290,48 +296,56 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 
 // --- Model Parameters sync ---
 
-// checkAndSyncModelParameters determines if model parameters data needs to be synced and performs the sync if needed.
-func (mc *ModelCatalog) checkAndSyncModelParameters(ctx context.Context) error {
-	if mc.configStore == nil {
-		return nil
+func applyModelParametersToProviderCache(paramsData map[string]json.RawMessage) {
+	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
+	for model, rawData := range paramsData {
+		var p struct {
+			MaxOutputTokens *int `json:"max_output_tokens"`
+		}
+		if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
+			modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+		}
 	}
-
-	needsSync, reason := mc.shouldSyncModelParameters(ctx)
-	if needsSync {
-		mc.logger.Debug("model parameters sync needed: %s", reason)
-		return mc.syncModelParameters(ctx)
+	if len(modelParamsEntries) > 0 {
+		providerUtils.BulkSetModelParams(modelParamsEntries)
 	}
-
-	return nil
 }
 
-// shouldSyncModelParameters determines if model parameters data should be synced
-func (mc *ModelCatalog) shouldSyncModelParameters(ctx context.Context) (bool, string) {
-	config, err := mc.configStore.GetConfig(ctx, ConfigLastParamsSyncKey)
+// loadModelParametersIntoMemoryFromURL loads model parameters from the remote URL into the
+// provider utils cache (when config store is not available).
+func (mc *ModelCatalog) loadModelParametersIntoMemoryFromURL(ctx context.Context) error {
+	paramsData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]json.RawMessage, error) {
+		return mc.loadModelParametersFromURL(ctx)
+	})
 	if err != nil {
-		return true, "no previous model parameters sync record found"
+		return fmt.Errorf("failed to load model parameters from URL: %w", err)
 	}
-
-	lastSync, err := time.Parse(time.RFC3339, config.Value)
-	if err != nil {
-		mc.logger.Warn("invalid last model parameters sync timestamp: %v", err)
-		return true, "corrupted sync timestamp"
-	}
-
-	if time.Since(lastSync) >= mc.getPricingSyncInterval() {
-		return true, "sync interval elapsed"
-	}
-
-	return false, "sync not needed"
+	applyModelParametersToProviderCache(paramsData)
+	return nil
 }
 
 // syncModelParameters syncs model parameters data from URL into memory cache
 func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
-	mc.logger.Debug("model-parameters-sync: starting model parameters synchronization")
+	if mc.shouldSyncGate != nil {
+		if !mc.shouldSyncGate(ctx) {
+			mc.logger.Debug("model parameters sync cancelled by custom gate")
+			return nil
+		}
+	}
+	mc.logger.Debug("starting model parameters synchronization")
 
-	paramsData, err := mc.loadModelParametersFromURL(ctx)
+	paramsData, err := WithRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]json.RawMessage, error) {
+		return mc.loadModelParametersFromURL(ctx)
+	})
 	if err != nil {
-		return fmt.Errorf("failed to load model parameters from URL: %w", err)
+		if mc.configStore != nil {
+			rows, dbErr := mc.configStore.GetModelParameters(ctx)
+			if dbErr == nil && len(rows) > 0 {
+				mc.logger.Error("failed to load model parameters from URL, falling back to existing database records: %v", err)
+				return nil
+			}
+		}
+		return fmt.Errorf("failed to load model parameters from URL and no existing data in database: %w", err)
 	}
 
 	// Persist to database if config store is available
@@ -349,36 +363,13 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("model-parameters-sync: failed to sync model parameters to database: %w", err)
+			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
 	}
 
-	// Update last sync time if config store is available
-	if mc.configStore != nil {
-		config := &configstoreTables.TableGovernanceConfig{
-			Key:   ConfigLastParamsSyncKey,
-			Value: time.Now().Format(time.RFC3339),
-		}
-		if err := mc.configStore.UpdateConfig(ctx, config); err != nil {
-			mc.logger.Warn("model-parameters-sync: failed to update last model parameters sync time: %v", err)
-		}
-	}
+	applyModelParametersToProviderCache(paramsData)
 
-	// Populate the in-memory model params cache for provider-level lookups
-	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
-	for model, rawData := range paramsData {
-		var p struct {
-			MaxOutputTokens *int `json:"max_output_tokens"`
-		}
-		if err := json.Unmarshal(rawData, &p); err == nil && p.MaxOutputTokens != nil {
-			modelParamsEntries[model] = providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
-		}
-	}
-	if len(modelParamsEntries) > 0 {
-		providerUtils.BulkSetModelParams(modelParamsEntries)
-	}
-
-	mc.logger.Info("model-parameters-sync: successfully synced %d model parameters records", len(paramsData))
+	mc.logger.Info("successfully synced %d model parameters records", len(paramsData))
 	return nil
 }
 
@@ -411,6 +402,6 @@ func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[str
 		return nil, fmt.Errorf("failed to unmarshal model parameters data: %w", err)
 	}
 
-	mc.logger.Debug("model-parameters-sync: successfully downloaded and parsed %d model parameters records", len(paramsData))
+	mc.logger.Debug("successfully downloaded and parsed %d model parameters records", len(paramsData))
 	return paramsData, nil
 }

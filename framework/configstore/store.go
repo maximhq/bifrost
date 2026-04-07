@@ -257,7 +257,8 @@ type ConfigStore interface {
 	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model parameters
-	GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error)
+	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
+	GetModelParametersByModel(ctx context.Context, model string) (*tables.TableModelParameters, error)
 	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
 
 	// Key management

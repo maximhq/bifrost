@@ -21,7 +21,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -61,7 +60,7 @@ type ServerCallbacks interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
-	ReloadPricingManager(ctx context.Context) error
+	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
@@ -778,14 +777,58 @@ func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
 }
 
 // ReloadPricingManager reloads the pricing manager
-func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
+func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
 		return fmt.Errorf("framework config not found")
 	}
-	return s.Config.ModelCatalog.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
+	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, s.Config.FrameworkConfig.Pricing)
+}
+
+func (s *BifrostHTTPServer) populateModelPoolWithListModels(ctx context.Context) error {
+	// Fetching keys for all providers and allowed models first
+	// Based on allowed models we will set the data in the model catalog
+	var wg sync.WaitGroup
+	for provider, providerConfig := range s.Config.Providers {
+		wg.Add(1)
+		go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
+			defer wg.Done()
+			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
+			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+			defer bfCtx.Cancel()
+			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider: provider,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			}
+			allowedModels := make([]schemas.Model, 0)
+			for _, key := range providerConfig.Keys {
+				if key.Models.IsUnrestricted() {
+					continue
+				}
+				for _, model := range key.Models {
+					allowedModels = append(allowedModels, schemas.Model{
+						ID: string(provider) + "/" + model,
+					})
+				}
+			}
+			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider:   provider,
+				Unfiltered: true,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			} else {
+				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+			}
+		}(provider, providerConfig)
+	}
+	wg.Wait()
+	return nil
 }
 
 // ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
@@ -793,60 +836,25 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 	if s.Config == nil {
 		return fmt.Errorf("server config not initialized")
 	}
-	if s.Config.ModelCatalog == nil {
-		if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
-			return fmt.Errorf("framework pricing config not initialized")
-		}
-		// Create a new model catalog
-		modelCatalog, err := modelcatalog.Init(ctx, s.Config.FrameworkConfig.Pricing, s.Config.ConfigStore, nil, logger)
-		if err != nil {
-			return fmt.Errorf("failed to initialize new model catalog: %w", err)
-		}
-		s.Config.ModelCatalog = modelCatalog
-	} else {
+	if s.Config.ModelCatalog != nil {
 		if err := s.Config.ModelCatalog.ForceReloadPricing(ctx); err != nil {
 			return fmt.Errorf("failed to force reload pricing: %w", err)
 		}
-		// Fetching keys for all providers and allowed models first
-		// Based on allowed models we will set the data in the model catalog
-		var wg sync.WaitGroup
-		for provider, providerConfig := range s.Config.Providers {
-			wg.Add(1)
-			go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
-				defer wg.Done()
-				bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-				bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-				defer bfCtx.Cancel()
-				modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-					Provider: provider,
-				})
-				if listModelsErr != nil {
-					logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-				}
-				allowedModels := make([]schemas.Model, 0)
-				for _, key := range providerConfig.Keys {
-					if key.Models.IsUnrestricted() {
-						continue
-					}
-					for _, model := range key.Models {
-						allowedModels = append(allowedModels, schemas.Model{
-							ID: string(provider) + "/" + model,
-						})
-					}
-				}
-				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-					Provider:   provider,
-					Unfiltered: true,
-				})
-				if listModelsErr != nil {
-					logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-				} else {
-					s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
-				}
-			}(provider, providerConfig)
+		return s.populateModelPoolWithListModels(ctx)
+	}
+	return nil
+}
+
+// ReloadPricingFromDBAndPopulateModelPool reloads the pricing from DB and populates the model pool
+func (s *BifrostHTTPServer) ReloadPricingFromDBAndPopulateModelPool(ctx context.Context) error {
+	if s.Config == nil {
+		return fmt.Errorf("server config not initialized")
+	}
+	if s.Config.ModelCatalog != nil {
+		if err := s.Config.ModelCatalog.ReloadFromDB(ctx); err != nil {
+			return fmt.Errorf("failed to reload pricing from DB: %w", err)
 		}
-		wg.Wait()
+		return s.populateModelPoolWithListModels(ctx)
 	}
 	return nil
 }
