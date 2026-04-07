@@ -116,6 +116,39 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
+// Checks whether the config provided for dynamic scaling is valid or not. It returns false for wrong config or if scaling was disabled.
+func ValidateDynamicScalingConfig(config *schemas.ProviderConfig) bool {
+	if config.ConcurrencyAndBufferSize.DynamicScaling {
+		disableScaling := false
+		if config.ConcurrencyAndBufferSize.MaxWorkers <= 0 || config.ConcurrencyAndBufferSize.MinWorkers <= 0 || config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold >= 100 || config.ConcurrencyAndBufferSize.ScaleDownThreshold >= 100 {
+			disableScaling = true
+		}
+		if !disableScaling && (config.ConcurrencyAndBufferSize.ScaleUpThreshold-config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0) {
+
+			disableScaling = true
+		}
+		if !disableScaling && (config.ConcurrencyAndBufferSize.MaxWorkers-config.ConcurrencyAndBufferSize.MinWorkers <= 0) {
+			disableScaling = true
+		}
+
+		if !disableScaling && (config.ConcurrencyAndBufferSize.Concurrency < config.ConcurrencyAndBufferSize.MinWorkers || config.ConcurrencyAndBufferSize.Concurrency > config.ConcurrencyAndBufferSize.MaxWorkers) {
+			disableScaling = true
+		}
+
+		if disableScaling {
+			return false
+		} else {
+			if config.ConcurrencyAndBufferSize.ScalingInterval <= 0 {
+				config.ConcurrencyAndBufferSize.ScalingInterval = 2 * time.Minute
+			}
+			return true
+		}
+	}
+	//scaling was disabled.
+	return false
+
+}
+
 // validateRequest validates the given request.
 func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {

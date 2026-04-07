@@ -188,6 +188,75 @@ type ConcurrencyAndBufferSize struct {
 	ScaleDownThreshold float64       `json:"scale_down_threshold"` //If Queue capacity is below this threshold (eg 20%) then workers would be scaled down.
 }
 
+// UnmarshalJSON customizes JSON unmarshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is interpreted as milliseconds in JSON,
+// but stored as time.Duration (nanoseconds) internally.
+func (c *ConcurrencyAndBufferSize) UnmarshalJSON(data []byte) error {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	// Copy all fields
+	c.Concurrency = alias.Concurrency
+	c.BufferSize = alias.BufferSize
+	c.DynamicScaling = alias.DynamicScaling
+	c.MinWorkers = alias.MinWorkers
+	c.MaxWorkers = alias.MaxWorkers
+	c.ScaleUpThreshold = alias.ScaleUpThreshold
+	c.ScaleDownThreshold = alias.ScaleDownThreshold
+
+	// Convert milliseconds to time.Duration (nanoseconds)
+	if alias.ScalingInterval > 0 {
+		c.ScalingInterval = time.Duration(alias.ScalingInterval) * time.Millisecond
+	}
+
+	return nil
+}
+
+// MarshalJSON customizes JSON marshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is converted from time.Duration (nanoseconds)
+// to milliseconds (integers) in JSON.
+func (c ConcurrencyAndBufferSize) MarshalJSON() ([]byte, error) {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	alias := Alias{
+		Concurrency:    c.Concurrency,
+		BufferSize:     c.BufferSize,
+		DynamicScaling: c.DynamicScaling,
+		// Convert time.Duration (nanoseconds) to milliseconds
+		ScalingInterval:    int64(c.ScalingInterval / time.Millisecond),
+		MinWorkers:         c.MinWorkers,
+		MaxWorkers:         c.MaxWorkers,
+		ScaleUpThreshold:   c.ScaleUpThreshold,
+		ScaleDownThreshold: c.ScaleDownThreshold,
+	}
+
+	return json.Marshal(alias)
+}
+
 // DefaultConcurrencyAndBufferSize is the default concurrency and buffer size for provider operations.
 var DefaultConcurrencyAndBufferSize = ConcurrencyAndBufferSize{
 	Concurrency: DefaultConcurrency,

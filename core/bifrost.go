@@ -126,7 +126,7 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 			capacity := (float64(len(pq.queue)) / bufferCap) * 100
 
 			if capacity >= config.ConcurrencyAndBufferSize.ScaleUpThreshold {
-				bifrost.logger.Info("Capacity for provider: %s is at %.1f which is above the threshold... scaling up the workers", providerName, capacity)
+				bifrost.logger.Info("Capacity for provider: %s is at %.2f which is above the threshold... scaling up the workers", providerName, capacity)
 				if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MaxWorkers {
 					bifrost.logger.Info("No. of workers is already at max workers. Cannot scale up. Provider: %s", providerName)
 					continue
@@ -150,7 +150,7 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 				bifrost.logger.Info("Added %d number of workers to worker pool provider: %s", numWorkersToAdd, providerName)
 			}
 			if capacity <= config.ConcurrencyAndBufferSize.ScaleDownThreshold {
-				bifrost.logger.Info("Capacity for provider: %s is at %.1f which is below the threshold... scaling down the workers", providerName, capacity)
+				bifrost.logger.Info("Capacity for provider: %s is at %.2f which is below the threshold... scaling down the workers", providerName, capacity)
 				if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MinWorkers {
 					bifrost.logger.Info("No. of workers is already at min workers. Cannot scale down. Provider: %s", providerName)
 					continue
@@ -162,17 +162,18 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 					targetWorkers = config.ConcurrencyAndBufferSize.MinWorkers
 				}
 				numWorkersToSubtract := int(pq.ActiveWorkers.Load()) - targetWorkers
+				numWorkersSubtracted := 0
 			outer:
 				for i := 0; i < numWorkersToSubtract; i++ {
 					select {
 					case pq.quit <- struct{}{}:
-						pq.ActiveWorkers.Add(-1)
+						numWorkersSubtracted++
 					default:
 						break outer
 					}
 				}
 
-				bifrost.logger.Info("Removed %d number of workers to worker pool provider: %s", numWorkersToSubtract, providerName)
+				bifrost.logger.Info("Removed %d number of workers to worker pool provider: %s", numWorkersSubtracted, providerName)
 			}
 		case <-pq.done:
 			bifrost.logger.Info("Shutdown underway.. stopping dynamic worker scaling provider: %s", providerName)
@@ -3292,12 +3293,18 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 
 	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
 
+	providerConfig.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(providerConfig)
+
 	// Step 1: Create new ProviderQueue with updated buffer size
 	newPq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize),
 		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
 		closeOnce:  sync.Once{},
+	}
+
+	if providerConfig.ConcurrencyAndBufferSize.DynamicScaling {
+		newPq.quit = make(chan struct{}, providerConfig.ConcurrencyAndBufferSize.MaxWorkers)
 	}
 
 	// Step 2: Atomically replace the queue FIRST (new producers immediately get the new queue)
@@ -3367,6 +3374,7 @@ transferComplete:
 	}
 
 	// Step 5: Close the old queue to signal workers to stop
+	bifrost.logger.Info(fmt.Sprintf("Stopping old Dynamic scaling Go routine: %s", providerKey))
 	oldPq.closeQueue()
 	bifrost.logger.Debug("closed old request queue for provider %s", providerKey)
 
@@ -3443,9 +3451,15 @@ transferComplete:
 
 	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)
+		newPq.ActiveWorkers.Add(1)
 		go bifrost.requestWorker(provider, providerConfig, newPq)
 	}
 
+	// Start dynamicscaling after all requests have been transferred.
+	if providerConfig.ConcurrencyAndBufferSize.DynamicScaling {
+		currentWaitGroup.Add(1)
+		go bifrost.DynamicWorkerScaling(provider, providerConfig, newPq)
+	}
 	bifrost.logger.Info("successfully updated provider configuration for provider %s", providerKey)
 	return nil
 }
@@ -3776,37 +3790,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	// Create ProviderQueue with lifecycle management
 
 	//config checks before enabling dynamic scaling and intialising the Provider Queue.
-	if config.ConcurrencyAndBufferSize.DynamicScaling {
-		disableScaling := false
-		if config.ConcurrencyAndBufferSize.MaxWorkers <= 0 || config.ConcurrencyAndBufferSize.MinWorkers <= 0 || config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold <= 0 {
-			bifrost.logger.Warn("Values provided for MaxWorkers, MinWorkers, ScaleDownThreshold, ScaleUpThreshold don't make sense. Disabling scaling.")
-			disableScaling = true
-		}
-		if !disableScaling && (config.ConcurrencyAndBufferSize.ScaleUpThreshold-config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0) {
-			bifrost.logger.Warn("Provider %s: ScaleUpThreshold (%d) is less than or equal to ScaleDownThreshold (%d). Dynamic scaling disabled.",
-				providerKey, config.ConcurrencyAndBufferSize.MaxWorkers, config.ConcurrencyAndBufferSize.MinWorkers)
-			disableScaling = true
-		}
-		if !disableScaling && (config.ConcurrencyAndBufferSize.MaxWorkers-config.ConcurrencyAndBufferSize.MinWorkers <= 0) {
-			bifrost.logger.Warn("Provider %s: MaxWorkers (%d) is less than or equal to MinWorkers (%d). Dynamic scaling disabled.",
-				providerKey, config.ConcurrencyAndBufferSize.MaxWorkers, config.ConcurrencyAndBufferSize.MinWorkers)
-			disableScaling = true
-		}
-
-		if !disableScaling && (config.ConcurrencyAndBufferSize.Concurrency < config.ConcurrencyAndBufferSize.MinWorkers || config.ConcurrencyAndBufferSize.Concurrency > config.ConcurrencyAndBufferSize.MaxWorkers) {
-			bifrost.logger.Warn("Provider %s: Initial Concurrency (%d) is not strictly between MinWorkers (%d) and MaxWorkers (%d). Dynamic scaling disabled.",
-				providerKey, config.ConcurrencyAndBufferSize.Concurrency, config.ConcurrencyAndBufferSize.MinWorkers, config.ConcurrencyAndBufferSize.MaxWorkers)
-			disableScaling = true
-		}
-
-		if disableScaling {
-			config.ConcurrencyAndBufferSize.DynamicScaling = false
-		} else {
-			if config.ConcurrencyAndBufferSize.ScalingInterval <= 0 {
-				config.ConcurrencyAndBufferSize.ScalingInterval = 2 * time.Minute
-			}
-		}
-	}
+	config.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(config)
 
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
@@ -5058,6 +5042,7 @@ func executeRequestWithRetries[T any](
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue) {
 	defer func() {
+		pq.ActiveWorkers.Add(-1)
 		if waitGroupValue, ok := bifrost.waitGroups.Load(provider.GetProviderKey()); ok {
 			waitGroup := waitGroupValue.(*sync.WaitGroup)
 			waitGroup.Done()

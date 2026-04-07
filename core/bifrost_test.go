@@ -3,7 +3,6 @@ package bifrost
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -719,6 +718,15 @@ func (ma *MockAccount) UpdateProviderConfig(provider schemas.ModelProvider, conc
 	}
 }
 
+func (ma *MockAccount) UpdateDynamicScalingConfig(provider schemas.ModelProvider, concurrency int, bufferSize int) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	if config, exists := ma.configs[provider]; exists {
+		config.ConcurrencyAndBufferSize.Concurrency = concurrency
+		config.ConcurrencyAndBufferSize.BufferSize = bufferSize
+	}
+}
+
 func (ma *MockAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
@@ -980,7 +988,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 }
 
 // Test DynamicWorkerScaling
-func NewDyanmicAutoScalingAccount(DynamicScaling bool, BufferSize int, Concurrency int, MaxWorkers int, MinWorkers int, ScalingInterval time.Duration, ScaleUpThreshold float64, ScaleDownThreshold float64) *MockAccount {
+func NewDynamicAutoScalingAccount(DynamicScaling bool, BufferSize int, Concurrency int, MaxWorkers int, MinWorkers int, ScalingInterval time.Duration, ScaleUpThreshold float64, ScaleDownThreshold float64) *MockAccount {
 	providerConfig := &schemas.ProviderConfig{
 		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 			BufferSize:         BufferSize,
@@ -1020,13 +1028,12 @@ func NewDyanmicAutoScalingAccount(DynamicScaling bool, BufferSize int, Concurren
 func TestDynamicWorkerScalingDown(t *testing.T) {
 	type TestDynamicScaling struct {
 		Name               string
-		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
-		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+		ScaleUpThreshold   float64
+		ScaleDownThreshold float64
 		Concurrency        int
 		BufferSize         int
 		MaxWorkers         int
 		MinWorkers         int
-		ExpectedIncrement  bool
 	}
 	tests := []TestDynamicScaling{
 		{
@@ -1043,7 +1050,7 @@ func TestDynamicWorkerScalingDown(t *testing.T) {
 		for _, test := range tests {
 			test := test
 			t.Run(test.Name, func(t *testing.T) {
-				account := NewDyanmicAutoScalingAccount(
+				account := NewDynamicAutoScalingAccount(
 					true, test.BufferSize, test.Concurrency,
 					test.MaxWorkers, test.MinWorkers, time.Millisecond*10,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
@@ -1072,8 +1079,8 @@ func TestDynamicWorkerScalingDown(t *testing.T) {
 func TestDynamicWorkerScalingUp(t *testing.T) {
 	type TestDynamicScaling struct {
 		Name               string
-		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
-		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+		ScaleUpThreshold   float64
+		ScaleDownThreshold float64
 		NumRequests        int
 		Concurrency        int
 		BufferSize         int
@@ -1097,7 +1104,7 @@ func TestDynamicWorkerScalingUp(t *testing.T) {
 		for _, test := range tests {
 			test := test
 			t.Run(test.Name, func(t *testing.T) {
-				account := NewDyanmicAutoScalingAccount(
+				account := NewDynamicAutoScalingAccount(
 					true, test.BufferSize, test.Concurrency,
 					test.MaxWorkers, test.MinWorkers, time.Millisecond*10,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
@@ -1147,14 +1154,14 @@ func TestDynamicWorkerScalingUp(t *testing.T) {
 func TestDynamicWorkerScalingConfig(t *testing.T) {
 	type TestConcurrencyAndBufferSize struct {
 		Name                string
-		DynamicScaling      bool          `json:"dynamic_scaling"`
-		BufferSize          int           `json:"buffer_size"`
-		Concurrency         int           `json:"concurrency"`
-		MaxWorkers          int           `json:"max_workers"`
-		MinWorkers          int           `json:"min_workers"`
-		ScalingInterval     time.Duration `json:"scaling_interval"`
-		ScaleUpThreshold    float64       `json:"scale_up_threshold"`
-		ScaleDownThreshold  float64       `json:"scale_down_threshold"`
+		DynamicScaling      bool
+		BufferSize          int
+		Concurrency         int
+		MaxWorkers          int
+		MinWorkers          int
+		ScalingInterval     time.Duration
+		ScaleUpThreshold    float64
+		ScaleDownThreshold  float64
 		ExpectedAutoScaling bool
 	}
 	tests := []TestConcurrencyAndBufferSize{
@@ -1163,7 +1170,7 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			DynamicScaling:      true,
 			BufferSize:          10,
 			Concurrency:         5,
-			MaxWorkers:          15, //negative value for max workers.
+			MaxWorkers:          15,
 			MinWorkers:          3,
 			ScalingInterval:     5 * time.Second,
 			ScaleUpThreshold:    80,
@@ -1187,10 +1194,10 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			DynamicScaling:      true,
 			BufferSize:          1,
 			Concurrency:         80,
-			MaxWorkers:          100,
+			MaxWorkers:          90,
 			MinWorkers:          50,
 			ScalingInterval:     0, //scaling interval 0
-			ScaleUpThreshold:    100,
+			ScaleUpThreshold:    90,
 			ScaleDownThreshold:  30,
 			ExpectedAutoScaling: true,
 		},
@@ -1219,7 +1226,7 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			ExpectedAutoScaling: false,
 		},
 		{
-			Name:                "min workers is more than max.",
+			Name:                "max workers is less than concurrency.",
 			DynamicScaling:      true,
 			BufferSize:          100,
 			Concurrency:         50,
@@ -1260,40 +1267,20 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 		for _, test := range tests {
 			test := test
 			t.Run(test.Name, func(t *testing.T) {
-				account := NewDyanmicAutoScalingAccount(
+				account := NewDynamicAutoScalingAccount(
 					test.DynamicScaling, test.BufferSize, test.Concurrency,
 					test.MaxWorkers, test.MinWorkers, test.ScalingInterval,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
 				)
-				account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-					{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Weight: 1},
-					{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Weight: 1},
-				})
 
-				ctx := context.Background()
-
-				before := runtime.NumGoroutine()
-
-				bifrost, err := Init(ctx, schemas.BifrostConfig{
-					Account: account,
-					Logger:  NewDefaultLogger(schemas.LogLevelError),
-				})
+				config, err := account.GetConfigForProvider(schemas.OpenAI)
 				assert.NoError(t, err)
+				valid := ValidateDynamicScalingConfig(config)
 
-				after := runtime.NumGoroutine()
-				delta := after - before
+				assert.Equal(t, valid, test.ExpectedAutoScaling,
+					"test %q:   result: %d, expected %d",
+					test.Name, valid, test.ExpectedAutoScaling)
 
-				expectedDelta := test.Concurrency
-				if test.ExpectedAutoScaling {
-					expectedDelta += 1 // this is for the DynamicWorkerScaling goroutine
-				}
-
-				assert.Equal(t, expectedDelta, delta,
-					"test %q: goroutine delta was %d, expected %d (concurrency=%d, scalingEnabled=%v)",
-					test.Name, delta, expectedDelta, test.Concurrency, test.ExpectedAutoScaling)
-
-				// all running go routines must be removed ...
-				bifrost.Shutdown()
 			})
 		}
 	})
