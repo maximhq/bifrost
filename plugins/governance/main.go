@@ -49,6 +49,7 @@ type InMemoryStore interface {
 
 type BaseGovernancePlugin interface {
 	GetName() string
+	EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError)
 	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
 	PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
@@ -366,7 +367,19 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	var needsMarshal bool
 
 	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
-	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
+	lowerCT := strings.ToLower(contentType)
+	// Strip parameters (e.g., "; charset=utf-8") for clean media type comparison
+	mediaType := lowerCT
+	if idx := strings.IndexByte(mediaType, ';'); idx >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:idx])
+	}
+	isMultipart := strings.HasPrefix(mediaType, "multipart/form-data")
+	isJSON := mediaType == "" || mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+
+	if !isMultipart && !isJSON {
+		// Non-parseable body (e.g., application/sdp for WebRTC signaling) — skip governance
+		return nil, nil
+	}
 
 	var err error
 	if isMultipart {
@@ -583,19 +596,29 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	if !hasModel {
 		// For genai integration, model is present in URL path instead of the request body
 		if isGeminiPath {
-			modelValue = req.CaseInsensitivePathParamLookup("model")
+			// Prefer context value set by a routing rule (format: "provider/model:suffix")
+			if ctxModel, ok := ctx.Value("model").(string); ok && ctxModel != "" {
+				modelValue = ctxModel
+			} else {
+				modelValue = req.CaseInsensitivePathParamLookup("model")
+			}
 		} else if isBedrockPath {
 			// For bedrock integration, model is present in URL path as modelId
-			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
-			if rawModelID == "" {
-				return body, nil
+			// Prefer context value set by a routing rule (format: "provider/model")
+			if ctxModelID, ok := ctx.Value("modelId").(string); ok && ctxModelID != "" {
+				modelValue = ctxModelID
+			} else {
+				rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+				if rawModelID == "" {
+					return body, nil
+				}
+				// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
+				decoded, err := url.PathUnescape(rawModelID)
+				if err != nil {
+					decoded = rawModelID
+				}
+				modelValue = decoded
 			}
-			// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
-			decoded, err := url.PathUnescape(rawModelID)
-			if err != nil {
-				decoded = rawModelID
-			}
-			modelValue = decoded
 		} else {
 			return body, nil
 		}
@@ -1016,7 +1039,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 	return nil
 }
 
-// evaluateGovernanceRequest is a common function that handles virtual key validation
+// EvaluateGovernanceRequest is a common function that handles virtual key validation
 // and governance evaluation logic. It returns the evaluation result and a BifrostError
 // if the request should be rejected, or nil if allowed.
 //
@@ -1027,7 +1050,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 // Returns:
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
-func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
+func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
 	// Check if authentication is mandatory (either VK or user auth)
 	// Checking if the virtual key is valid or not
 	isVirtualKeyValid := false
@@ -1035,6 +1058,15 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 		_, exists := p.store.GetVirtualKey(evaluationRequest.VirtualKey)
 		if exists {
 			isVirtualKeyValid = true
+		} else {
+			// VK was provided but does not exist in the store — reject regardless of mandatory setting
+			return nil, &schemas.BifrostError{
+				Type:       bifrost.Ptr("virtual_key_not_found"),
+				StatusCode: bifrost.Ptr(401),
+				Error: &schemas.ErrorField{
+					Message: "virtual key not found. The provided virtual key does not exist or has been revoked.",
+				},
+			}
 		}
 	}
 	p.cfgMutex.RLock()
@@ -1240,7 +1272,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		UserID:     userID,
 	}
 	// Evaluate governance using common function
-	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
+	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
 	// Convert BifrostError to LLMPluginShortCircuit if needed
 	if bifrostError != nil {
 		return req, &schemas.LLMPluginShortCircuit{
@@ -1339,7 +1371,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Evaluate governance using common function
-	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, schemas.MCPToolExecutionRequest)
+	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, schemas.MCPToolExecutionRequest)
 
 	// Convert BifrostError to MCPPluginShortCircuit if needed
 	if bifrostError != nil {
@@ -1349,7 +1381,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Blind single-tool check: validate the specific tool being executed against VK MCPConfigs.
-	// This runs independently of evaluateGovernanceRequest to enforce execution-time allow-list.
+	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(virtualKeyValue)
 		if !ok || vk == nil || !vk.IsActive {

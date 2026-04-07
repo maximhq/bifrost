@@ -32,27 +32,27 @@ func TestCohere(t *testing.T) {
 		RerankModel:    "rerank-v3.5",
 		ReasoningModel: "command-a-reasoning-08-2025",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not typical for Cohere
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not typical for Cohere
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,  // May not support automatic
-			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
-			ImageBase64:           true,  // Supported by c4ai-aya-vision-8b model
-			MultipleImages:        false, // Supported by c4ai-aya-vision-8b model
-			FileBase64:            false, // Not supported
-			FileURL:               false, // Not supported
-			CompleteEnd2End:       false,
-			Embedding:             true,
-			Rerank:                true,
-			Reasoning:             true,
-			ListModels:            true,
-			CountTokens:           true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,  // May not support automatic
+			ImageURL:                   false, // Supported by c4ai-aya-vision-8b model
+			ImageBase64:                true,  // Supported by c4ai-aya-vision-8b model
+			MultipleImages:             false, // Supported by c4ai-aya-vision-8b model
+			FileBase64:                 false, // Not supported
+			FileURL:                    false, // Not supported
+			CompleteEnd2End:            false,
+			Embedding:                  true,
+			Rerank:                     true,
+			Reasoning:                  true,
+			ListModels:                 true,
+			CountTokens:                true,
 		},
 	}
 

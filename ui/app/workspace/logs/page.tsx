@@ -1,6 +1,7 @@
 "use client";
 
 import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
+import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
@@ -13,7 +14,6 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
-	useGetAvailableFilterDataQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
@@ -55,6 +55,8 @@ export default function LogsPage() {
 	const [triggerGetHistogram] = useLazyGetLogsHistogramQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
 
+	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+	const [sessionHighlightedLogId, setSessionHighlightedLogId] = useState<string | null>(null);
 	const [isChartOpen, setIsChartOpen] = useState(true);
 	const [triggerGetLogById] = useLazyGetLogByIdQuery();
 	const [fetchedLog, setFetchedLog] = useState<LogEntry | null>(null);
@@ -78,6 +80,7 @@ export default function LogsPage() {
 	// URL state management with nuqs - all filters and pagination in URL
 	const [urlState, setUrlState] = useQueryStates(
 		{
+			parent_request_id: parseAsString.withDefault(""),
 			providers: parseAsArrayOf(parseAsString).withDefault([]),
 			models: parseAsArrayOf(parseAsString).withDefault([]),
 			aliases: parseAsArrayOf(parseAsString).withDefault([]),
@@ -112,7 +115,7 @@ export default function LogsPage() {
 	// Derive selectedLog: find in current logs array, or fetch by ID from API
 	const selectedLogId = urlState.selected_log || null;
 	const selectedLogFromData = useMemo(
-		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
+		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
 		[selectedLogId, logs],
 	);
 
@@ -191,6 +194,7 @@ export default function LogsPage() {
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
+			parent_request_id: urlState.parent_request_id,
 			providers: urlState.providers,
 			models: urlState.models,
 			aliases: urlState.aliases,
@@ -208,13 +212,15 @@ export default function LogsPage() {
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
 			missing_cost_only: urlState.missing_cost_only,
-			metadata_filters: urlState.metadata_filters ? (() => {
-				try {
-					return JSON.parse(urlState.metadata_filters);
-				} catch {
-					return undefined;
-				}
-			})() : undefined,
+			metadata_filters: urlState.metadata_filters
+				? (() => {
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
+				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
@@ -223,6 +229,7 @@ export default function LogsPage() {
 			urlState.routing_engine_used,
 			urlState.user_ids, urlState.team_ids, urlState.customer_ids, urlState.business_unit_ids,
 			urlState.content_search,
+			urlState.parent_request_id,
 			urlState.start_time, urlState.end_time,
 			urlState.missing_cost_only, urlState.metadata_filters,
 		],
@@ -249,6 +256,7 @@ export default function LogsPage() {
 			}
 
 			setUrlState({
+				parent_request_id: newFilters.parent_request_id || "",
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
 				aliases: newFilters.aliases || [],
@@ -321,6 +329,19 @@ export default function LogsPage() {
 	useEffect(() => {
 		latest.current = { logs, filters, pagination, showEmptyState, liveEnabled };
 	}, [logs, filters, pagination, showEmptyState, liveEnabled]);
+
+	const handleFilterByParentRequestId = useCallback(
+		(parentRequestId: string) => {
+			setSelectedSessionId(null);
+			setSessionHighlightedLogId(null);
+			setUrlState({ selected_log: "" }, { history: "replace" });
+			setFilters({
+				...filters,
+				parent_request_id: parentRequestId,
+			});
+		},
+		[filters, setFilters],
+	);
 
 	const handleDelete = useCallback(
 		async (log: LogEntry) => {
@@ -689,6 +710,9 @@ export default function LogsPage() {
 		if (filters.missing_cost_only && typeof log.cost === "number" && log.cost > 0) {
 			return false;
 		}
+		if (filters.parent_request_id && log.parent_request_id !== filters.parent_request_id) {
+			return false;
+		}
 		if (filters.providers?.length && !filters.providers.includes(log.provider)) {
 			return false;
 		}
@@ -795,20 +819,10 @@ export default function LogsPage() {
 		[stats, fetchingStats],
 	);
 
-	// Get metadata keys from filterdata API so columns always show even with no data on current page
-	const { data: filterData } = useGetAvailableFilterDataQuery();
-	const metadataKeys = useMemo(() => {
-		if (!filterData?.metadata_keys) return [];
-		return Object.keys(filterData.metadata_keys).sort();
-	}, [filterData?.metadata_keys]);
-
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess, metadataKeys), [handleDelete, hasDeleteAccess, metadataKeys]);
+	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
 	// Navigation for log detail sheet
-	const selectedLogIndex = useMemo(
-		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
-		[selectedLogId, logs],
-	);
+	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -870,13 +884,12 @@ export default function LogsPage() {
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
 				<div className="mx-auto flex h-full w-full flex-col">
-					<div className="flex flex-1 flex-col gap-2 overflow-hidden">
-						{/* Quick Stats */}
+					<div className="flex h-full flex-col gap-2 overflow-hidden">
 						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
-										<div className="min-w-0 w-full">
+										<div className="w-full min-w-0">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
@@ -885,7 +898,6 @@ export default function LogsPage() {
 							))}
 						</div>
 
-						{/* Volume Chart */}
 						<div className="shrink-0">
 							<LogsVolumeChart
 								data={histogram}
@@ -900,7 +912,6 @@ export default function LogsPage() {
 							/>
 						</div>
 
-						{/* Error Alert */}
 						{error && (
 							<Alert variant="destructive" className="shrink-0">
 								<AlertCircle className="h-4 w-4" />
@@ -921,13 +932,14 @@ export default function LogsPage() {
 								onRowClick={(row, columnId) => {
 									if (columnId === "actions") return;
 									setUrlState({ selected_log: row.id }, { history: "replace" });
+									setSelectedSessionId(null);
+									setSessionHighlightedLogId(null);
 								}}
-								isSocketConnected={isSocketConnected}
 								liveEnabled={liveEnabled}
 								onLiveToggle={handleLiveToggle}
+								isSocketConnected={isSocketConnected}
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
-								metadataKeys={metadataKeys}
 							/>
 						</div>
 					</div>
@@ -941,6 +953,24 @@ export default function LogsPage() {
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
+						onFilterByParentRequestId={handleFilterByParentRequestId}
+						onViewSession={(sessionId, logId) => {
+							setUrlState({ selected_log: "" }, { history: "replace" });
+							setSessionHighlightedLogId(logId);
+							setSelectedSessionId(sessionId);
+						}}
+					/>
+					<SessionDetailsSheet
+						sessionId={selectedSessionId}
+						highlightedLogId={sessionHighlightedLogId}
+						open={selectedSessionId !== null}
+						onOpenChange={handleSessionSheetOpenChange}
+						liveEnabled={liveEnabled}
+						onLogClick={(log) => {
+							setSelectedSessionId(null);
+							setUrlState({ selected_log: log.id }, { history: "replace" });
+						}}
+						onFilterByParentRequestId={handleFilterByParentRequestId}
 					/>
 				</div>
 			)}

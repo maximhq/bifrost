@@ -29,24 +29,24 @@ func TestOllama(t *testing.T) {
 		TextModel:      "", // Ollama doesn't support text completion in newer models
 		EmbeddingModel: "", // Ollama doesn't support embedding
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false,
-			ImageBase64:           false,
-			MultipleImages:        false,
-			FileBase64:            false,
-			FileURL:               false,
-			CompleteEnd2End:       true,
-			Embedding:             false,
-			ListModels:            true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false,
+			ImageBase64:                false,
+			MultipleImages:             false,
+			FileBase64:                 false,
+			FileURL:                    false,
+			CompleteEnd2End:            true,
+			Embedding:                  false,
+			ListModels:                 true,
 		},
 	}
 

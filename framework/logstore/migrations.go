@@ -2063,6 +2063,11 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_business_unit_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_business_unit_id ON logs(business_unit_id)",
+  },
+  {
+		table: "logs",
+		name:  "idx_logs_parent_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
 	},
 }
 

@@ -243,6 +243,7 @@ export interface DeleteSessionResponse {
 
 export interface CommitSessionRequest {
   commit_message: string
+  message_indices?: number[]
 }
 
 export interface CommitSessionResponse {

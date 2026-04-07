@@ -171,6 +171,13 @@ CreateTeamRequest:
       type: string
       description: Team name (must be unique)
 
+UpdateTeamRequest:
+  type: object
+  properties:
+    description:
+      type: string
+      description: Updated team description
+
 CreateTeamResponse:
   type: object
   properties:
@@ -192,6 +199,12 @@ ListTeamsResponse:
       type: integer
     limit:
       type: integer
+    total_pages:
+      type: integer
+      description: Total number of pages
+    has_more:
+      type: boolean
+      description: Whether more pages are available
 
 # ---- Team Members ----
 

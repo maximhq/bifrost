@@ -58,6 +58,14 @@ func NewWSResponsesHandler(client *bifrost.Bifrost, config *lib.Config, pool *bf
 	}
 }
 
+// Close gracefully shuts down all active WebSocket responses sessions.
+func (h *WSResponsesHandler) Close() {
+	if h == nil || h.sessions == nil {
+		return
+	}
+	h.sessions.CloseAll()
+}
+
 // RegisterRoutes registers the WebSocket Responses endpoint at the base path
 // and all OpenAI integration paths.
 func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
@@ -98,6 +106,7 @@ type authHeaders struct {
 	virtualKey    string
 	apiKey        string
 	googAPIKey    string
+	baggage       string
 	extraHeaders  map[string]string
 }
 
@@ -108,6 +117,7 @@ func captureAuthHeaders(ctx *fasthttp.RequestCtx) *authHeaders {
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
 		googAPIKey:    string(ctx.Request.Header.Peek("x-goog-api-key")),
+		baggage:       string(ctx.Request.Header.Peek("baggage")),
 		extraHeaders:  make(map[string]string),
 	}
 
@@ -192,7 +202,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 		bifrostReq.Params.ExtraParams = extraParams
 	}
 
-	bifrostCtx, cancel := h.createBifrostContext(auth)
+	bifrostCtx, cancel := createBifrostContextFromAuth(h.handlerStore, auth)
 	if bifrostCtx == nil {
 		writeWSError(session, 500, "server_error", "failed to create request context")
 		return
@@ -227,9 +237,10 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		return false
 	}
 
-	key, err := h.client.SelectKeyForProvider(ctx, req.Provider, req.Model)
+	key, err := h.client.SelectKeyForProviderRequestType(ctx, schemas.WebSocketResponsesRequest, req.Provider, req.Model)
 	if err != nil {
-		return false
+		writeWSError(session, 400, "invalid_request_error", err.Error())
+		return true
 	}
 
 	wsURL := wsProvider.WebSocketResponsesURL(key)
@@ -495,9 +506,13 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 	}, nil
 }
 
-// createBifrostContext builds a BifrostContext from the auth headers captured during upgrade.
-func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.BifrostContext, context.CancelFunc) {
+// createBifrostContextFromAuth builds a BifrostContext from the auth headers captured during upgrade.
+func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeaders) (*schemas.BifrostContext, context.CancelFunc) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+
+	if sessionID := lib.ParseSessionIDFromBaggage(auth.baggage); sessionID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyParentRequestID, sessionID)
+	}
 
 	if auth.virtualKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.virtualKey)
@@ -508,8 +523,8 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
 			if strings.HasPrefix(token, "sk-bf-") {
-				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
-			} else if h.handlerStore.ShouldAllowDirectKeys() {
+				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(token, "sk-bf-"))
+			} else if handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
 					ID:     "header-provided",
 					Value:  *schemas.NewEnvVar(token),
@@ -523,7 +538,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 	if auth.apiKey != "" {
 		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, "sk-bf-"))
-		} else if h.handlerStore.ShouldAllowDirectKeys() {
+		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.apiKey),
@@ -536,7 +551,7 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 	if auth.googAPIKey != "" {
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, "sk-bf-"))
-		} else if h.handlerStore.ShouldAllowDirectKeys() {
+		} else if handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
 				Value:  *schemas.NewEnvVar(auth.googAPIKey),

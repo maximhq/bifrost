@@ -124,7 +124,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	);
 
 	const handleFilterChange = useCallback(
-		(key: keyof LogFiltersType, values: string[] | boolean) => {
+		(key: keyof LogFiltersType, values: string[] | boolean | string) => {
 			onFiltersChange({ ...filters, [key]: values });
 		},
 		[filters, onFiltersChange],

@@ -1,0 +1,1 @@
+- fix: preseve routing rule targets for genai and bedrock paths for vk level provider load balancing

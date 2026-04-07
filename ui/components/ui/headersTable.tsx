@@ -117,20 +117,23 @@ export function HeadersTable<T extends HeaderValue>({
 			return next;
 		});
 
-		const newHeaders = { ...value };
-
-		// Remove old key if it exists and is not empty
-		if (oldKey !== "" && oldKey in newHeaders) {
-			delete newHeaders[oldKey];
+		// Rebuild the object preserving key order so the row doesn't jump to the end
+		const newHeaders: Record<string, T> = {};
+		for (const [k, v] of Object.entries(value) as [string, T][]) {
+			if (k === oldKey && oldKey !== "") {
+				// Replace old key with new key at the same position
+				if (newKey !== "") {
+					newHeaders[newKey] = currentValue;
+				}
+			} else if (k !== "") {
+				newHeaders[k] = v;
+			}
 		}
 
-		// Only add new entry if key is not empty
-		if (newKey !== "") {
+		// If this was a new (empty-key) row, append at the end
+		if (oldKey === "" && newKey !== "") {
 			newHeaders[newKey] = currentValue;
 		}
-
-		// Clean up any empty string keys
-		delete newHeaders[""];
 
 		onChange(newHeaders);
 	};

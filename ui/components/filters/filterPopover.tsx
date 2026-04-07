@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
@@ -11,12 +12,19 @@ import { useState } from "react";
 
 interface FilterPopoverProps {
 	filters: LogFiltersType;
-	onFilterChange: (key: keyof LogFiltersType, values: string[] | boolean) => void;
+	onFilterChange: (key: keyof LogFiltersType, values: string[] | boolean | string) => void;
 	onMetadataFilterChange?: (metadataKey: string, value: string | undefined) => void;
 	showMissingCost?: boolean;
+	showParentRequestIdFilter?: boolean;
 }
 
-export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange, showMissingCost }: FilterPopoverProps) {
+export function FilterPopover({
+	filters,
+	onFilterChange,
+	onMetadataFilterChange,
+	showMissingCost,
+	showParentRequestIdFilter = true,
+}: FilterPopoverProps) {
 	const [open, setOpen] = useState(false);
 	const [customMetadataInputs, setCustomMetadataInputs] = useState<Record<string, string>>({});
 
@@ -195,6 +203,21 @@ export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange,
 					<CommandInput placeholder="Search filters..." data-testid="filters-search-input" />
 					<CommandList>
 						<CommandEmpty>No filters found.</CommandEmpty>
+						{showParentRequestIdFilter && (
+							<CommandGroup heading="Session">
+								<div className="px-2 py-1.5">
+									<Input
+										value={filters.parent_request_id || ""}
+										onChange={(e) => onFilterChange("parent_request_id", e.target.value)}
+										onKeyDown={(e) => e.stopPropagation()}
+										onClick={(e) => e.stopPropagation()}
+										placeholder="Parent request ID"
+										className="h-8"
+										data-testid="session-parent-request-id-input"
+									/>
+								</div>
+							</CommandGroup>
+						)}
 						{showMissingCost && (
 							<CommandGroup>
 								<CommandItem className="cursor-pointer">

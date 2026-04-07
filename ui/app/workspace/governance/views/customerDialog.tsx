@@ -25,13 +25,13 @@ interface CustomerDialogProps {
 
 interface CustomerFormData {
 	name: string;
-	// Budget (stored as string to allow intermediate decimal states like "1.")
-	budgetMaxLimit: string;
+	// Budget
+	budgetMaxLimit: number | undefined;
 	budgetResetDuration: string;
-	// Rate Limit (stored as string)
-	tokenMaxLimit: string;
+	// Rate Limit
+	tokenMaxLimit: number | undefined;
 	tokenResetDuration: string;
-	requestMaxLimit: string;
+	requestMaxLimit: number | undefined;
 	requestResetDuration: string;
 	isDirty: boolean;
 }
@@ -40,13 +40,13 @@ interface CustomerFormData {
 const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, "isDirty"> => {
 	return {
 		name: customer?.name || "",
-		// Budget (stored as string)
-		budgetMaxLimit: customer?.budget ? String(customer.budget.max_limit) : "",
+		// Budget
+		budgetMaxLimit: customer?.budget?.max_limit ?? undefined,
 		budgetResetDuration: customer?.budget?.reset_duration || "1M",
-		// Rate Limit (stored as string)
-		tokenMaxLimit: customer?.rate_limit?.token_max_limit ? String(customer.rate_limit.token_max_limit) : "",
+		// Rate Limit
+		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
-		requestMaxLimit: customer?.rate_limit?.request_max_limit ? String(customer.rate_limit.request_max_limit) : "",
+		requestMaxLimit: customer?.rate_limit?.request_max_limit ?? undefined,
 		requestResetDuration: customer?.rate_limit?.request_reset_duration || "1h",
 	};
 };
@@ -85,10 +85,10 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 		}));
 	}, [formData.name, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
 
-	// Parse string values to numbers for validation and submission
-	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
-	const tokenMaxLimitNum = formData.tokenMaxLimit ? parseInt(formData.tokenMaxLimit) : undefined;
-	const requestMaxLimitNum = formData.requestMaxLimit ? parseInt(formData.requestMaxLimit) : undefined;
+	// Values for validation and submission (already numbers)
+	const budgetMaxLimitNum = formData.budgetMaxLimit;
+	const tokenMaxLimitNum = formData.tokenMaxLimit;
+	const requestMaxLimitNum = formData.requestMaxLimit;
 
 	// Validation
 	const validator = useMemo(
@@ -101,25 +101,25 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				Validator.custom(formData.isDirty, "No changes to save"),
 
 				// Budget validation
-				...(formData.budgetMaxLimit
+				...(formData.budgetMaxLimit !== undefined && formData.budgetMaxLimit !== null
 					? [
-							Validator.minValue(budgetMaxLimitNum || 0, 0.01, "Budget max limit must be greater than $0.01"),
+							Validator.minValue(budgetMaxLimitNum ?? 0, 0.01, "Budget max limit must be greater than $0.01"),
 							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
 						]
 					: []),
 
 				// Rate limit validation - token limits
-				...(formData.tokenMaxLimit
+				...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 					? [
-							Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+							Validator.minValue(tokenMaxLimitNum ?? 0, 1, "Token max limit must be at least 1"),
 							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
 						]
 					: []),
 
 				// Rate limit validation - request limits
-				...(formData.requestMaxLimit
+				...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 					? [
-							Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+							Validator.minValue(requestMaxLimitNum ?? 0, 1, "Request max limit must be at least 1"),
 							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
 						]
 					: []),
@@ -148,7 +148,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 				// Detect budget changes using had/has pattern
 				const hadBudget = !!customer.budget;
-				const hasBudget = !!budgetMaxLimitNum;
+				const hasBudget = budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null;
 				if (hasBudget) {
 					updateData.budget = {
 						max_limit: budgetMaxLimitNum,
@@ -160,13 +160,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!customer.rate_limit;
-				const hasRateLimit = !!tokenMaxLimitNum || !!requestMaxLimitNum;
+				const hasRateLimit = (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateCustomerRequest["rate_limit"];
@@ -181,7 +181,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				};
 
 				// Add budget if enabled
-				if (budgetMaxLimitNum) {
+				if (budgetMaxLimitNum !== undefined && budgetMaxLimitNum !== null) {
 					createData.budget = {
 						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
@@ -189,12 +189,12 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				}
 
 				// Add rate limit if enabled (token or request limits)
-				if (tokenMaxLimitNum || requestMaxLimitNum) {
+				if ((tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
-						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				}
 

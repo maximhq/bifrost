@@ -531,7 +531,7 @@ export default function DashboardPage() {
 
 	// Filter change handler for FilterPopover
 	const handleFilterChange = useCallback(
-		(key: keyof LogFilters, values: string[] | boolean) => {
+		(key: keyof LogFilters, values: string[] | boolean | string) => {
 			const urlKeyMap: Partial<Record<keyof LogFilters, string>> = {
 				providers: "providers",
 				models: "models",
@@ -547,6 +547,8 @@ export default function DashboardPage() {
 			if (!urlKey) return;
 			if (typeof values === "boolean") {
 				setUrlState({ [urlKey]: String(values) });
+			} else if (typeof values === "string") {
+				setUrlState({ [urlKey]: values });
 			} else {
 				setUrlState({ [urlKey]: values.join(",") });
 			}
@@ -608,7 +610,7 @@ export default function DashboardPage() {
 				</div>
 				<div className="flex items-center gap-2">
 					{(urlState.tab === "overview" || urlState.tab === "provider-usage" || urlState.tab === "rankings") && (
-						<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
+						<FilterPopover filters={filters} onFilterChange={handleFilterChange} showParentRequestIdFilter={false} />
 					)}
 					{urlState.tab === "mcp" && mcpFilterData && (
 						<div className="flex items-center gap-1">

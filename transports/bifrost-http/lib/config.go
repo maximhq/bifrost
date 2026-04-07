@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"gorm.io/gorm"
@@ -103,6 +104,7 @@ func getWeight(w *float64) float64 {
 // IsBuiltinPlugin checks if a plugin is a built-in plugin
 func IsBuiltinPlugin(name string) bool {
 	return name == telemetry.PluginName ||
+		name == prompts.PluginName ||
 		name == logging.PluginName ||
 		name == governance.PluginName ||
 		name == litellmcompat.PluginName ||
@@ -2100,9 +2102,17 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	}
 
 	// Initialize MCP catalog
-	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
-		PricingData: buildMCPPricingDataFromConfig(ctx, configData),
-	}, logger)
+	// Merge file-based pricing into mcpPricingConfig (DB data already loaded above).
+	// File config is used as fallback; DB values take precedence via the merge order.
+	if mcpPricingConfig.PricingData == nil {
+		mcpPricingConfig.PricingData = mcpcatalog.MCPPricingData{}
+	}
+	for k, v := range buildMCPPricingDataFromConfig(ctx, configData) {
+		if _, exists := mcpPricingConfig.PricingData[k]; !exists {
+			mcpPricingConfig.PricingData[k] = v
+		}
+	}
+	mcpCatalog, err := mcpcatalog.Init(ctx, mcpPricingConfig, logger)
 	if err != nil {
 		logger.Warn("failed to initialize MCP catalog: %v", err)
 	}

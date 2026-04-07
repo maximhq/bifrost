@@ -133,11 +133,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Get previous N transport versions (excluding prereleases)
+# Get previous N transport versions (excluding prereleases) plus explicitly tested prereleases
 get_previous_versions() {
   local count="${1:-3}"
   cd "$REPO_ROOT"
-  git tag -l "transports/v*" | grep -v -- "-" | sort -V | tail -n "$count" | sed 's|transports/||'
+  local stable
+  stable=$(git tag -l "transports/v*" | grep -v -- "-" | sort -V | tail -n "$count" | sed 's|transports/||')
+  # Explicitly include prerelease versions that need migration coverage
+  local prereleases="v1.5.0-prerelease1"
+  echo "$stable"$'\n'"$prereleases" | grep -v '^$' | sort -V | uniq
 }
 
 # Wait for bifrost to start
@@ -837,6 +841,16 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_keys SET vllm_model_name = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
   fi
 
+  # config_keys.ollama_url, sgl_url (added in v1.5.0-prerelease1)
+  if column_exists_postgres "config_keys" "ollama_url"; then
+    echo "UPDATE config_keys SET ollama_url = '' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET ollama_url = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+  if column_exists_postgres "config_keys" "sgl_url"; then
+    echo "UPDATE config_keys SET sgl_url = '' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET sgl_url = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
   # config_keys.encryption_status (added in v1.4.8)
   if column_exists_postgres "config_keys" "encryption_status"; then
     echo "UPDATE config_keys SET encryption_status = 'plain_text' WHERE name = 'migration-test-key-openai';" >> "$output_file"
@@ -963,6 +977,17 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  # logs.image_edit_input, image_variation_input (added in v1.5.0-prerelease1)
+  if column_exists_postgres "logs" "image_edit_input"; then
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "image_variation_input"; then
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
   if column_exists_postgres "logs" "video_list_output"; then
     echo "UPDATE logs SET video_list_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
@@ -1375,6 +1400,16 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE config_keys SET vllm_model_name = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
     fi
 
+    # config_keys.ollama_url, sgl_url (added in v1.5.0-prerelease1)
+    if column_exists_sqlite "$config_db" "config_keys" "ollama_url"; then
+      echo "UPDATE config_keys SET ollama_url = '' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET ollama_url = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "config_keys" "sgl_url"; then
+      echo "UPDATE config_keys SET sgl_url = '' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET sgl_url = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
     # config_keys.encryption_status (added in v1.4.8)
     if column_exists_sqlite "$config_db" "config_keys" "encryption_status"; then
       echo "UPDATE config_keys SET encryption_status = 'plain_text' WHERE name = 'migration-test-key-openai';" >> "$output_file"
@@ -1493,6 +1528,17 @@ append_dynamic_columns_sqlite() {
   echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET video_download_output = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  # logs.image_edit_input, image_variation_input (added in v1.5.0-prerelease1)
+  if column_exists_sqlite "$logs_db" "logs" "image_edit_input"; then
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET image_edit_input = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "image_variation_input"; then
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET image_variation_input = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
   echo "UPDATE logs SET video_list_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET video_list_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
   echo "UPDATE logs SET video_list_output = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
@@ -2677,6 +2723,20 @@ compare_postgres_snapshots() {
     # provider, model (dropped from routing_rules only in v1.4.12)
     if [ "$table" = "routing_rules" ]; then
       dropped_columns="$dropped_columns provider model"
+    fi
+    # azure_deployments_json, vertex_deployments_json, bedrock_deployments_json, replicate_deployments_json
+    # (dropped from config_keys - migrated to provider-level deployment config)
+    if [ "$table" = "config_keys" ]; then
+      dropped_columns="$dropped_columns azure_deployments_json vertex_deployments_json bedrock_deployments_json replicate_deployments_json"
+    fi
+    # budget_id (dropped from governance_virtual_keys and governance_virtual_key_provider_configs
+    # in add_multi_budget_tables - ownership moved to governance_budgets.virtual_key_id/provider_config_id)
+    if [ "$table" = "governance_virtual_keys" ] || [ "$table" = "governance_virtual_key_provider_configs" ]; then
+      dropped_columns="$dropped_columns budget_id"
+    fi
+    # calendar_aligned (dropped from governance_budgets in add_multi_budget_tables - moved to governance_virtual_keys.calendar_aligned)
+    if [ "$table" = "governance_budgets" ]; then
+      dropped_columns="$dropped_columns calendar_aligned"
     fi
     
     local before_col_array

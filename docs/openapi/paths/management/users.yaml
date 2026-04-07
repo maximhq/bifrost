@@ -200,6 +200,12 @@ users-teams:
               $ref: '../../schemas/management/users.yaml#/UserTeamsResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: User not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -364,7 +370,7 @@ teams-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/users.yaml#/CreateTeamRequest'
+            $ref: '../../schemas/management/users.yaml#/UpdateTeamRequest'
     responses:
       '200':
         description: Team updated successfully
@@ -441,6 +447,12 @@ team-members:
               $ref: '../../schemas/management/users.yaml#/TeamMembersResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

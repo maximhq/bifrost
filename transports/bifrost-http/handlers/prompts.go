@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/fasthttp/router"
@@ -14,15 +16,35 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// PromptsHandler handles prompt repository endpoints
-type PromptsHandler struct {
-	store configstore.ConfigStore
+// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
+// to trigger an in-memory cache refresh after any repository mutation.
+type PromptCacheReloader interface {
+	Reload(ctx context.Context) error
 }
 
-// NewPromptsHandler creates a new PromptsHandler
-func NewPromptsHandler(store configstore.ConfigStore) *PromptsHandler {
-	return &PromptsHandler{
-		store: store,
+// PromptsHandler handles prompt repository endpoints
+type PromptsHandler struct {
+	store    configstore.ConfigStore
+	reloader PromptCacheReloader // optional; nil when the prompts plugin is not loaded
+}
+
+// NewPromptsHandler creates a new PromptsHandler.
+// reloader may be nil; when set, the in-memory prompt cache is refreshed after mutations.
+func NewPromptsHandler(store configstore.ConfigStore, reloader PromptCacheReloader) *PromptsHandler {
+	if store == nil {
+		return nil
+	}
+	return &PromptsHandler{store: store, reloader: reloader}
+}
+
+// reloadCache triggers a cache refresh if a reloader is configured.
+// Errors are logged but do not fail the originating request.
+func (h *PromptsHandler) reloadCache(ctx context.Context) {
+	if h.reloader == nil {
+		return
+	}
+	if err := h.reloader.Reload(ctx); err != nil {
+		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
 
@@ -143,7 +165,8 @@ type RenameSessionRequest struct {
 
 // CommitSessionRequest represents the request body for committing a session as a version
 type CommitSessionRequest struct {
-	CommitMessage string `json:"commit_message"`
+	CommitMessage  string `json:"commit_message"`
+	MessageIndices *[]int `json:"message_indices,omitempty"` // optional: indices of messages to include (0-based). If nil/absent, all messages are included.
 }
 
 // ============================================================================
@@ -294,6 +317,7 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "folder deleted successfully",
 	})
@@ -392,6 +416,7 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -465,6 +490,7 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -493,6 +519,7 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "prompt deleted successfully",
 	})
@@ -619,6 +646,7 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -652,6 +680,7 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"message": "version deleted successfully",
 	})
@@ -1005,11 +1034,36 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 
 	// Convert session messages to version messages
 	var messages []tables.TablePromptVersionMessage
-	for _, msg := range session.Messages {
-		messages = append(messages, tables.TablePromptVersionMessage{
-			PromptID: session.PromptID,
-			Message:  msg.Message,
-		})
+	if req.MessageIndices != nil {
+		// Only include messages at the specified indices, deduplicating
+		seen := make(map[int]struct{})
+		for _, idx := range *req.MessageIndices {
+			if _, ok := seen[idx]; ok {
+				continue
+			}
+			seen[idx] = struct{}{}
+			if idx < 0 || idx >= len(session.Messages) {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("message index %d out of range (0-%d)", idx, len(session.Messages)-1))
+				return
+			}
+			msg := session.Messages[idx]
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
+	} else {
+		for _, msg := range session.Messages {
+			messages = append(messages, tables.TablePromptVersionMessage{
+				PromptID: session.PromptID,
+				Message:  msg.Message,
+			})
+		}
+	}
+
+	if len(messages) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "at least one message must be included in the version")
+		return
 	}
 
 	version := &tables.TablePromptVersion{
@@ -1027,6 +1081,7 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
