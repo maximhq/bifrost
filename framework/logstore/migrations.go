@@ -203,6 +203,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRequestIDColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1481,6 +1484,57 @@ func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) e
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding metadata column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRequestIDColumnToMCPToolLogs adds the request_id column to the mcp_tool_logs table.
+// This stores the original context request ID separately from the primary key (which is now a UUID),
+// enabling correct logging of parallel tool calls that share the same request ID.
+func migrationAddRequestIDColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_request_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&MCPToolLog{}, "request_id") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "request_id"); err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec(
+				"UPDATE mcp_tool_logs SET request_id = id WHERE request_id IS NULL OR request_id = ''",
+			).Error; err != nil {
+				return fmt.Errorf("failed to backfill request_id: %w", err)
+			}
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_request_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_request_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_request_id") {
+				if err := migrator.DropIndex(&MCPToolLog{}, "idx_mcp_logs_request_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&MCPToolLog{}, "request_id") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "request_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding request_id column to mcp_tool_logs: %s", err.Error())
 	}
 	return nil
 }
