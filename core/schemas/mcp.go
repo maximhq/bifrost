@@ -115,6 +115,9 @@ func parseFlexibleDurationJSON(data json.RawMessage) (time.Duration, error) {
 	var durationString string
 	if err := json.Unmarshal(data, &durationString); err == nil {
 		parsedDuration, parseErr := time.ParseDuration(durationString)
+		if durationString == "" {
+			return 0, nil
+		}
 		if parseErr != nil {
 			return 0, fmt.Errorf("invalid duration %q: %w", durationString, parseErr)
 		}
