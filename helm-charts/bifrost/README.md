@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.15
+**Latest Version:** 2.0.16
 
 ## Changelog
+
+### v2.0.16
+
+- Fixed disabled plugins being completely removed from rendered config.json instead of being kept with `enabled: false`
+- Applies to all built-in plugins (telemetry, logging, governance, maxim, semantic cache, otel, datadog) and custom plugins
 
 ### v2.0.15
 
