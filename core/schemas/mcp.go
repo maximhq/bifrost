@@ -5,7 +5,9 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -75,7 +77,7 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID               string            `json:"client_id"`                          // Client ID
+	ID               string            `json:"client_id"`                   // Client ID
 	Name             string            `json:"name"`                        // Client name
 	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
@@ -103,6 +105,130 @@ type MCPClientConfig struct {
 	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
 	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
 	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+}
+
+func parseFlexibleDurationJSON(data json.RawMessage) (time.Duration, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+
+	var durationString string
+	if err := json.Unmarshal(data, &durationString); err == nil {
+		parsedDuration, parseErr := time.ParseDuration(durationString)
+		if parseErr != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", durationString, parseErr)
+		}
+		return parsedDuration, nil
+	}
+
+	var durationNanos int64
+	if err := json.Unmarshal(data, &durationNanos); err == nil {
+		return time.Duration(durationNanos), nil
+	}
+
+	return 0, errors.New("must be a duration string or integer nanoseconds")
+}
+
+// UnmarshalJSON accepts duration fields as either Go duration strings (for example "10m")
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type rawMCPConfig struct {
+		ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`
+		ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"`
+		ToolSyncInterval  json.RawMessage       `json:"tool_sync_interval,omitempty"`
+	}
+
+	var raw rawMCPConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	c.ClientConfigs = raw.ClientConfigs
+	c.ToolManagerConfig = raw.ToolManagerConfig
+
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
+	if err != nil {
+		return fmt.Errorf("tool_sync_interval: %w", err)
+	}
+	c.ToolSyncInterval = parsedDuration
+
+	return nil
+}
+
+// UnmarshalJSON accepts tool_execution_timeout as either a Go duration string
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	type rawMCPToolManagerConfig struct {
+		ToolExecutionTimeout json.RawMessage      `json:"tool_execution_timeout,omitempty"`
+		MaxAgentDepth        int                  `json:"max_agent_depth"`
+		CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`
+	}
+
+	var raw rawMCPToolManagerConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	c.MaxAgentDepth = raw.MaxAgentDepth
+	c.CodeModeBindingLevel = raw.CodeModeBindingLevel
+
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolExecutionTimeout)
+	if err != nil {
+		return fmt.Errorf("tool_execution_timeout: %w", err)
+	}
+	c.ToolExecutionTimeout = parsedDuration
+
+	return nil
+}
+
+// UnmarshalJSON accepts tool_sync_interval as either a Go duration string
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type rawMCPClientConfig struct {
+		ID                 string             `json:"client_id"`
+		Name               string             `json:"name"`
+		IsCodeModeClient   bool               `json:"is_code_mode_client"`
+		ConnectionType     MCPConnectionType  `json:"connection_type"`
+		ConnectionString   *EnvVar            `json:"connection_string,omitempty"`
+		StdioConfig        *MCPStdioConfig    `json:"stdio_config,omitempty"`
+		AuthType           MCPAuthType        `json:"auth_type"`
+		OauthConfigID      *string            `json:"oauth_config_id,omitempty"`
+		State              string             `json:"state,omitempty"`
+		Headers            map[string]EnvVar  `json:"headers,omitempty"`
+		ToolsToExecute     []string           `json:"tools_to_execute,omitempty"`
+		ToolsToAutoExecute []string           `json:"tools_to_auto_execute,omitempty"`
+		IsPingAvailable    bool               `json:"is_ping_available"`
+		ToolSyncInterval   json.RawMessage    `json:"tool_sync_interval,omitempty"`
+		ToolPricing        map[string]float64 `json:"tool_pricing,omitempty"`
+	}
+
+	var raw rawMCPClientConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	c.ID = raw.ID
+	c.Name = raw.Name
+	c.IsCodeModeClient = raw.IsCodeModeClient
+	c.ConnectionType = raw.ConnectionType
+	c.ConnectionString = raw.ConnectionString
+	c.StdioConfig = raw.StdioConfig
+	c.AuthType = raw.AuthType
+	c.OauthConfigID = raw.OauthConfigID
+	c.State = raw.State
+	c.Headers = raw.Headers
+	c.ToolsToExecute = raw.ToolsToExecute
+	c.ToolsToAutoExecute = raw.ToolsToAutoExecute
+	c.IsPingAvailable = raw.IsPingAvailable
+	c.ToolPricing = raw.ToolPricing
+
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
+	if err != nil {
+		return fmt.Errorf("tool_sync_interval: %w", err)
+	}
+	c.ToolSyncInterval = parsedDuration
+
+	return nil
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
