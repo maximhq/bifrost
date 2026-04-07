@@ -18,7 +18,8 @@ type MistralErrorResponse struct {
 	Error   *schemas.ErrorField `json:"error,omitempty"`
 }
 
-func parseMistralError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+// ParseMistralError parses Mistral-specific error responses.
+func ParseMistralError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
 	var errorResp MistralErrorResponse
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if bifrostErr == nil {

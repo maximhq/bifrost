@@ -70,7 +70,27 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 
 // GetProviderKey returns the provider identifier for Mistral.
 func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
-	return providerUtils.GetProviderName(schemas.Mistral, provider.customProviderConfig)
+	return provider.reportedProviderKey()
+}
+
+func (provider *MistralProvider) baseProviderKey() schemas.ModelProvider {
+	return schemas.Mistral
+}
+
+func (provider *MistralProvider) reportedProviderKey() schemas.ModelProvider {
+	return providerUtils.GetProviderName(provider.baseProviderKey(), provider.customProviderConfig)
+}
+
+// Shared OpenAI-compatible converters key Mistral compatibility off the base provider,
+// while Bifrost still needs the custom alias for provider identity and reporting.
+func (provider *MistralProvider) normalizeChatRequestProvider(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil {
+		return nil
+	}
+
+	normalizedRequest := *request
+	normalizedRequest.Provider = provider.baseProviderKey()
+	return &normalizedRequest
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -103,7 +123,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := ParseMistralError(resp, schemas.ListModelsRequest, providerName, "")
 		return nil, bifrostErr
 	}
 
@@ -160,6 +180,8 @@ func (provider *MistralProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	request = provider.normalizeChatRequestProvider(request)
+
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -171,7 +193,7 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
-		nil,
+		ParseMistralError,
 		provider.logger,
 	)
 }
@@ -181,6 +203,8 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // Uses Mistral's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	request = provider.normalizeChatRequestProvider(request)
+
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -195,11 +219,11 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.Mistral,
+		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		nil,
-		nil,
+		ParseMistralError,
 		nil,
 		nil,
 		provider.logger,
@@ -243,7 +267,7 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
-		schemas.Mistral,
+		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
@@ -319,7 +343,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseMistralError(resp, schemas.OCRRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp, schemas.OCRRequest, providerName, request.Model)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -429,7 +453,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseMistralError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -564,7 +588,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, parseMistralError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
