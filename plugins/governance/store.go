@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/routing"
 	"gorm.io/gorm"
 )
 
@@ -3451,10 +3452,10 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableR
 	}
 
 	// Normalize header and param keys to lowercase so CEL expressions match normalized map keys
-	expr = normalizeMapKeysInCEL(expr)
+	expr = routing.NormalizeMapKeysInCEL(expr)
 
 	// Validate expression format
-	if err := validateCELExpression(expr); err != nil {
+	if err := routing.ValidateCELExpression(expr); err != nil {
 		return nil, fmt.Errorf("invalid CEL expression: %w", err)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/routing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1159,7 +1160,7 @@ func TestValidateCELExpression_Valid(t *testing.T) {
 	}
 
 	for _, expr := range tests {
-		err := validateCELExpression(expr)
+		err := routing.ValidateCELExpression(expr)
 		assert.NoError(t, err, "expression should be valid: %s", expr)
 	}
 }
@@ -1173,7 +1174,7 @@ func TestValidateCELExpression_Invalid(t *testing.T) {
 	}
 
 	for _, expr := range tests {
-		err := validateCELExpression(expr)
+		err := routing.ValidateCELExpression(expr)
 		assert.Error(t, err, "expression should be invalid: %s", expr)
 	}
 }
@@ -1733,7 +1734,7 @@ func TestNormalizeMapKeysInCEL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := normalizeMapKeysInCEL(tt.input)
+			result := routing.NormalizeMapKeysInCEL(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
