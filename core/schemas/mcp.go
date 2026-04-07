@@ -135,20 +135,15 @@ func parseFlexibleDurationJSON(data json.RawMessage) (time.Duration, error) {
 // UnmarshalJSON accepts duration fields as either Go duration strings (for example "10m")
 // or raw integer nanoseconds for backward compatibility.
 func (c *MCPConfig) UnmarshalJSON(data []byte) error {
-	type rawMCPConfig struct {
-		ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`
-		ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"`
-		ToolSyncInterval  json.RawMessage       `json:"tool_sync_interval,omitempty"`
+	type alias MCPConfig
+	var raw struct {
+		*alias
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
 	}
-
-	var raw rawMCPConfig
+	raw.alias = (*alias)(c)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-
-	c.ClientConfigs = raw.ClientConfigs
-	c.ToolManagerConfig = raw.ToolManagerConfig
-
 	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
 	if err != nil {
 		return fmt.Errorf("tool_sync_interval: %w", err)
@@ -161,19 +156,15 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 // UnmarshalJSON accepts tool_execution_timeout as either a Go duration string
 // or raw integer nanoseconds for backward compatibility.
 func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
-	type rawMCPToolManagerConfig struct {
-		ToolExecutionTimeout json.RawMessage      `json:"tool_execution_timeout,omitempty"`
-		MaxAgentDepth        int                  `json:"max_agent_depth"`
-		CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`
+	type alias MCPToolManagerConfig
+	var raw struct {
+		*alias
+		ToolExecutionTimeout json.RawMessage `json:"tool_execution_timeout,omitempty"`
 	}
-
-	var raw rawMCPToolManagerConfig
+	raw.alias = (*alias)(c)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-
-	c.MaxAgentDepth = raw.MaxAgentDepth
-	c.CodeModeBindingLevel = raw.CodeModeBindingLevel
 
 	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolExecutionTimeout)
 	if err != nil {
@@ -187,43 +178,15 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 // UnmarshalJSON accepts tool_sync_interval as either a Go duration string
 // or raw integer nanoseconds for backward compatibility.
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
-	type rawMCPClientConfig struct {
-		ID                 string             `json:"client_id"`
-		Name               string             `json:"name"`
-		IsCodeModeClient   bool               `json:"is_code_mode_client"`
-		ConnectionType     MCPConnectionType  `json:"connection_type"`
-		ConnectionString   *EnvVar            `json:"connection_string,omitempty"`
-		StdioConfig        *MCPStdioConfig    `json:"stdio_config,omitempty"`
-		AuthType           MCPAuthType        `json:"auth_type"`
-		OauthConfigID      *string            `json:"oauth_config_id,omitempty"`
-		State              string             `json:"state,omitempty"`
-		Headers            map[string]EnvVar  `json:"headers,omitempty"`
-		ToolsToExecute     []string           `json:"tools_to_execute,omitempty"`
-		ToolsToAutoExecute []string           `json:"tools_to_auto_execute,omitempty"`
-		IsPingAvailable    bool               `json:"is_ping_available"`
-		ToolSyncInterval   json.RawMessage    `json:"tool_sync_interval,omitempty"`
-		ToolPricing        map[string]float64 `json:"tool_pricing,omitempty"`
+	type alias MCPClientConfig
+	var raw struct {
+		*alias
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
 	}
-
-	var raw rawMCPClientConfig
+	raw.alias = (*alias)(c)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-
-	c.ID = raw.ID
-	c.Name = raw.Name
-	c.IsCodeModeClient = raw.IsCodeModeClient
-	c.ConnectionType = raw.ConnectionType
-	c.ConnectionString = raw.ConnectionString
-	c.StdioConfig = raw.StdioConfig
-	c.AuthType = raw.AuthType
-	c.OauthConfigID = raw.OauthConfigID
-	c.State = raw.State
-	c.Headers = raw.Headers
-	c.ToolsToExecute = raw.ToolsToExecute
-	c.ToolsToAutoExecute = raw.ToolsToAutoExecute
-	c.IsPingAvailable = raw.IsPingAvailable
-	c.ToolPricing = raw.ToolPricing
 
 	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
 	if err != nil {
