@@ -1,8 +1,8 @@
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import ModelParameters from "@/components/ui/custom/modelParameters";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { ScrollArea } from "@/components/ui/scrollArea";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -10,8 +10,9 @@ import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { ModelProviderName } from "@/lib/types/config";
 import { ModelParams } from "@/lib/types/prompts";
-import PromptDeploymentView from "@enterprise/components/prompt-deployments/promptDeploymentView";
-import { useCallback, useMemo } from "react";
+import { cn } from "@/lib/utils";
+import { PromptDeploymentsAccordionItem } from "@enterprise/components/prompt-deployments/promptDeploymentsAccordionItem";
+import { useCallback, useMemo, useState } from "react";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
@@ -26,6 +27,9 @@ export function SettingsPanel() {
 		setModelParams: onModelParamsChange,
 		apiKeyId,
 		setApiKeyId,
+		variables,
+		setVariables,
+		selectedPromptId,
 	} = usePromptContext();
 
 	const onProviderChange = useCallback(
@@ -113,6 +117,11 @@ export function SettingsPanel() {
 		[onModelParamsChange],
 	);
 
+	const hasModel = Boolean(model);
+
+	type SettingsSection = "parameters" | "deployments";
+	const [openSection, setOpenSection] = useState<SettingsSection | undefined>("parameters");
+
 	if (isInitialLoading) {
 		return (
 			<div className="flex h-full flex-col">
@@ -131,66 +140,98 @@ export function SettingsPanel() {
 	}
 
 	return (
-		<div className="flex h-full flex-col">
-			<ScrollArea className="grow overflow-y-auto" viewportClassName="no-table">
-				<div className="space-y-6 p-4">
-					<div className="flex flex-col gap-2" data-testid="settings-provider">
-						<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
-						<ComboboxSelect
-							options={providerOptions}
-							value={provider}
-							onValueChange={(v) => v && onProviderChange(v)}
-							placeholder="Select provider"
-							hideClear
-						/>
-					</div>
+		<div className="flex h-full min-h-0 flex-col">
+			<div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-2">
+				<Accordion
+					type="single"
+					collapsible
+					value={openSection ?? ""}
+					onValueChange={(v) => {
+						if (v === "parameters" || v === "deployments") {
+							setOpenSection(v);
+						} else {
+							setOpenSection(undefined);
+						}
+					}}
+					className="flex min-h-0 flex-1 flex-col"
+				>
+					<AccordionItem
+						value="parameters"
+						className={cn(
+							"flex min-h-0 flex-col border-b-0",
+							openSection === "parameters" ? "flex-1" : "shrink-0 overflow-hidden",
+						)}
+					>
+						<AccordionTrigger data-testid="prompts-configuration-trigger" className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline">
+							<span className="min-w-0 flex-1 text-left font-semibold">Configuration</span>
+						</AccordionTrigger>
+						<AccordionContent
+							containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"
+							className="min-h-0 flex-1 overflow-y-auto pb-2 pt-0"
+						>
+							<div className="space-y-6">
+								<div className="flex flex-col gap-2" data-testid="settings-provider">
+									<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
+									<ComboboxSelect
+										options={providerOptions}
+										value={provider}
+										onValueChange={(v) => v && onProviderChange(v)}
+										placeholder="Select provider"
+										hideClear
+									/>
+								</div>
 
-					<div className="flex flex-col gap-2" data-testid="settings-model">
-						<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
-						<ModelMultiselect
-							provider={provider}
-							keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
-							vks={filterVks}
-							value={model}
-							onChange={(v) => onModelChange(v)}
-							isSingleSelect
-							unfiltered
-							placeholder={!provider ? "Select a provider first" : "Select model"}
-							disabled={!provider}
-						/>
-					</div>
+								<div className="flex flex-col gap-2" data-testid="settings-model">
+									<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
+									<ModelMultiselect
+										provider={provider}
+										keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
+										vks={filterVks}
+										value={model}
+										onChange={(v) => onModelChange(v)}
+										isSingleSelect
+										placeholder={!provider ? "Select a provider first" : "Select model"}
+										disabled={!provider}
+										unfiltered={true}
+									/>
+								</div>
 
-					{(providerKeys.length > 0 || providerVirtualKeys.length > 0) && !!provider && (
-						<ApiKeySelectorView
-							providerKeys={providerKeys}
-							virtualKeys={providerVirtualKeys}
-							value={apiKeyId}
-							onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
-							disabled={!provider}
-						/>
-					)}
+								{(providerKeys.length > 0 || providerVirtualKeys.length > 0) && !!provider && (
+									<ApiKeySelectorView
+										providerKeys={providerKeys}
+										virtualKeys={providerVirtualKeys}
+										value={apiKeyId}
+										onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
+										disabled={!provider}
+									/>
+								)}
 
-					{Object.keys(variables).length > 0 && (
-						<>
-							<Separator />
-							<VariablesTableView variables={variables} onChange={setVariables} />
-						</>
-					)}
+								{Object.keys(variables).length > 0 && (
+									<>
+										<Separator />
+										<VariablesTableView variables={variables} onChange={setVariables} />
+									</>
+								)}
 
-					{model && (
-						<>
-							<Separator />
-
-							<div className="flex flex-col gap-4">
-								<Label className="text-muted-foreground text-xs font-medium uppercase">Model Parameters</Label>
-								<ModelParameters model={model} config={modelParams} onChange={handleModelParamsChange} hideFields={["promptTools"]} />
+								{hasModel && (
+									<>
+										<Separator />
+										<div className="flex flex-col gap-4">
+											<ModelParameters
+												model={model}
+												config={modelParams}
+												onChange={handleModelParamsChange}
+												hideFields={["promptTools"]}
+											/>
+										</div>
+									</>
+								)}
 							</div>
-						</>
-					)}
-
-					<PromptDeploymentView />
-				</div>
-			</ScrollArea>
+						</AccordionContent>
+					</AccordionItem>
+					{selectedPromptId && <PromptDeploymentsAccordionItem activeSection={openSection} />}
+				</Accordion>
+			</div>
 		</div>
 	);
 }
