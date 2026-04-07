@@ -2430,6 +2430,73 @@ func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
 	return result
 }
 
+// GetPerUserOAuthMCPClients returns a map of clientID -> clientName for all MCP clients
+// that have AuthType set to "per_user_oauth". The returned map is a copy, safe for concurrent use.
+func (c *Config) GetPerUserOAuthMCPClients() map[string]string {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth {
+			result[client.ID] = client.Name
+		}
+	}
+	return result
+}
+
+// GetPerUserOAuthMCPClientsForVirtualKey returns a map of clientID -> clientName for
+// per_user_oauth MCP clients that the given VK is allowed to use. A client is included if:
+//   - AllowOnAllVirtualKeys is true, OR
+//   - The VK has an explicit entry in governance_virtual_key_mcp_configs for that client.
+//
+// If virtualKeyID is empty, all per-user OAuth clients are returned. If the config store
+// is unavailable or the VK lookup fails, only clients with AllowOnAllVirtualKeys=true are returned.
+func (c *Config) GetPerUserOAuthMCPClientsForVirtualKey(ctx context.Context, virtualKeyID string) map[string]string {
+	all := c.GetPerUserOAuthMCPClients()
+	if virtualKeyID == "" {
+		return all
+	}
+
+	// Build set of per-user OAuth clients that allow all virtual keys.
+	c.muMCP.RLock()
+	allowAll := make(map[string]string)
+	if c.MCPConfig != nil {
+		for _, client := range c.MCPConfig.ClientConfigs {
+			if client != nil && client.AuthType == schemas.MCPAuthTypePerUserOauth && client.AllowOnAllVirtualKeys {
+				allowAll[client.ID] = client.Name
+			}
+		}
+	}
+	c.muMCP.RUnlock()
+
+	if c.ConfigStore == nil {
+		return allowAll
+	}
+
+	// Get VK-specific MCP configs (with MCPClient preloaded so we have the string ClientID).
+	vkConfigs, err := c.ConfigStore.GetVirtualKeyMCPConfigs(ctx, virtualKeyID)
+	if err != nil {
+		// Fail closed: only return clients that are allowed on all virtual keys.
+		return allowAll
+	}
+	explicit := make(map[string]bool, len(vkConfigs))
+	for _, cfg := range vkConfigs {
+		explicit[cfg.MCPClient.ClientID] = true
+	}
+
+	result := make(map[string]string)
+	for clientID, clientName := range all {
+		if _, ok := allowAll[clientID]; ok || explicit[clientID] {
+			result[clientID] = clientName
+		}
+	}
+	return result
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.

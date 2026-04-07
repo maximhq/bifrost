@@ -277,7 +277,6 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
-		schemas.Fireworks,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)

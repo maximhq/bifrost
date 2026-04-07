@@ -5,6 +5,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -594,12 +595,22 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 
 		// Try identity-based token lookup first (works even without session token)
 		accessToken, err := m.oauth2Provider.GetUserAccessTokenByIdentity(ctx, virtualKeyID, userID, sessionToken, client.ExecutionConfig.ID)
-		if err != nil && sessionToken != "" {
-			// Had session but token lookup failed — return error
+		if err != nil && !errors.Is(err, schemas.ErrOAuth2TokenNotFound) {
+			// Had session but token lookup failed with a real error (not just "not found") — return error
 			return nil, "", "", fmt.Errorf("failed to get user access token for MCP server %s: %w", client.ExecutionConfig.Name, err)
 		}
 		if err != nil {
-			// No session and no token by identity — user hasn't authenticated yet.
+			// No token found — user hasn't authenticated with this MCP server yet.
+			// In LLM gateway mode with no identity, we can't track who this user is,
+			// so an OAuth flow would produce an orphaned token. Return a clear error instead.
+			isMCPGateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool)
+			if !isMCPGateway && userID == "" && virtualKeyID == "" {
+				return nil, "", "", fmt.Errorf(
+					"per-user OAuth for %s requires a user identity: include X-Bf-User-Id or a Virtual Key in your request so the token can be linked to you",
+					client.ExecutionConfig.Name,
+				)
+			}
+
 			// Initiate OAuth flow to get a proper authorize URL with session tracking.
 			if client.ExecutionConfig.OauthConfigID == nil || *client.ExecutionConfig.OauthConfigID == "" {
 				return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth config but MCP client %s has none", client.ExecutionConfig.Name)

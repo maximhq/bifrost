@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/url"
+	"strings"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -69,31 +71,25 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if perUserErr == nil && sessionToken != "" {
-		// Per-user runtime OAuth flow completed — show session token
+		// Consent flow: session token is a flow proxy ("flow:<flowID>:<mcpClientID>").
+		// Redirect back to the MCPs consent page so the user can continue.
+		if strings.HasPrefix(sessionToken, "flow:") {
+			rest := strings.TrimPrefix(sessionToken, "flow:")
+			flowID := strings.SplitN(rest, ":", 2)[0]
+			mcpsURL := fmt.Sprintf("/oauth/consent/mcps?flow_id=%s", url.QueryEscape(flowID))
+			ctx.Redirect(mcpsURL, fasthttp.StatusFound)
+			return
+		}
+
+		// Per-user runtime OAuth flow completed — show success page.
 		ctx.SetStatusCode(fasthttp.StatusOK)
 		ctx.SetContentType("text/html")
-		ctx.SetBodyString(`
-			<!DOCTYPE html>
-			<html>
-			<head>
-				<title>Authorization Successful</title>
-				<script>
-					if (window.opener) {
-						window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
-						window.close();
-					}
-				</script>
-			</head>
-			<body>
-				<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
-					<div style="text-align: center;">
-						<h1>Authorization Successful</h1>
-						<p style="color: #666; font-size: 13px;">You can close this tab.</p>
-					</div>
-				</div>
-			</body>
-			</html>
-		`)
+		ctx.SetBodyString(oauthSuccessPage(`
+				if (window.opener) {
+					window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
+					window.close();
+				}
+		`, "Authorization Successful", "You can close this tab."))
 		return
 	}
 
@@ -107,31 +103,12 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	// Redirect to success page (or close popup)
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("text/html")
-	ctx.SetBodyString(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>OAuth Success</title>
-			<script>
-				// Close the popup window
-				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
-					window.close();
-				} else {
-					document.getElementById('message').textContent = 'OAuth authorization successful! You can close this window.';
-				}
-			</script>
-		</head>
-		<body>
-			<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
-				<div style="text-align: center;">
-					<h1>Authorization Successful</h1>
-					<p id="message">This window will close automatically...</p>
-				</div>
-			</div>
-		</body>
-		</html>
-	`)
+	ctx.SetBodyString(oauthSuccessPage(`
+		if (window.opener) {
+			window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
+			window.close();
+		}
+	`, "Authorization Successful", "OAuth authorization successful! You can close this window."))
 }
 
 // handleCallbackError handles OAuth callback errors
@@ -156,30 +133,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 	jsEscaped, _ := json.Marshal(errorMsg)
 	// HTML-escape for safe embedding in HTML body (prevents HTML injection)
 	htmlEscaped := html.EscapeString(errorMsg)
-	ctx.SetBodyString(fmt.Sprintf(`
-		<!DOCTYPE html>
-		<html>
-		<head>
-			<title>OAuth Failed</title>
-			<script>
-				// Notify parent window
-				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_failed', error: %s }, window.location.origin);
-					window.close();
-				}
-			</script>
-		</head>
-		<body>
-			<div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui;">
-				<div style="text-align: center;">
-					<h1>✗ Authorization Failed</h1>
-					<p>%s</p>
-					<p style="color: #666;">You can close this window.</p>
-				</div>
-			</div>
-		</body>
-		</html>
-	`, jsEscaped, htmlEscaped))
+	ctx.SetBodyString(oauthErrorPage(string(jsEscaped), htmlEscaped))
 }
 
 // getOAuthConfigStatus returns the current status of an OAuth config
@@ -293,6 +247,64 @@ func (h *OAuthHandler) RemovePendingMCPClient(oauthConfigID string) error {
 // Used during per-user OAuth setup to get the admin's temporary token for verification.
 func (h *OAuthHandler) GetAccessToken(ctx context.Context, oauthConfigID string) (string, error) {
 	return h.oauthProvider.GetAccessToken(ctx, oauthConfigID)
+}
+
+// oauthSuccessPage renders a Bifrost-themed success HTML page.
+// extraScript is injected verbatim into a <script> tag (caller is responsible for safety).
+func oauthSuccessPage(extraScript, title, message string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>%s</title>
+<style>%s
+  .icon{font-size:2.5rem;margin-bottom:16px}
+  .msg{font-size:0.9rem;color:oklch(0.552 0.016 285.938);margin-top:8px}
+</style>
+<script>%s</script>
+</head>
+<body>
+<div class="card" style="text-align:center">
+  <div class="icon">&#10003;</div>
+  <h1>%s</h1>
+  <p class="msg">%s</p>
+</div>
+</body>
+</html>`, html.EscapeString(title), bifrostPageCSS, extraScript, html.EscapeString(title), html.EscapeString(message))
+}
+
+// oauthErrorPage renders a Bifrost-themed error HTML page.
+// jsEscapedError must already be JSON-encoded (with quotes) for safe JS embedding.
+// htmlError must already be HTML-escaped for safe body embedding.
+func oauthErrorPage(jsEscapedError, htmlError string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorization Failed</title>
+<style>%s
+  .icon{font-size:2.5rem;margin-bottom:16px;color:oklch(0.50 0.18 27)}
+  .err-msg{font-size:0.9rem;color:oklch(0.552 0.016 285.938);margin-top:8px}
+  .hint{font-size:0.8rem;color:oklch(0.65 0.01 286);margin-top:16px}
+</style>
+<script>
+  if (window.opener) {
+    window.opener.postMessage({ type: 'oauth_failed', error: %s }, window.location.origin);
+    window.close();
+  }
+</script>
+</head>
+<body>
+<div class="card" style="text-align:center">
+  <div class="icon">&#10007;</div>
+  <h1>Authorization Failed</h1>
+  <p class="err-msg">%s</p>
+  <p class="hint">You can close this window.</p>
+</div>
+</body>
+</html>`, bifrostPageCSS, jsEscapedError, htmlError)
 }
 
 // jsEscapeString returns a JSON-encoded string (with quotes) safe for embedding in JavaScript.

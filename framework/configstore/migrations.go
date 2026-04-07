@@ -5949,20 +5949,36 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 		ID: "add_per_user_oauth_tables",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := tx.AutoMigrate(&tables.TablePerUserOAuthClient{}); err != nil {
-				return fmt.Errorf("failed to create oauth_per_user_clients table: %w", err)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TablePerUserOAuthClient{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthClient{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_clients table: %w", err)
+				}
 			}
-			if err := tx.AutoMigrate(&tables.TablePerUserOAuthSession{}); err != nil {
-				return fmt.Errorf("failed to create oauth_per_user_sessions table: %w", err)
+			if !mg.HasTable(&tables.TablePerUserOAuthSession{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthSession{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_sessions table: %w", err)
+				}
 			}
-			if err := tx.AutoMigrate(&tables.TablePerUserOAuthCode{}); err != nil {
-				return fmt.Errorf("failed to create oauth_per_user_codes table: %w", err)
+			if !mg.HasTable(&tables.TablePerUserOAuthCode{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthCode{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_codes table: %w", err)
+				}
 			}
-			if err := tx.AutoMigrate(&tables.TableOauthUserToken{}); err != nil {
-				return fmt.Errorf("failed to add identity columns to oauth_user_tokens: %w", err)
+			if !mg.HasTable(&tables.TableOauthUserToken{}) {
+				if err := mg.CreateTable(&tables.TableOauthUserToken{}); err != nil {
+					return fmt.Errorf("failed to create oauth_user_tokens table: %w", err)
+				}
 			}
-			if err := tx.AutoMigrate(&tables.TableOauthUserSession{}); err != nil {
-				return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
+			if !mg.HasTable(&tables.TableOauthUserSession{}) {
+				if err := mg.CreateTable(&tables.TableOauthUserSession{}); err != nil {
+					return fmt.Errorf("failed to create oauth_user_sessions table: %w", err)
+				}
+			}
+			if !mg.HasTable(&tables.TablePerUserOAuthPendingFlow{}) {
+				if err := mg.CreateTable(&tables.TablePerUserOAuthPendingFlow{}); err != nil {
+					return fmt.Errorf("failed to create oauth_per_user_pending_flows table: %w", err)
+				}
 			}
 
 			return nil
@@ -5971,6 +5987,7 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
 			for _, table := range []any{
+				&tables.TablePerUserOAuthPendingFlow{},
 				&tables.TablePerUserOAuthCode{},
 				&tables.TablePerUserOAuthSession{},
 				&tables.TablePerUserOAuthClient{},

@@ -31,12 +31,11 @@ type MCPToolManager interface {
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
-	toolManager          MCPToolManager
-	globalMCPServer      *server.MCPServer
-	vkMCPServers         map[string]*server.MCPServer // Map of vk value -> mcp server
-	config               *lib.Config
-	hasPerUserOAuthServers bool // Whether any per_user_oauth MCP servers are configured
-	mu                   sync.RWMutex
+	toolManager     MCPToolManager
+	globalMCPServer *server.MCPServer
+	vkMCPServers    map[string]*server.MCPServer // Map of vk value -> mcp server
+	config          *lib.Config
+	mu              sync.RWMutex
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
@@ -83,8 +82,33 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 }
 
 // handleMCPServer handles POST requests for MCP JSON-RPC 2.0 messages
+// injectMCPSessionIdentity sets the MCP gateway flag and, if a per-user OAuth
+// session exists, injects the session token and identity (VK / User ID) directly
+// into the BifrostContext. This avoids header-based identity propagation which
+// would be vulnerable to spoofing by upstream callers.
+//
+// Governance context keys are set here intentionally (bypassing governance plugin)
+// because in the MCP gateway path, identity is pre-authenticated via the OAuth session.
+func injectMCPSessionIdentity(bifrostCtx *schemas.BifrostContext, session *tables.TablePerUserOAuthSession) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+	if session != nil {
+		if session.AccessToken != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, session.AccessToken)
+		}
+		if session.VirtualKeyID != nil && *session.VirtualKeyID != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, *session.VirtualKeyID)
+			if session.VirtualKey != nil && session.VirtualKey.Name != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, session.VirtualKey.Name)
+			}
+		}
+		if session.UserID != nil && *session.UserID != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceUserID, *session.UserID)
+		}
+	}
+}
+
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	mcpServer, err := h.getMCPServerForRequest(ctx)
+	mcpServer, session, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
@@ -93,6 +117,8 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	defer cancel()
+
+	injectMCPSessionIdentity(bifrostCtx, session)
 
 	// Use mcp-go server to handle the request
 	// HandleMessage processes JSON-RPC messages and returns appropriate responses
@@ -118,7 +144,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 // handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
 func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
-	_, err := h.getMCPServerForRequest(ctx)
+	_, session, err := h.getMCPServerForRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, err.Error())
 		return
@@ -131,6 +157,8 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
+
+	injectMCPSessionIdentity(bifrostCtx, session)
 
 	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
 	reader := lib.NewSSEStreamReader()
@@ -260,6 +288,12 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			// Execute the tool via tool executor
 			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
+				if err.ExtraFields.MCPAuthRequired != nil {
+					return mcp.NewToolResultError(fmt.Sprintf(
+						"Authentication required for %s. Open this URL to connect your account: %s",
+						err.ExtraFields.MCPAuthRequired.MCPClientName, err.ExtraFields.MCPAuthRequired.AuthorizeURL,
+					)), nil
+				}
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
 
@@ -401,16 +435,7 @@ func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 
 // Utility methods
 
-// SetHasPerUserOAuthServers updates whether any per_user_oauth MCP servers are
-// configured. When true, the /mcp endpoint returns 401 with WWW-Authenticate
-// for unauthenticated requests to trigger the MCP spec OAuth flow.
-func (h *MCPServerHandler) SetHasPerUserOAuthServers(value bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.hasPerUserOAuthServers = value
-}
-
-func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, error) {
+func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*server.MCPServer, *tables.TablePerUserOAuthSession, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -421,88 +446,91 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 	vk := getVKFromRequest(ctx)
 
 	// Check for Bifrost per-user OAuth Bearer token (not a VK)
-	perUserSession := h.getPerUserOAuthSession(ctx)
-
-	// If per_user_oauth servers are configured and no valid auth, return 401 with discovery
-	if h.hasPerUserOAuthServers && vk == "" && perUserSession == nil {
-		if !enforceVK {
-			// Even without enforced VK, per_user_oauth servers require auth
-			scheme := "http"
-			if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-				scheme = "https"
-			}
-			host := string(ctx.Host())
-			resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, host)
-			ctx.Response.Header.Set("WWW-Authenticate",
-				fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
-			return nil, fmt.Errorf("OAuth authentication required for MCP access")
-		}
+	userOauthSession, sessionErr := h.getPerUserOAuthSession(ctx)
+	if sessionErr != nil {
+		return nil, nil, fmt.Errorf("failed to look up OAuth session: %w", sessionErr)
 	}
 
-	// If a per-user OAuth session is present, inject it into context and use global server.
-	// Also attach user identity to the session if not already set (first request after auth).
-	if perUserSession != nil {
-		// Propagate the access token so ConvertToBifrostContext picks it up
-		// and downstream tool execution can find the per-user OAuth session.
-		if perUserSession.AccessToken != "" {
-			ctx.Request.Header.Set("X-Bifrost-MCP-Session", perUserSession.AccessToken)
+	// If per_user_oauth MCP clients are configured and no valid auth, return 401 with discovery
+	if clients := h.config.GetPerUserOAuthMCPClients(); len(clients) > 0 && userOauthSession == nil && vk == "" {
+		scheme := "http"
+		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+			scheme = "https"
 		}
-		ctx.SetUserValue(string(schemas.BifrostContextKeyMCPUserSession), perUserSession.AccessToken)
+		host := string(ctx.Host())
+		resourceMetadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, host)
+		ctx.Response.Header.Set("WWW-Authenticate",
+			fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL))
+		return nil, nil, fmt.Errorf("oauth authentication required for mcp access")
+	}
 
-		// Identity (VirtualKeyID, UserID) is resolved by governance middleware downstream.
-		// Do not store the raw VK secret here — governance resolves the actual VK ID.
-
-		if vk == "" {
-			return h.globalMCPServer, nil
+	if userOauthSession != nil {
+		if !enforceVK && (userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "") {
+			return h.globalMCPServer, userOauthSession, nil
 		}
+
+		if userOauthSession.VirtualKeyID == nil || *userOauthSession.VirtualKeyID == "" || userOauthSession.VirtualKey == nil {
+			return nil, nil, fmt.Errorf("virtual key required in oauth session to access mcp server, please re-authenticate with a virtual key")
+		}
+
+		vkServer, ok := h.vkMCPServers[userOauthSession.VirtualKey.Value]
+		if !ok {
+			return nil, nil, fmt.Errorf("virtual key not found")
+		}
+
+		return vkServer, userOauthSession, nil
 	}
 
 	// Return global MCP server if not enforcing virtual key header and no virtual key is provided
 	if !enforceVK && vk == "" {
-		return h.globalMCPServer, nil
+		return h.globalMCPServer, nil, nil
 	}
 
-	// Check if virtual key is provided
 	if vk == "" {
-		return nil, fmt.Errorf("virtual key header is required to access MCP server.")
+		return nil, nil, fmt.Errorf("virtual key header required to access mcp server")
 	}
 
-	// Check if vk exists in the map
 	vkServer, ok := h.vkMCPServers[vk]
 	if !ok {
-		return nil, fmt.Errorf("virtual key not found.")
+		return nil, nil, fmt.Errorf("virtual key not found")
 	}
 
-	return vkServer, nil
+	return vkServer, nil, nil
 }
 
 // getPerUserOAuthSession extracts and validates a Bifrost-issued per-user OAuth
 // token from the Authorization header. Returns the session if valid, nil otherwise.
-func (h *MCPServerHandler) getPerUserOAuthSession(ctx *fasthttp.RequestCtx) *tables.TablePerUserOAuthSession {
+func (h *MCPServerHandler) getPerUserOAuthSession(ctx *fasthttp.RequestCtx) (*tables.TablePerUserOAuthSession, error) {
 	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
 	if authHeader == "" || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-		return nil
+		return nil, nil
 	}
 	token := strings.TrimSpace(authHeader[7:])
 	if token == "" || strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-		return nil // It's a virtual key, not a per-user OAuth token
+		return nil, nil // It's a virtual key, not a per-user OAuth token
 	}
 
 	if h.config.ConfigStore == nil {
-		return nil
+		return nil, nil
 	}
 
 	session, err := h.config.ConfigStore.GetPerUserOAuthSessionByAccessToken(ctx, token)
-	if err != nil || session == nil {
-		return nil
+	if err != nil {
+		logger.Warn("[mcp/auth] GetPerUserOAuthSessionByAccessToken error: %v", err)
+		return nil, err
+	}
+	if session == nil {
+		logger.Debug("[mcp/auth] Session not found for token")
+		return nil, nil
 	}
 
 	// Check expiry
 	if session.ExpiresAt.Before(time.Now()) {
-		return nil
+		logger.Debug("[mcp/auth] Session expired: session_id=%s expires_at=%v", session.ID, session.ExpiresAt)
+		return nil, nil
 	}
 
-	return session
+	return session, nil
 }
 
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {

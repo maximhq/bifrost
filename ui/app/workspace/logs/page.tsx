@@ -57,6 +57,17 @@ export default function LogsPage() {
 
 	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 	const [sessionHighlightedLogId, setSessionHighlightedLogId] = useState<string | null>(null);
+	// Stable handler so SessionDetailsSheet's loadSessionPage useCallback doesn't
+	// recreate on every parent re-render. Without this, every live WebSocket log
+	// tick would re-render LogsPage, hand the sheet a fresh inline arrow, recreate
+	// loadSessionPage, and trip the reset effect — wiping sessionLogs and
+	// refetching from offset 0 while the sheet is open.
+	const handleSessionSheetOpenChange = useCallback((open: boolean) => {
+		if (!open) {
+			setSelectedSessionId(null);
+			setSessionHighlightedLogId(null);
+		}
+	}, []);
 	const [isChartOpen, setIsChartOpen] = useState(true);
 	const [triggerGetLogById] = useLazyGetLogByIdQuery();
 	const [fetchedLog, setFetchedLog] = useState<LogEntry | null>(null);
@@ -224,14 +235,25 @@ export default function LogsPage() {
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		[
-			urlState.providers, urlState.models, urlState.aliases, urlState.status, urlState.objects,
-			urlState.selected_key_ids, urlState.virtual_key_ids, urlState.routing_rule_ids,
+			urlState.providers,
+			urlState.models,
+			urlState.aliases,
+			urlState.status,
+			urlState.objects,
+			urlState.selected_key_ids,
+			urlState.virtual_key_ids,
+			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
-			urlState.user_ids, urlState.team_ids, urlState.customer_ids, urlState.business_unit_ids,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
 			urlState.content_search,
 			urlState.parent_request_id,
-			urlState.start_time, urlState.end_time,
-			urlState.missing_cost_only, urlState.metadata_filters,
+			urlState.start_time,
+			urlState.end_time,
+			urlState.missing_cost_only,
+			urlState.metadata_filters,
 		],
 	);
 

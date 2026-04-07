@@ -138,7 +138,7 @@ func TestMakeStreamingRequest_StaleConnection_IsRetryable(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	_, _, bifrostErr := provider.makeStreamingRequest(ctx, []byte(`{}`), key, "anthropic.claude-sonnet-4-5", "converse-stream")
+	_, bifrostErr := provider.makeStreamingRequest(ctx, []byte(`{}`), key, "anthropic.claude-sonnet-4-5", "converse-stream")
 
 	require.NotNil(t, bifrostErr, "expected error when server closes connection")
 	assert.False(t, bifrostErr.IsBifrostError,

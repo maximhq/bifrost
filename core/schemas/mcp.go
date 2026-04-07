@@ -21,6 +21,8 @@ var (
 	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
 	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
 	ErrOAuth2NotPerUserSession    = errors.New("state does not match a per-user oauth session")
+	ErrOAuth2TokenNotFound              = errors.New("per-user oauth token not found for this identity and mcp server")
+	ErrPerUserOAuthPendingFlowExpired   = errors.New("per-user oauth pending flow has expired")
 )
 
 // MCPUserOAuthRequiredError is returned when a per-user OAuth MCP server requires

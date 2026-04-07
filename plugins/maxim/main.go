@@ -556,6 +556,10 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 
 	go func() {
 		requestType, _, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
+		modelTag := resolvedModel
+		if modelTag == "" {
+			modelTag = originalModel
+		}
 
 		var streamResponse *streaming.ProcessedStreamResponse
 		if bifrost.IsStreamRequestType(requestType) {
@@ -660,11 +664,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 		}
-		if hasGenerationID && generationID != "" {
-			logger.AddTagToGeneration(generationID, "model", string(model))
+		if hasGenerationID && generationID != "" && modelTag != "" {
+			logger.AddTagToGeneration(generationID, "model", string(modelTag))
 		}
-		if hasTraceID && traceID != "" {
-			logger.AddTagToTrace(traceID, "model", string(model))
+		if hasTraceID && traceID != "" && modelTag != "" {
+			logger.AddTagToTrace(traceID, "model", string(modelTag))
 		}
 		// Flush only the effective logger that was used for this request
 		logger.Flush()

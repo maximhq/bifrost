@@ -247,9 +247,13 @@ func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, co
 	return s.Client.VerifyPerUserOAuthConnection(ctx, config, accessToken)
 }
 
-// SetClientTools delegates to the Bifrost client to update tool map for an existing MCP client.
+// SetClientTools delegates to the Bifrost client to update tool map for an existing MCP client,
+// then re-syncs the MCP server so the new tools are immediately visible via /mcp.
 func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
 	s.Client.SetClientTools(clientID, tools, toolNameMapping)
+	if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
+		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
+	}
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
@@ -1100,6 +1104,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauthMetadataHandler.RegisterRoutes(s.Router)
 	perUserOAuthHandler := handlers.NewPerUserOAuthHandler(s.Config)
 	perUserOAuthHandler.RegisterRoutes(s.Router)
+	consentHandler := handlers.NewConsentHandler(s.Config)
+	consentHandler.RegisterRoutes(s.Router)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}

@@ -57,6 +57,11 @@ func (h *PerUserOAuthHandler) handleDynamicClientRegistration(ctx *fasthttp.Requ
 		return
 	}
 
+	if len(h.store.GetPerUserOAuthMCPClients()) == 0 {
+		sendStringError(ctx, fasthttp.StatusNotFound, "Not found")
+		return
+	}
+
 	var req struct {
 		ClientName              string   `json:"client_name"`
 		RedirectURIs            []string `json:"redirect_uris"`
@@ -104,21 +109,28 @@ func (h *PerUserOAuthHandler) handleDynamicClientRegistration(ctx *fasthttp.Requ
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]interface{}{
 		"client_id":                  clientID,
-		"client_name":               req.ClientName,
-		"redirect_uris":             req.RedirectURIs,
-		"grant_types":               grantTypes,
-		"response_types":            req.ResponseTypes,
+		"client_name":                req.ClientName,
+		"redirect_uris":              req.RedirectURIs,
+		"grant_types":                grantTypes,
+		"response_types":             req.ResponseTypes,
 		"token_endpoint_auth_method": "none",
 	})
 }
 
 // handleAuthorize handles the OAuth 2.1 authorization endpoint.
-// It validates the request, shows a consent page, and issues an authorization code.
+// Instead of issuing a code immediately, it validates the request parameters,
+// creates a PendingFlow record, and redirects the user to the consent screen.
+// The code is only issued after the user completes the consent flow (VK + MCP auths).
 //
-// GET /api/oauth/per-user/authorize?response_type=code&client_id=xxx&redirect_uri=xxx&state=xxx&code_challenge=xxx&code_challenge_method=S256
+// GET /api/oauth/per-user/authorize?response_type=code&client_id=xxx&redirect_uri=xxx&code_challenge=xxx&code_challenge_method=S256[&state=xxx]
 func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth authorization unavailable: config store is disabled")
+		return
+	}
+
+	if len(h.store.GetPerUserOAuthMCPClients()) == 0 {
+		sendStringError(ctx, fasthttp.StatusNotFound, "Not found")
 		return
 	}
 
@@ -129,15 +141,14 @@ func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	state := string(ctx.QueryArgs().Peek("state"))
 	codeChallenge := string(ctx.QueryArgs().Peek("code_challenge"))
 	codeChallengeMethod := string(ctx.QueryArgs().Peek("code_challenge_method"))
-	scope := string(ctx.QueryArgs().Peek("scope"))
 
 	// Validate required parameters
 	if responseType != "code" {
 		SendError(ctx, fasthttp.StatusBadRequest, "response_type must be 'code'")
 		return
 	}
-	if clientID == "" || redirectURI == "" || state == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "client_id, redirect_uri, and state are required")
+	if clientID == "" || redirectURI == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "client_id and redirect_uri are required")
 		return
 	}
 	if codeChallenge == "" || codeChallengeMethod != "S256" {
@@ -145,7 +156,7 @@ func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate client exists and redirect_uri is allowed
+	// Validate client exists and redirect_uri is registered
 	client, err := h.store.ConfigStore.GetPerUserOAuthClientByClientID(ctx, clientID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to validate client: %v", err))
@@ -155,8 +166,6 @@ func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Unknown client_id")
 		return
 	}
-
-	// Verify redirect_uri is registered
 	var allowedURIs []string
 	json.Unmarshal([]byte(client.RedirectURIs), &allowedURIs)
 	uriAllowed := false
@@ -171,41 +180,45 @@ func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Generate authorization code
-	code, err := generateOpaqueToken(32)
+	// Generate a browser-binding secret so only the initiating browser can resume this flow.
+	browserSecret, err := generateOpaqueToken(32)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to generate authorization code")
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to generate browser secret")
 		return
 	}
+	browserSecretHash := fmt.Sprintf("%x", sha256.Sum256([]byte(browserSecret)))
 
-	// Store authorization code
-	codeRecord := &tables.TablePerUserOAuthCode{
-		ID:            uuid.New().String(),
-		Code:          code,
-		ClientID:      clientID,
-		RedirectURI:   redirectURI,
-		CodeChallenge: codeChallenge,
-		Scopes:        scope,
-		ExpiresAt:     time.Now().Add(5 * time.Minute),
+	// Create a PendingFlow to carry OAuth params through the consent screen.
+	flow := &tables.TablePerUserOAuthPendingFlow{
+		ID:                uuid.New().String(),
+		ClientID:          clientID,
+		RedirectURI:       redirectURI,
+		CodeChallenge:     codeChallenge,
+		State:             state,
+		BrowserSecretHash: browserSecretHash,
+		ExpiresAt:         time.Now().Add(15 * time.Minute),
 	}
-	if err := h.store.ConfigStore.CreatePerUserOAuthCode(ctx, codeRecord); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store authorization code: %v", err))
+	if err := h.store.ConfigStore.CreatePerUserOAuthPendingFlow(ctx, flow); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create pending flow: %v", err))
 		return
 	}
+	logger.Debug("[oauth/authorize] PendingFlow created: flow_id=%s client_id=%s", flow.ID, clientID)
 
-	// Auto-approve and redirect back with code (no consent page for MCP clients)
-	// Build redirect URL with code and state
-	redirectURL, err := url.Parse(redirectURI)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid redirect_uri")
-		return
-	}
-	q := redirectURL.Query()
-	q.Set("code", code)
-	q.Set("state", state)
-	redirectURL.RawQuery = q.Encode()
+	// Set HttpOnly cookie binding this flow to the current browser.
+	var cookie fasthttp.Cookie
+	cookie.SetKey("__bifrost_flow_secret")
+	cookie.SetValue(browserSecret)
+	cookie.SetPath("/")
+	cookie.SetHTTPOnly(true)
+	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
+	isSecure := ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https"
+	cookie.SetSecure(isSecure)
+	cookie.SetMaxAge(15 * 60) // 15 minutes, matching flow TTL
+	ctx.Response.Header.SetCookie(&cookie)
 
-	ctx.Redirect(redirectURL.String(), fasthttp.StatusFound)
+	// Redirect to consent screen with flow_id (relative path — stays on current origin).
+	consentURL := fmt.Sprintf("/oauth/consent?flow_id=%s", url.QueryEscape(flow.ID))
+	ctx.Redirect(consentURL, fasthttp.StatusFound)
 }
 
 // handleToken handles the OAuth 2.1 token endpoint.
@@ -215,6 +228,11 @@ func (h *PerUserOAuthHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 func (h *PerUserOAuthHandler) handleToken(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth token endpoint unavailable: config store is disabled")
+		return
+	}
+
+	if len(h.store.GetPerUserOAuthMCPClients()) == 0 {
+		sendStringError(ctx, fasthttp.StatusNotFound, "Not found")
 		return
 	}
 
@@ -230,8 +248,8 @@ func (h *PerUserOAuthHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if code == "" || clientID == "" || codeVerifier == "" {
-		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "code, client_id, and code_verifier are required")
+	if code == "" || codeVerifier == "" {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "code and code_verifier are required")
 		return
 	}
 
@@ -252,14 +270,20 @@ func (h *PerUserOAuthHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate client_id matches
-	if codeRecord.ClientID != clientID {
+	// Validate client_id if provided — some public clients omit it (RFC 6749 §4.1.3 allows
+	// omitting client_id when the client is not authenticating with the server).
+	// The code record already binds the code to the correct client, so this is safe.
+	if clientID != "" && codeRecord.ClientID != clientID {
+		logger.Debug("[oauth/token] client_id mismatch: code_client=%s request_client=%s", codeRecord.ClientID, clientID)
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "client_id mismatch")
 		return
 	}
+	// Use the client_id from the code record as the authoritative value.
+	clientID = codeRecord.ClientID
 
 	// Validate redirect_uri matches
 	if redirectURI != "" && codeRecord.RedirectURI != redirectURI {
+		logger.Debug("[oauth/token] redirect_uri mismatch: code=%s request=%s", codeRecord.RedirectURI, redirectURI)
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
@@ -268,36 +292,64 @@ func (h *PerUserOAuthHandler) handleToken(ctx *fasthttp.RequestCtx) {
 	verifierHash := sha256.Sum256([]byte(codeVerifier))
 	computedChallenge := base64.RawURLEncoding.EncodeToString(verifierHash[:])
 	if computedChallenge != codeRecord.CodeChallenge {
+		logger.Debug("[oauth/token] PKCE verification failed")
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "PKCE verification failed")
 		return
 	}
 
-	// Generate access token and refresh token
-	accessToken, err := generateOpaqueToken(32)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to generate access token")
-		return
-	}
-	refreshToken, err := generateOpaqueToken(32)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to generate refresh token")
-		return
-	}
+	// If the code was issued by the consent flow (handleSubmit), the session already exists
+	// with the upstream tokens transferred to it. Reuse that session's access token so the
+	// client receives the token that the upstream (Notion, GitHub, etc.) tokens are linked to.
+	var accessToken string
+	var expiresAt time.Time
 
-	// Store session
-	expiresAt := time.Now().Add(24 * time.Hour) // 24-hour access token
-	session := &tables.TablePerUserOAuthSession{
-		ID:           uuid.New().String(),
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ClientID:     clientID,
-		ExpiresAt:    expiresAt,
+	if codeRecord.SessionID != "" {
+		existingSession, err := h.store.ConfigStore.GetPerUserOAuthSessionByID(ctx, codeRecord.SessionID)
+		if err != nil {
+			logger.Info("[oauth/token] Failed to load existing session: session_id=%s err=%v", codeRecord.SessionID, err)
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to load session")
+			return
+		}
+		if existingSession == nil {
+			logger.Info("[oauth/token] Existing session not found: session_id=%s", codeRecord.SessionID)
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Session not found")
+			return
+		}
+		if !existingSession.ExpiresAt.After(time.Now()) {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "Session expired")
+			return
+		}
+		accessToken = existingSession.AccessToken
+		expiresAt = existingSession.ExpiresAt
+		logger.Debug("[oauth/token] reusing consent session: session_id=%s", existingSession.ID)
+	} else {
+		// Fallback: no linked session (legacy path) — create a new one.
+		var newAccessToken, newRefreshToken string
+		newAccessToken, err = generateOpaqueToken(32)
+		if err != nil {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to generate access token")
+			return
+		}
+		newRefreshToken, err = generateOpaqueToken(32)
+		if err != nil {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to generate refresh token")
+			return
+		}
+		expiresAt = time.Now().Add(24 * time.Hour)
+		newSession := &tables.TablePerUserOAuthSession{
+			ID:           uuid.New().String(),
+			AccessToken:  newAccessToken,
+			RefreshToken: newRefreshToken,
+			ClientID:     clientID,
+			ExpiresAt:    expiresAt,
+		}
+		if err := h.store.ConfigStore.CreatePerUserOAuthSession(ctx, newSession); err != nil {
+			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to create session")
+			return
+		}
+		accessToken = newAccessToken
+		logger.Debug("[oauth/token] created new session (legacy path): session_id=%s", newSession.ID)
 	}
-	if err := h.store.ConfigStore.CreatePerUserOAuthSession(ctx, session); err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "Failed to create session")
-		return
-	}
-
 	// Return OAuth token response
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
@@ -320,7 +372,28 @@ func sendOAuthError(ctx *fasthttp.RequestCtx, statusCode int, errorCode, descrip
 	ctx.SetBody(resp)
 }
 
+func sendStringError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
+	ctx.SetContentType("text/plain")
+	ctx.SetStatusCode(statusCode)
+	ctx.SetBodyString(message)
+}
+
 // generateOpaqueToken generates a cryptographically secure random token.
+// validateFlowBrowserSecret checks that the request carries the __bifrost_flow_secret
+// cookie matching the hash stored on the pending flow. Returns true if valid.
+func validateFlowBrowserSecret(ctx *fasthttp.RequestCtx, flow *tables.TablePerUserOAuthPendingFlow) bool {
+	if flow.BrowserSecretHash == "" {
+		// Legacy flow without browser binding — allow for backwards compatibility.
+		return true
+	}
+	secret := ctx.Request.Header.Cookie("__bifrost_flow_secret")
+	if len(secret) == 0 {
+		return false
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(secret))
+	return hash == flow.BrowserSecretHash
+}
+
 func generateOpaqueToken(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
@@ -333,9 +406,10 @@ func generateOpaqueToken(length int) (string, error) {
 // When a user needs to authenticate with an upstream MCP server (e.g., Notion),
 // this endpoint redirects them to the upstream provider's OAuth authorize URL.
 // After the user authenticates, the callback stores their upstream token linked
-// to their Bifrost session.
+// to either their Bifrost session (runtime flow) or a PendingFlow (consent flow).
 //
-// GET /api/oauth/per-user/upstream/authorize?mcp_client_id=xxx&session=xxx
+// Runtime flow:  GET /api/oauth/per-user/upstream/authorize?mcp_client_id=xxx&session=xxx
+// Consent flow:  GET /api/oauth/per-user/upstream/authorize?mcp_client_id=xxx&flow_id=xxx
 func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth upstream authorization unavailable: config store is disabled")
@@ -344,31 +418,64 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 
 	mcpClientID := string(ctx.QueryArgs().Peek("mcp_client_id"))
 	sessionID := string(ctx.QueryArgs().Peek("session"))
+	flowID := string(ctx.QueryArgs().Peek("flow_id"))
 
-	if mcpClientID == "" || sessionID == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "mcp_client_id and session are required")
+	if mcpClientID == "" || (sessionID == "" && flowID == "") {
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_client_id and either session or flow_id are required")
 		return
 	}
 
-	// Validate the Bifrost session exists
-	session, err := h.store.ConfigStore.GetPerUserOAuthSessionByID(ctx, sessionID)
-	if err != nil || session == nil {
-		SendError(ctx, fasthttp.StatusUnauthorized, "Invalid or expired session")
-		return
+	// Resolve identity depending on whether this is a runtime session or a consent flow.
+	var virtualKeyID, userID, proxySessionToken, gatewaySessionID string
+	if flowID != "" {
+		// Consent flow: use the pending flow for identity and proxy token.
+		flow, err := h.store.ConfigStore.GetPerUserOAuthPendingFlow(ctx, flowID)
+		if err != nil || flow == nil || time.Now().After(flow.ExpiresAt) {
+			SendError(ctx, fasthttp.StatusUnauthorized, "Invalid or expired consent flow")
+			return
+		}
+		if !validateFlowBrowserSecret(ctx, flow) {
+			SendError(ctx, fasthttp.StatusForbidden, "Flow does not belong to this browser session")
+			return
+		}
+		if strVal(flow.VirtualKeyID) != "" {
+			virtualKeyID = *flow.VirtualKeyID
+		}
+		if strVal(flow.UserID) != "" {
+			userID = *flow.UserID
+		}
+		// Use a prefixed flow token so the callback can detect the consent path.
+		// Include mcpClientID to avoid unique constraint violations when multiple
+		// MCP services are connected in the same consent flow.
+		proxySessionToken = "flow:" + flowID + ":" + mcpClientID
+		gatewaySessionID = flowID
+	} else {
+		// Runtime flow: validate the existing Bifrost session.
+		bifrostSession, err := h.store.ConfigStore.GetPerUserOAuthSessionByID(ctx, sessionID)
+		if err != nil || bifrostSession == nil {
+			SendError(ctx, fasthttp.StatusUnauthorized, "Invalid or expired session")
+			return
+		}
+		if !bifrostSession.ExpiresAt.After(time.Now()) {
+			SendError(ctx, fasthttp.StatusUnauthorized, "Invalid or expired session")
+			return
+		}
+		virtualKeyID = strVal(bifrostSession.VirtualKeyID)
+		userID = strVal(bifrostSession.UserID)
+		proxySessionToken = "runtime:" + sessionID + ":" + mcpClientID
+		gatewaySessionID = sessionID
 	}
 
-	// Look up the MCP client config to get the template OAuth config
+	// Look up the MCP client config to get the template OAuth config.
 	mcpClient, err := h.store.ConfigStore.GetMCPClientByID(ctx, mcpClientID)
 	if err != nil || mcpClient == nil {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
-
 	if mcpClient.AuthType != string(schemas.MCPAuthTypePerUserOauth) {
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client does not use per-user OAuth")
 		return
 	}
-
 	if mcpClient.OauthConfigID == nil || *mcpClient.OauthConfigID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no OAuth configuration")
 		return
@@ -381,7 +488,7 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 		return
 	}
 
-	// Generate PKCE challenge for upstream
+	// Generate PKCE challenge for upstream.
 	codeVerifier, err := generateOpaqueToken(32)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to generate PKCE verifier")
@@ -390,53 +497,55 @@ func (h *PerUserOAuthHandler) handleUpstreamAuthorize(ctx *fasthttp.RequestCtx) 
 	verifierHash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(verifierHash[:])
 
-	// Generate state for upstream
+	// Generate state for upstream.
 	state, err := generateOpaqueToken(32)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to generate state token")
 		return
 	}
 
-	// Build redirect URI (Bifrost's callback endpoint)
+	// Build redirect URI (Bifrost's callback endpoint).
 	scheme := "http"
 	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 		scheme = "https"
 	}
 	host := string(ctx.Host())
 	redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
-
-	// Look up Bifrost session to propagate identity to upstream OAuth flow
-	var virtualKeyID, userID string
-	if bifrostSession, err := h.store.ConfigStore.GetPerUserOAuthSessionByID(ctx, sessionID); err == nil && bifrostSession != nil {
-		virtualKeyID = bifrostSession.VirtualKeyID
-		userID = bifrostSession.UserID
+	var vkId *string
+	if virtualKeyID != "" {
+		vkId = &virtualKeyID
 	}
-
-	// Store upstream OAuth session (links state → session + mcp_client + identity)
+	var uid *string
+	if userID != "" {
+		uid = &userID
+	}
+	// Store upstream OAuth session linking state → MCP client + identity.
 	upstreamSession := &tables.TableOauthUserSession{
-		ID:            uuid.New().String(),
-		MCPClientID:   mcpClientID,
-		OauthConfigID: *mcpClient.OauthConfigID,
-		State:         state,
-		CodeVerifier:  codeVerifier,
-		GatewaySessionID: sessionID, // Link to Bifrost MCP gateway session
-		VirtualKeyID:  virtualKeyID,
-		UserID:        userID,
-		Status:        "pending",
-		ExpiresAt:     time.Now().Add(15 * time.Minute),
+		ID:               uuid.New().String(),
+		MCPClientID:      mcpClientID,
+		OauthConfigID:    *mcpClient.OauthConfigID,
+		State:            state,
+		CodeVerifier:     codeVerifier,
+		SessionToken:     proxySessionToken, // "runtime:xxx" for runtime flow; "flow:xxx" for consent flow
+		GatewaySessionID: gatewaySessionID,
+		VirtualKeyID:     vkId,
+		UserID:           uid,
+		Status:           "pending",
+		ExpiresAt:        time.Now().Add(15 * time.Minute),
 	}
+	logger.Debug("[oauth/upstream-authorize] creating upstream session: mcp_client=%s flow=%s", mcpClientID, proxySessionToken)
 	if err := h.store.ConfigStore.CreateOauthUserSession(ctx, upstreamSession); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create upstream OAuth session: %v", err))
 		return
 	}
 
-	// Parse scopes from template config
+	// Parse scopes from template config.
 	var scopes []string
 	if templateConfig.Scopes != "" {
 		json.Unmarshal([]byte(templateConfig.Scopes), &scopes)
 	}
 
-	// Build upstream authorize URL with PKCE
+	// Build upstream authorize URL with PKCE.
 	params := url.Values{}
 	params.Set("response_type", "code")
 	params.Set("client_id", templateConfig.ClientID)

@@ -722,12 +722,6 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		json.Unmarshal([]byte(templateConfig.Scopes), &scopes)
 	}
 
-	// Generate session token upfront to avoid empty unique-index collisions on pending sessions
-	sessionToken, err := generateSessionToken()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate session token: %w", err)
-	}
-
 	// Create per-user OAuth session
 	sessionID := uuid.New().String()
 	expiresAt := time.Now().Add(15 * time.Minute)
@@ -740,6 +734,24 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		userID = mcpUserID
 	}
 
+	// If a Bifrost MCP session token is present in context, reuse it as the session token
+	// so the MCP server token is stored under the same key used for subsequent lookups.
+	// Otherwise generate a fresh token.
+	sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
+	if sessionToken == "" {
+		sessionToken, err = generateSessionToken()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to generate session token: %w", err)
+		}
+	}
+	var vkId *string
+	if virtualKeyID != "" {
+		vkId = &virtualKeyID
+	}
+	var uid *string
+	if userID != "" {
+		uid = &userID
+	}
 	session := &tables.TableOauthUserSession{
 		ID:            sessionID,
 		MCPClientID:   mcpClientID,
@@ -748,8 +760,8 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		RedirectURI:   redirectURI,
 		CodeVerifier:  codeVerifier,
 		SessionToken:  sessionToken,
-		VirtualKeyID:  virtualKeyID,
-		UserID:        userID,
+		VirtualKeyID:  vkId,
+		UserID:        uid,
 		Status:        "pending",
 		ExpiresAt:     expiresAt,
 	}
@@ -805,7 +817,6 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		p.configStore.UpdateOauthUserSession(ctx, session)
 		return "", fmt.Errorf("failed to load template oauth config: %w", err)
 	}
-
 	// Exchange code for tokens with PKCE verifier
 	// Use the redirect URI stored in the session (same one used in authorize step)
 	// to satisfy OAuth spec requirement that redirect_uri must match
@@ -828,7 +839,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	}
 
 	// Use existing session token if set (e.g., Bifrost session ID from MCP spec OAuth flow),
-	// otherwise generate a new one (for standalone per-user OAuth via X-Bifrost-MCP-Session header).
+	// otherwise generate a new one (for standalone per-user OAuth).
 	sessionToken := session.SessionToken
 	if sessionToken == "" {
 		sessionToken, err = generateSessionToken()
@@ -860,7 +871,6 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		ExpiresAt:     time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
 		Scopes:        string(scopesJSON),
 	}
-
 	if err := p.configStore.CreateOauthUserToken(ctx, tokenRecord); err != nil {
 		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
@@ -917,7 +927,7 @@ func (p *OAuth2Provider) GetUserAccessTokenByIdentity(ctx context.Context, virtu
 		return "", fmt.Errorf("failed to load per-user oauth token by identity: %w", err)
 	}
 	if token == nil {
-		return "", fmt.Errorf("per-user oauth token not found for this user and MCP server")
+		return "", schemas.ErrOAuth2TokenNotFound
 	}
 
 	// Check if token is expired — attempt refresh

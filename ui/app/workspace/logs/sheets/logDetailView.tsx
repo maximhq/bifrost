@@ -342,7 +342,6 @@ export function LogDetailView({
 								}
 							/>
 						)}
-
 						{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 						{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 						{log.routing_engines_used && log.routing_engines_used.length > 0 && (

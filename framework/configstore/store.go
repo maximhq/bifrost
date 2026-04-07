@@ -334,6 +334,26 @@ type ConfigStore interface {
 	CreatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
 	UpdatePerUserOAuthCode(ctx context.Context, code *tables.TablePerUserOAuthCode) error
 
+	// Per-user OAuth consent flow (pending flows before code issuance)
+	GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error)
+	CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
+	UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error
+	DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error
+	// ConsumePerUserOAuthPendingFlow atomically deletes a pending flow and returns the number of
+	// rows affected. Returns 0 if the flow was already consumed by a concurrent request.
+	ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error)
+	// FinalizePerUserOAuthConsent atomically consumes a pending flow, creates the session,
+	// and creates the authorization code in a single transaction. Returns (0, nil) if the
+	// flow was already consumed by a concurrent request.
+	FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error)
+	// GetOauthUserTokensByGatewaySessionID returns all upstream tokens linked to a gateway session ID.
+	// Used during consent submit to discover which MCPs the user authenticated with.
+	// Queries tokens via upstream sessions matching the given gateway session ID.
+	GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error)
+	// TransferOauthUserTokensFromGatewaySession migrates upstream tokens from all flow proxy sessions
+	// (identified by gateway_session_id) to the real Bifrost session token, and sets VirtualKeyID/UserID on each record.
+	TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error
+
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 

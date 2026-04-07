@@ -281,7 +281,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(request), nil
+			return ToGeminiChatCompletionRequest(request)
 		})
 	if err != nil {
 		return nil, err

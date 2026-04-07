@@ -1763,11 +1763,6 @@ func HandleOpenAIResponsesStreaming(
 						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
 						IsBifrostError: false,
 						Error:          &schemas.ErrorField{},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType:    schemas.ResponsesStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-						},
 					}
 					if response.Response != nil && response.Response.Error != nil {
 						bifrostErr.Error.Message = response.Response.Error.Message
@@ -1777,12 +1772,7 @@ func HandleOpenAIResponsesStreaming(
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 					return
 				}
-
-				response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ModelRequested = request.Model
 				response.ExtraFields.ChunkIndex = response.SequenceNumber
-
 				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 					// Set raw request if enabled
 					if sendBackRawRequest {

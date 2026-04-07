@@ -470,11 +470,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
-	// Extract per-user MCP OAuth session token from X-Bifrost-MCP-Session header
-	if mcpSession := string(ctx.Request.Header.Peek("X-Bifrost-MCP-Session")); mcpSession != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserSession, mcpSession)
-	}
-
 	// Extract per-user MCP OAuth user identifier from X-Bf-User-Id header
 	if mcpUserID := string(ctx.Request.Header.Peek("X-Bf-User-Id")); mcpUserID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPUserID, mcpUserID)

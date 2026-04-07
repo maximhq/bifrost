@@ -18,17 +18,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store";
+import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react";
+import {
+	ArrowUpDown,
+	ChevronLeft,
+	ChevronRight,
+	Copy,
+	Download,
+	Edit,
+	Eye,
+	EyeOff,
+	Loader2,
+	Plus,
+	Search,
+	ShieldCheck,
+	Trash2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 
@@ -38,7 +54,7 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
-			(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
+			vk.budgets?.some((b) => b.current_usage >= b.max_limit) ||
 			(vk.rate_limit?.token_current_usage &&
 				vk.rate_limit?.token_max_limit &&
 				vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
@@ -47,9 +63,9 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
 		const status = vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive";
 		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
-		const budgetLimit = vk.budget ? formatCurrency(vk.budget.max_limit) : "";
-		const budgetSpent = vk.budget ? formatCurrency(vk.budget.current_usage) : "";
-		const budgetReset = vk.budget ? formatResetDuration(vk.budget.reset_duration) : "";
+		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
+		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
+		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
 		return [vk.name, status, assignedTo, budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];
 	});
 	return [headers, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -109,6 +125,10 @@ export default function VirtualKeysTable({
 	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
 	const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null);
 	const [showDetailSheet, setShowDetailSheet] = useState(false);
+	const [showExportDialog, setShowExportDialog] = useState(false);
+	const [exportScope, setExportScope] = useState<ExportScope>("current_page");
+	const [exportMaxLimit, setExportMaxLimit] = useState("");
+	const [fetchVirtualKeys, { isFetching: isExporting }] = useLazyGetVirtualKeysQuery();
 
 	// Derive objects from props so they stay in sync with RTK cache updates
 	const editingVirtualKey = useMemo(

@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -938,7 +939,7 @@ func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provide
 	for _, model := range models {
 		grantedBy := make([]string, 0, len(matchedKeys))
 		for _, matched := range matchedKeys {
-			if keyAllowsModelForList(provider, model, matched.key, modelCatalog) {
+			if keyAllowsModelForList(matched.key, model) {
 				grantedBy = append(grantedBy, matched.id)
 			}
 		}

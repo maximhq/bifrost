@@ -43,6 +43,10 @@ func (h *OAuthMetadataHandler) RegisterRoutes(r *router.Router, middlewares ...s
 //
 // GET /.well-known/oauth-protected-resource
 func (h *OAuthMetadataHandler) handleProtectedResourceMetadata(ctx *fasthttp.RequestCtx) {
+	if clients := h.store.GetPerUserOAuthMCPClients(); len(clients) == 0 {
+		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
+		return
+	}
 	scheme := "http"
 	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 		scheme = "https"
@@ -53,7 +57,7 @@ func (h *OAuthMetadataHandler) handleProtectedResourceMetadata(ctx *fasthttp.Req
 	SendJSON(ctx, map[string]interface{}{
 		"resource":                 baseURL + "/mcp",
 		"authorization_servers":    []string{baseURL},
-		"scopes_supported":        []string{"mcp:read", "mcp:write"},
+		"scopes_supported":         []string{"mcp:read", "mcp:write"},
 		"bearer_methods_supported": []string{"header"},
 	})
 }
@@ -64,6 +68,10 @@ func (h *OAuthMetadataHandler) handleProtectedResourceMetadata(ctx *fasthttp.Req
 //
 // GET /.well-known/oauth-authorization-server
 func (h *OAuthMetadataHandler) handleAuthorizationServerMetadata(ctx *fasthttp.RequestCtx) {
+	if clients := h.store.GetPerUserOAuthMCPClients(); len(clients) == 0 {
+		sendStringError(ctx, fasthttp.StatusNotFound, "Not Found")
+		return
+	}
 	scheme := "http"
 	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 		scheme = "https"
@@ -78,7 +86,7 @@ func (h *OAuthMetadataHandler) handleAuthorizationServerMetadata(ctx *fasthttp.R
 		"registration_endpoint":                 baseURL + "/api/oauth/per-user/register",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code"},
-		"code_challenge_methods_supported":       []string{"S256"},
+		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"scopes_supported":                      []string{"mcp:read", "mcp:write"},
 	})

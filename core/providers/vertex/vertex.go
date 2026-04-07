@@ -409,7 +409,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				if err != nil {
 					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
-			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+			} else if schemas.IsGeminiModel(request.Model) || schemas.IsAllDigitsASCII(request.Model) {
 				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
 				if err != nil {
 					return nil, err
@@ -702,7 +702,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
-				reqBody.Stream = schemas.Ptr(true)
+				reqBody.Stream = new(true)
 				// Add provider-aware beta headers for Vertex
 				anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Vertex)
 

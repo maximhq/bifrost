@@ -1196,6 +1196,31 @@ func (m *MockConfigStore) UpdatePerUserOAuthCode(ctx context.Context, code *tabl
 	return nil
 }
 
+func (m *MockConfigStore) GetPerUserOAuthPendingFlow(ctx context.Context, id string) (*tables.TablePerUserOAuthPendingFlow, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
+	return nil
+}
+func (m *MockConfigStore) UpdatePerUserOAuthPendingFlow(ctx context.Context, flow *tables.TablePerUserOAuthPendingFlow) error {
+	return nil
+}
+func (m *MockConfigStore) DeletePerUserOAuthPendingFlow(ctx context.Context, id string) error {
+	return nil
+}
+func (m *MockConfigStore) ConsumePerUserOAuthPendingFlow(ctx context.Context, id string) (int64, error) {
+	return 1, nil
+}
+func (m *MockConfigStore) GetOauthUserTokensByGatewaySessionID(ctx context.Context, gatewaySessionID string) ([]tables.TableOauthUserToken, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) TransferOauthUserTokensFromGatewaySession(ctx context.Context, gatewaySessionID, realSessionToken, virtualKeyID, userID string) error {
+	return nil
+}
+func (m *MockConfigStore) FinalizePerUserOAuthConsent(ctx context.Context, flowID string, session *tables.TablePerUserOAuthSession, code *tables.TablePerUserOAuthCode) (int64, error) {
+	return 1, nil
+}
+
 // Routing rules
 func (m *MockConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
 	return nil, nil
