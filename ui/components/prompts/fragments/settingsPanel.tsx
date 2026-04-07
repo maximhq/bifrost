@@ -13,6 +13,7 @@ import { ModelParams } from "@/lib/types/prompts";
 import PromptDeploymentView from "@enterprise/components/prompt-deployments/promptDeploymentView";
 import { useCallback, useMemo } from "react";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
+import { VariablesTableView } from "../components/variablesTableView";
 import { usePromptContext } from "../context";
 
 export function SettingsPanel() {

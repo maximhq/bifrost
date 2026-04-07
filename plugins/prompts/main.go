@@ -1,3 +1,7 @@
+// Package prompts implements the Bifrost LLM plugin that resolves stored prompt templates
+// from the config store and prepends their messages to chat and Responses API requests.
+// HTTP clients select a prompt via x-bf-prompt-id / x-bf-prompt-version headers; optional
+// custom PromptResolver implementations can override how ID and version are chosen.
 package prompts
 
 import (
@@ -9,19 +13,28 @@ import (
 	"strings"
 	"sync"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 const (
-	PluginName                                    = "prompts"
-	PromptIDHeader                                = "bf-prompt-id"
-	PromptVersionHeader                           = "bf-prompt-version"
-	PromptIDKey         schemas.BifrostContextKey = PromptIDHeader
-	PromptVersionKey    schemas.BifrostContextKey = PromptVersionHeader
+	// PluginName is the canonical name registered for the prompts plugin.
+	PluginName = "prompts"
+
+	// PromptIDHeader and PromptVersionHeader are request headers copied into BifrostContext
+	// in HTTPTransportPreHook so PreLLMHook and custom resolvers can read them.
+	PromptIDHeader      = "x-bf-prompt-id"
+	PromptVersionHeader = "x-bf-prompt-version"
+
+	// PromptIDKey and PromptVersionKey are context keys for the resolved header values.
+	PromptIDKey      schemas.BifrostContextKey = PromptIDHeader
+	PromptVersionKey schemas.BifrostContextKey = PromptVersionHeader
 )
 
-type promptStore interface {
+// InMemoryStore is the data source for prompts and all versions. Implementations typically
+// wrap the framework config store; the plugin keeps an in-memory index built by loadCache.
+type InMemoryStore interface {
 	GetPrompts(ctx context.Context, folderID *string) ([]configstoreTables.TablePrompt, error)
 	GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error)
 }
@@ -29,30 +42,43 @@ type promptStore interface {
 // PromptResolver decides which prompt and version to inject for a given request.
 // Returning an empty promptID means no injection for this request.
 type PromptResolver interface {
-	Resolve(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (promptID string, versionNumber int, versionSpecified bool, err error)
+	Resolve(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (promptID string, versionNumber int, err error)
 }
 
-// headerResolver is the default OSS resolver: reads prompt ID and version from context
-// keys that were populated from HTTP headers in HTTPTransportPreHook.
+// headerResolver is the default OSS resolver: it reads prompt ID and version from context
+// keys populated from HTTP headers in HTTPTransportPreHook (x-bf-prompt-id, x-bf-prompt-version).
 type headerResolver struct {
 	logger schemas.Logger
 }
 
-func (r *headerResolver) Resolve(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (string, int, bool, error) {
-	promptID := promptStringFromCtx(ctx, PromptIDKey)
+// Resolve returns the prompt ID and version number from context. An empty promptID means
+// no prompt injection for this request. Version 0 means “use latest” when passed to resolveVersion.
+func (r *headerResolver) Resolve(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (string, int, error) {
+	promptID := bifrost.GetStringFromContext(ctx, PromptIDKey)
 	if promptID == "" {
-		return "", 0, false, nil
+		return "", 0, nil
 	}
-	versionNumber, specified, err := parsePromptVersionNumber(ctx)
+	versionNumber, err := parseNumberFromContext(ctx, PromptVersionKey)
 	if err != nil {
-		return "", 0, false, fmt.Errorf("invalid bifrost-prompt-version: %w", err)
+		return "", 0, fmt.Errorf("failed to parse version number: %w", err)
 	}
-	return promptID, versionNumber, specified, nil
+	return promptID, versionNumber, nil
 }
 
-// Plugin resolves stored prompt templates and prepends their messages to LLM requests.
+// Plugin implements schemas.LLMPlugin (and HTTP transport hooks) for server-side prompt injection.
+// It loads prompts and versions into memory, resolves which version to use per request, merges
+// the version’s model parameters with the client request (request wins), and prepends template
+// messages before chat or Responses input.
+//
+// Fields:
+//   - store: backing persistence for prompts and versions
+//   - logger: Bifrost logger for non-fatal merge/param warnings
+//   - resolver: chooses prompt ID and version; defaults to headerResolver
+//   - mu: protects promptsByID and versionsByPromptAndNumber
+//   - promptsByID: prompt ID → prompt row (includes LatestVersion when using “latest”)
+//   - versionsByPromptAndNumber: prompt ID → version number → version row
 type Plugin struct {
-	store    promptStore
+	store    InMemoryStore
 	logger   schemas.Logger
 	resolver PromptResolver
 
@@ -61,13 +87,32 @@ type Plugin struct {
 	versionsByPromptAndNumber map[string]map[int]*configstoreTables.TablePromptVersion
 }
 
-// Init wires the prompts plugin with the default header-based resolver.
-func Init(ctx context.Context, store promptStore, logger schemas.Logger) (schemas.LLMPlugin, error) {
+// Init constructs a Plugin using the default header-based resolver (x-bf-prompt-id / x-bf-prompt-version).
+//
+// Parameters:
+//   - ctx: used for the initial loadCache call
+//   - store: required config store backend for prompts
+//   - logger: used by the default resolver and param merge paths
+//
+// Returns:
+//   - schemas.LLMPlugin: the initialized plugin
+//   - error: if the store is missing or the initial cache load fails
+func Init(ctx context.Context, store InMemoryStore, logger schemas.Logger) (schemas.LLMPlugin, error) {
 	return InitWithResolver(ctx, store, &headerResolver{logger: logger}, logger)
 }
 
-// InitWithResolver wires the prompts plugin with a custom resolver.
-func InitWithResolver(ctx context.Context, store promptStore, resolver PromptResolver, logger schemas.Logger) (*Plugin, error) {
+// InitWithResolver constructs a Plugin with an explicit PromptResolver (nil falls back to headerResolver).
+//
+// Parameters:
+//   - ctx: used for the initial loadCache call
+//   - store: required config store backend for prompts
+//   - resolver: custom resolution logic; if nil, headerResolver is used
+//   - logger: passed to the default resolver when it is constructed internally
+//
+// Returns:
+//   - *Plugin: the initialized plugin (concrete type for Reload and handler integration)
+//   - error: if the store is missing or the initial cache load fails
+func InitWithResolver(ctx context.Context, store InMemoryStore, resolver PromptResolver, logger schemas.Logger) (*Plugin, error) {
 	if store == nil {
 		return nil, fmt.Errorf("config store is required for prompts plugin")
 	}
@@ -127,10 +172,13 @@ func (p *Plugin) Reload(ctx context.Context) error {
 	return p.loadCache(ctx)
 }
 
+// GetName returns the plugin identifier ("prompts").
 func (p *Plugin) GetName() string {
 	return PluginName
 }
 
+// HTTPTransportPreHook copies x-bf-prompt-id and x-bf-prompt-version from the incoming HTTP request
+// into BifrostContext so the default header resolver and PreLLMHook can read them.
 func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	if req == nil {
 		return nil, nil
@@ -141,66 +189,41 @@ func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.
 	if v := strings.TrimSpace(req.CaseInsensitiveHeaderLookup(PromptVersionHeader)); v != "" {
 		ctx.SetValue(PromptVersionKey, v)
 	}
-	p.setPromptStreamFromVersionForTransport(ctx)
 	return nil, nil
 }
 
-// setPromptStreamFromVersionForTransport sets BifrostContextKeyPromptStreamRequest when
-// the resolved prompt version has stream:true in its ModelParams.
-func (p *Plugin) setPromptStreamFromVersionForTransport(ctx *schemas.BifrostContext) {
-	promptID := promptStringFromCtx(ctx, PromptIDKey)
-	if promptID == "" {
-		return
-	}
-	versionNumber, versionSpecified, err := parsePromptVersionNumber(ctx)
-	if err != nil {
-		return
-	}
-	_, version, ok := p.resolveVersion(promptID, versionNumber, versionSpecified)
-	if !ok || version == nil || len(version.ModelParams) == 0 {
-		return
-	}
-	if includesStreamInModelParams(version.ModelParams) {
-		ctx.SetValue(schemas.BifrostContextKeyPromptStreamRequest, true)
-	}
-}
-
-func includesStreamInModelParams(mp configstoreTables.ModelParams) bool {
-	raw, ok := mp["stream"]
-	if !ok {
-		return true // default to true if stream is not set, this is done because for the initial version, the stream key is not present but we default to true for the initial version and show it as well on the UI. If the user toggles stream off, we set `stream: false` in the model params in db.
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case json.Number:
-		if i, err := strconv.ParseInt(string(v), 10, 64); err == nil {
-			return i != 0
-		}
-		b, err := strconv.ParseBool(string(v))
-		return err == nil && b
-	case string:
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "true", "1", "yes":
-			return true
-		default:
-			return false
-		}
-	default:
-		return false
-	}
-}
-
+// HTTPTransportPostHook is a no-op; this plugin does not modify HTTP response headers.
 func (p *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes streaming chunks through unchanged; prompt injection
+// happens in PreLLMHook before the provider call.
 func (p *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
 }
 
+// PreLLMHook resolves the prompt via PromptResolver, loads the version from the in-memory
+// cache, sets governance/observability context (selected prompt name and version), merges
+// version ModelParams with the request (request overrides), converts stored messages to
+// chat messages, and prepends them to Chat or Responses input. Non-HTTP transports rely
+// on context keys set by callers instead of HTTPTransportPreHook.
+//
+// Parameters:
+//   - ctx: may set BifrostContextKeySelectedPromptName, BifrostContextKeySelectedPromptID and BifrostContextKeySelectedPromptVersion when a prompt is applied
+//   - req: chat or Responses request to mutate in place
+//
+// Returns:
+//   - *schemas.BifrostRequest: possibly modified request
+//   - *schemas.LLMPluginShortCircuit: always nil
+//   - error: resolution failure or missing prompt/version; invalid or empty template returns
+//     the request unchanged with a nil error
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	promptID, versionNumber, versionSpecified, err := p.resolver.Resolve(ctx, req)
+	if req == nil {
+		return req, nil, nil
+	}
+
+	promptID, versionNumber, err := p.resolver.Resolve(ctx, req)
 	if err != nil {
 		p.logger.Warn("prompts plugin: failed to resolve prompt: %v", err)
 		return req, nil, nil
@@ -209,16 +232,22 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		return req, nil, nil
 	}
 
-	_, version, found := p.resolveVersion(promptID, versionNumber, versionSpecified)
+	prompt, version, found := p.resolveVersion(promptID, versionNumber)
 	if !found {
-		p.logger.Warn("prompts plugin: prompt or version not found: %s", promptID)
+		p.logger.Warn("prompts plugin: prompt or version not found: promptID=%s versionNumber=%d", promptID, versionNumber)
 		return req, nil, nil
 	}
 
 	if version == nil {
-		p.logger.Warn("prompts plugin: prompt %s has no versions", promptID)
+		p.logger.Warn("prompts plugin: prompt has no resolved version: promptID=%s", promptID)
 		return req, nil, nil
 	}
+
+	if prompt != nil && prompt.Name != "" {
+		ctx.SetValue(schemas.BifrostContextKeySelectedPromptID, prompt.ID)
+		ctx.SetValue(schemas.BifrostContextKeySelectedPromptName, prompt.Name)
+	}
+	ctx.SetValue(schemas.BifrostContextKeySelectedPromptVersion, strconv.Itoa(version.VersionNumber))
 
 	// Apply model params from the version (version params are defaults; request params win).
 	switch {
@@ -230,10 +259,11 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 
 	template, err := chatMessagesFromVersionMessages(version.Messages)
 	if err != nil {
-		p.logger.Warn("prompts plugin: failed to parse messages for prompt %s: %v", promptID, err)
+		p.logger.Warn("prompts plugin: failed to convert version messages to chat messages: %v", err)
 		return req, nil, nil
 	}
 	if len(template) == 0 {
+		p.logger.Warn("prompts plugin: no template messages found for prompt %s version %d", promptID, version.VersionNumber)
 		return req, nil, nil
 	}
 
@@ -247,6 +277,7 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	return req, nil, nil
 }
 
+// PostLLMHook is a no-op; the plugin does not modify responses.
 func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
@@ -407,9 +438,12 @@ func applyVersionParamsToResponsesRequest(version *configstoreTables.TablePrompt
 }
 
 // resolveVersion centralises the map-lookup logic shared by setPromptStreamFromVersionForTransport
-// and PreLLMHook. It returns the prompt and its resolved version (either the explicitly requested
-// version or the prompt's latest version), plus a bool indicating whether both were found.
-func (p *Plugin) resolveVersion(promptID string, versionNumber int, versionSpecified bool) (
+// and PreLLMHook. It returns the prompt and its resolved version.
+//
+// If versionNumber > 0, that explicit version is loaded from versionsByPromptAndNumber (from
+// x-bf-prompt-version header or a custom PromptResolver such as deployment traffic routing).
+// If versionNumber == 0, the prompt's latest version is used (no header / resolver chose latest).
+func (p *Plugin) resolveVersion(promptID string, versionNumber int) (
 	*configstoreTables.TablePrompt, *configstoreTables.TablePromptVersion, bool,
 ) {
 	p.mu.RLock()
@@ -419,47 +453,44 @@ func (p *Plugin) resolveVersion(promptID string, versionNumber int, versionSpeci
 	if !ok || prompt == nil {
 		return nil, nil, false
 	}
-	if !versionSpecified {
-		return prompt, prompt.LatestVersion, true
+	if versionNumber > 0 {
+		byNumber, ok := p.versionsByPromptAndNumber[promptID]
+		if !ok {
+			return nil, nil, false
+		}
+		v, found := byNumber[versionNumber]
+		if !found || v == nil {
+			return nil, nil, false
+		}
+		return prompt, v, true
 	}
-	byNumber, ok := p.versionsByPromptAndNumber[promptID]
-	if !ok {
-		return nil, nil, false
-	}
-	v, found := byNumber[versionNumber]
-	if !found || v == nil {
-		return nil, nil, false
-	}
-	return prompt, v, true
+	return prompt, prompt.LatestVersion, true
 }
 
+// Cleanup releases plugin resources; the prompts plugin has nothing to tear down.
 func (p *Plugin) Cleanup() error {
 	return nil
 }
 
-func promptStringFromCtx(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) string {
-	if v, ok := ctx.Value(key).(string); ok {
-		return strings.TrimSpace(v)
-	}
-	return ""
-}
-
-func parsePromptVersionNumber(ctx *schemas.BifrostContext) (num int, specified bool, err error) {
-	s, ok := ctx.Value(PromptVersionKey).(string)
+// parseNumberFromContext parses a decimal integer from a string context value. Missing or
+// empty values yield 0 with no error (treated as “no explicit version”).
+func parseNumberFromContext(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) (num int, err error) {
+	s, ok := ctx.Value(key).(string)
 	if !ok {
-		return 0, false, nil
+		return 0, nil
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, false, nil
+		return 0, nil
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return 0, true, err
+		return 0, err
 	}
-	return int(n), true, nil
+	return int(n), nil
 }
 
+// chatMessagePopulated reports whether a ChatMessage carries any meaningful content for injection.
 func chatMessagePopulated(cm schemas.ChatMessage) bool {
 	if strings.TrimSpace(string(cm.Role)) != "" {
 		return true
@@ -526,6 +557,8 @@ func convertVersionMessagesToChatMessages(data []byte) (schemas.ChatMessage, err
 	return chatMessage, nil
 }
 
+// chatMessagesFromVersionMessages decodes each stored row into schemas.ChatMessage, preferring
+// Message bytes and falling back to MessageJSON when needed.
 func chatMessagesFromVersionMessages(messages []configstoreTables.TablePromptVersionMessage) ([]schemas.ChatMessage, error) {
 	out := make([]schemas.ChatMessage, 0, len(messages))
 	for i := range messages {
@@ -543,6 +576,7 @@ func chatMessagesFromVersionMessages(messages []configstoreTables.TablePromptVer
 	return out, nil
 }
 
+// mergeChatMessages prepends prefix to the chat input slice (template first, then client messages).
 func mergeChatMessages(dest *[]schemas.ChatMessage, prefix []schemas.ChatMessage) {
 	if dest == nil || len(prefix) == 0 {
 		return
@@ -554,6 +588,8 @@ func mergeChatMessages(dest *[]schemas.ChatMessage, prefix []schemas.ChatMessage
 	*dest = merged
 }
 
+// mergeResponsesMessages converts template chat messages to ResponsesMessage entries and
+// prepends them before the client’s Responses input.
 func mergeResponsesMessages(dest *[]schemas.ResponsesMessage, template []schemas.ChatMessage) {
 	if dest == nil || len(template) == 0 {
 		return

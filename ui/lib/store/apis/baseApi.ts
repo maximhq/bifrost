@@ -164,6 +164,7 @@ export const baseApi = createApi({
 		"Sessions",
 		"AccessProfiles",
 		"BusinessUnits",
+		"PromptDeployments",
 	],
 	endpoints: () => ({}),
 });

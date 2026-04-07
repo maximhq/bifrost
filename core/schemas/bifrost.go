@@ -188,6 +188,9 @@ const (
 	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name" // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"    // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"  // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"          // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptVersion               BifrostContextKey = "bifrost-selected-prompt-version"       // string (numeric version as string, e.g. "3" (set by prompts plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedPromptID                    BifrostContextKey = "bifrost-selected-prompt-id"            // string (id of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"       // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"             // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
@@ -222,6 +225,7 @@ const (
 	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
+	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStoreRawRequestResponse             BifrostContextKey = "bifrost-store-raw-request-response"               // bool (per-request override — read by bifrost.go, never overwritten)
@@ -235,7 +239,6 @@ const (
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
-	BifrostContextKeyPromptStreamRequest                 BifrostContextKey = "bifrost-prompt-stream-request"                    // bool (set by prompts HTTP plugin when prompt version model_params.stream is true and body omitted stream)
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
 	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)

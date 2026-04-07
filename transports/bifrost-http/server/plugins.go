@@ -163,8 +163,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(telemetry.PluginName, builtinPlacement, schemas.Ptr(1))
 
-	// 2. Prompts (requires config store for prompt repository)
-	if s.Config.ConfigStore != nil {
+	// 2. Prompts (requires config store for prompt repository; disabled in enterprise)
+	if s.Config.ConfigStore != nil && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		s.registerPluginWithStatus(ctx, prompts.PluginName, nil, nil, false)
 	} else {
 		s.markPluginDisabled(prompts.PluginName)
