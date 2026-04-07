@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,14 +20,12 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -61,8 +57,8 @@ type StreamChunkInterceptor interface {
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
-	// GetHeaderMatcher returns the precompiled header matcher for header filtering
-	GetHeaderMatcher() *HeaderMatcher
+	// GetHeaderFilterConfig returns the global header filter configuration
+	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
 	// GetAvailableProviders returns the list of available providers
 	GetAvailableProviders() []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
@@ -73,9 +69,6 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
-	// GetKVStore returns the shared in-memory kvstore instance.
-	// Returns nil if not initialized.
-	GetKVStore() *kvstore.Store
 }
 
 // Retry backoff constants for validation
@@ -109,12 +102,6 @@ func IsBuiltinPlugin(name string) bool {
 		name == otel.PluginName
 }
 
-// pluginOrderInfo stores ordering metadata for a plugin.
-type pluginOrderInfo struct {
-	Placement schemas.PluginPlacement
-	Order     int
-}
-
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
 // It contains the client configuration, provider configurations, MCP configuration,
 // vector store configuration, config store configuration, and logs store configuration.
@@ -131,7 +118,6 @@ type ConfigData struct {
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 }
 
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
@@ -151,7 +137,6 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -167,7 +152,6 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.MCP = temp.MCP
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
-	cd.WebSocket = temp.WebSocket
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -188,20 +172,17 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 						if tableKey.Value.GetValue() != "" {
 							// Full key definition - add to provider
 							keysToAddToProvider = append(keysToAddToProvider, schemas.Key{
-								ID:                 tableKey.KeyID,
-								Name:               tableKey.Name,
-								Value:              tableKey.Value,
-								Models:             tableKey.Models,
-								BlacklistedModels:  tableKey.BlacklistedModels,
-								Weight:             getWeight(tableKey.Weight),
-								Enabled:            tableKey.Enabled,
-								UseForBatchAPI:     tableKey.UseForBatchAPI,
-								AzureKeyConfig:     tableKey.AzureKeyConfig,
-								VertexKeyConfig:    tableKey.VertexKeyConfig,
-								BedrockKeyConfig:   tableKey.BedrockKeyConfig,
-								ReplicateKeyConfig: tableKey.ReplicateKeyConfig,
-								VLLMKeyConfig:      tableKey.VLLMKeyConfig,
-								ConfigHash:         tableKey.ConfigHash,
+								ID:               tableKey.KeyID,
+								Name:             tableKey.Name,
+								Value:            tableKey.Value,
+								Models:           tableKey.Models,
+								Weight:           getWeight(tableKey.Weight),
+								Enabled:          tableKey.Enabled,
+								UseForBatchAPI:   tableKey.UseForBatchAPI,
+								AzureKeyConfig:   tableKey.AzureKeyConfig,
+								VertexKeyConfig:  tableKey.VertexKeyConfig,
+								BedrockKeyConfig: tableKey.BedrockKeyConfig,
+								ConfigHash:       tableKey.ConfigHash,
 							})
 						}
 						// Reference lookups (no Value) are NOT added to provider - they already exist there
@@ -284,7 +265,7 @@ type Config struct {
 	LogsStore   logstore.LogStore
 
 	// In-memory storage
-	ClientConfig     *configstore.ClientConfig
+	ClientConfig     configstore.ClientConfig
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	MCPConfig        *schemas.MCPConfig
 	GovernanceConfig *configstore.GovernanceConfig
@@ -296,7 +277,6 @@ type Config struct {
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
 	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
-	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
 	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
 	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
 	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
@@ -315,8 +295,6 @@ type Config struct {
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
-	// Shared in-memory kvstore for transport-level protocol coordination.
-	KVStore *kvstore.Store
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -325,31 +303,18 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
-
-	// StreamingDecompressThreshold overrides the default threshold (10MB) for
-	// switching from buffered to streaming request decompression. Set by
-	// enterprise from LargePayloadConfig.RequestThresholdBytes. Zero means
-	// use schemas.DefaultLargePayloadRequestThresholdBytes.
-	StreamingDecompressThreshold int64
-	// WebSocket configuration for WS gateway features (Responses WS mode, Realtime API).
-	WebSocketConfig *schemas.WebSocketConfig
-
-	// Precompiled header matcher for header filtering. Rebuilt on config change.
-	headerMatcher atomic.Pointer[HeaderMatcher]
 }
 
-// DefaultClientConfig is the default client config used when no config is provided.
 var DefaultClientConfig = configstore.ClientConfig{
 	DropExcessRequests:              false,
 	PrometheusLabels:                []string{},
 	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
-	EnableLogging:                   new(true),
+	EnableLogging:                   true,
 	DisableContentLogging:           false,
 	EnforceAuthOnInference:          false,
 	AllowDirectKeys:                 false,
 	AllowedOrigins:                  []string{"*"},
 	AllowedHeaders:                  []string{},
-	WhitelistedRoutes:               []string{},
 	MaxRequestBodySizeMB:            100,
 	MCPAgentDepth:                   10,
 	MCPToolExecutionTimeout:         30,
@@ -373,6 +338,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
+	// Initialize separate database connections for optimal performance at scale
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
 	logsDBPath := filepath.Join(configDirPath, "logs.db")
@@ -382,212 +348,144 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
 	}
+	// Getting absolute path for config file
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for config file: %w", err)
 	}
-	// Parse config file if it exists; otherwise use empty ConfigData (defaults will apply)
-	var configData ConfigData
+	// Check if config file exists
 	data, err := os.ReadFile(configFilePath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
+		// If config file doesn't exist, we will directly use the config store (create one if it doesn't exist)
+		if os.IsNotExist(err) {
+			logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
+			return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath)
 		}
-		// No config file — configData stays zero-value, defaults will apply
-		logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
-	} else {
-		// Schema warning check
-		var schema map[string]any
-		if err := json.Unmarshal(data, &schema); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
-		}
-		if schema["$schema"] != "https://www.getbifrost.ai/schema" {
-			yellowColor := "\033[33m"
-			resetColor := "\033[0m"
-			message := fmt.Sprintf("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
-			boxWidth := 100
-			contentWidth := boxWidth - 4
-			words := strings.Fields(message)
-			var lines []string
-			currentLine := ""
-			for _, word := range words {
-				if currentLine == "" {
-					currentLine = word
-				} else if len(currentLine)+1+len(word) <= contentWidth {
-					currentLine += " " + word
-				} else {
-					lines = append(lines, currentLine)
-					currentLine = word
-				}
-			}
-			if currentLine != "" {
-				lines = append(lines, currentLine)
-			}
-			fmt.Printf("%s╔%s╗%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
-			for _, l := range lines {
-				padding := contentWidth - len(l)
-				if padding < 0 {
-					padding = 0
-				}
-				fmt.Printf("%s║ %s%s ║%s\n", yellowColor, l, strings.Repeat(" ", padding), resetColor)
-			}
-			fmt.Printf("%s╚%s╝%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
-			fmt.Println("")
-			logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
-		}
-		// Validate config file against the schema
-		if err := ValidateConfigSchema(data); err != nil {
-			logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
-		}
-		// Parse config data
-		if err := json.Unmarshal(data, &configData); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-		}
-		logger.Info("loading configuration from: %s", absConfigFilePath)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
+	// If file exists, we will do a quick check if that file includes "$schema":"https://www.getbifrost.ai/schema", If not we will show a warning in a box - yellow color
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
+	}
+	if schema["$schema"] != "https://www.getbifrost.ai/schema" {
+		// Print warning in yellow ASCII box
+		yellowColor := "\033[33m"
+		resetColor := "\033[0m"
+		message := fmt.Sprintf("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
 
-	// 1. Encryption (before stores so BeforeSave hooks work correctly)
-	if err := initEncryption(&configData); err != nil {
+		// Fixed box width, content width is box - 4 (for "║ " and " ║")
+		boxWidth := 100
+		contentWidth := boxWidth - 4
+
+		// Word wrap the message into lines
+		words := strings.Fields(message)
+		var lines []string
+		currentLine := ""
+		for _, word := range words {
+			if currentLine == "" {
+				currentLine = word
+			} else if len(currentLine)+1+len(word) <= contentWidth {
+				currentLine += " " + word
+			} else {
+				lines = append(lines, currentLine)
+				currentLine = word
+			}
+		}
+		if currentLine != "" {
+			lines = append(lines, currentLine)
+		}
+
+		// Print top border
+		fmt.Printf("%s╔%s╗%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
+
+		// Print each line with proper padding
+		for _, l := range lines {
+			padding := contentWidth - len(l)
+			if padding < 0 {
+				padding = 0
+			}
+			fmt.Printf("%s║ %s%s ║%s\n", yellowColor, l, strings.Repeat(" ", padding), resetColor)
+		}
+
+		// Print bottom border
+		fmt.Printf("%s╚%s╝%s\n", yellowColor, strings.Repeat("═", boxWidth-2), resetColor)
+		fmt.Println("")
+		logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
+	}
+	// Validate config file against the schema - fatal on validation errors
+	if err := ValidateConfigSchema(data); err != nil {
+		logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
+	}
+	// If config file exists, we will use it to bootstrap config tables
+	logger.Info("loading configuration from: %s", absConfigFilePath)
+	return loadConfigFromFile(ctx, config, data)
+}
+
+// loadConfigFromFile initializes configuration from a JSON config file.
+// It merges config file data with existing database config, with store taking priority.
+func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Config, error) {
+	var configData ConfigData
+	if err := json.Unmarshal(data, &configData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	var err error
+	// Initialize encryption before stores so BeforeSave hooks and EncryptPlaintextRows work correctly
+	if err = initEncryptionFromFile(&configData); err != nil {
 		return nil, err
 	}
-	// 2. Stores (config, logs, vector) — creates defaults for absent configs
-	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
+	// Initialize stores from config file
+	if err = initStoresFromFile(ctx, config, &configData); err != nil {
 		return nil, err
 	}
-	// 3. KV store
-	if err := initKVStore(config); err != nil {
+	// From now on, config store gets priority if enabled and we find data.
+	// If we don't find any data in the store, then we resort to config file.
+	// NOTE: We follow a standard practice: store -> config file -> update store.
+	// Load client config
+	loadClientConfigFromFile(ctx, config, &configData)
+	// Load providers config with hash reconciliation
+	if err = loadProvidersFromFile(ctx, config, &configData); err != nil {
 		return nil, err
 	}
-	// 4. Client config (store → file → defaults)
-	loadClientConfig(ctx, config, &configData)
-	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
-	// 5. Providers (store → file → auto-detect)
-	if err := loadProviders(ctx, config, &configData); err != nil {
-		return nil, err
-	}
-	// 6. MCP config
-	loadMCPConfig(ctx, config, &configData)
-	// 7. Governance config
-	loadGovernanceConfig(ctx, config, &configData)
-	// 8. Auth config
-	loadAuthConfig(ctx, config, &configData)
-	// 9. Plugins
-	loadPlugins(ctx, config, &configData)
-	// 10. Framework config and pricing manager
-	initFrameworkConfig(ctx, config, &configData)
-	// 11. Encryption sync
+	// Load MCP config
+	loadMCPConfigFromFile(ctx, config, &configData)
+	// Load governance config
+	loadGovernanceConfigFromFile(ctx, config, &configData)
+	// Load auth config
+	loadAuthConfigFromFile(ctx, config, &configData)
+	// Load plugins
+	loadPluginsFromFile(ctx, config, &configData)
+	// Initialize framework config and pricing manager
+	initFrameworkConfigFromFile(ctx, config, &configData)
+	// Sync encryption: encrypt any plaintext rows written during config loading
 	syncEncryption(ctx, config)
-	// 12. WebSocket defaults
-	if configData.WebSocket != nil {
-		configData.WebSocket.CheckAndSetDefaults()
-		config.WebSocketConfig = configData.WebSocket
-	} else {
-		wsConfig := &schemas.WebSocketConfig{}
-		wsConfig.CheckAndSetDefaults()
-		config.WebSocketConfig = wsConfig
-	}
 	return config, nil
 }
 
-// initStores initializes config, logs, and vector stores.
-// When config data sections are absent (nil), creates default SQLite stores for persistence.
-func initStores(ctx context.Context, config *Config, configData *ConfigData, configDBPath, logsDBPath string) error {
+// initStoresFromFile initializes config, logs, and vector stores from config file
+func initStoresFromFile(ctx context.Context, config *Config, configData *ConfigData) error {
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		// Explicit config store configuration from config.json
 		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
 		if err != nil {
 			return err
 		}
 		logger.Info("config store initialized")
-	} else if configData.ConfigStoreConfig == nil {
-		// No config store section — create default SQLite store for persistence
-		config.ConfigStore, err = configstore.NewConfigStore(ctx, &configstore.Config{
-			Enabled: true,
-			Type:    configstore.ConfigStoreTypeSQLite,
-			Config: &configstore.SQLiteConfig{
-				Path: configDBPath,
-			},
-		}, logger)
-		if err != nil {
-			return fmt.Errorf("failed to initialize default config store: %w", err)
-		}
-		logger.Info("config store initialized (default SQLite)")
-	}
-	// else: ConfigStoreConfig is present but Enabled == false — leave ConfigStore nil
-
-	// Clear restart required flag on server startup
-	if config.ConfigStore != nil {
+		// Clear restart required flag on server startup
 		if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {
 			logger.Warn("failed to clear restart required config: %v", err)
 		}
 	}
-
 	// Initialize log store
 	if configData.LogsStoreConfig != nil && configData.LogsStoreConfig.Enabled {
-		// Explicit logs store configuration from config.json
 		config.LogsStore, err = logstore.NewLogStore(ctx, configData.LogsStoreConfig, logger)
 		if err != nil {
 			return err
 		}
 		logger.Info("logs store initialized")
-	} else if configData.LogsStoreConfig == nil {
-		// No logs store section — check DB for stored config (if available), then fall back to default SQLite
-		var logStoreConfig *logstore.Config
-		if config.ConfigStore != nil {
-			var dbErr error
-			logStoreConfig, dbErr = config.ConfigStore.GetLogsStoreConfig(ctx)
-			if dbErr != nil {
-				return fmt.Errorf("failed to get logs store config: %w", dbErr)
-			}
-		}
-		if logStoreConfig == nil {
-			logStoreConfig = &logstore.Config{
-				Enabled: true,
-				Type:    logstore.LogStoreTypeSQLite,
-				Config: &logstore.SQLiteConfig{
-					Path: logsDBPath,
-				},
-			}
-		}
-		config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
-		if err != nil {
-			// Handle case where stored path doesn't exist, create new at default path
-			if logStoreConfig.Type == logstore.LogStoreTypeSQLite && errors.Is(err, os.ErrNotExist) {
-				storedPath := ""
-				if sqliteConfig, ok := logStoreConfig.Config.(*logstore.SQLiteConfig); ok {
-					storedPath = sqliteConfig.Path
-				}
-				if storedPath != logsDBPath {
-					logger.Warn("failed to locate logstore file at path: %s: %v. Creating new one at path: %s", storedPath, err, logsDBPath)
-					logStoreConfig = &logstore.Config{
-						Enabled: true,
-						Type:    logstore.LogStoreTypeSQLite,
-						Config: &logstore.SQLiteConfig{
-							Path: logsDBPath,
-						},
-					}
-					config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
-					if err != nil {
-						return fmt.Errorf("failed to initialize logs store: %v", err)
-					}
-				} else {
-					return fmt.Errorf("failed to initialize logs store: %v", err)
-				}
-			} else {
-				return fmt.Errorf("failed to initialize logs store: %v", err)
-			}
-		}
-		logger.Info("logs store initialized")
-		if config.ConfigStore != nil {
-			if err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig); err != nil {
-				return fmt.Errorf("failed to update logs store config: %w", err)
-			}
-		}
 	}
-
-	// Initialize vector store (only if explicitly configured)
+	// Initialize vector store
 	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
 		logger.Info("connecting to vectorstore")
 		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
@@ -603,37 +501,8 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	return nil
 }
 
-// applyClientConfigDefaults fills in default values for zero-value fields in a ClientConfig.
-// This ensures partial configs (from file or DB) get sensible defaults for unset fields.
-func applyClientConfigDefaults(cc *configstore.ClientConfig) {
-	if cc.InitialPoolSize == 0 {
-		cc.InitialPoolSize = DefaultClientConfig.InitialPoolSize
-	}
-	if cc.MaxRequestBodySizeMB == 0 {
-		cc.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
-	}
-	if cc.MCPAgentDepth == 0 {
-		cc.MCPAgentDepth = DefaultClientConfig.MCPAgentDepth
-	}
-	if cc.MCPToolExecutionTimeout == 0 {
-		cc.MCPToolExecutionTimeout = DefaultClientConfig.MCPToolExecutionTimeout
-	}
-	if cc.MCPCodeModeBindingLevel == "" {
-		cc.MCPCodeModeBindingLevel = DefaultClientConfig.MCPCodeModeBindingLevel
-	}
-	if cc.AllowedOrigins == nil {
-		cc.AllowedOrigins = DefaultClientConfig.AllowedOrigins
-	}
-	if cc.AllowedHeaders == nil {
-		cc.AllowedHeaders = DefaultClientConfig.AllowedHeaders
-	}
-	if cc.EnableLogging == nil {
-		cc.EnableLogging = new(true)
-	}
-}
-
-// loadClientConfig loads and merges client config from file with store using hash-based reconciliation
-func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
+// loadClientConfigFromFile loads and merges client config from file with store using hash-based reconciliation
+func loadClientConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
 	var err error
 	if config.ConfigStore != nil {
@@ -646,8 +515,10 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
-			config.ClientConfig = configData.Client
-			applyClientConfigDefaults(config.ClientConfig)
+			config.ClientConfig = *configData.Client
+			if config.ClientConfig.MaxRequestBodySizeMB == 0 {
+				config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+			}
 			// Generate hash for the file config
 			fileHash, hashErr := configData.Client.GenerateClientConfigHash()
 			if hashErr != nil {
@@ -656,7 +527,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 				config.ClientConfig.ConfigHash = fileHash
 			}
 		} else {
-			config.ClientConfig = new(DefaultClientConfig)
+			config.ClientConfig = DefaultClientConfig
 			// Generate hash for default config
 			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHash()
 			if hashErr != nil {
@@ -667,15 +538,18 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		}
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+			if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}
 		return
 	}
 	// Case 2: Config exists in DB
-	config.ClientConfig = clientConfig
-	applyClientConfigDefaults(config.ClientConfig)
+	config.ClientConfig = *clientConfig
+	// For backward compatibility, handle cases where max request body size is not set
+	if config.ClientConfig.MaxRequestBodySizeMB == 0 {
+		config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+	}
 	// Case 2a: No file config - use DB config as-is
 	if configData.Client == nil {
 		logger.Debug("no client config in file, using DB config")
@@ -690,13 +564,16 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if clientConfig.ConfigHash != fileHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
-		config.ClientConfig = configData.Client
+		config.ClientConfig = *configData.Client
 		config.ClientConfig.ConfigHash = fileHash
-		applyClientConfigDefaults(config.ClientConfig)
+		// Apply defaults for zero values
+		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
+			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+		}
 		// Update store with file config
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store from file")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+			if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}
@@ -706,8 +583,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	}
 }
 
-// loadProviders loads and merges providers from file with store using hash reconciliation
-func loadProviders(ctx context.Context, config *Config, configData *ConfigData) error {
+// loadProvidersFromFile loads and merges providers from file with store using hash reconciliation
+func loadProvidersFromFile(ctx context.Context, config *Config, configData *ConfigData) error {
 	var providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig
 	var err error
 	if config.ConfigStore != nil {
@@ -722,18 +599,14 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		providersInConfigStore = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	}
 	// Process provider configurations from file
-	if len(configData.Providers) > 0 {
+	if configData.Providers != nil {
 		for providerName, providerCfgInFile := range configData.Providers {
-			if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+			if err = processProviderFromFile(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
 				logger.Warn("failed to process provider %s: %v", providerName, err)
 			}
 		}
-	} else if len(providersInConfigStore) == 0 {
-		// No providers in file and none in DB — auto-detect from environment
+	} else {
 		config.autoDetectProviders(ctx)
-		for k, v := range config.Providers {
-			providersInConfigStore[k] = v
-		}
 	}
 	// Update store and config
 	if config.ConfigStore != nil {
@@ -746,8 +619,8 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 	return nil
 }
 
-// processProvider processes a single provider configuration from config file
-func processProvider(
+// processProviderFromFile processes a single provider configuration from config file
+func processProviderFromFile(
 	config *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
@@ -834,18 +707,13 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:             dbKey.Name,
+					Value:            dbKey.Value,
+					Models:           dbKey.Models,
+					Weight:           dbKey.Weight,
+					AzureKeyConfig:   dbKey.AzureKeyConfig,
+					VertexKeyConfig:  dbKey.VertexKeyConfig,
+					BedrockKeyConfig: dbKey.BedrockKeyConfig,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -912,18 +780,13 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
 				dbKeyHash, err := configstore.GenerateKeyHash(schemas.Key{
-					Name:               dbKey.Name,
-					Value:              dbKey.Value,
-					Models:             dbKey.Models,
-					BlacklistedModels:  dbKey.BlacklistedModels,
-					Weight:             dbKey.Weight,
-					AzureKeyConfig:     dbKey.AzureKeyConfig,
-					VertexKeyConfig:    dbKey.VertexKeyConfig,
-					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
-					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
-					Enabled:            dbKey.Enabled,
-					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					Name:             dbKey.Name,
+					Value:            dbKey.Value,
+					Models:           dbKey.Models,
+					Weight:           dbKey.Weight,
+					AzureKeyConfig:   dbKey.AzureKeyConfig,
+					VertexKeyConfig:  dbKey.VertexKeyConfig,
+					BedrockKeyConfig: dbKey.BedrockKeyConfig,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -965,30 +828,14 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 	return mergedKeys
 }
 
-// loadMCPConfig loads and merges MCP config from file
-func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
+// loadMCPConfigFromFile loads and merges MCP config from file
+func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			logger.Warn("config store is disabled - MCP manager will not be initialized. MCP clients require config store for persistence.")
 		}
 		return
 	}
-	// Validate MCP client names from config file before processing
-	if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
-		valid := make([]*schemas.MCPClientConfig, 0, len(configData.MCP.ClientConfigs))
-		for _, c := range configData.MCP.ClientConfigs {
-			if c == nil {
-				continue
-			}
-			if err := mcp.ValidateMCPClientName(c.Name); err != nil {
-				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
-				continue
-			}
-			valid = append(valid, c)
-		}
-		configData.MCP.ClientConfigs = valid
-	}
-
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
 		tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
@@ -1065,8 +912,8 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	}
 }
 
-// loadGovernanceConfig loads and merges governance config from file
-func loadGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData) {
+// loadGovernanceConfigFromFile loads and merges governance config from file
+func loadGovernanceConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	var governanceConfig *configstore.GovernanceConfig
 	var err error
 	// Checking from the store
@@ -1636,9 +1483,9 @@ func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
 	}
 }
 
-// loadAuthConfig loads auth config from file.
+// loadAuthConfigFromFile loads auth config from file.
 // File config (configData) always takes precedence over DB config.
-func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData) {
+func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	hasFileConfig := configData != nil && (configData.AuthConfig != nil || (configData.Governance != nil && configData.Governance.AuthConfig != nil))
 	if !hasFileConfig && (config.GovernanceConfig == nil || config.GovernanceConfig.AuthConfig == nil) {
 		return
@@ -1745,8 +1592,8 @@ func loadAuthConfig(ctx context.Context, config *Config, configData *ConfigData)
 	}
 }
 
-// loadPlugins loads and merges plugins from file
-func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
+// loadPluginsFromFile loads and merges plugins from file
+func loadPluginsFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	// First load plugins from DB
 	if config.ConfigStore != nil {
 		logger.Debug("getting plugins from store")
@@ -1758,12 +1605,10 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
-					Name:      plugin.Name,
-					Enabled:   plugin.Enabled,
-					Config:    plugin.Config,
-					Path:      plugin.Path,
-					Placement: plugin.Placement,
-					Order:     plugin.Order,
+					Name:    plugin.Name,
+					Enabled: plugin.Enabled,
+					Config:  plugin.Config,
+					Path:    plugin.Path,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -1777,34 +1622,12 @@ func loadPlugins(ctx context.Context, config *Config, configData *ConfigData) {
 
 	// Merge with config file plugins
 	if len(configData.Plugins) > 0 {
-		mergePlugins(ctx, config, configData)
+		mergePluginsFromFile(ctx, config, configData)
 	}
 }
 
-// placementEqual compares two optional PluginPlacement pointers.
-func placementEqual(a, b *schemas.PluginPlacement) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
-}
-
-// orderEqual compares two optional int pointers.
-func orderEqual(a, b *int) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
-}
-
-// mergePlugins merges plugins from config file with existing config
-func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
+// mergePluginsFromFile merges plugins from config file with existing config
+func mergePluginsFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	logger.Debug("processing plugins from config file")
 	if len(config.PluginConfigs) == 0 {
 		logger.Debug("no plugins found in store, using plugins from config file")
@@ -1827,9 +1650,8 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				if existingPlugin.Version != nil {
 					existingVersion = *existingPlugin.Version
 				}
-				placementChanged := !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order)
-				if *plugin.Version > existingVersion || placementChanged {
-					logger.Debug("replacing plugin %s (version %d→%d, placementChanged=%v)", plugin.Name, existingVersion, *plugin.Version, placementChanged)
+				if *plugin.Version > existingVersion {
+					logger.Debug("replacing plugin %s with higher version %d (was %d)", plugin.Name, *plugin.Version, existingVersion)
 					config.PluginConfigs[existingIdx] = plugin
 				}
 			}
@@ -1859,13 +1681,11 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				plugin.Version = bifrost.Ptr(int16(1))
 			}
 			pluginConfig := &configstoreTables.TablePlugin{
-				Name:      plugin.Name,
-				Enabled:   plugin.Enabled,
-				Config:    pluginConfigCopy,
-				Path:      plugin.Path,
-				Version:   *plugin.Version,
-				Placement: plugin.Placement,
-				Order:     plugin.Order,
+				Name:    plugin.Name,
+				Enabled: plugin.Enabled,
+				Config:  pluginConfigCopy,
+				Path:    plugin.Path,
+				Version: *plugin.Version,
 			}
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
@@ -1918,7 +1738,7 @@ func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.C
 			for toolName, costPerExecution := range dbClientConfig.ToolPricing {
 				// Tool names in the DB are stored without the client/server prefix.
 				// Build the key using fmt.Sprintf("%s/%s", clientName, toolName) to match
-				// buildMCPPricingDataFromConfig and EditMCPClient patterns.
+				// buildMCPPricingDataFromFile and EditMCPClient patterns.
 				mcpPricingData[fmt.Sprintf("%s/%s", dbClientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
 					Server:           dbClientConfig.Name,
 					ToolName:         toolName,
@@ -1930,7 +1750,7 @@ func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.C
 	return mcpPricingData
 }
 
-func buildMCPPricingDataFromConfig(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
+func buildMCPPricingDataFromFile(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
 	mcpPricingData := mcpcatalog.MCPPricingData{}
 	if configData == nil || configData.MCP == nil {
 		return mcpPricingData
@@ -1947,34 +1767,8 @@ func buildMCPPricingDataFromConfig(ctx context.Context, configData *ConfigData) 
 	return mcpPricingData
 }
 
-// redactURL truncates a URL for safe logging, avoiding leakage of tokens or
-// credentials that may be embedded in query parameters or paths.
-func redactURL(u string) string {
-	if len(u) <= 8 {
-		return "***"
-	}
-	return u[:8] + "..."
-}
-
-// ResolveFrameworkPricingConfig resolves framework pricing configuration.
-//
-// Precedence order (highest → lowest): DB > config.json > built-in defaults.
-//
-// DB values are authoritative once written — this allows runtime changes via the
-// management API to persist across restarts without requiring a config.json edit.
-// When the DB is absent or contains a corrupted/zero value the file config is used,
-// with the DB backfilled so the next startup finds a valid value.
-//
-// pricing_url supports the "env.VAR_NAME" prefix for full-string env substitution.
-// The check is explicit (strings.HasPrefix "env.") so that non-prefixed URLs are
-// never passed through the env lookup — partial/embedded references such as
-// "https://host/env.PATH" are treated as plain strings without any expansion.
-//
-// NOTE on pricingSyncInterval naming:
-// Despite its name, pricingSyncInterval is NOT a scheduling frequency.
-// It defines the minimum allowed elapsed time between sync executions.
-// The actual check occurs on a fixed ticker (syncWorkerTickerPeriod).
-// Effective sync frequency = max(syncWorkerTickerPeriod, pricingSyncInterval).
+// ResolveFrameworkPricingConfig resolves framework pricing configuration with precedence:
+// database > file > defaults. It also returns whether DB backfill is needed.
 func ResolveFrameworkPricingConfig(
 	dbConfig *configstoreTables.TableFrameworkConfig,
 	fileConfig *framework.FrameworkConfig,
@@ -1982,139 +1776,45 @@ func ResolveFrameworkPricingConfig(
 	defaultPricingURL := modelcatalog.DefaultPricingURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
 
-	// --- Phase 1: parse and validate file config ---
-
 	filePricingURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
-	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	if fileConfig != nil && fileConfig.Pricing != nil {
 		if fileConfig.Pricing.PricingURL != nil {
-			raw := *fileConfig.Pricing.PricingURL
-			// Explicitly check for the "env." prefix before invoking the env lookup.
-			// This makes the substitution contract unambiguous: a URL that does not
-			// begin with "env." is always used verbatim, regardless of what
-			// envutils.ProcessEnvValue might do internally in the future.
-			if strings.HasPrefix(raw, "env.") {
-				resolvedURL, err := envutils.ProcessEnvValue(raw)
-				if err != nil {
-					// Named env variable not found — preserve the original "env.VAR"
-					// string so the downstream HTTP fetch fails visibly rather than
-					// silently falling back to the built-in default URL.
-					logger.Warn("pricing_url: env variable not found (%v); keeping original value %q", err, raw)
-					filePricingURL = fileConfig.Pricing.PricingURL
-					// Do NOT persist the unresolved "env.VAR" literal to DB.
-					// If we did, a later restart would read the literal from DB
-					// (which is authoritative) and never attempt env resolution again.
-					skipURLBackfill = true
-				} else {
-					filePricingURL = &resolvedURL
-				}
-			} else {
-				filePricingURL = &raw
-			}
+			filePricingURL = fileConfig.Pricing.PricingURL
 		}
-		if fileConfig.Pricing.PricingSyncInterval != nil {
-			val := *fileConfig.Pricing.PricingSyncInterval
-			switch {
-			case val <= 0:
-				// Zero or negative values are meaningless for a sync eligibility threshold.
-				logger.Warn("pricing_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
-			case val < modelcatalog.MinimumPricingSyncIntervalSec:
-				// Accept but clamp to the schema-declared minimum of 3600 s (1 hour).
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
-				logger.Warn("pricing_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
-				fileSyncSeconds = &clamped
-			default:
-				fileSyncSeconds = &val
-			}
+		if fileConfig.Pricing.PricingSyncInterval != nil && *fileConfig.Pricing.PricingSyncInterval > 0 {
+			secs := int64((*fileConfig.Pricing.PricingSyncInterval).Seconds())
+			fileSyncSeconds = &secs
 		}
 	}
-
-	// --- Phase 2: apply file config over defaults ---
 
 	resolvedPricingURL := &defaultPricingURL
 	resolvedSyncSeconds := &defaultSyncSeconds
-	urlSource := "default"
-	intervalSource := "default"
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
-		urlSource = "file"
-		logger.Debug("pricing_url resolved from file")
 	}
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
-		intervalSource = "file"
-		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
 	}
-
-	// --- Phase 3: apply DB values over file/defaults (DB is authoritative) ---
 
 	needsDBUpdate := false
 	configID := uint(0)
 	if dbConfig != nil {
 		configID = dbConfig.ID
 		if dbConfig.PricingURL != nil {
-			if filePricingURL != nil && *filePricingURL != *dbConfig.PricingURL {
-				logger.Info("pricing_url overridden by DB: file=%s db=%s", redactURL(*filePricingURL), redactURL(*dbConfig.PricingURL))
-			}
 			resolvedPricingURL = dbConfig.PricingURL
-			urlSource = "db"
-		} else if !skipURLBackfill {
-			// DB row exists but URL field is NULL — backfill with resolved value.
-			// Skip backfill when the resolved URL is an unresolved env reference
-			// to prevent persisting "env.VAR" literals into the DB.
-			needsDBUpdate = true
-		}
-		if dbConfig.PricingSyncInterval != nil {
-			val := *dbConfig.PricingSyncInterval
-			if val <= 0 {
-				// Corrupted or legacy zero written by the pre-fix bug.
-				// Ignore and backfill the DB with the correctly resolved value.
-				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
-				needsDBUpdate = true
-			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
-				// DB has a positive value below the minimum — clamp and backfill,
-				// consistent with the file-path validation in Phase 1.
-				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
-				resolvedSyncSeconds = &clamped
-				intervalSource = "db"
-				needsDBUpdate = true
-			} else {
-				if fileSyncSeconds != nil && *fileSyncSeconds != *dbConfig.PricingSyncInterval {
-					logger.Info("pricing_sync_interval overridden by DB: file=%d db=%d seconds", *fileSyncSeconds, *dbConfig.PricingSyncInterval)
-				}
-				resolvedSyncSeconds = dbConfig.PricingSyncInterval
-				intervalSource = "db"
-			}
 		} else {
-			// DB row exists but interval field is NULL — backfill.
+			needsDBUpdate = true
+		}
+		if dbConfig.PricingSyncInterval != nil && *dbConfig.PricingSyncInterval > 0 {
+			resolvedSyncSeconds = dbConfig.PricingSyncInterval
+		} else {
 			needsDBUpdate = true
 		}
 	}
 
-	// --- Phase 4: invariant assertion ---
-	//
-	// resolvedPricingURL and resolvedSyncSeconds are initialised to non-nil local
-	// variable addresses in Phase 2 and only ever reassigned from non-nil DB/file
-	// pointers. They cannot be nil here under any reachable code path.
-	// The checks below are a last-resort safety net for future refactors that
-	// might break that guarantee. If they fire, it is a programming error, not a
-	// runtime condition — hence the explicit "invariant violation" message.
-	if resolvedPricingURL == nil {
-		logger.Warn("invariant violation: pricing_url resolved to nil — falling back to default %q", defaultPricingURL)
-		resolvedPricingURL = &defaultPricingURL
-		urlSource = "default(invariant-fallback)"
-	}
-	if resolvedSyncSeconds == nil {
-		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
-		resolvedSyncSeconds = &defaultSyncSeconds
-		intervalSource = "default(invariant-fallback)"
-	}
-
-	logger.Info("resolved pricing config: url=%s (source: %s) sync_interval=%d seconds (source: %s)",
-		redactURL(*resolvedPricingURL), urlSource, *resolvedSyncSeconds, intervalSource)
+	syncDuration := time.Duration(*resolvedSyncSeconds) * time.Second
 
 	return &configstoreTables.TableFrameworkConfig{
 			ID:                  configID,
@@ -2122,12 +1822,12 @@ func ResolveFrameworkPricingConfig(
 			PricingSyncInterval: resolvedSyncSeconds,
 		}, &modelcatalog.Config{
 			PricingURL:          resolvedPricingURL,
-			PricingSyncInterval: resolvedSyncSeconds,
+			PricingSyncInterval: &syncDuration,
 		}, needsDBUpdate
 }
 
-// initFrameworkConfig initializes framework config and pricing manager from file
-func initFrameworkConfig(ctx context.Context, config *Config, configData *ConfigData) {
+// initFrameworkConfigFromFile initializes framework config and pricing manager from file
+func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	mcpPricingConfig := &mcpcatalog.Config{}
 	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
@@ -2176,7 +1876,7 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 
 	// Initialize MCP catalog
 	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
-		PricingData: buildMCPPricingDataFromConfig(ctx, configData),
+		PricingData: buildMCPPricingDataFromFile(ctx, configData),
 	}, logger)
 	if err != nil {
 		logger.Warn("failed to initialize MCP catalog: %v", err)
@@ -2184,9 +1884,8 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	config.MCPCatalog = mcpCatalog
 }
 
-// initEncryption initializes encryption from config data or environment variables.
-// When configData.EncryptionKey is nil (no config file), falls through to env var check.
-func initEncryption(configData *ConfigData) error {
+// initEncryptionFromFile initializes encryption from config file
+func initEncryptionFromFile(configData *ConfigData) error {
 	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
 		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
@@ -2209,6 +1908,353 @@ func syncEncryption(ctx context.Context, config *Config) {
 	if err := config.ConfigStore.EncryptPlaintextRows(ctx); err != nil {
 		logger.Error("failed to sync encryption for plaintext rows: %v", err)
 	}
+}
+
+// loadConfigFromDefaults initializes configuration when no config file exists.
+// It creates a default SQLite config store and loads/creates default configurations.
+func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, logsDBPath string) (*Config, error) {
+	var err error
+	// Initialize encryption before stores so BeforeSave hooks and EncryptPlaintextRows work correctly
+	encryptionKey := schemas.NewEnvVar("env.BIFROST_ENCRYPTION_KEY")
+	if encryptionKey != nil && encryptionKey.GetValue() != "" {
+		encrypt.Init(encryptionKey.GetValue(), logger)
+	}
+	// Initialize default config store
+	if err = initDefaultConfigStore(ctx, config, configDBPath); err != nil {
+		return nil, err
+	}
+	// Clear restart required flag on server startup
+	if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {
+		logger.Warn("failed to clear restart required config: %v", err)
+	}
+	// Load or create default client config
+	if err = loadDefaultClientConfig(ctx, config); err != nil {
+		return nil, err
+	}
+	// Initialize logs store
+	if err = initDefaultLogsStore(ctx, config, logsDBPath); err != nil {
+		return nil, err
+	}
+	// Load or auto-detect providers
+	if err = loadDefaultProviders(ctx, config); err != nil {
+		return nil, err
+	}
+	// Load governance config
+	loadDefaultGovernanceConfig(ctx, config)
+	// Load MCP config
+	if err = loadDefaultMCPConfig(ctx, config); err != nil {
+		return nil, err
+	}
+	// Load plugins
+	if err = loadDefaultPlugins(ctx, config); err != nil {
+		return nil, err
+	}
+	// Initialize framework config and pricing manager
+	if err = initDefaultFrameworkConfig(ctx, config); err != nil {
+		return nil, err
+	}
+	// Sync encryption: encrypt any plaintext rows written during config loading
+	syncEncryption(ctx, config)
+	return config, nil
+}
+
+// initDefaultConfigStore initializes a default SQLite config store
+func initDefaultConfigStore(ctx context.Context, config *Config, configDBPath string) error {
+	var err error
+	config.ConfigStore, err = configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{
+			Path: configDBPath,
+		},
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("failed to initialize config store: %w", err)
+	}
+	return nil
+}
+
+// loadDefaultClientConfig loads or creates default client configuration
+func loadDefaultClientConfig(ctx context.Context, config *Config) error {
+	clientConfig, err := config.ConfigStore.GetClientConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get client config: %w", err)
+	}
+	if clientConfig == nil {
+		clientConfig = &DefaultClientConfig
+	} else {
+		// For backward compatibility, handle cases where max request body size is not set
+		if clientConfig.MaxRequestBodySizeMB == 0 {
+			clientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+		}
+	}
+	if err = config.ConfigStore.UpdateClientConfig(ctx, clientConfig); err != nil {
+		return fmt.Errorf("failed to update client config: %w", err)
+	}
+	config.ClientConfig = *clientConfig
+	return nil
+}
+
+// initDefaultLogsStore initializes or loads the logs store configuration
+func initDefaultLogsStore(ctx context.Context, config *Config, logsDBPath string) error {
+	logStoreConfig, err := config.ConfigStore.GetLogsStoreConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get logs store config: %w", err)
+	}
+	if logStoreConfig == nil {
+		logStoreConfig = &logstore.Config{
+			Enabled: true,
+			Type:    logstore.LogStoreTypeSQLite,
+			Config: &logstore.SQLiteConfig{
+				Path: logsDBPath,
+			},
+		}
+	}
+	// Initialize logs store
+	config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
+	if err != nil {
+		// Handle case where stored path doesn't exist, create new at default path
+		if logStoreConfig.Type == logstore.LogStoreTypeSQLite && os.IsNotExist(err) {
+			storedPath := ""
+			if sqliteConfig, ok := logStoreConfig.Config.(*logstore.SQLiteConfig); ok {
+				storedPath = sqliteConfig.Path
+			}
+			if storedPath != logsDBPath {
+				logger.Warn("failed to locate logstore file at path: %s: %v. Creating new one at path: %s", storedPath, err, logsDBPath)
+				logStoreConfig = &logstore.Config{
+					Enabled: true,
+					Type:    logstore.LogStoreTypeSQLite,
+					Config: &logstore.SQLiteConfig{
+						Path: logsDBPath,
+					},
+				}
+				config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
+				if err != nil {
+					return fmt.Errorf("failed to initialize logs store: %v", err)
+				}
+			} else {
+				return fmt.Errorf("failed to initialize logs store: %v", err)
+			}
+		} else {
+			return fmt.Errorf("failed to initialize logs store: %v", err)
+		}
+	}
+	logger.Info("logs store initialized.")
+	if err = config.ConfigStore.UpdateLogsStoreConfig(ctx, logStoreConfig); err != nil {
+		return fmt.Errorf("failed to update logs store config: %w", err)
+	}
+	return nil
+}
+
+// loadDefaultProviders loads providers from DB or auto-detects from environment
+func loadDefaultProviders(ctx context.Context, config *Config) error {
+	providers, err := config.ConfigStore.GetProvidersConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get providers config: %w", err)
+	}
+	if providers == nil {
+		config.autoDetectProviders(ctx)
+		providers = config.Providers
+		// Store providers config in database
+		if err = config.ConfigStore.UpdateProvidersConfig(ctx, providers); err != nil {
+			return fmt.Errorf("failed to update providers config: %w", err)
+		}
+	} else {
+		processedProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
+		for providerKey, dbProvider := range providers {
+			provider := schemas.ModelProvider(providerKey)
+			// Convert database keys to schemas.Key
+			keys := make([]schemas.Key, len(dbProvider.Keys))
+			for i, dbKey := range dbProvider.Keys {
+				keys[i] = schemas.Key{
+					ID:                 dbKey.ID,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					Weight:             dbKey.Weight,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					ConfigHash:         dbKey.ConfigHash,
+					Status:             dbKey.Status,
+					Description:        dbKey.Description,
+				}
+			}
+			providerConfig := configstore.ProviderConfig{
+				Keys:                     keys,
+				NetworkConfig:            dbProvider.NetworkConfig,
+				ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
+				ProxyConfig:              dbProvider.ProxyConfig,
+				SendBackRawRequest:       dbProvider.SendBackRawRequest,
+				SendBackRawResponse:      dbProvider.SendBackRawResponse,
+				CustomProviderConfig:     dbProvider.CustomProviderConfig,
+				PricingOverrides:         dbProvider.PricingOverrides,
+				ConfigHash:               dbProvider.ConfigHash,
+			}
+			if err := ValidateCustomProvider(providerConfig, provider); err != nil {
+				logger.Warn("invalid custom provider config for %s: %v", provider, err)
+				continue
+			}
+			processedProviders[provider] = providerConfig
+		}
+		config.Providers = processedProviders
+	}
+	return nil
+}
+
+// loadDefaultGovernanceConfig loads governance configuration from the store
+func loadDefaultGovernanceConfig(ctx context.Context, config *Config) {
+	governanceConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to get governance config from store: %v", err)
+		return
+	}
+	if governanceConfig != nil {
+		config.GovernanceConfig = governanceConfig
+	}
+}
+
+// loadDefaultMCPConfig loads or creates MCP configuration
+func loadDefaultMCPConfig(ctx context.Context, config *Config) error {
+	tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get MCP config: %w", err)
+	}
+	if tableMCPConfig == nil {
+		if config.MCPConfig != nil {
+			for _, clientConfig := range config.MCPConfig.ClientConfigs {
+				if clientConfig != nil {
+					if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
+						logger.Warn("failed to create MCP client config: %v", err)
+						continue
+					}
+				}
+			}
+			// Refresh from store to ensure parity with persisted state
+			if tableMCPConfig, err = config.ConfigStore.GetMCPConfig(ctx); err != nil {
+				return fmt.Errorf("failed to get MCP config after update: %w", err)
+			}
+			if tableMCPConfig != nil {
+				config.MCPConfig = tableMCPConfig
+			}
+		}
+	} else {
+		config.MCPConfig = tableMCPConfig
+	}
+	return nil
+}
+
+// loadDefaultPlugins loads plugins from the config store
+func loadDefaultPlugins(ctx context.Context, config *Config) error {
+	plugins, err := config.ConfigStore.GetPlugins(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get plugins: %w", err)
+	}
+	if plugins == nil {
+		config.PluginConfigs = []*schemas.PluginConfig{}
+	} else {
+		config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
+		for i, plugin := range plugins {
+			pluginConfig := &schemas.PluginConfig{
+				Name:    plugin.Name,
+				Enabled: plugin.Enabled,
+				Config:  plugin.Config,
+				Path:    plugin.Path,
+			}
+			if plugin.Name == semanticcache.PluginName {
+				if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
+					logger.Warn("failed to add provider keys to semantic cache config: %v", err)
+				}
+			}
+			config.PluginConfigs[i] = pluginConfig
+		}
+	}
+	return nil
+}
+
+// initDefaultFrameworkConfig initializes framework configuration and pricing manager
+func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
+	frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to get framework config from store: %v", err)
+	}
+
+	pricingConfig := &modelcatalog.Config{}
+	if frameworkConfig != nil && frameworkConfig.PricingURL != nil {
+		pricingConfig.PricingURL = frameworkConfig.PricingURL
+	} else {
+		pricingConfig.PricingURL = bifrost.Ptr(modelcatalog.DefaultPricingURL)
+	}
+	if frameworkConfig != nil && frameworkConfig.PricingSyncInterval != nil && *frameworkConfig.PricingSyncInterval > 0 {
+		syncDuration := time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
+		pricingConfig.PricingSyncInterval = &syncDuration
+	} else {
+		pricingConfig.PricingSyncInterval = bifrost.Ptr(modelcatalog.DefaultPricingSyncInterval)
+	}
+
+	// Update DB with latest config
+	configID := uint(0)
+	if frameworkConfig != nil {
+		configID = frameworkConfig.ID
+	}
+	var durationSec int64
+	if pricingConfig.PricingSyncInterval != nil {
+		durationSec = int64((*pricingConfig.PricingSyncInterval).Seconds())
+	} else {
+		d := modelcatalog.DefaultPricingSyncInterval
+		durationSec = int64(d.Seconds())
+	}
+	logger.Debug("updating framework config with duration: %d", durationSec)
+	if err = config.ConfigStore.UpdateFrameworkConfig(ctx, &configstoreTables.TableFrameworkConfig{
+		ID:                  configID,
+		PricingURL:          pricingConfig.PricingURL,
+		PricingSyncInterval: bifrost.Ptr(durationSec),
+	}); err != nil {
+		return fmt.Errorf("failed to update framework config: %w", err)
+	}
+
+	// Initialize OAuth provider
+	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+
+	// Start token refresh worker for automatic OAuth token refresh
+	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
+	if config.TokenRefreshWorker != nil {
+		config.TokenRefreshWorker.Start(ctx)
+	}
+
+	config.FrameworkConfig = &framework.FrameworkConfig{
+		Pricing: pricingConfig,
+	}
+
+	// Initialize pricing manager
+	var modelCatalog *modelcatalog.ModelCatalog
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	modelCatalog, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
+	if err != nil {
+		logger.Error("failed to initialize model catalog: %v", err)
+	} else {
+		config.ModelCatalog = modelCatalog
+		applyProviderPricingOverrides(config.ModelCatalog, config.Providers)
+	}
+
+	// Initialize MCP catalog
+	var mcpCatalog *mcpcatalog.MCPCatalog
+
+	// Build MCP pricing data from database
+	mcpPricingData := buildMCPPricingDataFromStore(ctx, config.ConfigStore)
+
+	mcpCatalog, err = mcpcatalog.Init(ctx, &mcpcatalog.Config{
+		PricingData: mcpPricingData,
+	}, logger)
+	if err != nil {
+		logger.Warn("failed to initialize MCP catalog: %v", err)
+	}
+
+	config.MCPCatalog = mcpCatalog
+	return nil
 }
 
 // resolveMCPConfigClientIDs resolves MCPClientName to MCPClientID for each MCP config.
@@ -2432,33 +2478,19 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
 }
 
-// GetHeaderMatcher returns the precompiled header matcher for header filtering.
-// Lock-free via atomic pointer; safe for concurrent reads from hot paths.
-func (c *Config) GetHeaderMatcher() *HeaderMatcher {
-	return c.headerMatcher.Load()
+// GetHeaderFilterConfig returns the global header filter configuration
+// Note: This method doesn't use locking for performance. In rare cases during
+// config updates, it may return stale data, but this is acceptable since pointer
+// reads are atomic and won't cause panics.
+func (c *Config) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
+	return c.ClientConfig.HeaderFilterConfig
 }
 
-// SetHeaderMatcher atomically stores a new precompiled header matcher.
-// Called when header filter config changes.
-func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
-	c.headerMatcher.Store(m)
-}
-
-// GetPluginOrder returns the names of all base plugins in their sorted placement order.
+// GetLoadedLLMPlugins returns the current snapshot of loaded LLM plugins.
 // This method is lock-free and safe for concurrent access from hot paths.
+// It returns the plugin slice from the atomic pointer, which is safe to iterate
+// even if plugins are being updated concurrently.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
-func (c *Config) GetPluginOrder() []string {
-	plugins := c.BasePlugins.Load()
-	if plugins == nil {
-		return nil
-	}
-	names := make([]string, len(*plugins))
-	for i, p := range *plugins {
-		names[i] = p.GetName()
-	}
-	return names
-}
-
 func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
 	if plugins := c.LLMPlugins.Load(); plugins != nil {
 		return slices.Clone(*plugins)
@@ -2509,49 +2541,6 @@ func (c *Config) GetAsyncJobResultTTL() int {
 		return c.ClientConfig.AsyncJobResultTTL
 	}
 	return logstore.DefaultAsyncJobResultTTL
-}
-
-// GetKVStore returns the shared in-memory kvstore instance.
-func (c *Config) GetKVStore() *kvstore.Store {
-	return c.KVStore
-}
-
-// Close gracefully shuts down all background components associated with the Config.
-// This includes ModelCatalog sync worker, TokenRefreshWorker, KVStore cleanup loop,
-// ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
-// no longer needed to prevent goroutine leaks.
-func (c *Config) Close(ctx context.Context) {
-	if c.ModelCatalog != nil {
-		c.ModelCatalog.Cleanup()
-	}
-	if c.TokenRefreshWorker != nil {
-		c.TokenRefreshWorker.Stop()
-	}
-	if c.KVStore != nil {
-		c.KVStore.Close()
-	}
-	if c.ConfigStore != nil {
-		c.ConfigStore.Close(ctx)
-	}
-	if c.LogsStore != nil {
-		c.LogsStore.Close(ctx)
-	}
-	if c.VectorStore != nil {
-		c.VectorStore.Close(ctx, "")
-	}
-}
-
-// initKVStore initializes the kvstore for the config
-func initKVStore(config *Config) error {
-	var err error
-	config.KVStore, err = kvstore.New(kvstore.Config{
-		DefaultTTL:      30 * time.Minute,
-		CleanupInterval: 1 * time.Minute,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to initialize kvstore: %w", err)
-	}
-	return nil
 }
 
 // GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.
@@ -2730,7 +2719,7 @@ func (c *Config) GetPluginNameByDisplayName(displayName string) (string, bool) {
 	return "", false
 }
 
-// DeletePluginOverallStatus completely removes a plugin status entry
+// DeletePluginStatus completely removes a plugin status entry
 func (c *Config) DeletePluginOverallStatus(name string) {
 	c.pluginStatusMu.Lock()
 	defer c.pluginStatusMu.Unlock()
@@ -2808,7 +2797,7 @@ func (c *Config) UnregisterPlugin(name string) error {
 	for {
 		oldPlugins := c.BasePlugins.Load()
 		if oldPlugins == nil {
-			return plugins.ErrPluginNotFound
+			return fmt.Errorf("plugin %s not found", name)
 		}
 
 		newPlugins := make([]schemas.BasePlugin, 0, len(*oldPlugins))
@@ -2822,81 +2811,15 @@ func (c *Config) UnregisterPlugin(name string) error {
 		}
 
 		if !found {
-			return plugins.ErrPluginNotFound
+			return fmt.Errorf("plugin %s not found", name)
 		}
 
 		if c.BasePlugins.CompareAndSwap(oldPlugins, &newPlugins) {
-			delete(c.pluginOrderMap, name)
 			c.rebuildInterfaceCaches()
 			return nil
 		}
 		// CAS failed, retry with new snapshot
 	}
-}
-
-// SetPluginOrderInfo stores ordering metadata for a plugin.
-// If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
-func (c *Config) SetPluginOrderInfo(name string, placement *schemas.PluginPlacement, order *int) {
-	c.pluginsMu.Lock()
-	defer c.pluginsMu.Unlock()
-
-	if c.pluginOrderMap == nil {
-		c.pluginOrderMap = make(map[string]pluginOrderInfo)
-	}
-
-	p := schemas.PluginPlacementPostBuiltin
-	if placement != nil {
-		p = *placement
-	}
-	o := 0
-	if order != nil {
-		o = *order
-	}
-
-	c.pluginOrderMap[name] = pluginOrderInfo{Placement: p, Order: o}
-}
-
-// SortAndRebuildPlugins sorts BasePlugins by placement group then order, and rebuilds caches.
-// Placement groups execute in order: pre_builtin → builtin → post_builtin.
-// Within each group, plugins are sorted by order (lower = earlier). Ties preserve registration order (stable sort).
-func (c *Config) SortAndRebuildPlugins() {
-	c.pluginsMu.Lock()
-	defer c.pluginsMu.Unlock()
-
-	oldPlugins := c.BasePlugins.Load()
-	if oldPlugins == nil || len(*oldPlugins) == 0 {
-		return
-	}
-
-	sorted := make([]schemas.BasePlugin, len(*oldPlugins))
-	copy(sorted, *oldPlugins)
-
-	groupRank := map[schemas.PluginPlacement]int{
-		schemas.PluginPlacementPreBuiltin:  0,
-		schemas.PluginPlacementBuiltin:     1,
-		schemas.PluginPlacementPostBuiltin: 2,
-	}
-	defaultRank := 2 // Unknown placements default to post_builtin (least privileged)
-
-	sort.SliceStable(sorted, func(i, j int) bool {
-		iInfo := c.pluginOrderMap[sorted[i].GetName()]
-		jInfo := c.pluginOrderMap[sorted[j].GetName()]
-		iRank, iOk := groupRank[iInfo.Placement]
-		if !iOk {
-			iRank = defaultRank
-		}
-		jRank, jOk := groupRank[jInfo.Placement]
-		if !jOk {
-			jRank = defaultRank
-		}
-		if iRank != jRank {
-			return iRank < jRank
-		}
-		return iInfo.Order < jInfo.Order
-	})
-
-	c.BasePlugins.Store(&sorted)
-	c.rebuildInterfaceCaches()
 }
 
 // FindPluginAs finds a plugin by name in the given config and returns it as type T
@@ -3148,19 +3071,14 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 			if models == nil {
 				models = []string{}
 			}
-			blacklisted := key.BlacklistedModels
-			if blacklisted == nil {
-				blacklisted = []string{}
-			}
 			keys = append(keys, configstoreTables.TableKey{
-				KeyID:             key.ID,
-				Name:              key.Name,
-				Value:             *schemas.NewEnvVar(""),
-				Models:            models,
-				BlacklistedModels: blacklisted,
-				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				KeyID:      key.ID,
+				Name:       key.Name,
+				Value:      *schemas.NewEnvVar(""),
+				Models:     models,
+				Weight:     bifrost.Ptr(key.Weight),
+				Provider:   string(providerKey),
+				ConfigHash: key.ConfigHash,
 			})
 		}
 	}
@@ -3560,58 +3478,20 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 		return fmt.Errorf("semantic_cache plugin config must be a map, got %T", config.Config)
 	}
 
-	dimension, hasDimension, err := semanticCacheConfigDimension(configMap)
-	if err != nil {
-		return err
-	}
-
 	// Check if provider key exists and is a string
 	providerVal, exists := configMap["provider"]
 	if !exists {
-		if hasDimension && dimension == 1 {
-			delete(configMap, "keys")
-			delete(configMap, "embedding_model")
-			return nil
-		}
-		return fmt.Errorf("semantic_cache plugin requires 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
+		return fmt.Errorf("semantic_cache plugin missing required 'provider' field")
 	}
 
 	provider, ok := providerVal.(string)
 	if !ok {
 		return fmt.Errorf("semantic_cache plugin 'provider' field must be a string, got %T", providerVal)
 	}
-	provider = strings.TrimSpace(provider)
-	configMap["provider"] = provider
 
 	if provider == "" {
-		if hasDimension && dimension == 1 {
-			delete(configMap, "provider")
-			delete(configMap, "keys")
-			delete(configMap, "embedding_model")
-			return nil
-		}
-		return fmt.Errorf("semantic_cache plugin requires a non-empty 'provider' for semantic mode (dimension > 1). For direct-only mode, set dimension: 1 and omit provider")
+		return fmt.Errorf("semantic_cache plugin 'provider' field cannot be empty")
 	}
-	if !hasDimension {
-		return fmt.Errorf("semantic_cache plugin requires 'dimension' for provider-backed semantic mode. For direct-only mode, set dimension: 1 and omit provider")
-	}
-	if dimension <= 1 {
-		return fmt.Errorf("semantic_cache plugin requires 'dimension' > 1 when 'provider' is set. Use dimension: 1 only for direct-only mode without a provider")
-	}
-
-	embeddingModelVal, exists := configMap["embedding_model"]
-	if !exists {
-		return fmt.Errorf("semantic_cache plugin requires 'embedding_model' when 'provider' is set")
-	}
-	embeddingModel, ok := embeddingModelVal.(string)
-	if !ok {
-		return fmt.Errorf("semantic_cache plugin 'embedding_model' field must be a string, got %T", embeddingModelVal)
-	}
-	embeddingModel = strings.TrimSpace(embeddingModel)
-	if embeddingModel == "" {
-		return fmt.Errorf("semantic_cache plugin requires a non-empty 'embedding_model' when 'provider' is set")
-	}
-	configMap["embedding_model"] = embeddingModel
 
 	keys, err := c.GetProviderConfigRaw(schemas.ModelProvider(provider))
 	if err != nil {
@@ -3621,50 +3501,6 @@ func (c *Config) AddProviderKeysToSemanticCacheConfig(config *schemas.PluginConf
 	configMap["keys"] = keys.Keys
 
 	return nil
-}
-
-func semanticCacheConfigDimension(configMap map[string]interface{}) (int, bool, error) {
-	dimensionVal, exists := configMap["dimension"]
-	if !exists {
-		return 0, false, nil
-	}
-
-	switch v := dimensionVal.(type) {
-	case int:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return v, true, nil
-	case int32:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return int(v), true, nil
-	case int64:
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", v)
-		}
-		return int(v), true, nil
-	case float64:
-		if v != math.Trunc(v) {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %v", v)
-		}
-		if v < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %v", v)
-		}
-		return int(v), true, nil
-	case json.Number:
-		parsed, err := v.Int64()
-		if err != nil {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be an integer, got %q", v)
-		}
-		if parsed < 1 {
-			return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' must be >= 1, got %d", parsed)
-		}
-		return int(parsed), true, nil
-	default:
-		return 0, false, fmt.Errorf("semantic_cache plugin 'dimension' field must be numeric, got %T", dimensionVal)
-	}
 }
 
 func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTables.TablePlugin) error {

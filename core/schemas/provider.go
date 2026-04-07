@@ -178,14 +178,14 @@ var DefaultNetworkConfig = NetworkConfig{
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
-	Concurrency        int           `json:"concurrency"`          // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
-	BufferSize         int           `json:"buffer_size"`          // Size of the buffer
-	DynamicScaling     bool          `json:"dynamic_scaling"`      //Whether the user wants dynamic scaling to happen
-	ScalingInterval    time.Duration `json:"scaling_interval"`     //After how much time will the go routine run and check the capacity of the queue and make the nesscary changes.
-	MinWorkers         int           `json:"min_workers"`          //No. of workers will never go below this value
-	MaxWorkers         int           `json:"max_workers"`          //No. of workers will never go above this value
-	ScaleUpThreshold   float64       `json:"scale_up_threshold"`   //If Queue capacity is above this threshold (eg 70%) then workers would be scaled up.
-	ScaleDownThreshold float64       `json:"scale_down_threshold"` //If Queue capacity is below this threshold (eg 20%) then workers would be scaled down.
+	Concurrency        int           `json:"concurrency"`            // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
+	BufferSize         int           `json:"buffer_size"`            // Size of the buffer
+	DynamicScaling     bool          `json:"dynamic_worker_scaling"` //Whether the user wants dynamic scaling to happen
+	ScalingInterval    time.Duration `json:"scaling_interval"`       //After how much time will the go routine run and check the capacity of the queue and make the nesscary changes.
+	MinWorkers         int           `json:"min_workers"`            //No. of workers will never go below this value
+	MaxWorkers         int           `json:"max_workers"`            //No. of workers will never go above this value
+	ScaleUpThreshold   float64       `json:"scale_up_threshold"`     //If Queue capacity is above this threshold (eg 70%) then workers would be scaled up.
+	ScaleDownThreshold float64       `json:"scale_down_threshold"`   //If Queue capacity is below this threshold (eg 20%) then workers would be scaled down.
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for ConcurrencyAndBufferSize.
@@ -196,7 +196,7 @@ func (c *ConcurrencyAndBufferSize) UnmarshalJSON(data []byte) error {
 	type Alias struct {
 		Concurrency        int     `json:"concurrency"`
 		BufferSize         int     `json:"buffer_size"`
-		DynamicScaling     bool    `json:"dynamic_scaling"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
 		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
 		MinWorkers         int     `json:"min_workers"`
 		MaxWorkers         int     `json:"max_workers"`
@@ -219,6 +219,7 @@ func (c *ConcurrencyAndBufferSize) UnmarshalJSON(data []byte) error {
 	c.ScaleDownThreshold = alias.ScaleDownThreshold
 
 	// Convert milliseconds to time.Duration (nanoseconds)
+	c.ScalingInterval = 0
 	if alias.ScalingInterval > 0 {
 		c.ScalingInterval = time.Duration(alias.ScalingInterval) * time.Millisecond
 	}
@@ -234,7 +235,7 @@ func (c ConcurrencyAndBufferSize) MarshalJSON() ([]byte, error) {
 	type Alias struct {
 		Concurrency        int     `json:"concurrency"`
 		BufferSize         int     `json:"buffer_size"`
-		DynamicScaling     bool    `json:"dynamic_scaling"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
 		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
 		MinWorkers         int     `json:"min_workers"`
 		MaxWorkers         int     `json:"max_workers"`

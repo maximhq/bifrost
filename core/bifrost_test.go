@@ -11,6 +11,7 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -718,15 +719,6 @@ func (ma *MockAccount) UpdateProviderConfig(provider schemas.ModelProvider, conc
 	}
 }
 
-func (ma *MockAccount) UpdateDynamicScalingConfig(provider schemas.ModelProvider, concurrency int, bufferSize int) {
-	ma.mu.Lock()
-	defer ma.mu.Unlock()
-	if config, exists := ma.configs[provider]; exists {
-		config.ConcurrencyAndBufferSize.Concurrency = concurrency
-		config.ConcurrencyAndBufferSize.BufferSize = bufferSize
-	}
-}
-
 func (ma *MockAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	ma.mu.RLock()
 	defer ma.mu.RUnlock()
@@ -1052,7 +1044,7 @@ func TestDynamicWorkerScalingDown(t *testing.T) {
 			t.Run(test.Name, func(t *testing.T) {
 				account := NewDynamicAutoScalingAccount(
 					true, test.BufferSize, test.Concurrency,
-					test.MaxWorkers, test.MinWorkers, time.Millisecond*10,
+					test.MaxWorkers, test.MinWorkers, time.Millisecond*500,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
 				)
 				ctx := context.Background()
@@ -1061,14 +1053,14 @@ func TestDynamicWorkerScalingDown(t *testing.T) {
 					Account: account,
 					Logger:  NewDefaultLogger(schemas.LogLevelError),
 				})
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				pq, err := bifrost.getProviderQueue(schemas.OpenAI)
-				assert.NoError(t, err)
-				time.Sleep(50 * time.Millisecond) //By this time we should reach either max workers or min workers (depending on if we are scaling up or down)
-
-				assert.Equal(t, int(pq.ActiveWorkers.Load()), test.MinWorkers,
-					"test %q: no. of active workers were %d, expected %d (concurrency=%d)",
-					test.Name, pq.ActiveWorkers.Load(), test.MinWorkers, test.Concurrency)
+				require.NoError(t, err)
+				assert.Eventually(t, func() bool {
+					return int(pq.ActiveWorkers.Load()) == test.MinWorkers
+				}, 3*time.Second, 250*time.Millisecond,
+					"test %q: workers failed to scale down to %d within timeout. Final count: %d",
+					test.Name, test.MinWorkers, pq.ActiveWorkers.Load())
 
 				bifrost.Shutdown()
 			})
@@ -1106,7 +1098,7 @@ func TestDynamicWorkerScalingUp(t *testing.T) {
 			t.Run(test.Name, func(t *testing.T) {
 				account := NewDynamicAutoScalingAccount(
 					true, test.BufferSize, test.Concurrency,
-					test.MaxWorkers, test.MinWorkers, time.Millisecond*10,
+					test.MaxWorkers, test.MinWorkers, time.Millisecond*500,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
 				)
 				ctx := context.Background()
@@ -1115,9 +1107,9 @@ func TestDynamicWorkerScalingUp(t *testing.T) {
 					Account: account,
 					Logger:  NewDefaultLogger(schemas.LogLevelError),
 				})
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				pq, err := bifrost.getProviderQueue(schemas.OpenAI)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				testDone := make(chan struct{})
 				reqCtx, cancelReq := context.WithCancel(context.Background())
 
@@ -1140,9 +1132,11 @@ func TestDynamicWorkerScalingUp(t *testing.T) {
 				}()
 				time.Sleep(100 * time.Millisecond)
 
-				assert.Equal(t, int(pq.ActiveWorkers.Load()), test.MaxWorkers,
-					"test %q: no. of active workers were %d, expected %d (concurrency=%d)",
-					test.Name, int(pq.ActiveWorkers.Load()), test.MaxWorkers, test.Concurrency)
+				assert.Eventually(t, func() bool {
+					return int(pq.ActiveWorkers.Load()) == test.MaxWorkers
+				}, 3*time.Second, 250*time.Millisecond,
+					"test %q: workers failed to scale up to %d within timeout. Final count: %d",
+					test.Name, test.MaxWorkers, pq.ActiveWorkers.Load())
 				close(testDone)
 				cancelReq()
 				bifrost.Shutdown()
@@ -1233,8 +1227,8 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			MaxWorkers:          40, // invalid: max < concurrency
 			MinWorkers:          10,
 			ScalingInterval:     3 * time.Second,
-			ScaleUpThreshold:    0.7,
-			ScaleDownThreshold:  0.3,
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  30,
 			ExpectedAutoScaling: false,
 		},
 		{
@@ -1245,8 +1239,8 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			MaxWorkers:          90, // invalid: min > concurrency
 			MinWorkers:          60,
 			ScalingInterval:     3 * time.Second,
-			ScaleUpThreshold:    0.7,
-			ScaleDownThreshold:  0.3,
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  30,
 			ExpectedAutoScaling: false,
 		},
 		{
@@ -1257,8 +1251,8 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 			MaxWorkers:          100,
 			MinWorkers:          50,
 			ScalingInterval:     5 * time.Second,
-			ScaleUpThreshold:    0.6,
-			ScaleDownThreshold:  0.7, //scale down threshold is more than scale up! invalid
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  80, //scale down threshold is more than scale up! invalid
 			ExpectedAutoScaling: false,
 		},
 	}
@@ -1272,15 +1266,18 @@ func TestDynamicWorkerScalingConfig(t *testing.T) {
 					test.MaxWorkers, test.MinWorkers, test.ScalingInterval,
 					test.ScaleUpThreshold, test.ScaleDownThreshold,
 				)
+				logger := NewDefaultLogger(schemas.LogLevelError)
 
 				config, err := account.GetConfigForProvider(schemas.OpenAI)
-				assert.NoError(t, err)
-				valid := ValidateDynamicScalingConfig(config)
+				require.NoError(t, err)
+				valid := ValidateDynamicScalingConfig(config, schemas.OpenAI, logger)
 
-				assert.Equal(t, valid, test.ExpectedAutoScaling,
-					"test %q:   result: %d, expected %d",
+				assert.Equal(t, test.ExpectedAutoScaling, valid,
+					"test %q: result: %t, expected %t",
 					test.Name, valid, test.ExpectedAutoScaling)
-
+				if test.ScalingInterval == 0 && test.ExpectedAutoScaling && config.ConcurrencyAndBufferSize.ScalingInterval != 5*time.Second {
+					t.Fatalf("expected ScalingInterval to default to 5s , got %v", config.ConcurrencyAndBufferSize.ScalingInterval)
+				}
 			})
 		}
 	})

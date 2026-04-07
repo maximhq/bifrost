@@ -117,67 +117,94 @@ func (bifrost *Bifrost) DynamicWorkerScaling(provider schemas.Provider, config *
 	for {
 		select {
 		case <-ticker.C:
-			bifrost.logger.Debug("Starting Dynamic Worker Scaling Check happening in the background for provider: %s", providerName)
-			bufferCap := float64(cap(pq.queue))
-			if bufferCap == 0 {
-				bifrost.logger.Warn("Capacity of the queue is 0 dynamic scaling cannot proceed. Returning. Provider: %s", providerName)
+			select {
+			case <-pq.done:
+				bifrost.logger.Info("Shutdown underway .. stopping dynamic worker scaling provider: %s", providerName)
 				return
-			}
-			capacity := (float64(len(pq.queue)) / bufferCap) * 100
+			default:
+				bifrost.logger.Debug("Starting Dynamic Worker Scaling Check happening in the background for provider: %s", providerName)
+				bufferCap := float64(cap(pq.queue))
+				capacity := (float64(len(pq.queue)) / bufferCap) * 100
 
-			if capacity >= config.ConcurrencyAndBufferSize.ScaleUpThreshold {
-				bifrost.logger.Info("Capacity for provider: %s is at %.2f which is above the threshold... scaling up the workers", providerName, capacity)
-				if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MaxWorkers {
-					bifrost.logger.Info("No. of workers is already at max workers. Cannot scale up. Provider: %s", providerName)
-					continue
-				}
-				step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
-				//double the step size if above 90% queue utilization.
-				if float64(capacity) >= 90.0 {
-					step *= 2
-				}
-
-				targetWorkers := int(pq.ActiveWorkers.Load()) + step
-				if targetWorkers > config.ConcurrencyAndBufferSize.MaxWorkers {
-					targetWorkers = config.ConcurrencyAndBufferSize.MaxWorkers
-				}
-				numWorkersToAdd := targetWorkers - int(pq.ActiveWorkers.Load())
-				for i := 0; i < numWorkersToAdd; i++ {
-					currentWaitGroup.Add(1)
-					pq.ActiveWorkers.Add(1)
-					go bifrost.requestWorker(provider, config, pq)
-				}
-				bifrost.logger.Info("Added %d number of workers to worker pool provider: %s", numWorkersToAdd, providerName)
-			}
-			if capacity <= config.ConcurrencyAndBufferSize.ScaleDownThreshold {
-				bifrost.logger.Info("Capacity for provider: %s is at %.2f which is below the threshold... scaling down the workers", providerName, capacity)
-				if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MinWorkers {
-					bifrost.logger.Info("No. of workers is already at min workers. Cannot scale down. Provider: %s", providerName)
-					continue
-				}
-				step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
-
-				targetWorkers := int(pq.ActiveWorkers.Load()) - step
-				if targetWorkers < config.ConcurrencyAndBufferSize.MinWorkers {
-					targetWorkers = config.ConcurrencyAndBufferSize.MinWorkers
-				}
-				numWorkersToSubtract := int(pq.ActiveWorkers.Load()) - targetWorkers
-				numWorkersSubtracted := 0
-			outer:
-				for i := 0; i < numWorkersToSubtract; i++ {
-					select {
-					case pq.quit <- struct{}{}:
-						numWorkersSubtracted++
-					default:
-						break outer
+				if capacity >= config.ConcurrencyAndBufferSize.ScaleUpThreshold {
+					bifrost.logger.Info("Capacity for provider: %s is at %.2f which is above the threshold... scaling up the workers", providerName, capacity)
+				drainLoop:
+					for {
+						select {
+						case <-pq.quit:
+							// Since we need to scale up.. drain the quit tokens/signals
+						default:
+							break drainLoop
+						}
 					}
-				}
+					if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MaxWorkers {
+						bifrost.logger.Info("No. of workers is already at max workers. Cannot scale up. Provider: %s", providerName)
+						continue
+					}
+					step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
+					//double the step size if above 90% queue utilization.
+					if float64(capacity) >= 90.0 {
+						step *= 2
+					}
 
-				bifrost.logger.Info("Removed %d number of workers to worker pool provider: %s", numWorkersSubtracted, providerName)
+					targetWorkers := int(pq.ActiveWorkers.Load()) + step
+					if targetWorkers > config.ConcurrencyAndBufferSize.MaxWorkers {
+						targetWorkers = config.ConcurrencyAndBufferSize.MaxWorkers
+					}
+					//before scaling up, drain remaining quit tokens in the pq.quit channel.
+
+					numWorkersToAdd := targetWorkers - int(pq.ActiveWorkers.Load())
+					for i := 0; i < numWorkersToAdd; i++ {
+						currentWaitGroup.Add(1)
+						pq.ActiveWorkers.Add(1)
+						go bifrost.requestWorker(provider, config, pq)
+					}
+					bifrost.logger.Info("Added %d number of workers to worker pool provider: %s", numWorkersToAdd, providerName)
+				}
+				if capacity <= config.ConcurrencyAndBufferSize.ScaleDownThreshold {
+					bifrost.logger.Info("Capacity for provider: %s is at %.2f which is below the threshold... scaling down the workers", providerName, capacity)
+					if int(pq.ActiveWorkers.Load()) == config.ConcurrencyAndBufferSize.MinWorkers {
+						bifrost.logger.Info("No. of workers is already at min workers. Cannot scale down. Provider: %s", providerName)
+						continue
+					}
+					step := int(math.Ceil(float64(config.ConcurrencyAndBufferSize.MaxWorkers) * 0.15))
+
+					pendingQuits := len(pq.quit)
+					effectiveActive := int(pq.ActiveWorkers.Load()) - pendingQuits
+					if effectiveActive <= config.ConcurrencyAndBufferSize.MinWorkers {
+						bifrost.logger.Info("Workers already at or converging toward min workers, skipping. Provider: %s", providerName)
+						continue
+					}
+					targetWorkers := effectiveActive - step
+					if targetWorkers < config.ConcurrencyAndBufferSize.MinWorkers {
+						targetWorkers = config.ConcurrencyAndBufferSize.MinWorkers
+					}
+					numWorkersToSubtract := effectiveActive - targetWorkers
+					numWorkersSubtracted := 0
+				outer:
+					for i := 0; i < numWorkersToSubtract; i++ {
+						select {
+						case pq.quit <- struct{}{}:
+							numWorkersSubtracted++
+						default:
+							break outer
+						}
+					}
+
+					bifrost.logger.Info("Removed %d number of workers to worker pool provider: %s", numWorkersSubtracted, providerName)
+				}
 			}
 		case <-pq.done:
-			bifrost.logger.Info("Shutdown underway.. stopping dynamic worker scaling provider: %s", providerName)
-			return
+			for {
+				select {
+				case <-pq.quit:
+					// drain value
+				default:
+					bifrost.logger.Info("Shutdown underway.. stopping dynamic worker scaling provider: %s", providerName)
+					// channel empty → done
+					return
+				}
+			}
 		}
 	}
 }
@@ -3293,7 +3320,7 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 
 	bifrost.logger.Debug("gracefully stopping existing workers for provider %s", providerKey)
 
-	providerConfig.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(providerConfig)
+	providerConfig.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(providerConfig, providerKey, bifrost.logger)
 
 	// Step 1: Create new ProviderQueue with updated buffer size
 	newPq := &ProviderQueue{
@@ -3790,7 +3817,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	// Create ProviderQueue with lifecycle management
 
 	//config checks before enabling dynamic scaling and intialising the Provider Queue.
-	config.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(config)
+	config.ConcurrencyAndBufferSize.DynamicScaling = ValidateDynamicScalingConfig(config, providerKey, bifrost.logger)
 
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
@@ -5052,6 +5079,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		select {
 		case <-pq.quit:
 			// Dynamic autoscaler sent a kill signal
+			if pq.isClosing() {
+				//bifrost is shutting down. do the pending work and then return
+				continue
+			}
 			return
 
 		case req, ok := <-pq.queue:
@@ -5071,6 +5102,28 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				baseProvider = cfg.BaseProviderType
 			}
 			req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+
+			// Determine whether this provider attempt should capture raw payloads.
+			// logging-only mode (store_raw_request_response=true, send_back_raw_*=false):
+			//   sets BifrostContextKeySendBackRaw* = true so providers capture via the unified
+			//   ShouldSendBackRaw* path, and sets BifrostContextKeyRawRequestResponseForLogging
+			//   so the payload is stripped before the response reaches the client.
+			// full send-back mode (send_back_raw_request/response=true):
+			//   BifrostContextKeySendBackRaw* are set as before; stripping flag stays false.
+			// Always set both flags explicitly so stale values from a previous provider
+			// attempt (e.g. first attempt was logging-only, fallback is full send-back)
+			// cannot leak into the new attempt on a reused context.
+			existingSendBackReq, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool)
+			existingSendBackResp, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+			loggingOnly := config.StoreRawRequestResponse &&
+				!config.SendBackRawRequest && !existingSendBackReq &&
+				!config.SendBackRawResponse && !existingSendBackResp
+			req.Context.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, loggingOnly)
+			if loggingOnly {
+				// Enable capture via the standard flags so ShouldSendBackRaw* needs only one check.
+				req.Context.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+				req.Context.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			}
 
 			key := schemas.Key{}
 			var keys []schemas.Key

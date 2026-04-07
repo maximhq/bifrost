@@ -117,32 +117,38 @@ func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration
 }
 
 // Checks whether the config provided for dynamic scaling is valid or not. It returns false for wrong config or if scaling was disabled.
-func ValidateDynamicScalingConfig(config *schemas.ProviderConfig) bool {
+func ValidateDynamicScalingConfig(config *schemas.ProviderConfig, providerkey schemas.ModelProvider, logger schemas.Logger) bool {
 	if config.ConcurrencyAndBufferSize.DynamicScaling {
 		disableScaling := false
-		if config.ConcurrencyAndBufferSize.MaxWorkers <= 0 || config.ConcurrencyAndBufferSize.MinWorkers <= 0 || config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold >= 100 || config.ConcurrencyAndBufferSize.ScaleDownThreshold >= 100 {
+		if config.ConcurrencyAndBufferSize.BufferSize <= 0 || config.ConcurrencyAndBufferSize.MaxWorkers <= 0 || config.ConcurrencyAndBufferSize.MinWorkers <= 0 || config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold <= 0 || config.ConcurrencyAndBufferSize.ScaleUpThreshold >= 100 || config.ConcurrencyAndBufferSize.ScaleDownThreshold >= 100 {
+			logger.Warn("provider %s: Invalid values for either MaxWorkers, MinWorkers, ScaleUpThreshold or ScaleDownThreshold. Disabling Scaling.", providerkey)
 			disableScaling = true
 		}
 		if !disableScaling && (config.ConcurrencyAndBufferSize.ScaleUpThreshold-config.ConcurrencyAndBufferSize.ScaleDownThreshold <= 0) {
-
+			logger.Warn("provider %s: ScaleUpThreshold cannot be less than or equal to ScaleDownThreshold. Disabling Scaling.", providerkey)
 			disableScaling = true
 		}
 		if !disableScaling && (config.ConcurrencyAndBufferSize.MaxWorkers-config.ConcurrencyAndBufferSize.MinWorkers <= 0) {
+			logger.Warn("provider %s: MaxWorkers cannot be less than or equal to MinWorkers. Disabling Scaling.", providerkey)
 			disableScaling = true
 		}
 
 		if !disableScaling && (config.ConcurrencyAndBufferSize.Concurrency < config.ConcurrencyAndBufferSize.MinWorkers || config.ConcurrencyAndBufferSize.Concurrency > config.ConcurrencyAndBufferSize.MaxWorkers) {
+			logger.Warn("provider %s: Concurrency does not lie between MaxWorkers and MinWorkers. Disabling Scaling.", providerkey)
 			disableScaling = true
 		}
 
 		if disableScaling {
 			return false
-		} else {
-			if config.ConcurrencyAndBufferSize.ScalingInterval <= 0 {
-				config.ConcurrencyAndBufferSize.ScalingInterval = 2 * time.Minute
-			}
-			return true
 		}
+		if config.ConcurrencyAndBufferSize.ScalingInterval <= 0 {
+			logger.Warn("provider %s: scalingInterval (%v) cannot be <= 0, defaulting to 5 seconds", providerkey, config.ConcurrencyAndBufferSize.ScalingInterval)
+			config.ConcurrencyAndBufferSize.ScalingInterval = 5 * time.Second
+		} else if config.ConcurrencyAndBufferSize.ScalingInterval < 500*time.Millisecond {
+			logger.Warn("provider %s: ScalingInterval (%v) is too fast. Clamping to 500ms to prevent CPU thrashing.", providerkey, config.ConcurrencyAndBufferSize.ScalingInterval)
+			config.ConcurrencyAndBufferSize.ScalingInterval = 500 * time.Millisecond
+		}
+		return true
 	}
 	//scaling was disabled.
 	return false
