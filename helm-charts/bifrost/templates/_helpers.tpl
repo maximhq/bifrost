@@ -737,8 +737,13 @@ false
 {{- end }}
 {{- /* Plugins - as array per schema */ -}}
 {{- $plugins := list }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.telemetry.enabled "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config) }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.logging.enabled "name" "logging" "config" .Values.bifrost.plugins.logging.config) }}
+{{- if .Values.bifrost.plugins.telemetry.enabled }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.logging.enabled }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.governance.enabled }}
 {{- $governanceConfig := dict }}
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_vk_mandatory" }}
 {{- $_ := set $governanceConfig "is_vk_mandatory" .Values.bifrost.plugins.governance.config.is_vk_mandatory }}
@@ -749,7 +754,9 @@ false
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
 {{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.governance.enabled "name" "governance" "config" $governanceConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.maxim.enabled }}
 {{- $maximConfig := dict }}
 {{- if and .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
 {{- $_ := set $maximConfig "api_key" "env.BIFROST_MAXIM_API_KEY" }}
@@ -759,7 +766,9 @@ false
 {{- if .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- $_ := set $maximConfig "log_repo_id" .Values.bifrost.plugins.maxim.config.log_repo_id }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.maxim.enabled "name" "maxim" "config" $maximConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "maxim" "config" $maximConfig) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{- $scConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
 {{- if $inputConfig.dimension }}
@@ -804,7 +813,9 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.semanticCache.enabled "name" "semantic_cache" "config" $scConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
 {{- if $inputConfig.service_name }}
@@ -837,7 +848,9 @@ false
 {{- if hasKey $inputConfig "insecure" }}
 {{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.otel.enabled "name" "otel" "config" $otelConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.datadog.enabled }}
 {{- $datadogConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.datadog.config | default dict }}
 {{- if $inputConfig.service_name }}
@@ -858,7 +871,8 @@ false
 {{- if hasKey $inputConfig "enable_traces" }}
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" .Values.bifrost.plugins.datadog.enabled "name" "datadog" "config" $datadogConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "datadog" "config" $datadogConfig) }}
+{{- end }}
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
