@@ -392,7 +392,7 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 // else fall back to the snapshot from the latest PreLLMHook on this context (agent mode).
 func (p *LoggerPlugin) resolveLogMetadataForMCP(ctx *schemas.BifrostContext) map[string]interface{} {
 	if meta := p.captureLoggingHeaders(ctx); meta != nil {
-		return maps.Clone(meta)
+		return meta
 	}
 	if snap, ok := ctx.Value(logMetadataSnapshotKey).(map[string]interface{}); ok && len(snap) > 0 {
 		return maps.Clone(snap)
@@ -525,17 +525,17 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
 	initialData.Metadata = p.captureLoggingHeaders(ctx)
 
-	// System entries are set after so they take precedence over dynamic header values
+	// Snapshot header-derived metadata for MCP logs before system-only fields are added.
+	if initialData.Metadata != nil {
+		ctx.SetValue(logMetadataSnapshotKey, maps.Clone(initialData.Metadata))
+	}
+
+	// System entries are set after so they take precedence over dynamic header values.
 	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 		if initialData.Metadata == nil {
 			initialData.Metadata = make(map[string]interface{})
 		}
 		initialData.Metadata["isAsyncRequest"] = true
-	}
-
-	// Snapshot for MCP tool logs: headers map may not be present on ctx during nested MCP execution.
-	if initialData.Metadata != nil {
-		ctx.SetValue(logMetadataSnapshotKey, maps.Clone(initialData.Metadata))
 	}
 
 	// Queue the log creation message (non-blocking) - Using sync.Pool
