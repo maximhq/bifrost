@@ -9,7 +9,7 @@ package lib
 //   - The actual initFrameworkConfig code path
 //   - DB read → resolve → write lifecycle
 //
-// Run: go test ./bifrost-http/lib/... -run TestPricingE2E -v
+// Run: go test ./transports/bifrost-http/lib/... -run TestPricingE2E -v
 // =============================================================================
 
 import (
@@ -297,9 +297,6 @@ func TestPricingE2E_Step5A_ValidEnvVar(t *testing.T) {
 }
 
 func TestPricingE2E_Step5B_MissingEnvVar_PreservesLiteral(t *testing.T) {
-	t.Setenv("BIFROST_E2E_MISSING_VAR", "")
-	// Ensure the var is genuinely absent (not set to empty string — unset it).
-	t.Cleanup(func() {}) // t.Setenv already handles cleanup; just unset it.
 	log := newCapturingLogger()
 
 	rawURL := "env.BIFROST_E2E_PRICING_URL_DEFINITELY_NOT_SET_XYZ9999"
@@ -757,7 +754,6 @@ func TestPricingE2E_Step10_NoNilPointers_AllInputCombinations(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			log := newCapturingLogger()
 			tableOut, catalogOut, _ := resolveWithCapture(t, log, tc.db, tc.file)
 
@@ -829,6 +825,9 @@ func TestPricingE2E_Step10_FullPipeline_WithRealSQLite(t *testing.T) {
 	SetLogger(log)
 	initFrameworkConfig(ctx, cfg1, configData)
 	SetLogger(prev)
+	if cfg1.ModelCatalog != nil {
+		t.Cleanup(func() { cfg1.ModelCatalog.Cleanup() })
+	}
 
 	require.NotNil(t, cfg1.FrameworkConfig, "FrameworkConfig must be populated after init")
 	require.NotNil(t, cfg1.FrameworkConfig.Pricing, "Pricing config must not be nil")
@@ -850,6 +849,9 @@ func TestPricingE2E_Step10_FullPipeline_WithRealSQLite(t *testing.T) {
 	SetLogger(log2)
 	initFrameworkConfig(ctx, cfg2, configData)
 	SetLogger(prev2)
+	if cfg2.ModelCatalog != nil {
+		t.Cleanup(func() { cfg2.ModelCatalog.Cleanup() })
+	}
 
 	require.Equal(t, int64(7200), *cfg2.FrameworkConfig.Pricing.PricingSyncInterval,
 		"pricing_sync_interval must be 7200 s on restart (DB authoritative)")
@@ -871,6 +873,9 @@ func TestPricingE2E_Step10_FullPipeline_WithRealSQLite(t *testing.T) {
 	SetLogger(log3)
 	initFrameworkConfig(ctx, cfg3, changedFileConfig)
 	SetLogger(prev3)
+	if cfg3.ModelCatalog != nil {
+		t.Cleanup(func() { cfg3.ModelCatalog.Cleanup() })
+	}
 
 	require.Equal(t, int64(7200), *cfg3.FrameworkConfig.Pricing.PricingSyncInterval,
 		"DB (7200 s) must win over changed file config (3600 s) on third boot")

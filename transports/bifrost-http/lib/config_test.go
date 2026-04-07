@@ -15944,7 +15944,13 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	t.Run("pricing_url with missing env var falls back to literal string", func(t *testing.T) {
 		// Use a name that is guaranteed not to be set in the test environment
 		rawURL := "env.BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ"
+		prev, existed := os.LookupEnv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ")
 		os.Unsetenv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ")
+		t.Cleanup(func() {
+			if existed {
+				os.Setenv("BIFROST_TEST_PRICING_URL_NONEXISTENT_XYZ", prev)
+			}
+		})
 		fileConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL: &rawURL,
