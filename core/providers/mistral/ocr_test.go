@@ -397,6 +397,7 @@ func TestOCRWithMockServer(t *testing.T) {
 		responseBody   interface{}
 		expectError    bool
 		errorContains  string
+		validateError  func(t *testing.T, err *schemas.BifrostError)
 		validateResult func(t *testing.T, resp *schemas.BifrostOCRResponse)
 	}{
 		{
@@ -488,9 +489,24 @@ func TestOCRWithMockServer(t *testing.T) {
 			statusCode: http.StatusInternalServerError,
 			responseBody: map[string]interface{}{
 				"message": "Internal server error",
+				"type":    "server_error",
+				"code":    "internal_error",
 			},
 			expectError:   true,
-			errorContains: "",
+			errorContains: "Internal server error",
+			validateError: func(t *testing.T, err *schemas.BifrostError) {
+				require.NotNil(t, err)
+				require.NotNil(t, err.Error)
+				require.NotNil(t, err.StatusCode)
+				assert.Equal(t, http.StatusInternalServerError, *err.StatusCode)
+				require.NotNil(t, err.Error.Type)
+				assert.Equal(t, "server_error", *err.Error.Type)
+				require.NotNil(t, err.Error.Code)
+				assert.Equal(t, "internal_error", *err.Error.Code)
+				assert.Equal(t, schemas.Mistral, err.ExtraFields.Provider)
+				assert.Equal(t, schemas.OCRRequest, err.ExtraFields.RequestType)
+				assert.Equal(t, "mistral-ocr-latest", err.ExtraFields.ModelRequested)
+			},
 		},
 		{
 			name: "unauthorized 401",
@@ -504,9 +520,21 @@ func TestOCRWithMockServer(t *testing.T) {
 			statusCode: http.StatusUnauthorized,
 			responseBody: map[string]interface{}{
 				"message": "Unauthorized",
+				"type":    "authentication_error",
+				"code":    "invalid_api_key",
 			},
 			expectError:   true,
-			errorContains: "",
+			errorContains: "Unauthorized",
+			validateError: func(t *testing.T, err *schemas.BifrostError) {
+				require.NotNil(t, err)
+				require.NotNil(t, err.Error)
+				require.NotNil(t, err.StatusCode)
+				assert.Equal(t, http.StatusUnauthorized, *err.StatusCode)
+				require.NotNil(t, err.Error.Type)
+				assert.Equal(t, "authentication_error", *err.Error.Type)
+				require.NotNil(t, err.Error.Code)
+				assert.Equal(t, "invalid_api_key", *err.Error.Code)
+			},
 		},
 		{
 			name: "empty response body",
@@ -596,6 +624,9 @@ func TestOCRWithMockServer(t *testing.T) {
 				require.NotNil(t, err)
 				if tt.errorContains != "" {
 					assert.Contains(t, err.Error.Message, tt.errorContains)
+				}
+				if tt.validateError != nil {
+					tt.validateError(t, err)
 				}
 				return
 			}

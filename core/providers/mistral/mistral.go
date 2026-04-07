@@ -18,11 +18,12 @@ import (
 
 // MistralProvider implements the Provider interface for Mistral's API.
 type MistralProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger        // Logger for provider operations
+	client               *fasthttp.Client      // HTTP client for API requests
+	networkConfig        schemas.NetworkConfig // Network configuration including extra headers
+	customProviderConfig *schemas.CustomProviderConfig
+	sendBackRawRequest   bool // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool // Whether to include raw response in BifrostResponse
 }
 
 // NewMistralProvider creates a new Mistral provider instance.
@@ -58,17 +59,18 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MistralProvider{
-		logger:              logger,
-		client:              client,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		networkConfig:        config.NetworkConfig,
+		customProviderConfig: config.CustomProviderConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
 	}
 }
 
 // GetProviderKey returns the provider identifier for Mistral.
 func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Mistral
+	return providerUtils.GetProviderName(schemas.Mistral, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -317,7 +319,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, openai.ParseOpenAIError(resp, schemas.OCRRequest, providerName, request.Model)
+		return nil, parseMistralError(resp, schemas.OCRRequest, providerName, request.Model)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -427,7 +429,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		return nil, parseMistralError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -562,7 +564,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+		return nil, parseMistralError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client

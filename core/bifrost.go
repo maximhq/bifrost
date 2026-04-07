@@ -5092,7 +5092,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return bifrost.handleProviderRequest(provider, req, key, keys)
+				return bifrost.handleProviderRequest(provider, config, req, key, keys)
 			}, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
 
@@ -5158,7 +5158,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
-func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
@@ -5204,6 +5204,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.OCRRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.OCRRequest); bifrostError != nil {
+			bifrostError.ExtraFields.Provider = provider.GetProviderKey()
+			bifrostError.ExtraFields.RequestType = schemas.OCRRequest
+			if req.BifrostRequest.OCRRequest != nil {
+				bifrostError.ExtraFields.ModelRequested = req.BifrostRequest.OCRRequest.Model
+			}
+			return nil, bifrostError
+		}
 		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
