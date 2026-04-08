@@ -871,7 +871,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if req.ProviderConfigs != nil {
 			// Get existing provider configs for comparison
 			var existingConfigs []configstoreTables.TableVirtualKeyProviderConfig
-			if err := tx.Where("virtual_key_id = ?", vk.ID).Find(&existingConfigs).Error; err != nil {
+			if err := tx.Where("virtual_key_id = ?", vk.ID).
+				Preload("Budgets").
+				Find(&existingConfigs).Error; err != nil {
 				return err
 			}
 			// Create maps for easier lookup

@@ -151,10 +151,11 @@ export function SettingsPanel() {
 						<ModelMultiselect
 							provider={provider}
 							keys={filterKeys && filterKeys.length > 0 ? filterKeys : undefined}
-						vks={filterVks}
+							vks={filterVks}
 							value={model}
 							onChange={(v) => onModelChange(v)}
 							isSingleSelect
+							unfiltered
 							placeholder={!provider ? "Select a provider first" : "Select model"}
 							disabled={!provider}
 						/>
