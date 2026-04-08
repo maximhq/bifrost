@@ -1,2 +1,19 @@
-- feat: add model alias support
-- refactor: standardize extra fields handling for all providers
+- feat: add Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add realtime provider interfaces, schemas, and engine hooks
+- feat: add session log storage and realtime request normalization
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add IsSet method to EnvVar and improve provider auth validation
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: add prompts plugin with direct key header resolver
+- feat: add embeddings, image gen, edit and variation to bedrock
+- feat: allow path whitelisting from security config
+- fix: auto-redact env-backed values in EnvVar JSON serialization
+- fix: bedrock tool choice conversion to auto
+- fix: MCP tool logs not being captured correctly
+- fix: preserve explicit empty tool parameter schemas for openai passthrough
+- fix: correct SigV4 service name for bedrock agent runtime rerank
+- fix: include raw model ID in list-models output alongside aliases
+- fix: vertex endpoint correction
+- fix: bedrock streaming retry for retryable AWS exceptions and stale connections
+- fix: thinking budget validation for gemini models
+- fix: add empty arguments guard in bedrock utils

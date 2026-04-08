@@ -1,0 +1,16 @@
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add access profiles for fine-grained permission control
+- feat: add user level OAuth for MCP gateway
+- feat: add IsSet method to EnvVar and improve provider auth validation
+- feat: add session log storage and realtime request normalization
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: add prompts plugin with direct key header resolver
+- feat: add Fireworks AI provider support (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add sorting and CSV export to virtual keys table
+- feat: allow path whitelisting from security config
+- fix: auto-redact env-backed values in EnvVar JSON serialization
+- fix: MCP tool logs not being captured correctly
+- fix: SQLite migration connections and error handling
+- fix: disable SQLite foreign key checks during migration
+- fix: add retry mechanism to model catalog pricing sync lock
+- fix: increases buffer size for custom plugin installs from URLs

@@ -1239,6 +1239,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET mcp_disable_auto_tool_inject = false WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.whitelisted_routes_json (added in v1.5.0)
+  if column_exists_postgres "config_client" "whitelisted_routes_json"; then
+    echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
+  fi
+
   # governance_virtual_key_provider_configs.allow_all_keys (added in v1.5.0)
   # vk-migration-test-1 has a key in the join table, so old behavior was restricted to that key -> allow_all_keys=false
   # vk-migration-test-2 has no key rows, so old "empty=allow-all" semantics -> allow_all_keys=true

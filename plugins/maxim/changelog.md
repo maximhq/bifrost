@@ -1,0 +1,4 @@
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add support for image generation requests
+- feat: add realtime turn logging
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId

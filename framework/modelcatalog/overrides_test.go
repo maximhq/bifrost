@@ -129,7 +129,7 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 	assert.Equal(t, 7.0, pricing.InputCostPerToken)
 }
 
-func TestGetPricing_DeploymentLookupUsesRequestedModelForOverrideMatching(t *testing.T) {
+func TestGetPricing_DeploymentLookupUsesResolvedModelForOverrideMatching(t *testing.T) {
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("dep-gpt4o", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -143,16 +143,18 @@ func TestGetPricing_DeploymentLookupUsesRequestedModelForOverrideMatching(t *tes
 	providerID := "openai"
 	require.NoError(t, mc.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
-			ID:               "requested-model-override",
+			ID:               "resolved-model-override",
 			ScopeKind:        string(ScopeKindProvider),
 			ProviderID:       &providerID,
 			MatchType:        string(MatchTypeExact),
-			Pattern:          "gpt-4o",
+			Pattern:          "dep-gpt4o",
 			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
 			PricingPatchJSON: `{"input_cost_per_token":7}`,
 		},
 	}))
 
+	// Override pattern matches the resolved model name ("dep-gpt4o"), not the
+	// originally requested name ("gpt-4o"), because resolved model has priority.
 	pricing := mc.resolvePricing("openai", "gpt-4o", "dep-gpt4o", schemas.ChatCompletionRequest, PricingLookupScopes{Provider: "openai"})
 	require.NotNil(t, pricing)
 	require.NotNil(t, pricing.InputCostPerToken)

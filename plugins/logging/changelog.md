@@ -1,0 +1,4 @@
+- feat: add realtime turn logging
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: allow path whitelisting from security config
+- fix: MCP tool logs not being captured correctly

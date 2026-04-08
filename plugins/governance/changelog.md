@@ -1,1 +1,5 @@
-- fix: preseve routing rule targets for genai and bedrock paths for vk level provider load balancing
+- feat: add realtime WebSocket, WebRTC, and client secret handlers
+- feat: add access profiles for fine-grained permission control
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- fix: SQLite migration connections and error handling + vk not found message
+- fix: preserve routing rule targets for genai and bedrock paths

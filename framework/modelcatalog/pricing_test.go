@@ -1230,16 +1230,17 @@ func TestResolvePricing_DeploymentFallback(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
-func TestResolvePricing_ModelFoundDirectly(t *testing.T) {
+func TestResolvePricing_ResolvedModelHasPriority(t *testing.T) {
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"):        chatPricing(0.000005, 0.000015),
 		makeKey("my-deployment", "openai", "chat"): chatPricing(0.000001, 0.000002),
 	})
 
-	// Model found directly — doesn't fall back to deployment
+	// Resolved model ("my-deployment") is looked up first and has priority
+	// over the originally requested model ("gpt-4o").
 	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
-	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+	assert.Equal(t, 0.000001, derefF(p.InputCostPerToken))
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
