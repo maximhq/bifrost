@@ -15,8 +15,14 @@
   },
   "servers": [
     {
-      "url": "http://localhost:8080",
-      "description": "Local development server"
+      "url": "{baseUrl}",
+      "description": "Your Bifrost instance",
+      "variables": {
+        "baseUrl": {
+          "default": "http://localhost:8080",
+          "description": "Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)"
+        }
+      }
     }
   ],
   "tags": [
