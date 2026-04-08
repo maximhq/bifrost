@@ -614,9 +614,18 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
-	// Drop the table if it exists to start fresh (for this specific test)
-	db.Exec("DROP TABLE IF EXISTS migrations")
-	db.Exec("DROP TABLE IF EXISTS config_providers")
+	// Drop config_providers to start fresh (for this specific test).
+	// Use CASCADE to drop dependent objects (composite types, sequences, etc.).
+	db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
+
+	// Clear migration tracking without dropping the table — other test packages
+	// (e.g. logstore) may share this Postgres instance and use the same table
+	// concurrently.  CREATE IF NOT EXISTS is safe even if the table already
+	// exists from a previous test or a concurrent package.
+	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (
+		id VARCHAR(255) PRIMARY KEY
+	)`)
+	db.Exec("DELETE FROM migrations")
 
 	// Create the config_providers table manually without store_raw_request_response column
 	// This simulates the pre-migration state (PostgreSQL syntax)
@@ -645,20 +654,11 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
-	// Create the migrations table for the migrator (matches migrator.DefaultOptions.TableName)
-	err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS migrations (
-			id VARCHAR(255) PRIMARY KEY
-		)
-	`).Error
-	if err != nil {
-		return nil
-	}
-
-	// Clean up tables after the test
+	// Clean up after the test — drop config_providers but leave migrations
+	// intact for concurrent test packages.
 	t.Cleanup(func() {
-		db.Exec("DROP TABLE IF EXISTS migrations")
-		db.Exec("DROP TABLE IF EXISTS config_providers")
+		db.Exec("DELETE FROM migrations")
+		db.Exec("DROP TABLE IF EXISTS config_providers CASCADE")
 	})
 
 	return db

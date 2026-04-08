@@ -745,8 +745,8 @@ func TestIncludesStreamInModelParams(t *testing.T) {
 		{"string 1", tables.ModelParams{"stream": "1"}, true},
 		{"string false", tables.ModelParams{"stream": "false"}, false},
 		{"string 0", tables.ModelParams{"stream": "0"}, false},
-		{"absent key", tables.ModelParams{"temperature": 0.7}, false},
-		{"empty params", tables.ModelParams{}, false},
+		{"absent key", tables.ModelParams{"temperature": 0.7}, true},
+		{"empty params", tables.ModelParams{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -822,8 +822,8 @@ func TestHTTPTransportPreHook_NoStreamParam_NoStreamContext(t *testing.T) {
 	_, err := p.HTTPTransportPreHook(ctx, req)
 	require.NoError(t, err)
 
-	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyPromptStreamRequest),
-		"expected BifrostContextKeyPromptStreamRequest not set when no stream key in params")
+	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyPromptStreamRequest),
+		"expected BifrostContextKeyPromptStreamRequest to default to true when no stream key in params")
 }
 
 // TestHTTPTransportPreHook_SpecificVersion_StreamTrue_SetsStreamContext verifies

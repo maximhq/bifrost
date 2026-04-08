@@ -820,12 +820,26 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 }
 
 // keyAllowsModelForList reports whether a provider key permits model for catalog listing.
-func keyAllowsModelForList(key schemas.Key, model string) bool {
+// When a non-nil catalog is provided, it also checks whether any allowlisted
+// model resolves to the same base model name as the queried model (alias matching).
+func keyAllowsModelForList(key schemas.Key, model string, catalog *modelcatalog.ModelCatalog) bool {
 	if len(key.BlacklistedModels) > 0 && slices.Contains(key.BlacklistedModels, model) {
 		return false
 	}
 	if len(key.Models) > 0 {
-		return slices.Contains(key.Models, model)
+		if slices.Contains(key.Models, model) {
+			return true
+		}
+		// Catalog-aware alias matching: a key allowlisting "gpt-4o-2024-08-06"
+		// should also grant access to its base model "gpt-4o" in listings.
+		if catalog != nil {
+			for _, allowed := range key.Models {
+				if catalog.GetBaseModelName(allowed) == model {
+					return true
+				}
+			}
+		}
+		return false
 	}
 	return true
 }
@@ -912,7 +926,7 @@ func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provide
 	for _, model := range models {
 		grantedBy := make([]string, 0, len(matchedKeys))
 		for _, matched := range matchedKeys {
-			if keyAllowsModelForList(matched.key, model) {
+			if keyAllowsModelForList(matched.key, model, modelCatalog) {
 				grantedBy = append(grantedBy, matched.id)
 			}
 		}
