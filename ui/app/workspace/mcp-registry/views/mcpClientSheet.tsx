@@ -65,6 +65,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
+	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>(
+		(mcpClient.config.allowed_extra_headers || []).join(", "),
+	);
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -74,6 +77,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		setVKConfigsDirty(false);
 		setLocalVKNames({});
 	}, [initialVKConfigs]);
+
+	// Sync allowedExtraHeadersRaw when mcpClient changes
+	useEffect(() => {
+		setAllowedExtraHeadersRaw((mcpClient.config.allowed_extra_headers || []).join(", "));
+	}, [mcpClient.config.allowed_extra_headers]);
 
 	// Name lookup: server response names → search results → locally cached names (highest priority)
 	const vkNameByID = useMemo<Record<string, string>>(() => {
@@ -516,13 +524,17 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													placeholder="*, or: authorization, x-user-id"
 													name={field.name}
 													ref={field.ref}
-													value={(field.value || []).join(", ")}
+													value={allowedExtraHeadersRaw}
 													onChange={(e) => {
-														const raw = e.target.value;
-														const parsed = raw.trim() ? raw.split(",").map((h) => h.trim()).filter(Boolean) : [];
-														field.onChange(parsed);
+														setAllowedExtraHeadersRaw(e.target.value);
 													}}
-													onBlur={field.onBlur}
+													onBlur={() => {
+														const parsed = allowedExtraHeadersRaw.trim()
+															? allowedExtraHeadersRaw.split(",").map((h) => h.trim()).filter(Boolean)
+															: [];
+														field.onChange(parsed);
+														field.onBlur();
+													}}
 												/>
 											</FormControl>
 											<p className="text-muted-foreground text-xs">

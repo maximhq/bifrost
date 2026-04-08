@@ -1772,6 +1772,7 @@ func HandleOpenAIResponsesStreaming(
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 					return
 				}
+
 				response.ExtraFields.ChunkIndex = response.SequenceNumber
 				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 					// Set raw request if enabled

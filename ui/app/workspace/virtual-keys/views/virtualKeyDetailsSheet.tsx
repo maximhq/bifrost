@@ -114,7 +114,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Models</span>
 													<div className="col-span-2">
 														{config.allowed_models?.includes("*") ? (
-															<Badge variant="outline" className="text-xs">All Models</Badge>
+															<Badge variant="success" className="text-xs">All Models</Badge>
 														) : config.allowed_models && config.allowed_models.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.allowed_models.map((model) => (
@@ -133,7 +133,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													<span className="text-muted-foreground text-sm pt-0.5 font-medium">Allowed Keys</span>
 													<div className="col-span-2">
 														{config.allow_all_keys ? (
-															<span className="text-muted-foreground text-sm">All keys allowed</span>
+															<Badge variant="success" className="text-xs">All Keys</Badge>
 														) : config.keys && config.keys.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.keys.map((key) => (
@@ -143,7 +143,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<span className="text-muted-foreground text-sm">No keys allowed</span>
+															<Badge variant="destructive" className="text-xs">No keys (deny all)</Badge>
 														)}
 													</div>
 												</div>
@@ -319,7 +319,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 													<TableCell>{config.mcp_client?.name || "Unknown Client"}</TableCell>
 													<TableCell>
 														{config.tools_to_execute?.includes("*") ? (
-															<span className="text-muted-foreground text-sm">All tools allowed</span>
+															<Badge variant="success" className="text-xs">All Tools</Badge>
 														) : config.tools_to_execute && config.tools_to_execute.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.tools_to_execute.map((tool) => (
@@ -329,7 +329,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 																))}
 															</div>
 														) : (
-															<span className="text-muted-foreground text-sm">No tools selected</span>
+															<Badge variant="destructive" className="text-xs">No tools (deny all)</Badge>
 														)}
 													</TableCell>
 												</TableRow>

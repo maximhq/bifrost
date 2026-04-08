@@ -597,6 +597,8 @@ Route based on region headers:
 
 ## Rule Chaining
 
+<Info>Rule chaining is available in **Bifrost v1.5.0-prerelease2 and above**.</Info>
+
 Rule chaining allows routing rules to be composed together. When a rule has `chain_rule: true`, the routing engine does not stop after it matches — instead, it updates the request context with the resolved provider/model and re-evaluates the full rule set from the top.
 
 ### How Chaining Works

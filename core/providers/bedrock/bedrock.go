@@ -962,10 +962,6 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 							Message: schemas.ErrProviderNetworkError,
 							Error:   err,
 						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType: schemas.TextCompletionStreamRequest,
-							Provider:    providerName,
-						},
 					}, responseChan, provider.logger)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger)
@@ -1139,7 +1135,6 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	providerName := provider.GetProviderKey()
 	// Start streaming in a goroutine
 	go func() {
 		defer func() {
@@ -1202,7 +1197,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
+				provider.logger.Warn("Error decoding EventStream message: %v", err)
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
@@ -1230,7 +1225,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 							}
 						}
 						errMsg := string(message.Payload)
-						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+						err := fmt.Errorf("stream %s: %s", excType, errMsg)
 						// Retryable AWS exceptions must not set IsBifrostError:true — that would
 						// bypass the retry gate in executeRequestWithRetries. Instead emit
 						// IsBifrostError:false with the equivalent HTTP status code so the existing
@@ -1533,7 +1528,6 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
-		providerName := provider.GetProviderKey()
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -1575,7 +1569,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
+				provider.logger.Warn("Error decoding EventStream message: %v", err)
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
@@ -1603,7 +1597,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							}
 						}
 						errMsg := string(message.Payload)
-						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+						err := fmt.Errorf("stream %s: %s", excType, errMsg)
 						// Retryable AWS exceptions must not set IsBifrostError:true — that would
 						// bypass the retry gate in executeRequestWithRetries. Instead emit
 						// IsBifrostError:false with the equivalent HTTP status code so the existing

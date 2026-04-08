@@ -830,33 +830,6 @@ func keyAllowsModelForList(key schemas.Key, model string) bool {
 	return true
 }
 
-// keyModelListAllowsModel reports whether model matches a key allow/deny list entry,
-// using catalog-aware alias matching when model metadata is available.
-func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
-	if len(allowedModels) == 0 {
-		return false
-	}
-
-	if modelCatalog == nil {
-		return slices.Contains(allowedModels, model)
-	}
-
-	if modelCatalog.IsModelAllowedForProvider(provider, model, allowedModels) {
-		return true
-	}
-
-	for _, allowedModel := range allowedModels {
-		if strings.Contains(allowedModel, "/") {
-			continue
-		}
-		if modelCatalog.IsSameModel(allowedModel, model) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // matchesModelQuery applies the shared query match used by /api/models,
 // /api/models/details, and /api/models/base.
 func matchesModelQuery(model, query string) bool {

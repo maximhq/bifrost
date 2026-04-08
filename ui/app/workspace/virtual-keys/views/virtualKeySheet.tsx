@@ -323,7 +323,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 		const newConfig = {
 			mcp_client_name: mcpClientName,
-			tools_to_execute: [], // Empty means no tools allowed
+			tools_to_execute: ["*"],
 		};
 
 		form.setValue("mcpConfigs", [...mcpConfigs, newConfig], { shouldDirty: true });
@@ -495,7 +495,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				className="flex w-full flex-col overflow-x-hidden px-4 pb-8"
 				data-testid="vk-sheet-content"
 				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
+				onEscapeKeyDown={() => handleClose()}
 			>
 				<SheetHeader className="flex flex-col items-start px-3 pt-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>

@@ -145,7 +145,7 @@ func (h *ConsentHandler) handleIdentityPage(ctx *fasthttp.RequestCtx) {
     <form action="/api/oauth/per-user/consent/user-id" method="POST">
       <input type="hidden" name="flow_id" value="%s">
       <label for="user_id">User ID</label>
-      <input type="text" id="user_id" name="user_id" placeholder="e.g. alice" autocomplete="off">
+      <input type="text" id="user_id" name="user_id" placeholder="e.g. alice" autocomplete="off" spellcheck="false" autocapitalize="none" autocorrect="off">
       <button type="submit" class="btn btn-primary">Continue with User ID</button>
     </form>
   </div>
