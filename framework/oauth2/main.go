@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,8 +24,9 @@ import (
 // OAuth2Provider implements the schemas.OAuth2Provider interface
 // It provides OAuth 2.0 authentication functionality with database persistence
 type OAuth2Provider struct {
-	configStore configstore.ConfigStore
-	mu          sync.RWMutex
+	configStore    configstore.ConfigStore
+	mu             sync.RWMutex
+	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; defaults to 1s
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -72,6 +74,12 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 	if time.Now().After(token.ExpiresAt) {
 		// Attempt automatic refresh
 		if err := p.RefreshAccessToken(ctx, oauthConfigID); err != nil {
+			// Permanent rejection — mark the config expired so the user knows to re-authorize
+			var permErr *PermanentOAuthError
+			if errors.As(err, &permErr) {
+				oauthConfig.Status = "expired"
+				p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+			}
 			return "", fmt.Errorf("token expired and refresh failed: %w", err)
 		}
 		// Reload token after refresh
@@ -616,60 +624,100 @@ func (p *OAuth2Provider) exchangeRefreshToken(tokenURL, clientID, clientSecret, 
 	return p.callTokenEndpoint(tokenURL, data)
 }
 
-// callTokenEndpoint makes a POST request to the OAuth token endpoint
+// PermanentOAuthError indicates the OAuth provider rejected the request in a way
+// that requires user re-authorization (e.g. revoked refresh token, invalid_grant).
+// Distinct from transient network failures which should be retried.
+type PermanentOAuthError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *PermanentOAuthError) Error() string {
+	return fmt.Sprintf("permanent OAuth error (status %d): %s", e.StatusCode, e.Body)
+}
+
+// maxTokenRetries is the number of total attempts for token endpoint requests.
+// Transient errors (network failures, 5xx) are retried; 4xx errors are not.
+const maxTokenRetries = 3
+
+// callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
+// Transport errors and 5xx responses are retried up to maxTokenRetries times with
+// exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
 func (p *OAuth2Provider) callTokenEndpoint(tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	baseDelay := p.retryBaseDelay
+	if baseDelay == 0 {
+		baseDelay = time.Second
 	}
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
+	var lastErr error
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := range maxTokenRetries {
+		req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResponse schemas.OAuth2TokenExchangeResponse
-
-	// Try to parse as JSON first
-	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		// If JSON parsing fails, try to parse as URL-encoded form data
-		// (GitHub's OAuth endpoint may return application/x-www-form-urlencoded)
-		formValues, parseErr := url.ParseQuery(string(body))
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			// Transport error (DNS failure, timeout, connection refused) — retry
+			lastErr = fmt.Errorf("token request failed: %w", err)
+			if attempt < maxTokenRetries-1 {
+				time.Sleep(time.Duration(1<<attempt) * baseDelay)
+			}
+			continue
 		}
 
-		tokenResponse.AccessToken = formValues.Get("access_token")
-		tokenResponse.RefreshToken = formValues.Get("refresh_token")
-		tokenResponse.TokenType = formValues.Get("token_type")
-		tokenResponse.Scope = formValues.Get("scope")
-
-		// Parse expires_in if present
-		if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
-			fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			if attempt < maxTokenRetries-1 {
+				time.Sleep(time.Duration(1<<attempt) * baseDelay)
+			}
+			continue
 		}
+
+		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				// 4xx = permanent rejection from auth server (invalid_grant, unauthorized_client, etc.)
+				return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+			}
+			// 5xx = transient server error — retry
+			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+			if attempt < maxTokenRetries-1 {
+				time.Sleep(time.Duration(1<<attempt) * baseDelay)
+			}
+			continue
+		}
+
+		// Try to parse as JSON first
+		var tokenResponse schemas.OAuth2TokenExchangeResponse
+		if err := json.Unmarshal(body, &tokenResponse); err != nil {
+			// Fall back to URL-encoded form data (GitHub's OAuth endpoint returns this format)
+			formValues, parseErr := url.ParseQuery(string(body))
+			if parseErr != nil {
+				return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+			}
+			tokenResponse.AccessToken = formValues.Get("access_token")
+			tokenResponse.RefreshToken = formValues.Get("refresh_token")
+			tokenResponse.TokenType = formValues.Get("token_type")
+			tokenResponse.Scope = formValues.Get("scope")
+			if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
+				fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+			}
+		}
+
+		if tokenResponse.AccessToken == "" {
+			return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
+		}
+
+		return &tokenResponse, nil
 	}
 
-	// Validate that we got an access token
-	if tokenResponse.AccessToken == "" {
-		return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
-	}
-
-	return &tokenResponse, nil
+	return nil, fmt.Errorf("token request failed after %d attempts: %w", maxTokenRetries, lastErr)
 }
 
 // generateSecureRandomString generates a cryptographically secure random string
