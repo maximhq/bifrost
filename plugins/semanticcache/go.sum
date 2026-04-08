@@ -199,8 +199,8 @@ github.com/maximhq/bifrost/core v1.5.1 h1:iJoVnI4q0CpNylBqXLVaZUc0qgJhd8j8Xa2vtN
 github.com/maximhq/bifrost/core v1.5.1/go.mod h1:O6VEP2MHkQgo1iLYoxGQ7a+3VBBlHoETCH+pOR6Q5X8=
 github.com/maximhq/bifrost/framework v1.3.1 h1:HpKD0JigkxsR6+jI3DDxAm9AKsO241E3sj2BpxG82Xs=
 github.com/maximhq/bifrost/framework v1.3.1/go.mod h1:M+MDjP4cRZMinI2qk0DHtTp9ayFWaoQ2Ye+ikmyhGYQ=
-github.com/maximhq/bifrost/plugins/mocker v1.4.17 h1:CEItx77k22fS/N5K8/dCQpse88yfbgzVebQWJXOH4NY=
-github.com/maximhq/bifrost/plugins/mocker v1.4.17/go.mod h1:RrA/XyRkggxYiK10k6D6r9VjfmRyiGBIW92ZvhWAtUw=
+github.com/maximhq/bifrost/plugins/mocker v1.5.0 h1:mZ2oZNOnISG6wdhAwkxwplSl0QBPPLFk+IJYEdsi8XU=
+github.com/maximhq/bifrost/plugins/mocker v1.5.0/go.mod h1:ewREvrpRbIyMwnm50MkPdMbr2a4rRwxlAiiCk6YxgYA=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
 github.com/oapi-codegen/runtime v1.1.1/go.mod h1:SK9X900oXmPWilYR5/WKPzt3Kqxn/uS/+lbpREv+eCg=
 github.com/oklog/ulid v1.3.1 h1:EGfNDEx6MqHz8B3uNV6QAib1UR2Lm97sHi3ocA6ESJ4=
