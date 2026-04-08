@@ -21,6 +21,11 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+const (
+	maxTokenRetries = 3
+	networkTimeout  = 30 * time.Second
+)
+
 // OAuth2Provider implements the schemas.OAuth2Provider interface
 // It provides OAuth 2.0 authentication functionality with database persistence
 type OAuth2Provider struct {
@@ -647,10 +652,6 @@ func (e *PermanentOAuthError) Error() string {
 	return fmt.Sprintf("permanent OAuth error (status %d): %s", e.StatusCode, e.Body)
 }
 
-// maxTokenRetries is the number of total attempts for token endpoint requests.
-// Transient errors (network failures, 5xx) are retried; 4xx errors are not.
-const maxTokenRetries = 3
-
 // sleepIfNotLastAttempt waits with exponential backoff between retry attempts.
 // No-ops on the final attempt to avoid sleeping before returning an error.
 // Respects context cancellation so worker shutdown is not delayed.
@@ -667,7 +668,7 @@ func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Dura
 // Transport errors and 5xx responses are retried up to maxTokenRetries times with
 // exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
 func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: networkTimeout}
 	var lastErr error
 
 	for attempt := range maxTokenRetries {
