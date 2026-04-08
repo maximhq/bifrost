@@ -623,7 +623,9 @@ func (p *OAuth2Provider) markExpiredIfPermanent(ctx context.Context, oauthConfig
 	var permErr *PermanentOAuthError
 	if errors.As(err, &permErr) {
 		oauthConfig.Status = "expired"
-		if updateErr := p.configStore.UpdateOauthConfig(ctx, oauthConfig); updateErr != nil {
+		updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if updateErr := p.configStore.UpdateOauthConfig(updateCtx, oauthConfig); updateErr != nil {
 			logger.Error("Failed to update oauth config status: %s, error: %s", oauthConfig.ID, updateErr.Error())
 		}
 	}
