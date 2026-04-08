@@ -653,9 +653,13 @@ const maxTokenRetries = 3
 
 // sleepIfNotLastAttempt waits with exponential backoff between retry attempts.
 // No-ops on the final attempt to avoid sleeping before returning an error.
-func sleepIfNotLastAttempt(attempt int, baseDelay time.Duration) {
+// Respects context cancellation so worker shutdown is not delayed.
+func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Duration) {
 	if attempt < maxTokenRetries-1 {
-		time.Sleep(time.Duration(1<<attempt) * baseDelay)
+		select {
+		case <-time.After(time.Duration(1<<attempt) * baseDelay):
+		case <-ctx.Done():
+		}
 	}
 }
 
@@ -676,9 +680,13 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 
 		resp, err := client.Do(req)
 		if err != nil {
+			// Propagate context cancellation immediately — no point retrying.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			// Transport error (DNS failure, timeout, connection refused) — retry
 			lastErr = fmt.Errorf("token request failed: %w", err)
-			sleepIfNotLastAttempt(attempt, p.retryBaseDelay)
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
 			continue
 		}
 
@@ -686,7 +694,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
-			sleepIfNotLastAttempt(attempt, p.retryBaseDelay)
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
 			continue
 		}
 
@@ -699,7 +707,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			}
 			// Transient error (rate limit, server error, etc.) — retry
 			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
-			sleepIfNotLastAttempt(attempt, p.retryBaseDelay)
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
 			continue
 		}
 
