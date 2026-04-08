@@ -2,32 +2,35 @@
 """
 OpenAPI Bundle Script
 
-This script bundles multiple OpenAPI YAML files with $ref references into a single
-resolved OpenAPI specification file (JSON or YAML).
+Bundles multiple OpenAPI YAML files with $ref references into a single
+OpenAPI specification file using proper component references instead of
+full inlining.
+
+The bundler uses openapi.yaml#/components/* as a registry. All $refs that
+resolve to a registered component are replaced with #/components/{type}/{Name}
+pointers. Only genuinely unregistered sub-schemas are inlined.
+
+This is fully generic — adding new component types (securitySchemes, headers,
+requestBodies, links, callbacks, etc.) to openapi.yaml requires no changes here.
 
 Usage:
     python bundle.py                    # Output to openapi.json
     python bundle.py --output spec.json # Output to custom file
     python bundle.py --format yaml      # Output as YAML
-    python bundle.py --validate         # Validate the bundled spec
 
 Requirements:
     pip install pyyaml
-
-Optional (for validation):
-    pip install openapi-spec-validator
 """
 
 import argparse
+import copy
 import json
 import os
-import re
 import sys
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Set, Tuple, Optional
+from typing import Any, Dict, Optional, Set, Tuple
 from urllib.parse import urldefrag
-import copy
 
 try:
     import yaml
@@ -37,447 +40,350 @@ except ImportError:
 
 
 class OpenAPIBundler:
-    """Bundles OpenAPI specs with $ref resolution."""
+    """
+    Generic OpenAPI bundler that hoists all registered components into
+    #/components/{type}/{name} refs rather than fully inlining $refs.
+
+    Algorithm:
+      Phase 1 - Build registry: scan ALL openapi.yaml components/* sections and
+                map (abs_file, frag_key) -> (component_type, canonical_name).
+      Phase 2 - Resolve components: for each registered component, resolve its
+                content, substituting known refs with #/components/{type}/{name}.
+      Phase 3 - Resolve paths: resolve all path items the same way.
+      Phase 4 - Assemble output: emit the full bundled spec.
+
+    Adding a new component type (e.g. securitySchemes, headers, requestBodies)
+    only requires registering it in openapi.yaml components section — no changes
+    needed in this file.
+
+    Circular reference handling:
+      If a $ref points back to something currently being resolved AND that
+      something is registered, the registry lookup intercepts it first and emits
+      a clean #/components/{type}/{name} pointer (breaking the cycle). If it is
+      NOT registered, a warning is emitted with instructions to register it.
+    """
 
     def __init__(self, base_path: Path):
         self.base_path = base_path
-        self.cache: Dict[str, Any] = {}
-        self.resolved_refs: Dict[str, Any] = {}  # Cache resolved content
-        self.circular_schemas: Dict[str, Any] = {}  # Schemas with circular refs
-        self.in_progress: Set[str] = set()  # Track refs currently being resolved
+        self.file_cache: Dict[str, Any] = {}
+        # Registry: (abs_file_str, frag_key) -> (component_type, canonical_name)
+        # e.g. ('/path/chat.yaml', 'ChatMessage') -> ('schemas', 'ChatMessage')
+        self.registry: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        # Resolved components: {component_type: {name: resolved_content}}
+        self.resolved_components: Dict[str, Dict[str, Any]] = {}
+        # Set of (abs_file_str, frag_key) currently being resolved (circular detection)
+        self.resolving: Set[Tuple[str, str]] = set()
 
-    def load_yaml(self, file_path: Path) -> Dict[str, Any]:
-        """Load a YAML file and cache it."""
-        abs_path = str(file_path.resolve())
-        if abs_path in self.cache:
-            return self.cache[abs_path]
+    # -------------------------------------------------------------------------
+    # File loading
+    # -------------------------------------------------------------------------
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = yaml.safe_load(f)
-            self.cache[abs_path] = content
-            return content
+    def _load(self, path: Path) -> Any:
+        key = str(path.resolve())
+        if key not in self.file_cache:
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {path}")
+            with open(path, "r", encoding="utf-8") as f:
+                self.file_cache[key] = yaml.safe_load(f)
+        return self.file_cache[key]
 
-    def resolve_ref(self, ref: str, current_file: Path) -> Tuple[Any, Path, str]:
-        """Resolve a $ref pointer to its actual content.
+    # -------------------------------------------------------------------------
+    # Ref parsing helpers
+    # -------------------------------------------------------------------------
 
-        Returns: (content, target_file, schema_name)
+    def _split_ref(self, ref: str, current_file: Path) -> Tuple[Path, str]:
         """
-        # Split the reference into file path and JSON pointer
-        file_part, fragment = urldefrag(ref)
+        Split a $ref into (absolute_file_path, normalized_fragment_key).
 
-        # Determine the target file
-        if file_part:
-            # Relative path reference
-            target_file = (current_file.parent / file_part).resolve()
-        else:
-            # Same file reference
-            target_file = current_file
+        fragment_key is the JSON Pointer fragment with the leading '#/' stripped,
+        e.g. '#/ChatMessage' -> 'ChatMessage', 'file.yaml#/foo/bar' -> 'foo/bar'.
+        """
+        url, fragment = urldefrag(ref)
+        abs_path = (current_file.parent / url).resolve() if url else current_file.resolve()
+        return abs_path, fragment.lstrip("/")
 
-        # Check if target file exists
-        if not target_file.exists():
-            raise FileNotFoundError(
-                f"Referenced file not found: {target_file}\n"
-                f"  Referenced from: {current_file}\n"
-                f"  $ref: {ref}"
-            )
+    def _navigate(self, content: Any, frag_key: str) -> Any:
+        """Navigate into content using a normalized fragment key."""
+        if not frag_key:
+            return content
+        for part in frag_key.split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(content, dict):
+                if part not in content:
+                    raise KeyError(
+                        f"Key '{part}' not found. Available: {list(content.keys())}"
+                    )
+                content = content[part]
+            elif isinstance(content, list):
+                content = content[int(part)]
+            else:
+                raise KeyError(f"Cannot navigate into {type(content).__name__} at '{part}'")
+        return content
 
-        # Load the target file
-        target_content = self.load_yaml(target_file)
+    # -------------------------------------------------------------------------
+    # Phase 1: Build registry (generic over all component types)
+    # -------------------------------------------------------------------------
 
-        # Extract schema name from fragment
-        schema_name = ""
+    def _build_registry(self, entry_path: Path) -> None:
+        """
+        Scan openapi.yaml components/* and register every $ref entry as
+        (abs_file, frag_key) -> (component_type, canonical_name).
 
-        # Navigate to the fragment if present
-        if fragment:
-            # Remove leading '#/' or '#' and split by '/'
-            pointer = fragment.lstrip("#/")
-            if pointer:
-                path_parts = []
-                for part in pointer.split("/"):
-                    # Handle URL-encoded characters
-                    part = part.replace("~1", "/").replace("~0", "~")
-                    path_parts.append(part)
-                    if isinstance(target_content, dict):
-                        if part not in target_content:
-                            raise KeyError(
-                                f"Invalid $ref key '{part}' not found in object\n"
-                                f"  Full pointer: {fragment}\n"
-                                f"  Available keys: {list(target_content.keys())}\n"
-                                f"  Target file: {target_file}\n"
-                                f"  Referenced from: {current_file}\n"
-                                f"  $ref: {ref}"
-                            )
-                        target_content = target_content[part]
-                    elif isinstance(target_content, list):
-                        try:
-                            target_content = target_content[int(part)]
-                        except (ValueError, IndexError) as e:
-                            raise KeyError(
-                                f"Invalid array index '{part}' in $ref\n"
-                                f"  Full pointer: {fragment}\n"
-                                f"  Target file: {target_file}\n"
-                                f"  Referenced from: {current_file}\n"
-                                f"  $ref: {ref}\n"
-                                f"  Error: {e}"
-                            )
-                    else:
-                        raise KeyError(
-                            f"Cannot navigate into non-object/non-array at '{part}'\n"
-                            f"  Full pointer: {fragment}\n"
-                            f"  Target file: {target_file}\n"
-                            f"  Referenced from: {current_file}\n"
-                            f"  $ref: {ref}"
-                        )
-                # Use the last part as schema name
-                schema_name = path_parts[-1] if path_parts else ""
+        Works for any component type: schemas, responses, parameters,
+        securitySchemes, headers, requestBodies, links, callbacks, etc.
+        No changes needed here when new types are added to openapi.yaml.
+        """
+        spec = self._load(entry_path)
+        for comp_type, section in spec.get("components", {}).items():
+            if not isinstance(section, dict):
+                continue
+            for name, comp_def in section.items():
+                if isinstance(comp_def, dict) and "$ref" in comp_def:
+                    abs_file, frag_key = self._split_ref(comp_def["$ref"], entry_path)
+                    self.registry[(str(abs_file), frag_key)] = (comp_type, name)
 
-        return target_content, target_file, schema_name
+    # -------------------------------------------------------------------------
+    # Core resolver
+    # -------------------------------------------------------------------------
 
-    def _make_unique_schema_name(self, base_name: str, target_file: Path) -> str:
-        """Generate a unique schema name based on file path context."""
-        if base_name in self.circular_schemas:
-            # Add file context to make it unique
-            file_stem = target_file.stem
-            parent_name = target_file.parent.name
-            unique_name = f"{parent_name}_{file_stem}_{base_name}"
-            return unique_name
-        return base_name
+    def _resolve_value(self, obj: Any, current_file: Path) -> Any:
+        """
+        Recursively resolve all $refs in obj.
 
-    def resolve_refs_recursive(
-        self, obj: Any, current_file: Path, depth: int = 0
-    ) -> Any:
-        """Recursively resolve all $ref pointers in an object."""
-        if depth > 100:
-            raise RecursionError("Maximum recursion depth exceeded while resolving refs")
-
+        - If a $ref already points to #/components/..., keep it as-is.
+        - If a $ref resolves to a registered component, replace with
+          #/components/{type}/{name}.
+        - Otherwise, inline the referenced content (resolved recursively).
+        - Circular refs to unregistered content emit a warning with fix instructions.
+        """
         if isinstance(obj, dict):
-            # Check if this object contains a $ref
             if "$ref" in obj:
                 ref = obj["$ref"]
-                ref_key = f"{current_file}:{ref}"
 
-                # Check for circular reference
-                if ref_key in self.in_progress:
-                    # Circular reference detected
-                    # Resolve to get schema name, but don't recurse
-                    try:
-                        resolved, target_file, schema_name = self.resolve_ref(ref, current_file)
-                        if schema_name and isinstance(resolved, dict):
-                            # Store the schema for later addition to components
-                            if schema_name not in self.circular_schemas:
-                                self.circular_schemas[schema_name] = {
-                                    'content': resolved,
-                                    'target_file': target_file,
-                                    'original_ref': ref
-                                }
-                            # Return a reference to the component schema
-                            component_ref = {"$ref": f"#/components/schemas/{schema_name}"}
-                            # Merge with siblings if any
-                            if len(obj) > 1:
-                                siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                                resolved_siblings = {
-                                    k: self.resolve_refs_recursive(v, current_file, depth + 1)
-                                    for k, v in siblings.items()
-                                }
-                                component_ref.update(resolved_siblings)
-                            return component_ref
-                    except (FileNotFoundError, KeyError) as e:
-                        warnings.warn(
-                            f"Failed to resolve circular reference '{ref}' from {current_file}: {e}"
-                        )
+                # Already an internal component ref — keep it as-is
+                if ref.startswith("#/components/"):
+                    if len(obj) > 1:
+                        result = {"$ref": ref}
+                        for k, v in obj.items():
+                            if k != "$ref":
+                                result[k] = self._resolve_value(v, current_file)
+                        return result
                     return obj
 
-                # Return cached resolved content if already processed
-                if ref_key in self.resolved_refs:
-                    cached = self.resolved_refs[ref_key]
-                    if cached is not None:
-                        # If there are siblings, merge them
-                        if len(obj) > 1:
-                            siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                            resolved_siblings = {
-                                k: self.resolve_refs_recursive(v, current_file, depth + 1)
-                                for k, v in siblings.items()
-                            }
-                            if isinstance(cached, dict):
-                                result = dict(cached)
-                                result.update(resolved_siblings)
-                                return result
-                        return cached
+                abs_file, frag_key = self._split_ref(ref, current_file)
 
-                # Mark as in progress
-                self.in_progress.add(ref_key)
-
-                try:
-                    # Resolve the reference (will raise on missing refs)
-                    resolved, target_file, schema_name = self.resolve_ref(ref, current_file)
-
-                    # Recursively resolve any nested refs
-                    resolved_content = self.resolve_refs_recursive(resolved, target_file, depth + 1)
-
-                    # Cache the resolved content
-                    self.resolved_refs[ref_key] = resolved_content
-
-                    # If there are sibling properties alongside $ref, merge them
+                # Check if this resolves to a registered component
+                match = self.registry.get((str(abs_file), frag_key))
+                if match is not None:
+                    comp_type, name = match
+                    result: Dict[str, Any] = {"$ref": f"#/components/{comp_type}/{name}"}
                     if len(obj) > 1:
-                        # Get sibling properties (everything except $ref)
-                        siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                        # Recursively resolve siblings
-                        resolved_siblings = {
-                            k: self.resolve_refs_recursive(v, current_file, depth + 1)
-                            for k, v in siblings.items()
-                        }
-                        # Merge resolved content with siblings (siblings override)
-                        if isinstance(resolved_content, dict):
-                            result = dict(resolved_content)
-                            result.update(resolved_siblings)
-                            return result
-                        else:
-                            # If resolved content is not a dict, can't merge
-                            return resolved_content
+                        for k, v in obj.items():
+                            if k != "$ref":
+                                result[k] = self._resolve_value(v, current_file)
+                    return result
 
-                    return resolved_content
-                finally:
-                    # Remove from in progress
-                    self.in_progress.discard(ref_key)
-
-            # Process all keys in the dict
-            return {
-                k: self.resolve_refs_recursive(v, current_file, depth + 1)
-                for k, v in obj.items()
-            }
-
-        elif isinstance(obj, list):
-            return [
-                self.resolve_refs_recursive(item, current_file, depth + 1)
-                for item in obj
-            ]
-
-        return obj
-
-    def _resolve_circular_schemas(self, spec: Dict[str, Any], entry_path: Path) -> None:
-        """Resolve circular schemas and add them to components/schemas."""
-        if not self.circular_schemas:
-            return
-
-        # Ensure components/schemas exists
-        if "components" not in spec:
-            spec["components"] = {}
-        if "schemas" not in spec["components"]:
-            spec["components"]["schemas"] = {}
-
-        # Process circular schemas
-        for schema_name, schema_info in self.circular_schemas.items():
-            content = schema_info['content']
-            target_file = schema_info['target_file']
-
-            # Deep copy to avoid mutation issues
-            schema_content = copy.deepcopy(content)
-
-            # Resolve refs within the schema (with circular ref handling)
-            resolved_schema = self._resolve_schema_refs(schema_content, target_file, schema_name)
-
-            spec["components"]["schemas"][schema_name] = resolved_schema
-
-    def _resolve_schema_refs(self, obj: Any, current_file: Path, parent_schema: str, depth: int = 0) -> Any:
-        """Resolve refs within a schema, converting local refs to component refs."""
-        if depth > 50:
-            return obj
-
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref = obj["$ref"]
-
-                # Check if this is a local ref that should point to a component
-                if ref.startswith("#/"):
-                    schema_name = ref.lstrip("#/")
-                    if schema_name in self.circular_schemas or schema_name == parent_schema:
-                        # Convert to component ref
-                        result = {"$ref": f"#/components/schemas/{schema_name}"}
-                        if len(obj) > 1:
-                            siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                            result.update(siblings)
-                        return result
-
-                # Try to resolve normally
-                try:
-                    resolved, target_file, schema_name = self.resolve_ref(ref, current_file)
-
-                    # Check if this schema is circular
-                    if schema_name and schema_name in self.circular_schemas:
-                        result = {"$ref": f"#/components/schemas/{schema_name}"}
-                        if len(obj) > 1:
-                            siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                            result.update(siblings)
-                        return result
-
-                    # Resolve recursively
-                    resolved_content = self._resolve_schema_refs(resolved, target_file, parent_schema, depth + 1)
-
-                    if len(obj) > 1:
-                        siblings = {k: v for k, v in obj.items() if k != "$ref"}
-                        if isinstance(resolved_content, dict):
-                            result = dict(resolved_content)
-                            result.update(siblings)
-                            return result
-
-                    return resolved_content
-                except (FileNotFoundError, KeyError) as e:
+                # Detect circular reference — the target is currently being resolved
+                # and is NOT in the registry (so the registry can't break the cycle).
+                #
+                # This happens when a schema file has an internal self-ref (e.g.
+                # `$ref: '#/MySchema'`) but MySchema was never added to openapi.yaml.
+                #
+                # FIX: register the schema in openapi.yaml components/schemas:
+                #
+                #   MySchema:
+                #     $ref: './schemas/path/to/file.yaml#/MySchema'
+                #
+                # Once registered, the registry check above intercepts the ref and
+                # emits a clean #/components/schemas/MySchema pointer instead of
+                # attempting to inline it (which would recurse forever).
+                resolve_key = (str(abs_file), frag_key)
+                if resolve_key in self.resolving:
                     warnings.warn(
-                        f"Failed to resolve schema reference '{ref}' from {current_file}: {e}"
+                        f"Circular $ref not in registry, left unresolved: '{ref}' "
+                        f"(from {current_file}). Register it in openapi.yaml components/."
                     )
                     return obj
 
-            return {
-                k: self._resolve_schema_refs(v, current_file, parent_schema, depth + 1)
-                for k, v in obj.items()
-            }
+                # Inline the referenced content
+                try:
+                    content = self._load(abs_file)
+                    value = self._navigate(content, frag_key)
+                except (FileNotFoundError, KeyError) as e:
+                    warnings.warn(f"Cannot resolve $ref '{ref}' from {current_file}: {e}")
+                    return obj
+
+                self.resolving.add(resolve_key)
+                try:
+                    resolved = self._resolve_value(copy.deepcopy(value), abs_file)
+                finally:
+                    self.resolving.discard(resolve_key)
+
+                # Merge any sibling keys alongside $ref
+                if len(obj) > 1 and isinstance(resolved, dict):
+                    result = dict(resolved)
+                    for k, v in obj.items():
+                        if k != "$ref":
+                            result[k] = self._resolve_value(v, current_file)
+                    return result
+
+                return resolved
+
+            return {k: self._resolve_value(v, current_file) for k, v in obj.items()}
 
         elif isinstance(obj, list):
-            return [
-                self._resolve_schema_refs(item, current_file, parent_schema, depth + 1)
-                for item in obj
-            ]
+            return [self._resolve_value(item, current_file) for item in obj]
 
         return obj
 
+    # -------------------------------------------------------------------------
+    # Phase 2: Resolve all registered components (generic)
+    # -------------------------------------------------------------------------
+
+    def _ensure_component(
+        self, comp_type: str, name: str, ref_str: str, entry_path: Path
+    ) -> None:
+        """
+        Resolve a registered component and store it in resolved_components.
+        Idempotent; handles circular refs via the resolving set.
+        """
+        if name in self.resolved_components.get(comp_type, {}):
+            return
+
+        abs_file, frag_key = self._split_ref(ref_str, entry_path)
+        resolve_key = (str(abs_file), frag_key)
+
+        if resolve_key in self.resolving:
+            return  # Circular — the registry will emit a component ref to break the cycle
+
+        self.resolving.add(resolve_key)
+        try:
+            content = self._load(abs_file)
+            value = self._navigate(content, frag_key)
+            resolved = self._resolve_value(copy.deepcopy(value), abs_file)
+        except (FileNotFoundError, KeyError) as e:
+            warnings.warn(f"Cannot resolve {comp_type} '{name}' ({ref_str}): {e}")
+            resolved = {"description": f"[unresolvable: {e}]"}
+        finally:
+            self.resolving.discard(resolve_key)
+
+        self.resolved_components.setdefault(comp_type, {})[name] = resolved
+
+    # -------------------------------------------------------------------------
+    # Main bundle entry point
+    # -------------------------------------------------------------------------
+
     def bundle(self, entry_file: str = "openapi.yaml") -> Dict[str, Any]:
         """Bundle the OpenAPI spec starting from the entry file."""
-        entry_path = self.base_path / entry_file
+        entry_path = (self.base_path / entry_file).resolve()
         if not entry_path.exists():
             raise FileNotFoundError(f"Entry file not found: {entry_path}")
 
-        spec = self.load_yaml(entry_path)
-        resolved_spec = self.resolve_refs_recursive(spec, entry_path)
+        # Phase 1: Build registry from all components/* sections
+        self._build_registry(entry_path)
 
-        # Add circular schemas to components
-        self._resolve_circular_schemas(resolved_spec, entry_path)
+        spec = self._load(entry_path)
+        components = spec.get("components", {})
 
-        return resolved_spec
+        # Phase 2: Resolve every registered component generically
+        for comp_type, section in components.items():
+            if not isinstance(section, dict):
+                continue
+            for name, comp_def in section.items():
+                if isinstance(comp_def, dict) and "$ref" in comp_def:
+                    self._ensure_component(comp_type, name, comp_def["$ref"], entry_path)
+                else:
+                    self.resolved_components.setdefault(comp_type, {})[name] = (
+                        self._resolve_value(copy.deepcopy(comp_def), entry_path)
+                    )
+
+        # Phase 3 + 4: Build output spec
+        output: Dict[str, Any] = {}
+        for key, value in spec.items():
+            if key == "paths":
+                output["paths"] = self._resolve_paths(value, entry_path)
+            elif key == "components":
+                output["components"] = self.resolved_components
+            else:
+                # info, servers, tags, security, etc. — resolve defensively
+                output[key] = (
+                    self._resolve_value(copy.deepcopy(value), entry_path)
+                    if isinstance(value, (dict, list))
+                    else value
+                )
+
+        return output
+
+    def _resolve_paths(self, paths: Dict[str, Any], entry_path: Path) -> Dict[str, Any]:
+        """Resolve all path items."""
+        resolved: Dict[str, Any] = {}
+        for path_name, path_ref in paths.items():
+            if isinstance(path_ref, dict) and "$ref" in path_ref:
+                abs_file, frag_key = self._split_ref(path_ref["$ref"], entry_path)
+                try:
+                    content = self._load(abs_file)
+                    value = self._navigate(content, frag_key)
+                    resolved[path_name] = self._resolve_value(
+                        copy.deepcopy(value), abs_file
+                    )
+                except (FileNotFoundError, KeyError) as e:
+                    warnings.warn(f"Cannot resolve path '{path_name}': {e}")
+                    resolved[path_name] = path_ref
+            else:
+                resolved[path_name] = self._resolve_value(path_ref, entry_path)
+        return resolved
 
 
-def validate_spec(spec: Dict[str, Any]) -> bool:
-    """Validate the OpenAPI spec (requires openapi-spec-validator)."""
-    try:
-        from openapi_spec_validator import validate
-        from openapi_spec_validator.readers import read_from_filename
-
-        validate(spec)
-        print("✓ OpenAPI specification is valid!")
-        return True
-    except ImportError:
-        print(
-            "Warning: openapi-spec-validator not installed. "
-            "Install with: pip install openapi-spec-validator"
-        )
-        return True
-    except Exception as e:
-        print(f"✗ Validation error: {e}")
-        return False
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bundle OpenAPI YAML files into a single specification"
     )
     parser.add_argument(
-        "--input",
-        "-i",
-        default="openapi.yaml",
+        "--input", "-i", default="openapi.yaml",
         help="Entry point YAML file (default: openapi.yaml)",
     )
     parser.add_argument(
-        "--output",
-        "-o",
-        default="openapi.json",
+        "--output", "-o", default="openapi.json",
         help="Output file path (default: openapi.json)",
     )
     parser.add_argument(
-        "--format",
-        "-f",
-        choices=["json", "yaml"],
-        default="json",
+        "--format", "-f", choices=["json", "yaml"], default="json",
         help="Output format (default: json)",
     )
     parser.add_argument(
-        "--validate",
-        "-v",
-        action="store_true",
-        help="Validate the bundled specification",
-    )
-    parser.add_argument(
-        "--indent",
-        type=int,
-        default=2,
+        "--indent", type=int, default=2,
         help="Indentation level for output (default: 2)",
-    )
-    parser.add_argument(
-        "--inline",
-        action="store_true",
-        help="Replace the input file with resolved specification (for Mintlify compatibility)",
     )
 
     args = parser.parse_args()
 
-    # Determine the base path (directory of this script)
     base_path = Path(__file__).parent.resolve()
-
     print(f"Bundling OpenAPI spec from: {base_path / args.input}")
 
     try:
         bundler = OpenAPIBundler(base_path)
         spec = bundler.bundle(args.input)
 
-        # Validate if requested
-        if args.validate:
-            if not validate_spec(spec):
-                sys.exit(1)
-
-        # Handle inline replacement for Mintlify compatibility
-        if args.inline:
-            input_path = base_path / args.input
-            # When inlining, update the original YAML file
-            with open(input_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    spec,
-                    f,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
-            print(f"✓ Updated original file with resolved references: {input_path}")
-
-            # Also create the JSON output for reference
-            output_path = base_path / args.output
-            with open(output_path, "w", encoding="utf-8") as f:
+        output_path = base_path / args.output
+        with open(output_path, "w", encoding="utf-8") as f:
+            if args.format == "json":
                 json.dump(spec, f, indent=args.indent, ensure_ascii=False)
-            print(f"✓ JSON bundled specification written to: {output_path}")
-        else:
-            # Write output
-            output_path = base_path / args.output
-            with open(output_path, "w", encoding="utf-8") as f:
-                if args.format == "json":
-                    json.dump(spec, f, indent=args.indent, ensure_ascii=False)
-                else:
-                    yaml.dump(
-                        spec,
-                        f,
-                        default_flow_style=False,
-                        allow_unicode=True,
-                        sort_keys=False,
-                    )
+            else:
+                yaml.dump(spec, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-            print(f"✓ Bundled specification written to: {output_path}")
+        print(f"✓ Bundled specification written to: {output_path}")
 
-        # Print some stats
         paths_count = len(spec.get("paths", {}))
-        schemas_count = len(spec.get("components", {}).get("schemas", {}))
         print(f"  - Paths: {paths_count}")
-        print(f"  - Schemas: {schemas_count}")
-
-        if bundler.circular_schemas:
-            print(f"  - Circular schemas resolved: {len(bundler.circular_schemas)}")
-            for name in bundler.circular_schemas:
-                print(f"      • {name}")
+        for comp_type, section in spec.get("components", {}).items():
+            print(f"  - {comp_type.capitalize()}: {len(section)}")
+        size_kb = os.path.getsize(output_path) / 1024
+        print(f"  - File size: {size_kb:.1f} KB")
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
@@ -485,7 +391,6 @@ def main():
     except Exception as e:
         print(f"Error bundling spec: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)
 
