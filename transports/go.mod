@@ -19,6 +19,7 @@ require (
 	github.com/maximhq/bifrost/plugins/logging v1.5.0
 	github.com/maximhq/bifrost/plugins/maxim v1.6.0
 	github.com/maximhq/bifrost/plugins/otel v1.2.0
+	github.com/maximhq/bifrost/plugins/prompts v1.0.1
 	github.com/maximhq/bifrost/plugins/semanticcache v1.5.0
 	github.com/maximhq/bifrost/plugins/telemetry v1.5.0
 	github.com/pion/rtcp v1.2.16

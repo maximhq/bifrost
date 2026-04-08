@@ -229,11 +229,14 @@ github.com/maximhq/bifrost/plugins/mocker v1.5.0 h1:mZ2oZNOnISG6wdhAwkxwplSl0QBP
 github.com/maximhq/bifrost/plugins/mocker v1.5.0/go.mod h1:ewREvrpRbIyMwnm50MkPdMbr2a4rRwxlAiiCk6YxgYA=
 github.com/maximhq/bifrost/plugins/otel v1.2.0 h1:+aJnWdryDlhza7wc4KETosX9j3Mdad5uUFBuwhslNsk=
 github.com/maximhq/bifrost/plugins/otel v1.2.0/go.mod h1:BwNVvRuEgdPlSlDLzANpGy2RugWQjtHkEUoBiwT5MNI=
+github.com/maximhq/bifrost/plugins/prompts v1.0.1 h1:JpM+uVkYmNLWEvg/hT8HN2Wpzax6TUsM/mdIyYzkx00=
+github.com/maximhq/bifrost/plugins/prompts v1.0.1/go.mod h1:379vljFVED/0L+odEmYQaaYDY/HFy4smb8tpXXCeBvA=
 github.com/maximhq/bifrost/plugins/semanticcache v1.5.0 h1:tibnQ8lSnKXujnjL4mt84P/5Vxj9e9wbhvh1Tjr68JA=
 github.com/maximhq/bifrost/plugins/semanticcache v1.5.0/go.mod h1:+NfIRAlHpuh5ORv0MoOf5f8uY4WPx6v/8Kuk+8FEGnw=
 github.com/maximhq/bifrost/plugins/telemetry v1.5.0 h1:hECZgcsqeJSmiLrWONTFFU6APzTyILQzZuVV96oql5Q=
 github.com/maximhq/bifrost/plugins/telemetry v1.5.0/go.mod h1:dl/4mtQhxooqU+r42hXajhUaq04S1X3LaH+km5UJAy0=
 github.com/maximhq/maxim-go v0.2.1 h1:hCp8dQ4HsyyNC+y5HCUuY/HFD0sOnGkjL5MdYCHkgEQ=
+github.com/maximhq/maxim-go v0.2.1/go.mod h1:nwFznXy0Dn4mxXGU4X+BCnE3VP68L+FPEaW0yUgk96o=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=
@@ -269,6 +272,7 @@ github.com/pion/srtp/v3 v3.0.10/go.mod h1:3mOTIB0cq9qlbn59V4ozvv9ClW/BSEbRp4cY0V
 github.com/pion/stun/v3 v3.1.1 h1:CkQxveJ4xGQjulGSROXbXq94TAWu8gIX2dT+ePhUkqw=
 github.com/pion/stun/v3 v3.1.1/go.mod h1:qC1DfmcCTQjl9PBaMa5wSn3x9IPmKxSdcCsxBcDBndM=
 github.com/pion/transport/v3 v3.1.1 h1:Tr684+fnnKlhPceU+ICdrw6KKkTms+5qHMgw6bIkYOM=
+github.com/pion/transport/v3 v3.1.1/go.mod h1:+c2eewC5WJQHiAA46fkMMzoYZSuGzA/7E2FPrOYHctQ=
 github.com/pion/transport/v4 v4.0.1 h1:sdROELU6BZ63Ab7FrOLn13M6YdJLY20wldXW2Cu2k8o=
 github.com/pion/transport/v4 v4.0.1/go.mod h1:nEuEA4AD5lPdcIegQDpVLgNoDGreqM/YqmEx3ovP4jM=
 github.com/pion/turn/v4 v4.1.4 h1:EU11yMXKIsK43FhcUnjLlrhE4nboHZq+TXBIi3QpcxQ=
@@ -391,6 +395,7 @@ golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6/go.mod h1:46edojNIoXTNOhySWI
 golang.org/x/net v0.52.0 h1:He/TN1l0e4mmR3QqHMT2Xab3Aj3L9qjbhRm78/6jrW0=
 golang.org/x/net v0.52.0/go.mod h1:R1MAz7uMZxVMualyPXb+VaqGSa3LIaUqk0eEt3w36Sw=
 golang.org/x/oauth2 v0.36.0 h1:peZ/1z27fi9hUOFCAZaHyrpWG5lwe0RJEEEeH0ThlIs=
+golang.org/x/oauth2 v0.36.0/go.mod h1:YDBUJMTkDnJS+A4BP4eZBjCqtokkg1hODuPjwiGPO7Q=
 golang.org/x/sync v0.20.0 h1:e0PTpb7pjO8GAtTs2dQ6jYa5BWYlMuX047Dco/pItO4=
 golang.org/x/sync v0.20.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
 golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
