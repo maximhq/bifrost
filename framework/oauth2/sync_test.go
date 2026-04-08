@@ -42,8 +42,7 @@ func (s *testConfigStore) GetOauthConfigByID(_ context.Context, id string) (*tab
 	if cfg == nil {
 		return nil, nil
 	}
-	copy := *cfg
-	return &copy, nil
+	return bifrost.Ptr(*cfg), nil
 }
 
 func (s *testConfigStore) GetOauthConfigByTokenID(_ context.Context, tokenID string) (*tables.TableOauthConfig, error) {
@@ -51,8 +50,7 @@ func (s *testConfigStore) GetOauthConfigByTokenID(_ context.Context, tokenID str
 	defer s.mu.Unlock()
 	for _, cfg := range s.oauthConfigs {
 		if cfg.TokenID != nil && *cfg.TokenID == tokenID {
-			copy := *cfg
-			return &copy, nil
+			return bifrost.Ptr(*cfg), nil
 		}
 	}
 	return nil, nil
@@ -61,8 +59,7 @@ func (s *testConfigStore) GetOauthConfigByTokenID(_ context.Context, tokenID str
 func (s *testConfigStore) UpdateOauthConfig(_ context.Context, cfg *tables.TableOauthConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	copy := *cfg
-	s.oauthConfigs[cfg.ID] = &copy
+	s.oauthConfigs[cfg.ID] = bifrost.Ptr(*cfg)
 	return nil
 }
 
@@ -73,15 +70,13 @@ func (s *testConfigStore) GetOauthTokenByID(_ context.Context, id string) (*tabl
 	if token == nil {
 		return nil, nil
 	}
-	copy := *token
-	return &copy, nil
+	return bifrost.Ptr(*token), nil
 }
 
 func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.TableOauthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	copy := *token
-	s.oauthTokens[token.ID] = &copy
+	s.oauthTokens[token.ID] = bifrost.Ptr(*token)
 	return nil
 }
 
@@ -91,8 +86,7 @@ func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.
 	var expiring []*tables.TableOauthToken
 	for _, token := range s.oauthTokens {
 		if token.ExpiresAt.Before(before) {
-			copy := *token
-			expiring = append(expiring, &copy)
+			expiring = append(expiring, bifrost.Ptr(*token))
 		}
 	}
 	return expiring, nil
@@ -121,7 +115,7 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		RedirectURI: "http://localhost/callback",
 		Scopes:      `["read"]`,
 		Status:      "authorized",
-		TokenID:     &tokenID,
+		TokenID:     bifrost.Ptr(tokenID),
 		ExpiresAt:   time.Now().Add(24 * time.Hour),
 	}
 

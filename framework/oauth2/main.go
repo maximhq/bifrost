@@ -651,7 +651,7 @@ type PermanentOAuthError struct {
 }
 
 func (e *PermanentOAuthError) Error() string {
-	return fmt.Sprintf("permanent OAuth error (status %d): %s", e.StatusCode, e.Body)
+	return fmt.Sprintf("permanent oauth error (status %d): %s", e.StatusCode, e.Body)
 }
 
 // sleepIfNotLastAttempt waits with exponential backoff between retry attempts.
