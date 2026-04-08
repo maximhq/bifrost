@@ -1,5 +1,3 @@
-"use client";
-
 import FullPageLoader from "@/components/fullPageLoader";
 import NotAvailableBanner from "@/components/notAvailableBanner";
 import ProgressProvider from "@/components/progressBar";
@@ -11,15 +9,19 @@ import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
-import dynamic from "next/dynamic";
-import { usePathname } from "next/navigation";
-import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { useEffect } from "react";
+import { useLocation } from "@tanstack/react-router";
+import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
+import { Suspense, lazy, useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
 
-// Dynamic import - only loaded in development, completely excluded from prod bundle
-const DevProfiler = dynamic(() => import("@/components/devProfiler").then((mod) => ({ default: mod.DevProfiler })), { ssr: false });
+// Lazy import — only loaded in development, completely excluded from prod bundle
+const DevProfilerLazy = lazy(() => import("@/components/devProfiler").then((mod) => ({ default: mod.DevProfiler })));
+const DevProfiler = () => (
+	<Suspense fallback={null}>
+		<DevProfilerLazy />
+	</Suspense>
+);
 
 function StoreSyncInitializer() {
 	useStoreSync();
@@ -53,7 +55,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 }
 
 function FullPage({ config, children }: { config: BifrostConfig | undefined; children: React.ReactNode }) {
-	const pathname = usePathname();
+	const pathname = useLocation({ select: (l) => l.pathname });
 	if (config && config.is_db_connected) {
 		return children;
 	}

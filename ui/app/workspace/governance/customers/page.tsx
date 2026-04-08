@@ -1,5 +1,3 @@
-"use client"
-
 import FullPageLoader from "@/components/fullPageLoader"
 import { useDebouncedValue } from "@/hooks/useDebounce"
 import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store"

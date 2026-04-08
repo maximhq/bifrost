@@ -3,8 +3,6 @@
  * Allows selection of AND/OR combinators between rules
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { CombinatorSelectorProps } from "react-querybuilder";
 

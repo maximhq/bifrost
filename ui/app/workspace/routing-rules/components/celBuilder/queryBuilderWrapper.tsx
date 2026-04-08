@@ -3,8 +3,6 @@
  * Provides styled wrapper with custom CSS for react-querybuilder
  */
 
-"use client";
-
 import { ReactNode } from "react";
 
 interface QueryBuilderWrapperProps {

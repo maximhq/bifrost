@@ -1,5 +1,3 @@
-"use client";
-
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { BarChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis } from "recharts";
 

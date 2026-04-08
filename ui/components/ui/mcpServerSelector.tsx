@@ -1,5 +1,3 @@
-"use client"
-
 import { ExternalLink, X } from "lucide-react"
 import { useCallback, useMemo } from "react"
 import { AsyncMultiSelect } from "./asyncMultiselect"

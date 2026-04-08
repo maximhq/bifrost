@@ -1,5 +1,3 @@
-"use client";
-
 import { createContext, useContext } from "react";
 
 // RBAC Resource Names (must match backend definitions)

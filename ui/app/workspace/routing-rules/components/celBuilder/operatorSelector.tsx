@@ -3,8 +3,6 @@
  * Allows selection of operators for CEL expressions
  */
 
-"use client";
-
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { OperatorSelectorProps } from "react-querybuilder";
 

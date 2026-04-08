@@ -1,5 +1,3 @@
-"use client";
-
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { PrometheusFormSchema } from "@/lib/types/schemas";
 import { useMemo } from "react";

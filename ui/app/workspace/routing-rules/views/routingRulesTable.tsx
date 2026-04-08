@@ -3,8 +3,6 @@
  * Displays all routing rules with CRUD actions
  */
 
-"use client";
-
 import { RoutingRule } from "@/lib/types/routingRules";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

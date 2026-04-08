@@ -1,5 +1,3 @@
-"use client";
-
 import { useGetModelsQuery, useGetProvidersQuery, useLazyGetLogsStatsQuery, useLazyGetLogsModelHistogramQuery } from "@/lib/store";
 import { ProviderNames } from "@/lib/constants/logs";
 import { KnownProvider } from "@/lib/types/config";

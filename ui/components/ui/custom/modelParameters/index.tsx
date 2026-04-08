@@ -1,5 +1,3 @@
-'use client'
-
 import { useGetModelParametersQuery } from '@/lib/store/apis/providersApi'
 import { Parameter, ParameterType } from './types'
 import ParameterFieldView from './paramFieldView'

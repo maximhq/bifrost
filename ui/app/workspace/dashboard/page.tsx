@@ -1,5 +1,3 @@
-"use client";
-
 import { FilterPopover } from "@/components/filters/filterPopover";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";

@@ -1,5 +1,3 @@
-"use client"
-
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { ChevronDown, ChevronRight, X } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"

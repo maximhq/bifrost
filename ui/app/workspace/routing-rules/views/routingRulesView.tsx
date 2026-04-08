@@ -3,8 +3,6 @@
  * Main orchestrator component for routing rules management
  */
 
-"use client";
-
 import { RbacOperation, RbacResource, useRbac } from "@/app/_fallbacks/enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";

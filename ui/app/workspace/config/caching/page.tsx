@@ -1,5 +1,3 @@
-"use client"
-
 import CachingView from "../views/cachingView"
 
 export default function CachingPage() {

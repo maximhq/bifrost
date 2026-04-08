@@ -1,5 +1,3 @@
-"use client";
-
 import { getErrorMessage } from "@/lib/store";
 import {
 	useCreateSessionMutation,

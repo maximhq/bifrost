@@ -1,5 +1,3 @@
-"use client";
-
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +18,7 @@ import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/co
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useNavigate } from "@tanstack/react-router";
 import { useQueryState } from "nuqs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -32,7 +30,7 @@ import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
 	const dispatch = useAppDispatch();
-	const router = useRouter();
+	const navigate = useNavigate();
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
@@ -40,9 +38,9 @@ export default function Providers() {
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
 		if (!hasProvidersAccess && hasSettingsOnly) {
-			router.replace("/workspace/custom-pricing");
+			navigate({ to: "/workspace/custom-pricing", replace: true });
 		}
-	}, [hasProvidersAccess, hasSettingsOnly, router]);
+	}, [hasProvidersAccess, hasSettingsOnly, navigate]);
 
 	const selectedProvider = useAppSelector((state) => state.provider.selectedProvider);
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);

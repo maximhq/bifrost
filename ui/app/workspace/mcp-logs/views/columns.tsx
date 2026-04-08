@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";

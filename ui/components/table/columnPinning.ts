@@ -1,5 +1,3 @@
-"use client";
-
 import { Column, ColumnPinningState } from "@tanstack/react-table";
 import { CSSProperties, useLayoutEffect, useRef, useState } from "react";
 

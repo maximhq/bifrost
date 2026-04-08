@@ -1,5 +1,3 @@
-"use client"
-
 import FullPageLoader from "@/components/fullPageLoader"
 import { NoPermissionView } from "@/components/noPermissionView"
 import { useGetCoreConfigQuery } from "@/lib/store"

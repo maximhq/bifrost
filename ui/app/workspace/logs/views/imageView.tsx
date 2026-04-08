@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useEffect } from "react";
 import { BifrostImageGenerationOutput, ImageEditInput, ImageVariationInput } from "@/lib/types/logs";
 import { Image, ChevronLeft, ChevronRight } from "lucide-react";

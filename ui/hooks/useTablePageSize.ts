@@ -1,5 +1,3 @@
-"use client"
-
 import { RefObject, useCallback, useEffect, useState } from "react"
 
 const ROW_HEIGHT = 48 // h-12 = 3rem = 48px

@@ -1,5 +1,3 @@
-"use client";
-
 import { ExternalLink, Video } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";

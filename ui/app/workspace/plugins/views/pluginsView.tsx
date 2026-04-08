@@ -1,5 +1,3 @@
-"use client";
-
 import ConfirmDeletePluginDialog from "@/app/workspace/plugins/dialogs/confirmDeletePluginDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

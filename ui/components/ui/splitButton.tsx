@@ -1,5 +1,3 @@
-'use client'
-
 import { cn } from "@/lib/utils";
 import { Content } from "@radix-ui/react-dropdown-menu";
 import { cva, type VariantProps } from "class-variance-authority";

@@ -1,5 +1,3 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";

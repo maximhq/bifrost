@@ -1,5 +1,3 @@
-"use client";
-
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelConfigSchema, OtelFormSchema } from "@/lib/types/schemas";
 import { useMemo } from "react";

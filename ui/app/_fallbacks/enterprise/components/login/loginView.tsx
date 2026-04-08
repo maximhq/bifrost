@@ -1,14 +1,11 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getErrorMessage, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
-import Image from "next/image";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 const externalLinks = [
@@ -38,7 +35,7 @@ export default function LoginView() {
 	const [showPassword, setShowPassword] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
 	const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-	const router = useRouter();
+	const navigate = useNavigate();
 	const [isLoading, setIsLoading] = useState(false);
 	const { data: isAuthEnabledData, isLoading: isLoadingIsAuthEnabled, error: isAuthEnabledError } = useIsAuthEnabledQuery();
 	const isAuthEnabled = isAuthEnabledData?.is_auth_enabled || false;
@@ -59,7 +56,7 @@ export default function LoginView() {
 			return;
 		}
 		if (!isAuthEnabled || hasValidToken) {
-			router.push("/workspace");
+			navigate({ to: "/workspace" });
 			return;
 		}
 		// Auth is enabled but user is not logged in, show login form
@@ -73,7 +70,7 @@ export default function LoginView() {
 		try {
 			await login({ username, password }).unwrap();
 			// Cookie is set automatically by the server response — just navigate
-			router.push("/workspace");
+			navigate({ to: "/workspace" });
 		} catch (error) {
 			const message = getErrorMessage(error);
 			setErrorMessage(message);
@@ -92,7 +89,7 @@ export default function LoginView() {
 				<div className="w-full max-w-md">
 					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 						<div className="flex items-center justify-center">
-							<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
+							<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
 						</div>
 						<div className="flex items-center justify-center py-8">
 							<div className="text-muted-foreground text-sm">Checking authentication...</div>
@@ -109,7 +106,7 @@ export default function LoginView() {
 				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
-						<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
+						<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
 					</div>
 
 					<div className="space-y-2 text-center">

@@ -1,8 +1,6 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
+import { Link } from "@tanstack/react-router";
 import { LayoutGrid } from "lucide-react";
-import Link from "next/link";
 
 export function ModelCatalogEmptyState() {
 	return (
@@ -17,7 +15,7 @@ export function ModelCatalogEmptyState() {
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button asChild data-testid="modelcatalog-configure-providers-cta">
-						<Link href="/workspace/providers">Configure Providers</Link>
+						<Link to="/workspace/providers">Configure Providers</Link>
 					</Button>
 				</div>
 			</div>

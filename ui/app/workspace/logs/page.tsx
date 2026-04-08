@@ -1,5 +1,3 @@
-"use client";
-
 import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";

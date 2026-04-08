@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/components/ui/utils";
 import { useLazyGetBaseModelsQuery, useLazyGetModelsQuery } from "@/lib/store/apis/providersApi";
 import { X } from "lucide-react";

@@ -3,8 +3,6 @@
  * Create/Edit form for routing rules
  */
 
-"use client";
-
 import { useState, useEffect, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
@@ -43,7 +41,7 @@ import {
 } from "@/lib/store/apis/governanceApi";
 import { useGetProvidersQuery, useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { toast } from "sonner";
-import dynamic from "next/dynamic";
+import { Suspense, lazy } from "react";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Separator } from "@/components/ui/separator";
@@ -65,15 +63,16 @@ const defaultQuery: RuleGroupType = {
 	rules: [],
 };
 
-// Dynamically import CEL builder to avoid SSR issues
-const CELRuleBuilder = dynamic(
-	() => import("@/app/workspace/routing-rules/components/celBuilder/celRuleBuilder").then((mod) => ({
+// Lazy-load CEL builder (heavy dependency tree).
+const CELRuleBuilderLazy = lazy(() =>
+	import("@/app/workspace/routing-rules/components/celBuilder/celRuleBuilder").then((mod) => ({
 		default: mod.CELRuleBuilder,
 	})),
-	{
-		loading: () => <div className="text-sm text-gray-500">Loading CEL builder...</div>,
-		ssr: false,
-	},
+);
+const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) => (
+	<Suspense fallback={<div className="text-sm text-gray-500">Loading CEL builder...</div>}>
+		<CELRuleBuilderLazy {...props} />
+	</Suspense>
 );
 
 export function RoutingRuleSheet({

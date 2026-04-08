@@ -1,5 +1,3 @@
-"use client";
-
 import { CheckIcon, ChevronDown, PlusIcon, XIcon } from "lucide-react";
 import React, { KeyboardEventHandler, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -36,7 +34,7 @@ import {
 	CustomOptionProps,
 	CustomPlaceholderProps,
 	Option,
-	OptionGroup
+	OptionGroup,
 } from "./multiselectUtils";
 import { Separator } from "./separator";
 import { cn, radixDialogOnBlurWorkaround } from "./utils";
@@ -529,7 +527,6 @@ export function MultiSelectInput<T>(props: AsyncMultiSelectProps<T>) {
 		/>
 	);
 }
-
 
 function CustomOption<T>(props: OptionProps<Option<T>> & { selectProps: CustomOptionProps & CustomComponentsProps }) {
 	const { Option } = components;

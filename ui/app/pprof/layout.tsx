@@ -1,15 +1,13 @@
-"use client";
-
 import { ThemeProvider } from "@/components/themeProvider";
 import { ReduxProvider } from "@/lib/store";
 import { isDevelopmentMode } from "@/lib/utils/port";
-import { notFound } from "next/navigation";
+import { notFound } from "@tanstack/react-router";
 import { Toaster } from "sonner";
 
 export default function PprofLayout({ children }: { children: React.ReactNode }) {
 	// Only allow access in development mode
 	if (!isDevelopmentMode()) {
-		notFound();
+		throw notFound();
 	}
 
 	return (

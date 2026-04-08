@@ -3,8 +3,6 @@
  * Used for Add/Remove actions in query builder
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Plus, X } from "lucide-react";
 import { ActionProps } from "react-querybuilder";

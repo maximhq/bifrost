@@ -1,5 +1,3 @@
-"use client";
-
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import {
 	AlertDialog,

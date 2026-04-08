@@ -1,5 +1,3 @@
-"use client";
-
 import FormFooter from "@/components/formFooter";
 import { Badge } from "@/components/ui/badge";
 import {

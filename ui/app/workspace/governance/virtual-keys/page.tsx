@@ -1,5 +1,3 @@
-"use client"
-
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
 import FullPageLoader from "@/components/fullPageLoader"
 import { useDebouncedValue } from "@/hooks/useDebounce"

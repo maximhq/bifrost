@@ -1,5 +1,3 @@
-"use client";
-
 import { VariantProps, cva } from "class-variance-authority";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import "./input.css";

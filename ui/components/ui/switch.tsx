@@ -1,5 +1,3 @@
-"use client";
-
 import * as SwitchPrimitives from "@radix-ui/react-switch";
 import { Loader2 } from "lucide-react";
 import * as React from "react";

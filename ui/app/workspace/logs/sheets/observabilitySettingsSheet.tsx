@@ -1,5 +1,3 @@
-"use client";
-
 import LoggingView from "@/app/workspace/config/views/loggingView";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 

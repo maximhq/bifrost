@@ -1,6 +1,6 @@
 import { ThemeProvider } from "@/components/themeProvider";
 import { ReduxProvider } from "@/lib/store/provider";
-import { NuqsAdapter } from "nuqs/adapters/next/app";
+import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 
 export default function LoginLayout({ children }: { children: React.ReactNode }) {
 	return (

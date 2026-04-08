@@ -1,5 +1,3 @@
-"use client"
-
 import ObservabilityView from "../views/observabilityView"
 
 export default function ObservabilityPage() {

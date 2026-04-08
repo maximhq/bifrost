@@ -1,5 +1,3 @@
-"use client"
-
 import { useCallback, useMemo } from "react"
 import { AsyncMultiSelect } from "./asyncMultiselect"
 import { Option } from "./multiselectUtils"

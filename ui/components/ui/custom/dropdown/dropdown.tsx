@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useEffect, useMemo, useRef } from "react";
 import { DropdownGroup } from "./dropdownGroup";
 import { DropdownItem } from "./dropdownItem";

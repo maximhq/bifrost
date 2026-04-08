@@ -6,6 +6,51 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ─── Local Geist fonts ───────────────────────────────────────────────────
+ * Variable woff2 files self-hosted from public/static/fonts/.
+ * Replaces @fontsource-variable/geist and next/font/google.
+ */
+@font-face {
+	font-family: "Geist";
+	src: url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist";
+	src: url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src: url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Geist Mono";
+	src: url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2-variations"),
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: italic;
+	font-display: swap;
+}
+
+:root {
+	--font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	--font-geist-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Liberation Mono", monospace;
+}
+
 @theme inline {
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);

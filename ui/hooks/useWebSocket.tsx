@@ -1,5 +1,3 @@
-"use client";
-
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getWebSocketUrl } from "@/lib/utils/port";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";

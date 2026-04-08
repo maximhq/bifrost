@@ -1,5 +1,3 @@
-"use client"
-
 import { GripVerticalIcon } from "lucide-react"
 import type { GroupProps, PanelProps, SeparatorProps } from "react-resizable-panels"
 import { Group, Panel, Separator } from "react-resizable-panels"

@@ -1,5 +1,3 @@
-"use client"
-
 import UsersView from "@enterprise/components/user-groups/usersView"
 
 export default function GovernanceUsersPage() {

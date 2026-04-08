@@ -1,5 +1,3 @@
-"use client";
-
 import {
 	ArrowUpRight,
 	BookUser,
@@ -70,12 +68,10 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import moment from "moment";
 import { useTheme } from "next-themes";
-import Image from "next/image";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
@@ -142,14 +138,14 @@ const productionSetupHelpCard = {
 			<br />
 			<br />
 			Book a demo with our team{" "}
-			<Link
+			<a
 				href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
 				target="_blank"
 				className="text-primary font-medium underline"
 				rel="noopener noreferrer"
 			>
 				here
-			</Link>
+			</a>
 			.
 		</>
 	),
@@ -182,11 +178,9 @@ const SidebarItemView = ({
 	isExpanded,
 	onToggle,
 	pathname,
-	router,
 	isSidebarCollapsed,
 	expandSidebar,
 	highlightedUrl,
-	prefetchRoute,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -195,11 +189,9 @@ const SidebarItemView = ({
 	isExpanded?: boolean;
 	onToggle?: () => void;
 	pathname: string;
-	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
 	highlightedUrl?: string;
-	prefetchRoute: (url: string) => void;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isRouteMatch = (url: string) => {
@@ -228,73 +220,81 @@ const SidebarItemView = ({
 		}
 	};
 
-	const openInNewTab = (url: string) => {
-		window.open(url, "_blank", "noopener,noreferrer");
-	};
-
-	const handleNavigation = (url: string, e?: React.MouseEvent) => {
-		if (isExternal || e?.metaKey || e?.ctrlKey) {
-			openInNewTab(url);
-			return;
-		}
-		router.push(url);
-	};
-
-	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
-		const url = getSidebarItemHref(subItem);
-		if (e?.metaKey || e?.ctrlKey) {
-			openInNewTab(url);
-			return;
-		}
-		router.push(url);
-	};
-
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
+
+	const buttonClassName = `relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
+
+	const innerContent = (
+		<div className="flex w-full items-center justify-between">
+			<div className="flex w-full items-center gap-2">
+				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
+					{item.title}
+				</span>
+				{item.tag && (
+					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
+						{item.tag}
+					</Badge>
+				)}
+			</div>
+			{hasSubItems && (
+				<ChevronRight
+					className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
+				/>
+			)}
+			{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
+				<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+			)}
+			{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
+		</div>
+	);
+
+	// Render strategy:
+	//   - Items with sub-items: <button> (toggle, not navigation)
+	//   - Leaf items, no access: <button> (disabled-style, non-clickable)
+	//   - Leaf items, external:  <a target="_blank">
+	//   - Leaf items, internal:  TanStack <Link> with preload-on-hover
+	let menuButton: React.ReactNode;
+	if (hasSubItems) {
+		menuButton = (
+			<SidebarMenuButton tooltip={item.title} className={buttonClassName} onClick={handleClick}>
+				{innerContent}
+			</SidebarMenuButton>
+		);
+	} else if (!item.hasAccess) {
+		menuButton = (
+			<SidebarMenuButton tooltip={item.title} data-nav-url={item.url} className={buttonClassName}>
+				{innerContent}
+			</SidebarMenuButton>
+		);
+	} else if (isExternal) {
+		menuButton = (
+			<SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+				<a href={item.url} target="_blank" rel="noopener noreferrer" data-nav-url={item.url}>
+					{innerContent}
+				</a>
+			</SidebarMenuButton>
+		);
+	} else {
+		menuButton = (
+			<SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+				<Link to={item.url as any} preload="intent" data-nav-url={item.url}>
+					{innerContent}
+				</Link>
+			</SidebarMenuButton>
+		);
+	}
 
 	return (
 		<SidebarMenuItem key={item.title}>
-			<SidebarMenuButton
-				tooltip={item.title}
-				data-testid={`nav-button-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
-				data-nav-url={!hasSubItems ? item.url : undefined}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isHighlighted
-						? "bg-sidebar-accent text-accent-foreground border-primary/20"
-						: isActive || isAnySubItemActive
-							? "bg-sidebar-accent text-primary border-primary/20"
-							: item.hasAccess
-								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
-				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
-				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
-				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
-			>
-				<div className="flex w-full items-center justify-between">
-					<div className="flex w-full items-center gap-2">
-						<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-						<span
-							className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
-						>
-							{item.title}
-						</span>
-						{item.tag && (
-							<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
-								{item.tag}
-							</Badge>
-						)}
-					</div>
-					{hasSubItems && (
-						<ChevronRight
-							className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
-						/>
-					)}
-					{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
-						<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-					)}
-					{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
-				</div>
-			</SidebarMenuButton>
+			{menuButton}
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
@@ -303,34 +303,38 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl === subItemHref;
 						const SubItemIcon = subItem.icon;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
+						const subInner = (
+							<div className="flex w-full items-center gap-2">
+								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
+								<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+								{subItem.tag && (
+									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+										{subItem.tag}
+									</Badge>
+								)}
+							</div>
+						);
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
-								<SidebarMenuSubButton
-									data-testid={`nav-submenu-toggle-${subItem.title.toLowerCase().replace(/\s+/g, "-")}`}
-									data-nav-url={subItemHref}
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemHighlighted
-											? "bg-sidebar-accent text-accent-foreground"
-											: isSubItemActive
-												? "bg-sidebar-accent text-primary font-medium"
-												: subItem.hasAccess === false
-													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
-									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
-									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
-									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
-								>
-									<div className="flex w-full items-center gap-2">
-										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
-										{subItem.tag && (
-											<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
-												{subItem.tag}
-											</Badge>
-										)}
-									</div>
-								</SidebarMenuSubButton>
+								{subItem.hasAccess === false ? (
+									<SidebarMenuSubButton data-nav-url={subItemHref} className={subItemClassName}>
+										{subInner}
+									</SidebarMenuSubButton>
+								) : (
+									<SidebarMenuSubButton asChild className={subItemClassName}>
+										<Link to={subItemHref as any} preload="intent" data-nav-url={subItemHref}>
+											{subInner}
+										</Link>
+									</SidebarMenuSubButton>
+								)}
 							</SidebarMenuSubItem>
 						);
 					})}
@@ -381,8 +385,11 @@ const compareVersions = (v1: string, v2: string): number => {
 };
 
 export default function AppSidebar() {
-	const pathname = usePathname();
-	const router = useRouter();
+	const pathname = useLocation({ select: (l) => l.pathname });
+	const tsNavigate = useNavigate();
+	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
+	// strictly typed, but our sidebar items come from a runtime config).
+	const navigate = useCallback((url: string) => tsNavigate({ to: url as any }), [tsNavigate]);
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -673,31 +680,31 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: hasPromptRepositoryAccess,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: hasPromptDeploymentStrategyAccess,
-								},
-							],
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+						subItems: [
+							{
+								title: "Prompts",
+								url: "/workspace/prompt-repo/prompts",
+								icon: SquareTerminal,
+								description: "Manage prompts",
+								hasAccess: hasPromptRepositoryAccess,
+								tag: "Beta",
+							},
+							{
+								title: "Deployments",
+								url: "/workspace/prompt-repo/deployments",
+								icon: Router,
+								description: "Manage deployment",
+								hasAccess: hasPromptDeploymentStrategyAccess,
+							},
+						],
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -744,14 +751,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -821,16 +828,6 @@ export default function AppSidebar() {
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const [logout] = useLogoutMutation();
-
-	const prefetchRoute = useCallback(
-		(url: string) => {
-			if (!url.startsWith("/")) {
-				return;
-			}
-			router.prefetch(url);
-		},
-		[router],
-	);
 
 	// Get user info from localStorage (for enterprise SCIM OAuth)
 	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
@@ -950,7 +947,7 @@ export default function AppSidebar() {
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
 						window.open(url, "_blank", "noopener,noreferrer");
 					} else {
-						router.push(url);
+						navigate(url);
 					}
 					setSearchQuery("");
 					setFocusedIndex(-1);
@@ -962,7 +959,7 @@ export default function AppSidebar() {
 				searchInputRef.current?.blur();
 			}
 		},
-		[navigableItems, focusedIndex, router],
+		[navigableItems, focusedIndex, navigate],
 	);
 
 	// Auto-scroll focused item into view
@@ -1034,13 +1031,14 @@ export default function AppSidebar() {
 				description: (
 					<div className="flex h-full flex-col gap-2">
 						<img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
-						<Link
+						<a
 							href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
 							target="_blank"
+							rel="noopener noreferrer"
 							className="text-primary mt-auto pb-1 font-medium underline"
 						>
 							View release notes
-						</Link>
+						</a>
 					</div>
 				),
 				dismissible: true,
@@ -1087,10 +1085,10 @@ export default function AppSidebar() {
 		try {
 			setUserPopoverOpen(false);
 			await logout().unwrap();
-			router.push("/login");
+			navigate("/login");
 		} catch (error) {
 			// Even if logout fails on server, redirect to login
-			router.push("/login");
+			navigate("/login");
 		}
 	};
 
@@ -1109,8 +1107,8 @@ export default function AppSidebar() {
 			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
-					<Link href="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						<Image className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
+						<img className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1125,7 +1123,7 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<Image className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
+					<img className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
 				</div>
 			</SidebarHeader>
 			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
@@ -1168,11 +1166,9 @@ export default function AppSidebar() {
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
-										router={router}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
 										highlightedUrl={highlightedUrl}
-										prefetchRoute={prefetchRoute}
 									/>
 								);
 							})}

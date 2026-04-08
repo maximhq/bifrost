@@ -1,5 +1,3 @@
-"use client"
-
 import { RoutingRulesView } from "@/app/workspace/routing-rules/views/routingRulesView"
 
 export default function ProvidersRoutingRulesPage() {

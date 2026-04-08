@@ -1,12 +1,10 @@
-"use client"
-
-import { useRouter } from "next/navigation"
+import { useNavigate } from "@tanstack/react-router"
 import { useEffect } from "react"
 
 export default function GovernancePage() {
-  const router = useRouter()
+  const navigate = useNavigate()
   useEffect(() => {
-    router.replace("/workspace/governance/virtual-keys")
-  }, [router])
+    navigate({ to: "/workspace/governance/virtual-keys", replace: true })
+  }, [navigate])
   return null
 }

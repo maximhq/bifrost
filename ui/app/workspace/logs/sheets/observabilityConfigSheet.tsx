@@ -1,5 +1,3 @@
-"use client"
-
 import ObservabilityView from "@/app/workspace/config/views/observabilityView"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 

@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import GradientHeader from "@/components/ui/gradientHeader";
 import { BookOpen, Code, ExternalLink, FileText, GitBranch, Play, Shield, Users, Zap } from "lucide-react";
-import Link from "next/link";
 
 const docSections = [
 	{
@@ -94,16 +93,16 @@ export default function DocsPage() {
 						</p>
 						<div className="flex justify-center gap-4">
 							<Button asChild>
-								<Link href="https://github.com/maximhq/bifrost/tree/main/docs" target="_blank">
+								<a href="https://github.com/maximhq/bifrost/tree/main/docs" target="_blank" rel="noopener noreferrer">
 									<ExternalLink className="mr-2 h-4 w-4" />
 									View Full Documentation
-								</Link>
+								</a>
 							</Button>
 							<Button variant="outline" asChild>
-								<Link href="https://github.com/maximhq/bifrost/tree/main/docs/quickstart" target="_blank">
+								<a href="https://github.com/maximhq/bifrost/tree/main/docs/quickstart" target="_blank" rel="noopener noreferrer">
 									<Play className="mr-2 h-4 w-4" />
 									Quick Start Guide
-								</Link>
+								</a>
 							</Button>
 						</div>
 					</div>
@@ -140,10 +139,10 @@ export default function DocsPage() {
 											</ul>
 										</div>
 										<Button asChild variant="outline" className="w-full">
-											<Link href={section.url} target="_blank" className="flex items-center justify-center gap-2">
+											<a href={section.url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2">
 												Read More
 												<ExternalLink className="h-4 w-4" />
-											</Link>
+											</a>
 										</Button>
 									</CardContent>
 								</Card>
@@ -165,10 +164,10 @@ export default function DocsPage() {
 								<CardContent>
 									<p className="text-muted-foreground mb-4 text-sm">{doc.content}</p>
 									<Button asChild className="w-full">
-										<Link href={doc.href} target="_blank">
+										<a href={doc.href} target="_blank" rel="noopener noreferrer">
 											<doc.icon className="mr-2 h-4 w-4" />
 											{doc.buttonText}
-										</Link>
+										</a>
 									</Button>
 								</CardContent>
 							</Card>

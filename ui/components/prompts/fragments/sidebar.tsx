@@ -24,7 +24,7 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { useLocation } from "@tanstack/react-router";
 import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
 import { usePromptContext } from "../context";
 
@@ -57,7 +57,7 @@ export function PromptSidebar() {
 	const onCreatePrompt = useCallback((folderId?: string) => setPromptSheet({ open: true, folderId }), [setPromptSheet]);
 	const onEditPrompt = useCallback((prompt: Prompt) => setPromptSheet({ open: true, prompt }), [setPromptSheet]);
 	const onDeletePrompt = useCallback((prompt: Prompt) => setDeletePromptDialog({ open: true, prompt }), [setDeletePromptDialog]);
-	const pathname = usePathname();
+	const pathname = useLocation({ select: (l) => l.pathname });
 	const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 	const [searchQuery, setSearchQuery] = useState("");
 	const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);

@@ -1,5 +1,3 @@
-'use client'
-
 import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from '@/lib/store'
 import type { GoroutineGroup } from '@/lib/store/apis/devApi'
 import { isDevelopmentMode } from '@/lib/utils/port'

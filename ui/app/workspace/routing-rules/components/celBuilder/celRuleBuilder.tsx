@@ -3,8 +3,6 @@
  * Visual query builder for creating CEL expressions
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";

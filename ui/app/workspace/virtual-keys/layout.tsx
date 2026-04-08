@@ -1,5 +1,3 @@
-"use client"
-
 import { NoPermissionView } from "@/components/noPermissionView"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 

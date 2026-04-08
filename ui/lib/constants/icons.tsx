@@ -1,5 +1,3 @@
-"use client";
-
 import { Landmark, Network, Shuffle } from "lucide-react";
 import { useTheme } from "next-themes";
 
