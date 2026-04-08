@@ -1,0 +1,104 @@
+{
+  "_comment": "Alert channel fixtures for TC-011 test suite",
+  "_version": "1.0",
+  "channels": [
+    {
+      "id": "alert_ch_webhook_001",
+      "name": "Test Webhook Channel",
+      "type": "webhook",
+      "enabled": true,
+      "events": ["budget_warning", "budget_breach", "provider_error_rate", "guardrail_violation", "rate_limit_hit"],
+      "config": {
+        "endpoint_url": "http://localhost:8088/capture/webhook",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Test-Token": "test-webhook-secret-abc123"
+        },
+        "timeout_seconds": 5
+      },
+      "used_by": ["TC-011-001", "TC-011-002", "TC-011-003", "TC-011-004", "TC-011-005", "TC-011-006"]
+    },
+    {
+      "id": "alert_ch_slack_002",
+      "name": "Test Slack Channel",
+      "type": "slack",
+      "enabled": true,
+      "events": ["budget_breach"],
+      "config": {
+        "webhook_url": "http://localhost:8088/capture/slack",
+        "channel": "#bifrost-alerts-test",
+        "username": "Bifrost Test Bot",
+        "icon_emoji": ":robot_face:"
+      },
+      "used_by": ["TC-011-010"]
+    },
+    {
+      "id": "alert_ch_disabled_003",
+      "name": "Disabled Test Channel",
+      "type": "webhook",
+      "enabled": false,
+      "events": ["budget_warning"],
+      "config": {
+        "endpoint_url": "http://localhost:8088/capture/disabled",
+        "method": "POST"
+      },
+      "used_by": ["TC-011-009"]
+    }
+  ],
+  "alert_rules": [
+    {
+      "id": "rule_budget_warning_001",
+      "name": "Budget Warning at 80%",
+      "event_type": "budget_warning",
+      "condition": {
+        "metric": "budget_usage_pct",
+        "operator": ">=",
+        "threshold": 80
+      },
+      "channel_ids": ["alert_ch_webhook_001"],
+      "dedup_window_seconds": 3600,
+      "enabled": true
+    },
+    {
+      "id": "rule_budget_breach_002",
+      "name": "Budget Exhausted",
+      "event_type": "budget_breach",
+      "condition": {
+        "metric": "budget_usage_pct",
+        "operator": ">=",
+        "threshold": 100
+      },
+      "channel_ids": ["alert_ch_webhook_001", "alert_ch_slack_002"],
+      "dedup_window_seconds": 3600,
+      "enabled": true
+    },
+    {
+      "id": "rule_error_rate_003",
+      "name": "Provider Error Rate >30%",
+      "event_type": "provider_error_rate",
+      "condition": {
+        "metric": "error_rate",
+        "operator": ">=",
+        "threshold": 0.3,
+        "window_seconds": 60
+      },
+      "channel_ids": ["alert_ch_webhook_001"],
+      "dedup_window_seconds": 300,
+      "enabled": true
+    },
+    {
+      "id": "rule_rate_limit_004",
+      "name": "Rate Limit Hit",
+      "event_type": "rate_limit_hit",
+      "condition": {
+        "metric": "rate_limit_rejections",
+        "operator": ">",
+        "threshold": 0
+      },
+      "channel_ids": ["alert_ch_webhook_001"],
+      "dedup_window_seconds": 60,
+      "enabled": true
+    }
+  ]
+}

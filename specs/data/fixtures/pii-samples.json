@@ -1,0 +1,225 @@
+{
+  "_comment": "PII detection test cases — curated, no real PII",
+  "_version": "1.0",
+  "entity_types": ["EMAIL", "PHONE", "SSN", "CREDIT_CARD", "IP_ADDRESS", "CUSTOM"],
+  "detection_cases": [
+    {
+      "id": "pii_email_001",
+      "entity_type": "EMAIL",
+      "description": "Standard email address",
+      "input": "Please contact user@example.com for support.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "EMAIL", "value": "user@example.com", "start": 16, "end": 32 }
+      ]
+    },
+    {
+      "id": "pii_email_002",
+      "entity_type": "EMAIL",
+      "description": "Email with plus-tag and subdomain",
+      "input": "user.name+tag@domain.co.uk replied to your request.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "EMAIL", "value": "user.name+tag@domain.co.uk", "start": 0, "end": 26 }
+      ]
+    },
+    {
+      "id": "pii_email_003",
+      "entity_type": "EMAIL",
+      "description": "Non-email with @ symbol — should NOT be detected",
+      "input": "The Twitter handle is @bifrost_ai not an email.",
+      "should_detect": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_phone_001",
+      "entity_type": "PHONE",
+      "description": "International format phone",
+      "input": "Call our support at +1-800-555-0199 anytime.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "PHONE", "value": "+1-800-555-0199", "start": 20, "end": 35 }
+      ]
+    },
+    {
+      "id": "pii_phone_002",
+      "entity_type": "PHONE",
+      "description": "US format with parentheses",
+      "input": "Reach me at (415) 555-2671 on weekdays.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "PHONE", "value": "(415) 555-2671", "start": 12, "end": 26 }
+      ]
+    },
+    {
+      "id": "pii_phone_003",
+      "entity_type": "PHONE",
+      "description": "Short number — should NOT be detected as phone",
+      "input": "The answer is 1234, not a phone.",
+      "should_detect": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_ssn_001",
+      "entity_type": "SSN",
+      "description": "Standard SSN with dashes",
+      "input": "My Social Security Number is 123-45-6789.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "SSN", "value": "123-45-6789", "start": 29, "end": 40 }
+      ]
+    },
+    {
+      "id": "pii_ssn_002",
+      "entity_type": "SSN",
+      "description": "SSN with spaces",
+      "input": "SSN on record: 987 65 4321",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "SSN", "value": "987 65 4321", "start": 15, "end": 26 }
+      ]
+    },
+    {
+      "id": "pii_ssn_003",
+      "entity_type": "SSN",
+      "description": "Wrong format — should NOT be detected",
+      "input": "Reference: 12-3456-789 is not an SSN.",
+      "should_detect": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_cc_valid_001",
+      "entity_type": "CREDIT_CARD",
+      "description": "Valid Visa CC (passes Luhn check)",
+      "input": "Card number: 4532015112830366",
+      "should_detect": true,
+      "luhn_valid": true,
+      "expected_entities": [
+        { "type": "CREDIT_CARD", "value": "4532015112830366", "start": 13, "end": 29 }
+      ]
+    },
+    {
+      "id": "pii_cc_valid_002",
+      "entity_type": "CREDIT_CARD",
+      "description": "Valid Mastercard (passes Luhn check)",
+      "input": "Process card: 5425233430109903",
+      "should_detect": true,
+      "luhn_valid": true,
+      "expected_entities": [
+        { "type": "CREDIT_CARD", "value": "5425233430109903", "start": 14, "end": 30 }
+      ]
+    },
+    {
+      "id": "pii_cc_invalid_001",
+      "entity_type": "CREDIT_CARD",
+      "description": "Invalid Luhn — should NOT be detected as CC",
+      "input": "Number is 1234567890123456 in the system.",
+      "should_detect": false,
+      "luhn_valid": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_cc_invalid_002",
+      "entity_type": "CREDIT_CARD",
+      "description": "All same digits — fails Luhn",
+      "input": "Test with 1111111111111111 (all ones).",
+      "should_detect": false,
+      "luhn_valid": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_ip_001",
+      "entity_type": "IP_ADDRESS",
+      "description": "IPv4 address",
+      "input": "The server IP is 192.168.1.100.",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "IP_ADDRESS", "value": "192.168.1.100", "start": 17, "end": 30 }
+      ]
+    },
+    {
+      "id": "pii_ip_002",
+      "entity_type": "IP_ADDRESS",
+      "description": "Invalid IP — should NOT be detected",
+      "input": "Version 999.999.999.999 is not an IP.",
+      "should_detect": false,
+      "expected_entities": []
+    },
+    {
+      "id": "pii_multi_001",
+      "entity_type": "MULTIPLE",
+      "description": "Multiple PII entities in one message",
+      "input": "Name: John, Email: john@test.com, Phone: +1-555-123-4567, SSN: 123-45-6789",
+      "should_detect": true,
+      "expected_entities": [
+        { "type": "EMAIL", "value": "john@test.com" },
+        { "type": "PHONE", "value": "+1-555-123-4567" },
+        { "type": "SSN",   "value": "123-45-6789" }
+      ]
+    },
+    {
+      "id": "pii_custom_001",
+      "entity_type": "CUSTOM",
+      "description": "Custom employee ID pattern: EMP-NNNNNN",
+      "input": "Employee EMP-123456 has been assigned.",
+      "should_detect": true,
+      "custom_pattern": "EMP-\\d{6}",
+      "expected_entities": [
+        { "type": "CUSTOM", "value": "EMP-123456", "start": 9, "end": 19 }
+      ]
+    }
+  ],
+  "redaction_cases": [
+    {
+      "id": "redact_mask_email",
+      "mode": "mask",
+      "input": "Contact me at user@example.com please.",
+      "expected_output": "Contact me at [REDACTED_EMAIL] please.",
+      "entity_types": ["EMAIL"]
+    },
+    {
+      "id": "redact_mask_phone",
+      "mode": "mask",
+      "input": "Call me at +1-800-555-0199 tomorrow.",
+      "expected_output": "Call me at [REDACTED_PHONE] tomorrow.",
+      "entity_types": ["PHONE"]
+    },
+    {
+      "id": "redact_mask_ssn",
+      "mode": "mask",
+      "input": "My SSN is 123-45-6789.",
+      "expected_output": "My SSN is [REDACTED_SSN].",
+      "entity_types": ["SSN"]
+    },
+    {
+      "id": "redact_mask_cc",
+      "mode": "mask",
+      "input": "Card: 4532015112830366 expires 12/25.",
+      "expected_output": "Card: [REDACTED_CREDIT_CARD] expires 12/25.",
+      "entity_types": ["CREDIT_CARD"]
+    },
+    {
+      "id": "redact_mask_multi",
+      "mode": "mask",
+      "input": "Email: user@test.com and SSN: 123-45-6789.",
+      "expected_output": "Email: [REDACTED_EMAIL] and SSN: [REDACTED_SSN].",
+      "entity_types": ["EMAIL", "SSN"]
+    },
+    {
+      "id": "redact_hash_email",
+      "mode": "hash",
+      "input": "user@example.com",
+      "expected_output_pattern": "^\\[HASH_EMAIL_[a-f0-9]{12}\\]$",
+      "note": "SHA-256 first 12 hex chars — deterministic",
+      "entity_types": ["EMAIL"]
+    },
+    {
+      "id": "redact_no_pii",
+      "mode": "mask",
+      "input": "What is the capital of France?",
+      "expected_output": "What is the capital of France?",
+      "note": "No PII — output unchanged",
+      "entity_types": ["EMAIL", "PHONE", "SSN"]
+    }
+  ]
+}

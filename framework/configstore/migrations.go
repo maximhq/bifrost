@@ -329,6 +329,194 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
 		return err
 	}
+	// Enterprise feature migrations
+	if err := migrationAddRBACTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddSSOTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddUserGroupTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAuditLogTable(ctx, db); err != nil {
+		return err
+	}
+	// Phase 2 — Content Safety
+	if err := migrationAddGuardrailTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPIITables(ctx, db); err != nil {
+		return err
+	}
+	// Phase 3 — Infrastructure
+	if err := migrationAddMCPToolGroupTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddConnectorTable(ctx, db); err != nil {
+		return err
+	}
+	// Phase 4 — Intelligence
+	if err := migrationAddAdaptiveRoutingTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAlertingTables(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationAddRBACTables creates the RBAC roles, permissions, and assignment tables.
+func migrationAddRBACTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_rbac_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasTable(&tables.TableRole{}) {
+				if err := mgr.CreateTable(&tables.TableRole{}); err != nil {
+					return fmt.Errorf("failed to create rbac_roles table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TablePermission{}) {
+				if err := mgr.CreateTable(&tables.TablePermission{}); err != nil {
+					return fmt.Errorf("failed to create rbac_permissions table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableRolePermission{}) {
+				if err := mgr.CreateTable(&tables.TableRolePermission{}); err != nil {
+					return fmt.Errorf("failed to create rbac_role_permissions table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableUserRole{}) {
+				if err := mgr.CreateTable(&tables.TableUserRole{}); err != nil {
+					return fmt.Errorf("failed to create rbac_user_roles table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			_ = mgr.DropTable(&tables.TableUserRole{})
+			_ = mgr.DropTable(&tables.TableRolePermission{})
+			_ = mgr.DropTable(&tables.TablePermission{})
+			_ = mgr.DropTable(&tables.TableRole{})
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_rbac_tables migration: %w", err)
+	}
+	return nil
+}
+
+// migrationAddSSOTables creates the SSO provider, external user, and session tables.
+func migrationAddSSOTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_sso_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasTable(&tables.TableSSOProvider{}) {
+				if err := mgr.CreateTable(&tables.TableSSOProvider{}); err != nil {
+					return fmt.Errorf("failed to create sso_providers table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableExternalUser{}) {
+				if err := mgr.CreateTable(&tables.TableExternalUser{}); err != nil {
+					return fmt.Errorf("failed to create sso_external_users table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableSSOSession{}) {
+				if err := mgr.CreateTable(&tables.TableSSOSession{}); err != nil {
+					return fmt.Errorf("failed to create sso_sessions table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			_ = mgr.DropTable(&tables.TableSSOSession{})
+			_ = mgr.DropTable(&tables.TableExternalUser{})
+			_ = mgr.DropTable(&tables.TableSSOProvider{})
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_sso_tables migration: %w", err)
+	}
+	return nil
+}
+
+// migrationAddUserGroupTables creates the user group and related join tables.
+func migrationAddUserGroupTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_user_group_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasTable(&tables.TableUserGroup{}) {
+				if err := mgr.CreateTable(&tables.TableUserGroup{}); err != nil {
+					return fmt.Errorf("failed to create user_groups table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableUserGroupMember{}) {
+				if err := mgr.CreateTable(&tables.TableUserGroupMember{}); err != nil {
+					return fmt.Errorf("failed to create user_group_members table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableUserGroupVirtualKey{}) {
+				if err := mgr.CreateTable(&tables.TableUserGroupVirtualKey{}); err != nil {
+					return fmt.Errorf("failed to create user_group_virtual_keys table: %w", err)
+				}
+			}
+			if !mgr.HasTable(&tables.TableUserGroupMCPGroup{}) {
+				if err := mgr.CreateTable(&tables.TableUserGroupMCPGroup{}); err != nil {
+					return fmt.Errorf("failed to create user_group_mcp_groups table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			_ = mgr.DropTable(&tables.TableUserGroupMCPGroup{})
+			_ = mgr.DropTable(&tables.TableUserGroupVirtualKey{})
+			_ = mgr.DropTable(&tables.TableUserGroupMember{})
+			_ = mgr.DropTable(&tables.TableUserGroup{})
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_user_group_tables migration: %w", err)
+	}
+	return nil
+}
+
+// migrationAddAuditLogTable creates the append-only audit log table.
+func migrationAddAuditLogTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_audit_log_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasTable(&tables.TableAuditLog{}) {
+				if err := mgr.CreateTable(&tables.TableAuditLog{}); err != nil {
+					return fmt.Errorf("failed to create audit_logs table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableAuditLog{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_audit_log_table migration: %w", err)
+	}
 	return nil
 }
 
@@ -4920,6 +5108,162 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_model_capability_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGuardrailTables creates guardrail policy, rule, and violation tables.
+func migrationAddGuardrailTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_guardrail_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, model := range []interface{}{
+				&tables.TableGuardrailPolicy{},
+				&tables.TableGuardrailRule{},
+				&tables.TableGuardrailViolation{},
+			} {
+				if !mgr.HasTable(model) {
+					if err := mgr.CreateTable(model); err != nil {
+						return fmt.Errorf("failed to create guardrail table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_guardrail_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPIITables creates PII policy, detector rule, and token store tables.
+func migrationAddPIITables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_pii_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, model := range []interface{}{
+				&tables.TablePIIPolicy{},
+				&tables.TablePIIDetectorRule{},
+				&tables.TablePIITokenStore{},
+			} {
+				if !mgr.HasTable(model) {
+					if err := mgr.CreateTable(model); err != nil {
+						return fmt.Errorf("failed to create PII table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_pii_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPToolGroupTables creates MCP tool group and assignment tables.
+func migrationAddMCPToolGroupTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_tool_group_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, model := range []interface{}{
+				&tables.TableMCPToolGroup{},
+				&tables.TableMCPToolGroupMember{},
+				&tables.TableVirtualKeyMCPGroup{},
+			} {
+				if !mgr.HasTable(model) {
+					if err := mgr.CreateTable(model); err != nil {
+						return fmt.Errorf("failed to create mcp_tool_group table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_tool_group_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddConnectorTable creates the data connector table.
+func migrationAddConnectorTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_connector_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableConnector{}) {
+				if err := tx.Migrator().CreateTable(&tables.TableConnector{}); err != nil {
+					return fmt.Errorf("failed to create data_connectors table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_connector_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAdaptiveRoutingTables creates routing policy and provider metrics tables.
+func migrationAddAdaptiveRoutingTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_adaptive_routing_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, model := range []interface{}{
+				&tables.TableRoutingPolicy{},
+				&tables.TableProviderMetrics{},
+				&tables.TableModelQualityScore{},
+			} {
+				if !mgr.HasTable(model) {
+					if err := mgr.CreateTable(model); err != nil {
+						return fmt.Errorf("failed to create adaptive routing table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_adaptive_routing_tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAlertingTables creates alert rule, channel, state, and history tables.
+func migrationAddAlertingTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_alerting_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, model := range []interface{}{
+				&tables.TableAlertRule{},
+				&tables.TableAlertChannel{},
+				&tables.TableAlertState{},
+				&tables.TableAlertHistory{},
+			} {
+				if !mgr.HasTable(model) {
+					if err := mgr.CreateTable(model); err != nil {
+						return fmt.Errorf("failed to create alerting table: %w", err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_alerting_tables migration: %s", err.Error())
 	}
 	return nil
 }

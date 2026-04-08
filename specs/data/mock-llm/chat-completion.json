@@ -1,0 +1,27 @@
+{
+  "id": "chat_completion_standard",
+  "description": "Standard non-streaming chat completion response",
+  "response": {
+    "id": "chatcmpl-mock-test-abc123",
+    "object": "chat.completion",
+    "created": 1712500000,
+    "model": "gpt-4o",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "This is a mock response from the test LLM server. The answer to your question is: Paris is the capital of France."
+        },
+        "finish_reason": "stop",
+        "logprobs": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 22,
+      "total_tokens": 37
+    },
+    "system_fingerprint": "fp_mock_test_v1"
+  }
+}

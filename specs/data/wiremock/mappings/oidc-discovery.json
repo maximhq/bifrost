@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "/oidc/.well-known/openid-configuration"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "oidc-discovery.json"
+  }
+}

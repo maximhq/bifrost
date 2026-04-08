@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPattern": "/capture/.*"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "status": "received",
+      "timestamp": "{{now}}"
+    },
+    "transformers": ["response-template"]
+  }
+}

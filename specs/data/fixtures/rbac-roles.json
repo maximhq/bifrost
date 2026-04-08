@@ -1,0 +1,133 @@
+{
+  "_comment": "RBAC role definitions — matches the 5 system roles in 04-rbac.sql",
+  "_version": "1.0",
+  "roles": [
+    {
+      "id": "role_super_admin",
+      "name": "super_admin",
+      "description": "Full access to everything including user management and license",
+      "is_system": true,
+      "permissions": [
+        { "resource": "*", "action": "*" }
+      ],
+      "test_token": "tok_super_admin_test_12345",
+      "test_user_id": "usr_super_001"
+    },
+    {
+      "id": "role_admin",
+      "name": "admin",
+      "description": "Full resource management except users and license",
+      "is_system": true,
+      "permissions": [
+        { "resource": "providers",    "action": "read"  },
+        { "resource": "providers",    "action": "write" },
+        { "resource": "virtual_keys", "action": "read"  },
+        { "resource": "virtual_keys", "action": "write" },
+        { "resource": "guardrails",   "action": "read"  },
+        { "resource": "guardrails",   "action": "write" },
+        { "resource": "audit_logs",   "action": "read"  },
+        { "resource": "audit_logs",   "action": "export"},
+        { "resource": "config",       "action": "read"  },
+        { "resource": "config",       "action": "write" },
+        { "resource": "pii",          "action": "read"  },
+        { "resource": "pii",          "action": "write" },
+        { "resource": "alerts",       "action": "read"  },
+        { "resource": "alerts",       "action": "write" },
+        { "resource": "logs",         "action": "read"  }
+      ],
+      "restricted_from": ["users", "license"],
+      "test_token": "tok_admin_test_67890",
+      "test_user_id": "usr_admin_002"
+    },
+    {
+      "id": "role_operator",
+      "name": "operator",
+      "description": "Can manage virtual keys; view-only providers, audit logs, logs",
+      "is_system": true,
+      "permissions": [
+        { "resource": "providers",    "action": "read"  },
+        { "resource": "virtual_keys", "action": "read"  },
+        { "resource": "virtual_keys", "action": "write" },
+        { "resource": "audit_logs",   "action": "read"  },
+        { "resource": "logs",         "action": "read"  }
+      ],
+      "restricted_from": ["providers:write", "guardrails", "users", "license", "config:write"],
+      "test_token": "tok_operator_test_abcde",
+      "test_user_id": "usr_operator_003"
+    },
+    {
+      "id": "role_viewer",
+      "name": "viewer",
+      "description": "Read-only access to all resources",
+      "is_system": true,
+      "permissions": [
+        { "resource": "providers",    "action": "read" },
+        { "resource": "virtual_keys", "action": "read" },
+        { "resource": "guardrails",   "action": "read" },
+        { "resource": "audit_logs",   "action": "read" },
+        { "resource": "config",       "action": "read" },
+        { "resource": "logs",         "action": "read" }
+      ],
+      "restricted_from": ["write", "delete", "users", "license"],
+      "test_token": "tok_viewer_test_fghij",
+      "test_user_id": "usr_viewer_004"
+    },
+    {
+      "id": "role_api_user",
+      "name": "api_user",
+      "description": "Inference API access only — no management endpoints",
+      "is_system": true,
+      "permissions": [
+        { "resource": "inference", "action": "call" }
+      ],
+      "restricted_from": ["providers", "virtual_keys", "guardrails", "audit_logs", "config", "users", "license"],
+      "test_token": "tok_api_user_test_klmno",
+      "test_user_id": "usr_api_005"
+    }
+  ],
+  "management_endpoints": {
+    "_comment": "Expected HTTP response by role for key management endpoints",
+    "POST /api/providers": {
+      "super_admin": 201,
+      "admin": 201,
+      "operator": 403,
+      "viewer": 403,
+      "api_user": 403
+    },
+    "GET /api/providers": {
+      "super_admin": 200,
+      "admin": 200,
+      "operator": 200,
+      "viewer": 200,
+      "api_user": 403
+    },
+    "POST /api/governance/virtual-keys": {
+      "super_admin": 201,
+      "admin": 201,
+      "operator": 201,
+      "viewer": 403,
+      "api_user": 403
+    },
+    "POST /api/users" : {
+      "super_admin": 201,
+      "admin": 403,
+      "operator": 403,
+      "viewer": 403,
+      "api_user": 403
+    },
+    "GET /api/audit/logs": {
+      "super_admin": 200,
+      "admin": 200,
+      "operator": 200,
+      "viewer": 200,
+      "api_user": 403
+    },
+    "GET /api/license": {
+      "super_admin": 200,
+      "admin": 403,
+      "operator": 403,
+      "viewer": 403,
+      "api_user": 403
+    }
+  }
+}

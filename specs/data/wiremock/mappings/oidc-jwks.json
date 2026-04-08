@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "/oidc/jwks"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "jwks.json"
+  }
+}

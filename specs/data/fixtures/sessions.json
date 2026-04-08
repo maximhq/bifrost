@@ -1,0 +1,67 @@
+{
+  "_comment": "Static auth tokens for integration testing — DO NOT USE IN PRODUCTION",
+  "_version": "1.0",
+  "sessions": {
+    "super_admin": {
+      "token": "tok_super_admin_test_12345",
+      "user_id": "usr_super_001",
+      "email": "superadmin@bifrost-test.local",
+      "role": "super_admin",
+      "display_name": "Super Admin (Test)"
+    },
+    "admin": {
+      "token": "tok_admin_test_67890",
+      "user_id": "usr_admin_002",
+      "email": "admin@bifrost-test.local",
+      "role": "admin",
+      "display_name": "Admin User (Test)"
+    },
+    "operator": {
+      "token": "tok_operator_test_abcde",
+      "user_id": "usr_operator_003",
+      "email": "operator@bifrost-test.local",
+      "role": "operator",
+      "display_name": "Operator User (Test)"
+    },
+    "viewer": {
+      "token": "tok_viewer_test_fghij",
+      "user_id": "usr_viewer_004",
+      "email": "viewer@bifrost-test.local",
+      "role": "viewer",
+      "display_name": "Viewer User (Test)"
+    },
+    "api_user": {
+      "token": "tok_api_user_test_klmno",
+      "user_id": "usr_api_005",
+      "email": "apiuser@bifrost-test.local",
+      "role": "api_user",
+      "display_name": "API User (Test)"
+    },
+    "invalid": {
+      "token": "tok_invalid_does_not_exist_xyz",
+      "user_id": null,
+      "note": "This token does NOT exist in DB — use to test 401 responses"
+    },
+    "expired_session": {
+      "token": "tok_expired_session_pqrst",
+      "user_id": "usr_expired_006",
+      "email": "expired@bifrost-test.local",
+      "role": "operator",
+      "note": "Session created with past expires_at — use to test session expiry"
+    }
+  },
+  "scim_tokens": {
+    "valid": {
+      "token": "scim_test_bearer_token_abc123",
+      "note": "Valid SCIM provisioning token"
+    },
+    "invalid": {
+      "token": "scim_invalid_token_xyz789",
+      "note": "Non-existent SCIM token — use to test 401"
+    },
+    "revoked": {
+      "token": "scim_revoked_token_mnop456",
+      "note": "Was valid, then revoked — use to test 401 on revoked"
+    }
+  }
+}

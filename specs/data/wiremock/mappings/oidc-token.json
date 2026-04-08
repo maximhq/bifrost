@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "/oidc/token",
+    "bodyPatterns": [
+      { "contains": "grant_type=authorization_code" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "access_token": "mock_access_token_engineering_group_abc123",
+      "token_type": "Bearer",
+      "expires_in": 3600,
+      "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5LTAxIn0.eyJzdWIiOiJ1c3JfYWxpY2VfMDAxIiwiZW1haWwiOiJhbGljZUBhY21lLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJuYW1lIjoiQWxpY2UgU21pdGgiLCJncm91cHMiOlsiZW5naW5lZXJpbmciXSwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdDo4MDg4L29pZGMiLCJhdWQiOiJiaWZyb3N0LXRlc3QtY2xpZW50IiwiZXhwIjo5OTk5OTk5OTk5LCJpYXQiOjE3MTI1MDAwMDB9.mock_signature_not_valid_for_bypass_tests",
+      "refresh_token": "mock_refresh_token_abc123",
+      "scope": "openid email profile groups"
+    }
+  }
+}

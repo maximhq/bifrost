@@ -27,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed test-enterprise
 
 all: help
 
@@ -820,6 +820,52 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 			echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
 			echo ""; \
 		fi; \
+	fi; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		exit 1; \
+	fi
+
+test-enterprise: install-gotestsum ## Run enterprise integration tests (Usage: make test-enterprise [SUITE=license|rbac|audit|guardrails|vault|cluster|payload|inference] [TESTCASE=TestName])
+	@echo "$(GREEN)Running enterprise integration tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ ! -d "tests/enterprise" ]; then \
+		echo "$(RED)Error: Enterprise tests directory not found$(NC)"; \
+		exit 1; \
+	fi
+	@TEST_FAILED=0; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/enterprise-all.xml"; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	SUITE_PATTERN="."; \
+	if [ -n "$(SUITE)" ]; then \
+		case "$(SUITE)" in \
+			license)    SUITE_PATTERN="TestLicense" ;; \
+			rbac)       SUITE_PATTERN="TestRBAC" ;; \
+			audit)      SUITE_PATTERN="TestAudit" ;; \
+			guardrails) SUITE_PATTERN="TestGuardrails" ;; \
+			vault)      SUITE_PATTERN="TestVault" ;; \
+			cluster)    SUITE_PATTERN="TestCluster" ;; \
+			payload)    SUITE_PATTERN="TestPayload" ;; \
+			inference)  SUITE_PATTERN="TestInference" ;; \
+			*)          SUITE_PATTERN="$(SUITE)" ;; \
+		esac; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/enterprise-$(SUITE).xml"; \
+	fi; \
+	if [ -n "$(TESTCASE)" ]; then \
+		SUITE_PATTERN="^$(TESTCASE)$$"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/enterprise-$(TESTCASE).xml"; \
+	fi; \
+	echo "$(CYAN)Pattern: $$SUITE_PATTERN$(NC)"; \
+	cd tests/enterprise && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -timeout 5m -run "$$SUITE_PATTERN" ./... || TEST_FAILED=1; \
+	cd ../..; \
+	if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+		echo ""; \
+		echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
 	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \

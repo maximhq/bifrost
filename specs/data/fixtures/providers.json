@@ -1,0 +1,164 @@
+{
+  "_comment": "Mock provider configurations for test environments",
+  "_version": "1.0",
+  "providers": [
+    {
+      "id": "provider_mock_openai_001",
+      "name": "mock-openai",
+      "type": "openai",
+      "description": "Primary mock LLM — standard 10ms latency, no errors",
+      "base_url": "http://localhost:9090",
+      "api_keys": [
+        {
+          "id": "key_mock_001",
+          "name": "mock-key-primary",
+          "value": "sk-mock-openai-primary-test-key-001",
+          "weight": 100
+        }
+      ],
+      "network": {
+        "request_timeout_ms": 30000,
+        "max_conns_per_host": 100
+      },
+      "models": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
+      "used_by": ["TC-001", "TC-003"]
+    },
+    {
+      "id": "provider_fast_002",
+      "name": "provider-fast",
+      "type": "openai",
+      "description": "Low latency mock — 5ms response time",
+      "base_url": "http://localhost:9091",
+      "api_keys": [
+        {
+          "id": "key_fast_001",
+          "name": "fast-key",
+          "value": "sk-mock-fast-provider-test-key-002",
+          "weight": 100
+        }
+      ],
+      "network": {
+        "request_timeout_ms": 5000
+      },
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "used_by": ["TC-009", "TC-015"]
+    },
+    {
+      "id": "provider_slow_003",
+      "name": "provider-slow",
+      "type": "openai",
+      "description": "High latency mock — 200ms response time",
+      "base_url": "http://localhost:9092",
+      "api_keys": [
+        {
+          "id": "key_slow_001",
+          "name": "slow-key",
+          "value": "sk-mock-slow-provider-test-key-003",
+          "weight": 100
+        }
+      ],
+      "network": {
+        "request_timeout_ms": 10000
+      },
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "used_by": ["TC-009"]
+    },
+    {
+      "id": "provider_error_004",
+      "name": "provider-error",
+      "type": "openai",
+      "description": "Error-prone mock — 50% error rate (X-Mock-Error-Rate: 50)",
+      "base_url": "http://localhost:9093",
+      "api_keys": [
+        {
+          "id": "key_error_001",
+          "name": "error-key",
+          "value": "sk-mock-error-provider-test-key-004",
+          "weight": 100
+        }
+      ],
+      "network": {
+        "request_timeout_ms": 5000
+      },
+      "models": ["gpt-4o-mini"],
+      "used_by": ["TC-009", "TC-011"]
+    },
+    {
+      "id": "provider_secondary_005",
+      "name": "provider-secondary",
+      "type": "openai",
+      "description": "Secondary provider for failover tests",
+      "base_url": "http://localhost:9090",
+      "api_keys": [
+        {
+          "id": "key_secondary_001",
+          "name": "secondary-key",
+          "value": "sk-mock-secondary-provider-key-005",
+          "weight": 100
+        }
+      ],
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "used_by": ["TC-001-006", "TC-002-013"]
+    },
+    {
+      "id": "provider_weighted_006",
+      "name": "provider-weighted",
+      "type": "openai",
+      "description": "Provider with 2 keys at different weights for weighted distribution tests",
+      "base_url": "http://localhost:9090",
+      "api_keys": [
+        {
+          "id": "key_weighted_a",
+          "name": "weighted-key-a",
+          "value": "sk-mock-weighted-key-a-80-weight",
+          "weight": 80
+        },
+        {
+          "id": "key_weighted_b",
+          "name": "weighted-key-b",
+          "value": "sk-mock-weighted-key-b-20-weight",
+          "weight": 20
+        }
+      ],
+      "models": ["gpt-4o-mini"],
+      "used_by": ["TC-002-004", "TC-003-013"]
+    },
+    {
+      "id": "provider_timeout_007",
+      "name": "provider-timeout",
+      "type": "openai",
+      "description": "Simulates 500ms delay — use with 100ms timeout to trigger TC-002-018",
+      "base_url": "http://localhost:9094",
+      "api_keys": [
+        {
+          "id": "key_timeout_001",
+          "name": "timeout-key",
+          "value": "sk-mock-timeout-provider-key-007",
+          "weight": 100
+        }
+      ],
+      "network": {
+        "request_timeout_ms": 100
+      },
+      "models": ["gpt-4o-mini"],
+      "used_by": ["TC-002-018"]
+    },
+    {
+      "id": "provider_vault_backed_008",
+      "name": "provider-vault",
+      "type": "openai",
+      "description": "API key resolved from Vault — key value is vault:// URI",
+      "base_url": "http://localhost:9090",
+      "api_keys": [
+        {
+          "id": "key_vault_001",
+          "name": "vault-key",
+          "value": "vault://secret/bifrost/openai#api_key",
+          "weight": 100
+        }
+      ],
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "used_by": ["TC-012"]
+    }
+  ]
+}

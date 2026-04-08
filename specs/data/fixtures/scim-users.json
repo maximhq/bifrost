@@ -1,0 +1,100 @@
+{
+  "_comment": "SCIM 2.0 user provisioning payloads for TC-008 test suite",
+  "_version": "1.0",
+  "users": [
+    {
+      "id": "scim_user_alice_001",
+      "description": "Alice — engineering group member, maps to admin role",
+      "create_payload": {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": "alice@acme.com",
+        "displayName": "Alice Smith",
+        "name": {
+          "formatted": "Alice Smith",
+          "familyName": "Smith",
+          "givenName": "Alice"
+        },
+        "emails": [
+          { "value": "alice@acme.com", "type": "work", "primary": true }
+        ],
+        "active": true,
+        "externalId": "ext_alice_001",
+        "groups": [
+          { "value": "grp_engineering", "display": "Engineering" }
+        ]
+      },
+      "expected_role": "admin",
+      "used_by": ["TC-008-010", "TC-008-015"]
+    },
+    {
+      "id": "scim_user_bob_002",
+      "description": "Bob — platform-team member, maps to operator role",
+      "create_payload": {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": "bob@acme.com",
+        "displayName": "Bob Builder",
+        "name": {
+          "formatted": "Bob Builder",
+          "familyName": "Builder",
+          "givenName": "Bob"
+        },
+        "emails": [
+          { "value": "bob@acme.com", "type": "work", "primary": true }
+        ],
+        "active": true,
+        "externalId": "ext_bob_002",
+        "groups": [
+          { "value": "grp_platform", "display": "Platform Team" }
+        ]
+      },
+      "expected_role": "operator",
+      "used_by": ["TC-008-010", "TC-008-011", "TC-008-012"]
+    },
+    {
+      "id": "scim_user_charlie_003",
+      "description": "Charlie — no group (unmapped), gets default viewer role",
+      "create_payload": {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "userName": "charlie@acme.com",
+        "displayName": "Charlie Davis",
+        "name": {
+          "formatted": "Charlie Davis",
+          "familyName": "Davis",
+          "givenName": "Charlie"
+        },
+        "emails": [
+          { "value": "charlie@acme.com", "type": "work", "primary": true }
+        ],
+        "active": true,
+        "externalId": "ext_charlie_003",
+        "groups": []
+      },
+      "expected_role": "viewer",
+      "used_by": ["TC-008-015", "TC-UG-007"]
+    }
+  ],
+  "patch_payloads": {
+    "update_email": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [
+        {
+          "op": "replace",
+          "path": "emails[primary eq true].value",
+          "value": "bob.new@acme.com"
+        }
+      ]
+    },
+    "deactivate": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [
+        { "op": "replace", "path": "active", "value": false }
+      ]
+    },
+    "update_display_name": {
+      "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+      "Operations": [
+        { "op": "replace", "path": "displayName", "value": "Bob Builder Jr." }
+      ]
+    }
+  }
+}

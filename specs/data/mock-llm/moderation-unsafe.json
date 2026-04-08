@@ -1,0 +1,36 @@
+{
+  "id": "modr-mock-unsafe-001",
+  "description": "Unsafe content — high violence score (0.95) triggers AI classifier guardrail",
+  "model": "text-moderation-latest",
+  "results": [
+    {
+      "flagged": true,
+      "categories": {
+        "sexual": false,
+        "hate": false,
+        "harassment": false,
+        "self-harm": false,
+        "sexual/minors": false,
+        "hate/threatening": false,
+        "violence/graphic": true,
+        "self-harm/intent": false,
+        "self-harm/instructions": false,
+        "harassment/threatening": false,
+        "violence": true
+      },
+      "category_scores": {
+        "sexual": 0.002,
+        "hate": 0.015,
+        "harassment": 0.023,
+        "self-harm": 0.004,
+        "sexual/minors": 0.001,
+        "hate/threatening": 0.032,
+        "violence/graphic": 0.872,
+        "self-harm/intent": 0.002,
+        "self-harm/instructions": 0.003,
+        "harassment/threatening": 0.041,
+        "violence": 0.950
+      }
+    }
+  ]
+}

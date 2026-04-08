@@ -1,0 +1,146 @@
+{
+  "_comment": "Virtual Key fixtures for test suites — covers all governance test scenarios",
+  "_version": "1.0",
+  "virtual_keys": [
+    {
+      "id": "vk_unlimited_test_001",
+      "name": "vk-unlimited",
+      "key_value": "bfvk_unlimited_test_key_00000001",
+      "description": "No budget or rate limit — for baseline inference tests",
+      "budget": null,
+      "rate_limit": null,
+      "allowed_models": null,
+      "allowed_providers": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-001", "TC-006", "TC-007"]
+    },
+    {
+      "id": "vk_tight_budget_test_002",
+      "name": "vk-tight-budget",
+      "key_value": "bfvk_tight_budget_test_key_00002",
+      "description": "Very small budget ($0.001) — exhausted by 1-2 requests",
+      "budget": {
+        "max_budget": 0.001,
+        "currency": "USD",
+        "reset_duration": "monthly"
+      },
+      "rate_limit": null,
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-001-011", "TC-003-003"]
+    },
+    {
+      "id": "vk_rate_limited_test_003",
+      "name": "vk-rate-limited",
+      "key_value": "bfvk_rate_limited_test_key_00003",
+      "description": "1 request per minute — easy to exhaust for rate limit tests",
+      "budget": null,
+      "rate_limit": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": null
+      },
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-001-012", "TC-003-004", "TC-003-005"]
+    },
+    {
+      "id": "vk_expired_test_004",
+      "name": "vk-expired",
+      "key_value": "bfvk_expired_test_key_000000004",
+      "description": "Expired January 2020 — always rejected",
+      "budget": null,
+      "rate_limit": null,
+      "allowed_models": null,
+      "expires_at": "2020-01-01T00:00:00Z",
+      "enabled": true,
+      "used_by": ["TC-001-014", "TC-003-009"]
+    },
+    {
+      "id": "vk_model_restricted_test_005",
+      "name": "vk-model-restricted",
+      "key_value": "bfvk_model_restricted_test_00005",
+      "description": "Only allows gpt-4o-mini",
+      "budget": null,
+      "rate_limit": null,
+      "allowed_models": ["gpt-4o-mini"],
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-001-013", "TC-003-006"]
+    },
+    {
+      "id": "vk_disabled_test_006",
+      "name": "vk-disabled",
+      "key_value": "bfvk_disabled_test_key_000000006",
+      "description": "Explicitly disabled VK",
+      "budget": null,
+      "rate_limit": null,
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": false,
+      "used_by": ["TC-003-017"]
+    },
+    {
+      "id": "vk_token_rate_test_007",
+      "name": "vk-token-rate-limited",
+      "key_value": "bfvk_token_rate_test_key_000007",
+      "description": "100 tokens per minute limit",
+      "budget": null,
+      "rate_limit": {
+        "requests_per_minute": null,
+        "tokens_per_minute": 100
+      },
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-003-015"]
+    },
+    {
+      "id": "vk_combined_limit_test_008",
+      "name": "vk-combined-limits",
+      "key_value": "bfvk_combined_limit_test_000008",
+      "description": "Both request (10/min) and token (50/min) limits",
+      "budget": null,
+      "rate_limit": {
+        "requests_per_minute": 10,
+        "tokens_per_minute": 50
+      },
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-003-018"]
+    },
+    {
+      "id": "vk_guardrail_test_009",
+      "name": "vk-for-guardrail-tests",
+      "key_value": "bfvk_guardrail_test_key_000009",
+      "description": "Unlimited VK for guardrail and PII tests",
+      "budget": null,
+      "rate_limit": null,
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-006", "TC-007"]
+    },
+    {
+      "id": "vk_perf_test_010",
+      "name": "vk-performance",
+      "key_value": "bfvk_performance_test_key_000010",
+      "description": "High throughput VK for k6 performance tests",
+      "budget": {
+        "max_budget": 1000.00,
+        "currency": "USD",
+        "reset_duration": "monthly"
+      },
+      "rate_limit": {
+        "requests_per_minute": 100000
+      },
+      "allowed_models": null,
+      "expires_at": null,
+      "enabled": true,
+      "used_by": ["TC-015"]
+    }
+  ]
+}

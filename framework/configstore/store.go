@@ -307,6 +307,135 @@ type ConfigStore interface {
 
 	// Cleanup
 	Close(ctx context.Context) error
+
+	// ─── RBAC ─────────────────────────────────────────────────────────────────
+	CreateRole(ctx context.Context, role *tables.TableRole) error
+	GetRole(ctx context.Context, id string) (*tables.TableRole, error)
+	ListRoles(ctx context.Context) ([]tables.TableRole, error)
+	UpdateRole(ctx context.Context, id string, updates map[string]any) error
+	DeleteRole(ctx context.Context, id string) error
+	UpsertPermission(ctx context.Context, perm *tables.TablePermission) error
+	ListPermissions(ctx context.Context) ([]tables.TablePermission, error)
+	AssignPermissionToRole(ctx context.Context, roleID, permissionID string) error
+	RevokePermissionFromRole(ctx context.Context, roleID, permissionID string) error
+	GetRolePermissions(ctx context.Context, roleID string) ([]tables.TablePermission, error)
+	AssignRoleToUser(ctx context.Context, userID, roleID, grantedBy string) error
+	RevokeRoleFromUser(ctx context.Context, userID, roleID string) error
+	GetUserRoles(ctx context.Context, userID string) ([]tables.TableRole, error)
+	GetUserPermissions(ctx context.Context, userID string) ([]tables.TablePermission, error)
+
+	// ─── SSO/SCIM ─────────────────────────────────────────────────────────────
+	CreateSSOProvider(ctx context.Context, provider *tables.TableSSOProvider) error
+	GetSSOProvider(ctx context.Context, id string) (*tables.TableSSOProvider, error)
+	ListSSOProviders(ctx context.Context) ([]tables.TableSSOProvider, error)
+	UpdateSSOProvider(ctx context.Context, id string, updates map[string]any) error
+	DeleteSSOProvider(ctx context.Context, id string) error
+	UpsertExternalUser(ctx context.Context, user *tables.TableExternalUser) (*tables.TableExternalUser, error)
+	GetExternalUser(ctx context.Context, id string) (*tables.TableExternalUser, error)
+	FindExternalUserByEmail(ctx context.Context, email string) (*tables.TableExternalUser, error)
+	ListExternalUsers(ctx context.Context, providerID string) ([]tables.TableExternalUser, error)
+	DeactivateExternalUser(ctx context.Context, id string) error
+	CreateSSOSession(ctx context.Context, sess *tables.TableSSOSession) error
+	DeleteSSOSession(ctx context.Context, id string) error
+	CleanExpiredSSOSessions(ctx context.Context) (int64, error)
+
+	// ─── User Groups ──────────────────────────────────────────────────────────
+	CreateUserGroup(ctx context.Context, group *tables.TableUserGroup) error
+	GetUserGroup(ctx context.Context, id string) (*tables.TableUserGroup, error)
+	ListUserGroups(ctx context.Context) ([]tables.TableUserGroup, error)
+	UpdateUserGroup(ctx context.Context, id string, updates map[string]any) error
+	DeleteUserGroup(ctx context.Context, id string) error
+	UpsertUserGroup(ctx context.Context, group *tables.TableUserGroup) (*tables.TableUserGroup, error)
+	FindUserGroupByExternalID(ctx context.Context, externalID string) (*tables.TableUserGroup, error)
+	AddUserToGroup(ctx context.Context, groupID, userID, addedBy string) error
+	RemoveUserFromGroup(ctx context.Context, groupID, userID string) error
+	GetUserGroups(ctx context.Context, userID string) ([]tables.TableUserGroup, error)
+	GetUserGroupMembers(ctx context.Context, groupID string) ([]tables.TableUserGroupMember, error)
+	AssignVirtualKeyToGroup(ctx context.Context, groupID, vkID string, budgetOverride *float64) error
+	UnassignVirtualKeyFromGroup(ctx context.Context, groupID, vkID string) error
+	GetUserGroupVirtualKeys(ctx context.Context, groupID string) ([]tables.TableUserGroupVirtualKey, error)
+	AssignMCPGroupToUserGroup(ctx context.Context, groupID, mcpGroupID string) error
+	UnassignMCPGroupFromUserGroup(ctx context.Context, groupID, mcpGroupID string) error
+	GetUserGroupMCPGroups(ctx context.Context, groupID string) ([]tables.TableUserGroupMCPGroup, error)
+
+	// ─── Audit Logs ───────────────────────────────────────────────────────────
+	AppendAuditLog(ctx context.Context, entry *tables.TableAuditLog) error
+	QueryAuditLogs(ctx context.Context, opts AuditLogQueryOpts) ([]tables.TableAuditLog, int64, error)
+	VerifyAuditChain(ctx context.Context, fromSeq int64) (int64, error)
+
+	// ─── Guardrails ───────────────────────────────────────────────────────────
+	CreateGuardrailPolicy(ctx context.Context, p *tables.TableGuardrailPolicy) error
+	GetGuardrailPolicy(ctx context.Context, id string) (*tables.TableGuardrailPolicy, error)
+	ListGuardrailPolicies(ctx context.Context) ([]tables.TableGuardrailPolicy, error)
+	UpdateGuardrailPolicy(ctx context.Context, id string, updates map[string]any) error
+	DeleteGuardrailPolicy(ctx context.Context, id string) error
+	CreateGuardrailRule(ctx context.Context, r *tables.TableGuardrailRule) error
+	ListGuardrailRules(ctx context.Context, policyID string) ([]tables.TableGuardrailRule, error)
+	DeleteGuardrailRule(ctx context.Context, id string) error
+	AppendGuardrailViolation(ctx context.Context, v *tables.TableGuardrailViolation) error
+	QueryGuardrailViolations(ctx context.Context, opts GuardrailViolationQueryOpts) ([]tables.TableGuardrailViolation, int64, error)
+
+	// ─── PII Redactor ─────────────────────────────────────────────────────────
+	CreatePIIPolicy(ctx context.Context, p *tables.TablePIIPolicy) error
+	GetPIIPolicy(ctx context.Context, id string) (*tables.TablePIIPolicy, error)
+	ListPIIPolicies(ctx context.Context) ([]tables.TablePIIPolicy, error)
+	UpdatePIIPolicy(ctx context.Context, id string, updates map[string]any) error
+	DeletePIIPolicy(ctx context.Context, id string) error
+	CreatePIIDetectorRule(ctx context.Context, r *tables.TablePIIDetectorRule) error
+	ListPIIDetectorRules(ctx context.Context, policyID string) ([]tables.TablePIIDetectorRule, error)
+	DeletePIIDetectorRule(ctx context.Context, id string) error
+	UpsertPIIToken(ctx context.Context, t *tables.TablePIITokenStore) error
+	GetPIIToken(ctx context.Context, token string) (*tables.TablePIITokenStore, error)
+	DeleteExpiredPIITokens(ctx context.Context) (int64, error)
+
+	// ─── Adaptive Routing ─────────────────────────────────────────────────────
+	CreateRoutingPolicy(ctx context.Context, p *tables.TableRoutingPolicy) error
+	GetRoutingPolicy(ctx context.Context, id string) (*tables.TableRoutingPolicy, error)
+	ListRoutingPolicies(ctx context.Context) ([]tables.TableRoutingPolicy, error)
+	UpdateRoutingPolicy(ctx context.Context, id string, updates map[string]any) error
+	DeleteRoutingPolicy(ctx context.Context, id string) error
+	UpsertProviderMetrics(ctx context.Context, m *tables.TableProviderMetrics) error
+	GetProviderMetrics(ctx context.Context, provider, model string, windowMinutes int, since time.Time) ([]tables.TableProviderMetrics, error)
+	UpsertModelQualityScore(ctx context.Context, score *tables.TableModelQualityScore) error
+	ListModelQualityScores(ctx context.Context) ([]tables.TableModelQualityScore, error)
+
+	// ─── Alerting ─────────────────────────────────────────────────────────────
+	CreateAlertRule(ctx context.Context, r *tables.TableAlertRule) error
+	GetAlertRule(ctx context.Context, id string) (*tables.TableAlertRule, error)
+	ListAlertRules(ctx context.Context) ([]tables.TableAlertRule, error)
+	UpdateAlertRule(ctx context.Context, id string, updates map[string]any) error
+	DeleteAlertRule(ctx context.Context, id string) error
+	CreateAlertChannel(ctx context.Context, c *tables.TableAlertChannel) error
+	GetAlertChannel(ctx context.Context, id string) (*tables.TableAlertChannel, error)
+	ListAlertChannels(ctx context.Context) ([]tables.TableAlertChannel, error)
+	UpdateAlertChannel(ctx context.Context, id string, updates map[string]any) error
+	DeleteAlertChannel(ctx context.Context, id string) error
+	UpsertAlertState(ctx context.Context, state *tables.TableAlertState) error
+	GetAlertState(ctx context.Context, ruleID string) (*tables.TableAlertState, error)
+	ListAlertStates(ctx context.Context) ([]tables.TableAlertState, error)
+	AppendAlertHistory(ctx context.Context, h *tables.TableAlertHistory) error
+	QueryAlertHistory(ctx context.Context, opts AlertHistoryQueryOpts) ([]tables.TableAlertHistory, int64, error)
+
+	// ─── MCP Tool Groups ──────────────────────────────────────────────────────
+	CreateMCPToolGroup(ctx context.Context, g *tables.TableMCPToolGroup) error
+	GetMCPToolGroup(ctx context.Context, id string) (*tables.TableMCPToolGroup, error)
+	ListMCPToolGroups(ctx context.Context) ([]tables.TableMCPToolGroup, error)
+	UpdateMCPToolGroup(ctx context.Context, id string, updates map[string]any) error
+	DeleteMCPToolGroup(ctx context.Context, id string) error
+	AddMCPToolGroupMember(ctx context.Context, groupID, clientID, toolName string) error
+	RemoveMCPToolGroupMember(ctx context.Context, memberID string) error
+	GetMCPToolGroupMembers(ctx context.Context, groupID string) ([]tables.TableMCPToolGroupMember, error)
+	AssignVirtualKeyMCPGroup(ctx context.Context, vkID, groupID string) error
+	UnassignVirtualKeyMCPGroup(ctx context.Context, vkID, groupID string) error
+	GetVirtualKeyMCPToolGroups(ctx context.Context, vkID string) ([]tables.TableMCPToolGroup, error)
+
+	// ─── Data Connectors ──────────────────────────────────────────────────────
+	CreateConnector(ctx context.Context, c *tables.TableConnector) error
+	GetConnector(ctx context.Context, id string) (*tables.TableConnector, error)
+	ListConnectors(ctx context.Context, connType string) ([]tables.TableConnector, error)
+	UpdateConnector(ctx context.Context, id string, updates map[string]any) error
+	DeleteConnector(ctx context.Context, id string) error
+	MarkConnectorTested(ctx context.Context, id string, ok bool) error
 }
 
 // NewConfigStore creates a new config store based on the configuration

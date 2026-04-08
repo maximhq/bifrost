@@ -1,99 +1,168 @@
+# =============================================================================
+# Bifrost Enterprise Test Infrastructure
+# =============================================================================
+# Chỉ bao gồm các services thực sự được dùng trong test suite.
+#
+# Services và mục đích:
+#   postgres      - ConfigStore, AuditLog, Governance (TC-002, TC-005)
+#   redis         - Cluster coordination, rate-limit sync (TC-007, TC-010)
+#   qdrant        - SemanticCache vector store (framework/vectorstore tests)
+#   vault         - HashiCorp Vault dev server (TC-012)
+#   bifrost       - Bifrost HTTP gateway — target cho enterprise tests
+#
+# ĐÃ BỎ (không có image local hoặc không dùng trong enterprise tests):
+#   weaviate      - semitechnologies/weaviate:1.32.4 không có local
+#   redis-stack   - redis/redis-stack không có local → dùng redis:7-alpine
+#   pinecone-local- ghcr.io/pinecone-io không có local, không dùng trong tests
+#
+# Sử dụng:
+#   docker compose -f tests/docker-compose.yml up -d
+#   docker compose -f tests/docker-compose.yml up -d postgres redis
+#   docker compose -f tests/docker-compose.yml down -v
+# =============================================================================
+
 services:
-    # Weaviate instance for basic tests
-    weaviate:
-        image: semitechnologies/weaviate:1.32.4
-        command:
-            - --host
-            - 0.0.0.0
-            - --port
-            - '8080'
-            - --scheme
-            - http
-        environment:
-            - CLUSTER_HOSTNAME=weaviate
-            - CLUSTER_ADVERTISE_ADDR=172.28.0.12
-            - CLUSTER_GOSSIP_BIND_PORT=7946
-            - CLUSTER_DATA_BIND_PORT=7947
-            - DISABLE_TELEMETRY=true
-            - PERSISTENCE_DATA_PATH=/var/lib/weaviate
-            - DEFAULT_VECTORIZER_MODULE=none
-            - ENABLE_MODULES=
-            - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
-            - LOG_LEVEL=info
-        ports:
-            - "9000:8080"
-        volumes:
-            - weaviate_data:/var/lib/weaviate
-        networks:
-            bifrost_network:
-                ipv4_address: 172.28.0.12
 
-    # Redis Stack instance for vector store tests
-    redis-stack:
-        image: redis/redis-stack:7.4.0-v6
-        command: redis-stack-server --protected-mode no
-        ports:
-            - "6379:6379"
-            - "8001:8001"  # RedisInsight web UI
-        volumes:
-            - redis_data:/data
-        networks:
-            bifrost_network:
-                ipv4_address: 172.28.0.13
-        healthcheck:
-            test: ["CMD", "redis-cli", "ping"]
-            interval: 30s
-            timeout: 10s
-            retries: 3
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  # Image có sẵn: postgres:16-alpine
+  # Dùng cho: ConfigStore, AuditLog (TC-005), Governance plugin
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bifrost
+      POSTGRES_PASSWORD: bifrost_password
+      POSTGRES_DB: bifrost
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      bifrost_network:
+        ipv4_address: 172.28.0.16
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bifrost -d bifrost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-    # Qdrant instance for vector store tests
-    qdrant:
-        image: qdrant/qdrant:v1.16.0
-        ports:
-            - "6334:6334"  # gRPC API
-        volumes:
-            - qdrant_data:/qdrant/storage
-        networks:
-            bifrost_network:
-                ipv4_address: 172.28.0.14
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  # Image có sẵn: redis:7-alpine
+  # Dùng cho: Cluster coordination (TC-007, TC-010), rate-limit in-memory sync,
+  #           SemanticCache backend
+  redis:
+    image: redis:7-alpine
+    command: redis-server --protected-mode no --loglevel notice
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      bifrost_network:
+        ipv4_address: 172.28.0.13
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
-    # Pinecone Local instance for vector store tests
-    pinecone-local:
-        image: ghcr.io/pinecone-io/pinecone-index:latest
-        environment:
-            PORT: 5081
-            INDEX_TYPE: serverless
-            VECTOR_TYPE: dense
-            DIMENSION: 1536
-            METRIC: cosine
-        ports:
-            - "5081:5081"
-        platform: linux/amd64
-        networks:
-            bifrost_network:
-                ipv4_address: 172.28.0.15
-    # Postgres instance for configstore and encryption tests
-    postgres:
-        image: postgres:16-alpine
-        environment:
-            POSTGRES_USER: bifrost
-            POSTGRES_PASSWORD: bifrost_password
-            POSTGRES_DB: bifrost
-        ports:
-            - "5432:5432"
-        networks:
-            bifrost_network:
-                ipv4_address: 172.28.0.16
+  # ─── Qdrant ─────────────────────────────────────────────────────────────────
+  # Image có sẵn: qdrant/qdrant:latest
+  # Dùng cho: SemanticCache vector store (framework/vectorstore tests)
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      bifrost_network:
+        ipv4_address: 172.28.0.14
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
+  # ─── HashiCorp Vault (Dev mode) ─────────────────────────────────────────────
+  # Image: hashicorp/vault:latest  (pull-on-demand ~55MB)
+  # Dùng cho: TC-012 Vault integration tests
+  # Dev mode: root token = "dev-root", auto-unsealed, KV v2 tại secret/
+  # NOTE: Chỉ bật khi cần: docker compose up vault
+  vault:
+    image: hashicorp/vault:latest
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_LOG_LEVEL: warn
+    command: vault server -dev
+    ports:
+      - "8200:8200"
+    networks:
+      bifrost_network:
+        ipv4_address: 172.28.0.17
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -address=http://localhost:8200 2>/dev/null | grep -q 'Initialized' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ─── Bifrost HTTP Gateway ────────────────────────────────────────────────────
+  # Image có sẵn: vnp/bifrost:latest
+  # Dùng cho: Target cho tất cả enterprise integration tests (TC-001 → TC-013)
+  # NOTE: Profile "gateway" để không bật mặc định (cần config.json)
+  bifrost:
+    image: vnp/bifrost:latest
+    profiles:
+      - gateway
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: "postgres://bifrost:bifrost_password@postgres:5432/bifrost?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      BIFROST_LICENSE_KEY: "${BIFROST_LICENSE_KEY:-}"
+      LOG_LEVEL: "info"
+      LOG_STYLE: "text"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./bifrost-test-config:/app/config:ro
+    networks:
+      bifrost_network:
+        ipv4_address: 172.28.0.10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+# =============================================================================
+# Networks
+# =============================================================================
 networks:
-    bifrost_network:
-        driver: bridge
-        ipam:
-            config:
-                - subnet: 172.28.0.0/16
-                  gateway: 172.28.0.1
+  bifrost_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
 
+# =============================================================================
+# Volumes
+# =============================================================================
 volumes:
-    weaviate_data:
-    redis_data:
-    qdrant_data:    
+  postgres_data:
+  redis_data:
+  qdrant_data:
