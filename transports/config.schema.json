@@ -188,6 +188,12 @@
           "type": "boolean",
           "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
           "default": false
+        },
+        "routing_chain_max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum depth for routing rule chain evaluation",
+          "default": 10
         }
       },
       "additionalProperties": false
@@ -299,11 +305,6 @@
                 "type": "string",
                 "format": "date-time",
                 "description": "Last time budget was reset"
-              },
-              "calendar_aligned": {
-                "type": "boolean",
-                "description": "Snap resets to calendar boundaries (day/week/month/year start)",
-                "default": false
               },
               "virtual_key_id": {
                 "type": "string",

@@ -582,13 +582,13 @@ func setupProviderTestDBWithoutStoreRawColumn(t *testing.T) *gorm.DB {
 	`).Error
 	require.NoError(t, err, "Failed to create config_providers table")
 
-	// Create the gomigrate table for the migrator
+	// Create the migrations table for the migrator (matches migrator.DefaultOptions.TableName)
 	err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS gomigrate (
+		CREATE TABLE IF NOT EXISTS migrations (
 			id VARCHAR(255) PRIMARY KEY
 		)
 	`).Error
-	require.NoError(t, err, "Failed to create gomigrate table")
+	require.NoError(t, err, "Failed to create migrations table")
 
 	return db
 }
@@ -615,7 +615,7 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 	}
 
 	// Drop the table if it exists to start fresh (for this specific test)
-	db.Exec("DROP TABLE IF EXISTS gomigrate")
+	db.Exec("DROP TABLE IF EXISTS migrations")
 	db.Exec("DROP TABLE IF EXISTS config_providers")
 
 	// Create the config_providers table manually without store_raw_request_response column
@@ -645,9 +645,9 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 		return nil
 	}
 
-	// Create the gomigrate table for the migrator
+	// Create the migrations table for the migrator (matches migrator.DefaultOptions.TableName)
 	err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS gomigrate (
+		CREATE TABLE IF NOT EXISTS migrations (
 			id VARCHAR(255) PRIMARY KEY
 		)
 	`).Error
@@ -657,7 +657,7 @@ func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *g
 
 	// Clean up tables after the test
 	t.Cleanup(func() {
-		db.Exec("DROP TABLE IF EXISTS gomigrate")
+		db.Exec("DROP TABLE IF EXISTS migrations")
 		db.Exec("DROP TABLE IF EXISTS config_providers")
 	})
 

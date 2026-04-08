@@ -275,7 +275,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 	client := provider.client
 	extraHeaders := provider.networkConfig.ExtraHeaders
 
-	if !key.ReplicateKeyConfig.UseDeploymentsEndpoint {
+	if key.ReplicateKeyConfig == nil || !key.ReplicateKeyConfig.UseDeploymentsEndpoint {
 		return ToBifrostListModelsResponse(
 			&ReplicateDeploymentListResponse{},
 			providerName,
