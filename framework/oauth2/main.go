@@ -116,6 +116,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 
 	// Call OAuth provider's token endpoint with refresh_token
 	newTokenResponse, err := p.exchangeRefreshToken(
+		ctx,
 		oauthConfig.TokenURL,
 		oauthConfig.ClientID,
 		oauthConfig.ClientSecret,
@@ -511,6 +512,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 
 	// Exchange code for tokens with PKCE verifier
 	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
+		ctx,
 		oauthConfig.TokenURL,
 		code,
 		oauthConfig.ClientID,
@@ -579,7 +581,7 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 }
 
 // exchangeCodeForTokens exchanges authorization code for access/refresh tokens
-func (p *OAuth2Provider) exchangeCodeForTokens(tokenURL, code, clientID, clientSecret, redirectURI string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeCodeForTokens(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -589,11 +591,11 @@ func (p *OAuth2Provider) exchangeCodeForTokens(tokenURL, code, clientID, clientS
 		data.Set("client_secret", clientSecret)
 	}
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
 }
 
 // exchangeCodeForTokensWithPKCE exchanges authorization code for access/refresh tokens with PKCE verifier
-func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -606,7 +608,7 @@ func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(tokenURL, code, clientID,
 		data.Set("client_secret", clientSecret)
 	}
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
 }
 
 // markExpiredIfPermanent marks oauth_config.status as "expired" when a refresh failure
@@ -623,14 +625,14 @@ func (p *OAuth2Provider) markExpiredIfPermanent(ctx context.Context, oauthConfig
 }
 
 // exchangeRefreshToken exchanges refresh token for new access token
-func (p *OAuth2Provider) exchangeRefreshToken(tokenURL, clientID, clientSecret, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeRefreshToken(ctx context.Context, tokenURL, clientID, clientSecret, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", clientID)
 	data.Set("client_secret", clientSecret)
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
 }
 
 // PermanentOAuthError indicates the OAuth provider rejected the request in a way
@@ -660,12 +662,12 @@ func sleepIfNotLastAttempt(attempt int, baseDelay time.Duration) {
 // callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
 // Transport errors and 5xx responses are retried up to maxTokenRetries times with
 // exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
-func (p *OAuth2Provider) callTokenEndpoint(tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	var lastErr error
 
 	for attempt := range maxTokenRetries {
-		req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
+		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
