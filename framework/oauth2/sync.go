@@ -2,7 +2,6 @@ package oauth2
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -116,15 +115,7 @@ func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 			// Only mark as expired for permanent auth rejections (e.g. invalid_grant, 401).
 			// Transient failures (DNS, timeout, offline) are skipped — the worker will
 			// retry on the next tick and the connection heals automatically when online.
-			var permErr *PermanentOAuthError
-			if errors.As(err, &permErr) {
-				oauthConfig.Status = "expired"
-				if updateErr := w.provider.configStore.UpdateOauthConfig(ctx, oauthConfig); updateErr != nil {
-					if w.logger != nil {
-						w.logger.Error("Failed to update oauth config status: %s, error: %s", oauthConfig.ID, updateErr.Error())
-					}
-				}
-			}
+			w.provider.markExpiredIfPermanent(ctx, oauthConfig, err)
 		} else {
 			if w.logger != nil {
 				w.logger.Debug("Successfully refreshed token: %s", oauthConfig.ID)

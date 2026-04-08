@@ -207,3 +207,66 @@ func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "new-access-token", token.AccessToken)
 }
+
+func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkExpired(t *testing.T) {
+	// This is the exact failure mode that triggered this fix: the machine goes
+	// offline, DNS fails, and the token endpoint is unreachable. The transport
+	// error (client.Do fails) must not mark the config expired.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	tokenURL := server.URL + "/token"
+	server.Close() // close immediately so all connection attempts are refused
+
+	store := newTestConfigStore()
+	oauthConfigID := seedFixtures(t, store, tokenURL)
+
+	worker := newTestWorker(store)
+	worker.refreshExpiredTokens(context.Background())
+
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "authorized", cfg.Status, "connection refused must not mark config as expired")
+}
+
+func TestTokenRefreshWorker_400InvalidGrant_MarksExpired(t *testing.T) {
+	// 400 invalid_grant is the canonical RFC 6749 signal that a refresh token
+	// has been revoked. Must mark the config expired.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":             "invalid_grant",
+			"error_description": "The refresh token has been revoked",
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	worker.refreshExpiredTokens(context.Background())
+
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "expired", cfg.Status, "400 invalid_grant must mark config as expired")
+}
+
+func TestTokenRefreshWorker_429RateLimit_DoesNotMarkExpired(t *testing.T) {
+	// 429 Too Many Requests is a transient rate limit — not a permanent auth
+	// rejection. Must not mark the config expired.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	worker.refreshExpiredTokens(context.Background())
+
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "authorized", cfg.Status, "429 rate limit must not mark config as expired")
+}
