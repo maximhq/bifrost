@@ -238,6 +238,9 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	sort_by?: "name" | "budget_spent" | "created_at" | "status";
+	order?: "asc" | "desc";
+	export?: boolean;
 }
 
 // Response types

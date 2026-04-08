@@ -397,7 +397,7 @@ func NewMockConfigStore() *MockConfigStore {
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -12247,13 +12247,13 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	mock := &MockConfigStore{
 		plugins: []*tables.TablePlugin{
 			{
-				Name:      "plugin-a",
-				Enabled:   true,
-				Placement: &postBuiltin,
-				Order:     &order0,
-				Version:   1,
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				Version:    1,
 				ConfigJSON: `{"setting":"db-value"}`,
-				Config:    map[string]any{"setting": "db-value"},
+				Config:     map[string]any{"setting": "db-value"},
 			},
 		},
 	}
@@ -12292,17 +12292,17 @@ func TestGenerateClientConfigHash(t *testing.T) {
 	initTestLogger()
 
 	cc1 := configstore.ClientConfig{
-		DropExcessRequests:      true,
-		InitialPoolSize:         300,
-		PrometheusLabels:        []string{"label1", "label2"},
-		EnableLogging:           new(true),
-		DisableContentLogging:   false,
-		LogRetentionDays:        30,
+		DropExcessRequests:     true,
+		InitialPoolSize:        300,
+		PrometheusLabels:       []string{"label1", "label2"},
+		EnableLogging:          new(true),
+		DisableContentLogging:  false,
+		LogRetentionDays:       30,
 		EnforceAuthOnInference: false,
 		AllowDirectKeys:        true,
-		AllowedOrigins:          []string{"http://localhost:3000"},
-		MaxRequestBodySizeMB:    100,
-		EnableLiteLLMFallbacks:  false,
+		AllowedOrigins:         []string{"http://localhost:3000"},
+		MaxRequestBodySizeMB:   100,
+		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -13341,30 +13341,30 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		labels := []string{"provider", "model", "status"}
 
 		ccToSave := tables.TableClientConfig{
-			DropExcessRequests:      true,
-			InitialPoolSize:         300,
-			PrometheusLabels:        labels,
-			EnableLogging:           new(true),
-			DisableContentLogging:   false,
-			LogRetentionDays:        30,
+			DropExcessRequests:     true,
+			InitialPoolSize:        300,
+			PrometheusLabels:       labels,
+			EnableLogging:          new(true),
+			DisableContentLogging:  false,
+			LogRetentionDays:       30,
 			EnforceAuthOnInference: false,
-			AllowDirectKeys:         true,
-			MaxRequestBodySizeMB:    100,
-			EnableLiteLLMFallbacks:  false,
+			AllowDirectKeys:        true,
+			MaxRequestBodySizeMB:   100,
+			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
 		clientConfig := configstore.ClientConfig{
-			DropExcessRequests:      ccToSave.DropExcessRequests,
-			InitialPoolSize:         ccToSave.InitialPoolSize,
-			PrometheusLabels:        ccToSave.PrometheusLabels,
-			EnableLogging:           ccToSave.EnableLogging,
-			DisableContentLogging:   ccToSave.DisableContentLogging,
-			LogRetentionDays:        ccToSave.LogRetentionDays,
+			DropExcessRequests:     ccToSave.DropExcessRequests,
+			InitialPoolSize:        ccToSave.InitialPoolSize,
+			PrometheusLabels:       ccToSave.PrometheusLabels,
+			EnableLogging:          ccToSave.EnableLogging,
+			DisableContentLogging:  ccToSave.DisableContentLogging,
+			LogRetentionDays:       ccToSave.LogRetentionDays,
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
-			AllowDirectKeys:         ccToSave.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccToSave.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccToSave.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13374,16 +13374,16 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Where("id = ?", ccToSave.ID).First(&ccFromDB)
 
 		clientConfigFromDB := configstore.ClientConfig{
-			DropExcessRequests:      ccFromDB.DropExcessRequests,
-			InitialPoolSize:         ccFromDB.InitialPoolSize,
-			PrometheusLabels:        ccFromDB.PrometheusLabels,
-			EnableLogging:           ccFromDB.EnableLogging,
-			DisableContentLogging:   ccFromDB.DisableContentLogging,
-			LogRetentionDays:        ccFromDB.LogRetentionDays,
+			DropExcessRequests:     ccFromDB.DropExcessRequests,
+			InitialPoolSize:        ccFromDB.InitialPoolSize,
+			PrometheusLabels:       ccFromDB.PrometheusLabels,
+			EnableLogging:          ccFromDB.EnableLogging,
+			DisableContentLogging:  ccFromDB.DisableContentLogging,
+			LogRetentionDays:       ccFromDB.LogRetentionDays,
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
-			AllowDirectKeys:         ccFromDB.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccFromDB.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -15390,12 +15390,13 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 
 // enterpriseSchemaPaths are schema paths that exist only in enterprise version
 var enterpriseSchemaPaths = map[string]bool{
-	"$schema":              true,
-	"audit_logs":           true,
-	"cluster_config":       true,
-	"saml_config":          true,
-	"load_balancer_config": true,
-	"guardrails_config":    true,
+	"$schema":                    true,
+	"audit_logs":                 true,
+	"cluster_config":             true,
+	"saml_config":                true,
+	"load_balancer_config":       true,
+	"guardrails_config":          true,
+	"large_payload_optimization": true,
 }
 
 // excludedGoFields are Go struct fields that should not be in the schema (internal use only)
@@ -15751,12 +15752,13 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 	// Enterprise-only features: These fields exist in the JSON schema for documentation
 	// and validation purposes, but are only available in the enterprise version.
 	enterpriseSchemaFields := map[string]bool{
-		"$schema":              true,
-		"audit_logs":           true,
-		"cluster_config":       true,
-		"saml_config":          true,
-		"load_balancer_config": true,
-		"guardrails_config":    true,
+		"$schema":                      true,
+		"audit_logs":                   true,
+		"cluster_config":               true,
+		"saml_config":                  true,
+		"load_balancer_config":         true,
+		"guardrails_config":            true,
+		"large_payload_optimization":   true,
 	}
 
 	schema := loadJSONSchema(t)
@@ -16722,7 +16724,7 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	require.NotNil(t, config.ConfigStore, "ConfigStore should be created by default")
 
 	// Verify default client config
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 
 	// HeaderMatcher is nil when no header filter is configured (DefaultClientConfig has nil HeaderFilterConfig)
 	// This is expected behavior - it's only set when HeaderFilterConfig is non-nil
@@ -16882,7 +16884,7 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 	require.True(t, hasOpenAI, "OpenAI should be loaded from file")
 
 	// Verify client config gets defaults (no client in file)
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 
 	// Verify other sections are nil/empty
 	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
@@ -16949,7 +16951,7 @@ func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
 	require.Equal(t, 500.0, config.GovernanceConfig.Budgets[0].MaxLimit)
 
 	// Verify client config gets defaults
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 }
 
 // TestLoadConfig_PartialConfigFile_OnlyPlugins tests config.json with only plugins section
@@ -16976,7 +16978,7 @@ func TestLoadConfig_PartialConfigFile_OnlyPlugins(t *testing.T) {
 	require.Equal(t, "my-plugin", config.PluginConfigs[0].Name)
 
 	// Verify client gets defaults
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 }
 
 // TestLoadConfig_PartialConfigFile_OnlyMCP tests config.json with only MCP section
@@ -17005,7 +17007,7 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 	require.Equal(t, "mcp_test", config.MCPConfig.ClientConfigs[0].Name)
 
 	// Verify client gets defaults
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 }
 
 // TestLoadConfig_PartialConfigFile_ClientAndProviders tests the most common minimal config
@@ -17231,7 +17233,7 @@ func TestLoadConfig_DefaultClientConfig_Values(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	assertDefaultClientConfigValues(t, config.ClientConfig)
+	assertDefaultClientConfigValues(t, *config.ClientConfig)
 }
 
 // TestLoadConfig_PartialClientConfig_DefaultsFillGaps tests that missing client fields get defaults

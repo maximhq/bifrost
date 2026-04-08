@@ -75,7 +75,7 @@
         },
         "enforce_governance_header": {
           "type": "boolean",
-          "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
+          "description": "Deprecated: use enforce_auth_on_inference"
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
@@ -138,6 +138,13 @@
             "type": "string"
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
+        },
+        "whitelisted_routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
         },
         "hide_deleted_virtual_keys_in_filters": {
           "type": "boolean",
@@ -245,6 +252,9 @@
           "$ref": "#/$defs/provider_with_vllm_config"
         },
         "huggingface": {
+          "$ref": "#/$defs/provider"
+        },
+        "fireworks": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -1685,12 +1695,54 @@
                     "type": "string",
                     "description": "AWS ARN"
                   },
+                  "role_arn": {
+                    "type": "string",
+                    "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                  },
+                  "external_id": {
+                    "type": "string",
+                    "description": "External ID for AssumeRole (can use env. prefix)"
+                  },
+                  "session_name": {
+                    "type": "string",
+                    "description": "Role session name for AssumeRole (can use env. prefix)"
+                  },
                   "deployments": {
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
                     },
                     "description": "Model to deployment mappings"
+                  },
+                  "batch_s3_config": {
+                    "type": "object",
+                    "description": "S3 bucket configuration for Bedrock batch operations",
+                    "properties": {
+                      "buckets": {
+                        "type": "array",
+                        "description": "List of S3 bucket configurations",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "bucket_name": {
+                              "type": "string",
+                              "description": "S3 bucket name"
+                            },
+                            "prefix": {
+                              "type": "string",
+                              "description": "S3 key prefix for batch files"
+                            },
+                            "is_default": {
+                              "type": "boolean",
+                              "description": "Whether this is the default bucket for batch operations"
+                            }
+                          },
+                          "required": ["bucket_name"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -2148,6 +2200,26 @@
                   "type": "string",
                   "description": "AWS session token (can use env. prefix)"
                 },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region"
+                },
+                "arn": {
+                  "type": "string",
+                  "description": "AWS ARN"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
                 "deployments": {
                   "type": "object",
                   "additionalProperties": {
@@ -2155,13 +2227,35 @@
                   },
                   "description": "Model to deployment mappings"
                 },
-                "arn": {
-                  "type": "string",
-                  "description": "AWS ARN"
-                },
-                "region": {
-                  "type": "string",
-                  "description": "AWS region"
+                "batch_s3_config": {
+                  "type": "object",
+                  "description": "S3 bucket configuration for Bedrock batch operations",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "description": "List of S3 bucket configurations",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bucket_name": {
+                            "type": "string",
+                            "description": "S3 bucket name"
+                          },
+                          "prefix": {
+                            "type": "string",
+                            "description": "S3 key prefix for batch files"
+                          },
+                          "is_default": {
+                            "type": "boolean",
+                            "description": "Whether this is the default bucket for batch operations"
+                          }
+                        },
+                        "required": ["bucket_name"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -2962,10 +3056,6 @@
         "enabled": {
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
-        },
-        "node_id": {
-          "type": "string",
-          "description": "Unique identifier for this cluster node"
         },
         "region": {
           "type": "string",

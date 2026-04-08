@@ -10,7 +10,8 @@ import {
 	useGetVirtualKeysQuery,
 } from "@/lib/store"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { useEffect, useRef, useState } from "react"
+import { parseAsInteger, parseAsString, useQueryStates } from "nuqs"
+import { useEffect, useRef } from "react"
 import { toast } from "sonner"
 
 const POLLING_INTERVAL = 5000
@@ -22,28 +23,32 @@ export default function GovernanceVirtualKeysPage() {
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View)
 	const shownErrorsRef = useRef(new Set<string>())
 
-	const [search, setSearch] = useState("")
-	const [customerFilter, setCustomerFilter] = useState("")
-	const [teamFilter, setTeamFilter] = useState("")
-	const [offset, setOffset] = useState(0)
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			search: parseAsString.withDefault(""),
+			customer_id: parseAsString.withDefault(""),
+			team_id: parseAsString.withDefault(""),
+			offset: parseAsInteger.withDefault(0),
+			sort_by: parseAsString.withDefault(""),
+			order: parseAsString.withDefault(""),
+		},
+		{ history: "push" },
+	)
 
-	const debouncedSearch = useDebouncedValue(search, 300)
+	const debouncedSearch = useDebouncedValue(urlState.search, 300)
 
-	// Reset to first page when filters change
-	useEffect(() => {
-		setOffset(0)
-	}, [debouncedSearch, customerFilter, teamFilter])
-
-	const {
+const {
 		data: virtualKeysData,
 		error: vkError,
 		isLoading: vkLoading,
 	} = useGetVirtualKeysQuery({
 		limit: PAGE_SIZE,
-		offset,
+		offset: urlState.offset,
 		search: debouncedSearch || undefined,
-		customer_id: customerFilter || undefined,
-		team_id: teamFilter || undefined,
+		customer_id: urlState.customer_id || undefined,
+		team_id: urlState.team_id || undefined,
+		sort_by: (urlState.sort_by as "name" | "budget_spent" | "created_at" | "status") || undefined,
+		order: (urlState.order as "asc" | "desc") || undefined,
 	}, {
 		skip: !hasVirtualKeysAccess,
 		pollingInterval: POLLING_INTERVAL,
@@ -71,9 +76,9 @@ export default function GovernanceVirtualKeysPage() {
 
 	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
 	useEffect(() => {
-		if (!virtualKeysData || offset < vkTotal) return
-		setOffset(vkTotal === 0 ? 0 : Math.floor((vkTotal - 1) / PAGE_SIZE) * PAGE_SIZE)
-	}, [vkTotal, offset])
+		if (!virtualKeysData || urlState.offset < vkTotal) return
+		setUrlState({ offset: vkTotal === 0 ? 0 : Math.floor((vkTotal - 1) / PAGE_SIZE) * PAGE_SIZE })
+	}, [vkTotal, urlState.offset])
 
 	const isLoading = vkLoading || teamsLoading || customersLoading
 
@@ -98,6 +103,26 @@ export default function GovernanceVirtualKeysPage() {
 		return <FullPageLoader />
 	}
 
+	const handleSearchChange = (value: string) => {
+		setUrlState({ search: value || null, offset: 0 })
+	}
+
+	const handleCustomerFilterChange = (value: string) => {
+		setUrlState({ customer_id: value || null, offset: 0 })
+	}
+
+	const handleTeamFilterChange = (value: string) => {
+		setUrlState({ team_id: value || null, offset: 0 })
+	}
+
+	const handleOffsetChange = (newOffset: number) => {
+		setUrlState({ offset: newOffset })
+	}
+
+	const handleSortChange = (newSortBy: string, newOrder: string) => {
+		setUrlState({ sort_by: newSortBy || null, order: newOrder || null, offset: 0 })
+	}
+
 	return (
 		<div className="mx-auto w-full max-w-7xl">
 			<VirtualKeysTable
@@ -105,16 +130,19 @@ export default function GovernanceVirtualKeysPage() {
 				totalCount={virtualKeysData?.total_count || 0}
 				teams={teamsData?.teams || []}
 				customers={customersData?.customers || []}
-				search={search}
+				search={urlState.search}
 				debouncedSearch={debouncedSearch}
-				onSearchChange={setSearch}
-				customerFilter={customerFilter}
-				onCustomerFilterChange={setCustomerFilter}
-				teamFilter={teamFilter}
-				onTeamFilterChange={setTeamFilter}
-				offset={offset}
+				onSearchChange={handleSearchChange}
+				customerFilter={urlState.customer_id}
+				onCustomerFilterChange={handleCustomerFilterChange}
+				teamFilter={urlState.team_id}
+				onTeamFilterChange={handleTeamFilterChange}
+				offset={urlState.offset}
 				limit={PAGE_SIZE}
-				onOffsetChange={setOffset}
+				onOffsetChange={handleOffsetChange}
+				sortBy={urlState.sort_by}
+				order={urlState.order}
+				onSortChange={handleSortChange}
 			/>
 		</div>
 	)

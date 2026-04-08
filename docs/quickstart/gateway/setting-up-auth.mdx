@@ -42,7 +42,27 @@ By default, when authentication is enabled, all API calls (including inference c
 This option is useful if you want to protect your dashboard and admin functions while allowing public access to inference endpoints.
 </Note>
 
-### Step 4: Save Changes
+### Step 4: Configure Whitelisted Routes (Optional)
+
+You can configure specific routes that bypass the authentication middleware entirely. Requests to these routes will not require authentication, even when auth is enabled.
+
+1. Scroll to the **Whitelisted Routes** section
+2. Enter a comma-separated list of routes in the textarea
+
+![Whitelisted Routes Configuration](../../media/ui-security-whitelisted-routes.png)
+
+**Wildcard support:** Routes ending with `*` are treated as prefix matches. For example, `/api/webhook*` will match `/api/webhook`, `/api/webhook/v1`, `/api/webhook/github`, etc.
+
+**Example values:**
+```
+/api/custom-webhook, /api/public-endpoint, /api/webhook*
+```
+
+<Note>
+System routes like `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback`, and `/api/info` are always whitelisted regardless of this setting. Whitelisted routes only apply to dashboard and admin API endpoints — inference endpoints have their own toggle (see Step 3).
+</Note>
+
+### Step 5: Save Changes
 
 1. Click **Save Changes** to apply your authentication settings
 2. Changes take effect immediately - no restart required
@@ -79,6 +99,10 @@ When authentication is enabled for inference calls (i.e., the "Disable authentic
 
 - **Basic Authentication**: Username and Password in Basic auth
 - **Bearer Token**: base64 string of username:password as bearer token
+### Whitelisted Routes
+
+When a route is added to the whitelisted routes list in Security settings, requests to that path bypass authentication entirely — no Basic Auth or Bearer Token is required. This applies only to dashboard and admin API endpoints. Inference endpoints are controlled separately via the "Disable authentication on inference calls" toggle.
+
 ### Example: Using Basic Auth for Inference Calls
 
 ```bash
@@ -98,6 +122,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 - **Session Duration**: Login sessions last for 30 days
 - **Password Security**: Passwords are hashed and stored securely in the database
 - **Inference Calls**: If you disable authentication on inference calls, only dashboard and admin API endpoints will be protected
+- **Whitelisted Routes**: Routes configured in Security settings bypass auth on dashboard/admin API endpoints only. Use `*` at the end of a route for prefix matching (e.g., `/api/webhook*`)
 
 ## Disabling Authentication
 

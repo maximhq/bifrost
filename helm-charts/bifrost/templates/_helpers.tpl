@@ -263,6 +263,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.whitelistedRoutes }}
+{{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
+{{- end }}
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
@@ -873,15 +876,13 @@ false
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
-{{- if .enabled }}
-{{- $customPlugin := dict "enabled" true "name" .name }}
+{{- $customPlugin := dict "enabled" .enabled "name" .name }}
 {{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
 {{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
 {{- $plugins = append $plugins $customPlugin }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- if $plugins }}

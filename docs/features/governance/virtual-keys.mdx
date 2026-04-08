@@ -155,7 +155,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   },
   "governance": {
     "virtual_keys": [
@@ -520,7 +520,7 @@ curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "enforce_governance_header": true
+      "enforce_auth_on_inference": true
     }
   }'
 ```
@@ -531,7 +531,7 @@ curl -X PUT http://localhost:8080/api/config \
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   }
 }
 ```

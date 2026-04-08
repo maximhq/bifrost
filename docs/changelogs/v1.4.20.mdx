@@ -1,0 +1,97 @@
+---
+title: "v1.4.20"
+description: "v1.4.20 changelog - 2026-04-06"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.20
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.20
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.20
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.20">
+## ✨ Features
+
+- **Fireworks AI Provider** — Added Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- **Unified Models API** — Unified /api/models and /api/models/details listing behavior
+- **Server Bootstrap Timer** — Added server bootstrap timer for performance monitoring
+- **Security Path Whitelisting** — Allow path whitelisting from security config
+- **Large Payload Optimizations** — Updated config schema for large payload optimizations
+- **Virtual Keys Table** — Added sorting and CSV export to virtual keys table
+- **Combobox Refactor** — Removed base-ui dependencies and recreated combobox using Radix primitives
+- **Switch Component** — Added async support and loading state to Switch component
+
+## 🐞 Fixed
+
+- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- **Gemini Thinking Budget** — Fixed thinking budget validation for Gemini models
+- **Integration Data Race** — Fixed race in data reading from fasthttp request for integrations
+- **Beta Headers** — Fixed case-insensitive lookup in merge beta headers
+- **Deprecated Config Field** — Replaced enforce_governance_header with enforce_auth_on_inference
+- **Bedrock Config Schema** — Fixed config schema for Bedrock key config
+- **OpenAI Codex** — Fixed store flag for OpenAI Codex
+- **Delete Button Styling** — Standardized delete button styling with red theme across workspace tables
+
+</Update>
+<Update label="Core" description="1.4.17">
+- feat: add Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: allow path whitelisting from security config
+- fix: bedrock streaming - retry retryable AWS exceptions (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: bedrock streaming - retry stale/closed-connection errors (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: thinking budget validation for Gemini models
+- fix: add empty arguments guard in Bedrock utils
+- fix: case-insensitive lookup in merge beta headers
+- fix: LLM validation fixes
+
+</Update>
+<Update label="Framework" description="1.2.36">
+- feat: add Fireworks AI provider support (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add sorting and CSV export to virtual keys table
+- feat: allow path whitelisting from security config
+- fix: increase buffer size for custom plugin installs from URLs
+- fix: add retry mechanism to model catalog pricing sync lock
+
+</Update>
+<Update label="governance" description="1.4.36">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="jsonparser" description="1.4.35">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="litellmcompat" description="0.0.25">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="logging" description="1.4.36">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="maxim" description="1.5.36">
+- feat: add image generation request support
+
+</Update>
+<Update label="mocker" description="1.4.35">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="otel" description="1.1.35">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="semanticcache" description="1.4.34">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>
+<Update label="telemetry" description="1.4.36">
+- chore: upgraded core to v1.4.17 and framework to v1.2.36
+
+</Update>

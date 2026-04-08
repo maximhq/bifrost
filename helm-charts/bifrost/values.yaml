@@ -203,6 +203,7 @@ bifrost:
     # mcpCodeModeBindingLevel: ""    # Code mode binding level (server or tool)
     # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
+    # whitelistedRoutes: []           # Routes that bypass auth middleware
 
   # Framework configuration
   framework:

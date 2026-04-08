@@ -100,6 +100,13 @@
             ]
           },
           {
+            "group": "Migration Guides",
+            "icon": "arrow-up-right-dots",
+            "pages": [
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
             "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
@@ -121,6 +128,7 @@
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/elevenlabs",
+                  "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
@@ -478,6 +486,7 @@
             "icon": "rocket",
             "pages": [
               "changelogs/v1.5.0-prerelease1",
+              "changelogs/v1.4.20",
               {
                 "group": "March 2026",
                 "pages": [

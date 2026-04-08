@@ -78,6 +78,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.applyMistralCompatibility()
 		}
 		return openaiReq
+	case schemas.Fireworks:
+		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
+		// Preserve it before the generic filter strips prompt_cache_key.
+		if openaiReq.ChatParameters.PromptCacheKey != nil && openaiReq.PromptCacheIsolationKey == nil {
+			openaiReq.PromptCacheIsolationKey = openaiReq.ChatParameters.PromptCacheKey
+		}
+		// Fireworks supports predicted outputs; save before the filter strips them.
+		prediction := openaiReq.ChatParameters.Prediction
+		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.ChatParameters.Prediction = prediction
+		return openaiReq
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {

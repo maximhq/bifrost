@@ -21,6 +21,9 @@ type VirtualKeyQueryParams struct {
 	Search     string
 	CustomerID string
 	TeamID     string
+	SortBy     string // name, budget_spent, created_at, status (default: created_at)
+	Order      string // asc, desc (default: asc)
+	Export     bool   // When true, skip default pagination limits (caller controls limit)
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.

@@ -71,9 +71,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 }
 
-func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *GeminiGenerationRequest {
+func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Create the base Gemini generation request
@@ -83,7 +83,11 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		geminiReq.GenerationConfig = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
+		var err error
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
+		if err != nil {
+			return nil, err
+		}
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
@@ -100,7 +104,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 	if bifrostReq.Input != nil {
 		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		geminiReq.Contents = contents
 
@@ -135,7 +139,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 		}
 	}
 
-	return geminiReq
+	return geminiReq, nil
 }
 
 // ToResponsesBifrostResponsesResponse converts a Gemini GenerateContentResponse to a BifrostResponsesResponse
@@ -2638,7 +2642,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) GenerationConfig {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -2655,13 +2659,6 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
-
-		// Get max tokens for conversions
-		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
-		if config.MaxOutputTokens > 0 {
-			maxTokens = int(config.MaxOutputTokens)
-		}
-		minBudget := DefaultReasoningMinBudget
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
@@ -2685,6 +2682,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
+				if err := validateThinkingBudget(r.Model, budget); err != nil {
+					return config, err
+				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
 			}
 		} else if hasEffort {
@@ -2693,11 +2693,16 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				// Gemini 3.0+ - use thinkingLevel (more native)
 				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, r.Model))
 			} else {
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+				if config.MaxOutputTokens > 0 {
+					maxTokens = int(config.MaxOutputTokens)
+				}
+				budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
-					minBudget,
-					maxTokens,
+					budgetRange.Min,
+					budgetRange.Max,
 				)
 				if err == nil {
 					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
@@ -2737,7 +2742,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 	}
 
-	return config
+	return config, nil
 }
 
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools

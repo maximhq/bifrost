@@ -95,6 +95,51 @@ func effortToThinkingLevel(effort string, model string) string {
 	}
 }
 
+func getThinkingBudgetRange(model string, defaultMaxTokens int) thinkingBudgetRange {
+	modelLower := strings.ToLower(model)
+	for _, entry := range thinkingBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			return entry.r
+		}
+	}
+	// Fallback for unknown thinking-capable models
+	return thinkingBudgetRange{Min: DefaultReasoningMinBudget, Max: defaultMaxTokens}
+}
+
+// validateThinkingBudget returns an error if the explicit thinking budget is outside the
+// model's allowed range. Budget 0 (disable) and -1 (dynamic) are always valid.
+// Models not present in thinkingBudgetRanges are skipped — limits are only enforced
+// for models whose ranges are explicitly known.
+func validateThinkingBudget(model string, budget int) error {
+	if budget == 0 || budget == DynamicReasoningBudget {
+		return nil // 0 = disable thinking, -1 = dynamic
+	}
+	if budget < 0 {
+		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
+	}
+	modelLower := strings.ToLower(model)
+
+	var budgetRange thinkingBudgetRange
+	found := false
+	for _, entry := range thinkingBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			budgetRange = entry.r
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil // skip validation
+	}
+	if budget < budgetRange.Min {
+		return fmt.Errorf("thinking budget %d is below the minimum of %d for model %s", budget, budgetRange.Min, model)
+	}
+	if budget > budgetRange.Max {
+		return fmt.Errorf("thinking budget %d exceeds the maximum of %d for model %s", budget, budgetRange.Max, model)
+	}
+	return nil
+}
+
 func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
@@ -128,7 +173,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
-		minBudget := DefaultReasoningMinBudget
+		budgetRange := getThinkingBudgetRange(r.Model, maxTokens)
 
 		// Priority: Budget first (if present), then Level
 		if config.ThinkingConfig.ThinkingBudget != nil {
@@ -137,7 +182,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			params.Reasoning.MaxTokens = schemas.Ptr(budget)
 
 			// Also provide effort for compatibility
-			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, minBudget, maxTokens)
+			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, budgetRange.Min, budgetRange.Max)
 			params.Reasoning.Effort = schemas.Ptr(effort)
 
 			// Handle special cases
@@ -170,7 +215,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 
 			// Also convert to budget for compatibility
 			if effort != "none" {
-				budget, _ := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTokens)
+				budget, _ := providerUtils.GetBudgetTokensFromReasoningEffort(effort, budgetRange.Min, budgetRange.Max)
 				params.Reasoning.MaxTokens = schemas.Ptr(budget)
 			}
 		}
@@ -922,7 +967,7 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) GenerationConfig {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -963,13 +1008,6 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			IncludeThoughts: true,
 		}
 
-		// Get max tokens for conversions
-		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
-		if config.MaxOutputTokens > 0 {
-			maxTokens = int(config.MaxOutputTokens)
-		}
-		minBudget := DefaultReasoningMinBudget
-
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
 		supportsLevel := isGemini3Plus(model) // Check if model is 3.0+
@@ -992,6 +1030,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
+				if err := validateThinkingBudget(model, budget); err != nil {
+					return config, err
+				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
 			}
 		} else if hasEffort {
@@ -1001,11 +1042,16 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
 				config.ThinkingConfig.ThinkingLevel = &level
 			} else {
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
+				if config.MaxOutputTokens > 0 {
+					maxTokens = int(config.MaxOutputTokens)
+				}
+				budgetRange := getThinkingBudgetRange(model, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
-					minBudget,
-					maxTokens,
+					budgetRange.Min,
+					budgetRange.Max,
 				)
 				if err == nil {
 					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
@@ -1062,7 +1108,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
-	return config
+	return config, nil
 }
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format

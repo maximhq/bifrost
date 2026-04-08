@@ -638,6 +638,7 @@ func (l *Log) DeserializeFields() error {
 // This is separate from the main Log table since MCP tool calls have different fields
 type MCPToolLog struct {
 	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	RequestID      string    `gorm:"type:varchar(255);column:request_id;index:idx_mcp_logs_request_id" json:"request_id,omitempty"` // The original request ID from context
 	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	Timestamp      time.Time `gorm:"index;not null" json:"timestamp"`
 	ToolName       string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`

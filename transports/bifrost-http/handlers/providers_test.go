@@ -7,12 +7,13 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
+// mockModelsManager returns stable filtered and unfiltered model lists for handler tests.
 type mockModelsManager struct {
 	filtered   map[schemas.ModelProvider][]string
 	unfiltered map[schemas.ModelProvider][]string
@@ -40,6 +41,7 @@ func (m *mockModelsManager) GetUnfilteredModelsForProvider(provider schemas.Mode
 	return result
 }
 
+// providerHandlerForTest builds a handler with fixed provider config and model sets.
 func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
@@ -60,7 +62,10 @@ func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, 
 	}
 }
 
-func boolPtr(v bool) *bool { return &v }
+// boolPtr keeps pointer-valued key fixtures inline without pulling in pointer helpers.
+func boolPtr(v bool) *bool {
+	return &v
+}
 
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -143,6 +148,42 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 	}
 	if len(got["gpt-4o-mini"]) != 1 || got["gpt-4o-mini"][0] != "key-b" {
 		t.Fatalf("expected gpt-4o-mini to be accessible by [key-b], got %#v", got["gpt-4o-mini"])
+	}
+}
+
+func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"},
+		[]string{"gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"},
+	)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&query=gpt&limit=1")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if resp.Total != 2 {
+		t.Fatalf("expected total=2 after query filtering, got %d", resp.Total)
+	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected limit to truncate response to 1 model, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-4o" {
+		t.Fatalf("expected first filtered model to be gpt-4o, got %#v", resp.Models[0])
 	}
 }
 
@@ -243,7 +284,7 @@ func TestListModelDetails_ErrorsWhenModelCatalogUnavailable(t *testing.T) {
 	}
 }
 
-func TestListModelDetails_FailsClosedForUnknownKeys(t *testing.T) {
+func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -269,17 +310,17 @@ func TestListModelDetails_FailsClosedForUnknownKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 0 || len(resp.Models) != 0 {
-		t.Fatalf("expected no models, got %#v", resp.Models)
+	if resp.Total != 2 || len(resp.Models) != 2 {
+		t.Fatalf("expected all models when keys are unknown, got %#v", resp.Models)
 	}
 }
 
-func TestListModelDetails_FailsClosedForMixedValidAndUnknownKeys(t *testing.T) {
+func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
 		schemas.OpenAI,
-		[]schemas.Key{{ID: "key-a"}},
+		[]schemas.Key{{ID: "key-a", Models: []string{"gpt-4o"}}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
@@ -300,18 +341,21 @@ func TestListModelDetails_FailsClosedForMixedValidAndUnknownKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 0 || len(resp.Models) != 0 {
-		t.Fatalf("expected no models, got %#v", resp.Models)
+	if resp.Total != 1 || len(resp.Models) != 1 {
+		t.Fatalf("expected 1 model filtered by valid key, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %s", resp.Models[0].Name)
 	}
 }
 
-func TestListModelDetails_FailsClosedForDisabledKeys(t *testing.T) {
+func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
 		schemas.OpenAI,
 		[]schemas.Key{
-			{ID: "key-a"},
+			{ID: "key-a", Models: []string{"gpt-4o"}},
 			{ID: "key-disabled", Enabled: boolPtr(false)},
 		},
 		[]string{"gpt-4o", "gpt-4o-mini"},
@@ -334,12 +378,15 @@ func TestListModelDetails_FailsClosedForDisabledKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 0 || len(resp.Models) != 0 {
-		t.Fatalf("expected no models, got %#v", resp.Models)
+	if resp.Total != 1 || len(resp.Models) != 1 {
+		t.Fatalf("expected 1 model filtered by valid key, got %#v", resp.Models)
+	}
+	if resp.Models[0].Name != "gpt-4o" {
+		t.Fatalf("expected gpt-4o, got %s", resp.Models[0].Name)
 	}
 }
 
-func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
+func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := providerHandlerForTest(
@@ -367,11 +414,8 @@ func TestListModelDetails_UnfilteredStillHonorsKeys(t *testing.T) {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
 
-	if resp.Total != 1 || len(resp.Models) != 1 || resp.Models[0].Name != "gpt-4o-mini" {
-		t.Fatalf("expected only gpt-4o-mini, got %#v", resp.Models)
-	}
-	if len(resp.Models[0].AccessibleByKeys) != 1 || resp.Models[0].AccessibleByKeys[0] != "key-b" {
-		t.Fatalf("expected exact accessible_by_keys for gpt-4o-mini, got %#v", resp.Models[0].AccessibleByKeys)
+	if resp.Total != 2 || len(resp.Models) != 2 {
+		t.Fatalf("expected all unfiltered models when unfiltered=true, got %#v", resp.Models)
 	}
 }
 
