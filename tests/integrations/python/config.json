@@ -238,6 +238,42 @@
             "network_config": {
                 "default_request_timeout_in_seconds": 300
             }
+        },
+        "replicate": {
+            "keys": [
+                {
+                    "name": "Replicate API Key",
+                    "value": "env.REPLICATE_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "runway": {
+            "keys": [
+                {
+                    "name": "Runway API Key",
+                    "value": "env.RUNWAY_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "nebius": {
+            "keys": [
+                {
+                    "name": "Nebius API Key",
+                    "value": "env.NEBIUS_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
         }
     },
     "config_store": {
@@ -257,6 +293,7 @@
     "governance": {
         "virtual_keys": [
             {
+                "name": "Test Key",
                 "id": "vk-test",
                 "value": "sk-bf-test-key",
                 "is_active": true

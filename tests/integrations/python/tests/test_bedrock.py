@@ -382,7 +382,7 @@ class TestBedrockIntegration:
         )
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         # 1. Initial Request - should trigger tool call
@@ -815,7 +815,7 @@ class TestBedrockIntegration:
         messages = convert_to_bedrock_messages(MULTIPLE_TOOL_CALL_MESSAGES)
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL, CALCULATOR_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         response = bedrock_client.converse(
@@ -899,7 +899,7 @@ class TestBedrockIntegration:
         )
         tool_config = convert_to_bedrock_tools([WEATHER_TOOL])
         # Add toolChoice to force the model to use a tool
-        tool_config["toolChoice"] = {"any": {}}
+        tool_config["toolChoice"] = {"auto": {}}
         model_id = format_provider_model(provider, model)
 
         # Step 1: Initial request - should trigger tool call
