@@ -30,6 +30,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `semanticcache.CacheNoStoreKey` | `x-bf-cache-no-store` | `bool` | Prevent caching |
 | `mcp-include-clients` | `x-bf-mcp-include-clients` | `[]string` | Filter MCP clients (comma-separated). |
 | `mcp-include-tools` | `x-bf-mcp-include-tools` | `[]string` | Filter MCP tools (`clientName-toolName` format, comma-separated) |
+| `BifrostContextKeyMCPExtraHeaders` | *(any header in a client's `allowed_extra_headers`)* | `map[string][]string` | Headers forwarded to MCP servers at tool execution time, filtered per-client against `allowed_extra_headers` |
 | `maxim.TraceIDKey` | `x-bf-maxim-trace-id` | `string` | Maxim trace ID |
 | `maxim.GenerationIDKey` | `x-bf-maxim-generation-id` | `string` | Maxim generation ID |
 | `maxim.TagsKey` | `x-bf-maxim-*` | `map[string]string` | Maxim tags (custom tag names) |

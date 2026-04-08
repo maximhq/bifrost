@@ -450,6 +450,191 @@ Environment variables are:
 
 ---
 
+## Forwarding Request Headers to MCP Servers
+
+<Info>
+Header Forwarding is available in **v1.5.0-prerelease1 and above**.
+</Info>
+
+By default, Bifrost does not forward incoming request headers to MCP servers during tool execution. The `allowed_extra_headers` field lets you define a per-client allowlist of headers that callers may inject at request time and have forwarded to that MCP server when tools are executed.
+
+This is separate from the static `headers` field used for authentication:
+
+| Field | Purpose | When sent |
+|-------|---------|-----------|
+| `headers` | Static auth credentials (API keys, tokens) | Always, on every tool call |
+| `allowed_extra_headers` | Dynamic per-request headers from callers | Only when the caller provides them, and only if they match the allowlist |
+
+**Common use cases:**
+- Forwarding a user's auth token to an MCP server that enforces per-user authorization
+- Passing a tenant or org ID to a multi-tenant MCP server
+- Propagating trace or correlation IDs for end-to-end observability
+
+### How It Works
+
+1. An incoming request carries one or more headers matching a client's `allowed_extra_headers` pattern
+2. Bifrost captures those headers from the request (using the union of all clients' allowlists)
+3. At tool execution time, each client **re-checks** the header against its own allowlist — so the same header can be forwarded to one MCP server but not another
+
+<Note>
+Headers are matched case-insensitively. The only wildcard supported is a standalone `"*"` (allow all headers) — partial patterns like `x-tenant-*` are not supported. If `"*"` is used, it must be the only entry in the list.
+</Note>
+
+<Tabs>
+<Tab title="UI">
+
+**Configure:** Navigate to **MCP Gateway**, open the configuration sheet for an HTTP or SSE client, and set the **Allowed Extra Headers** field:
+
+<Frame>
+  <img src="/media/ui-mcp-allowed-extra-headers.png" alt="Allowed Extra Headers configuration in the MCP client edit sheet" />
+</Frame>
+
+**Send headers:** Include the allowed headers in any inference request to the LLM gateway:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-user-token: eyJhbGci..." \
+  -H "x-tenant-id: acme-corp" \
+  -d '{
+    "model": "openai/gpt-4o",
+    "messages": [{"role": "user", "content": "Look up my account details"}]
+  }'
+```
+
+</Tab>
+<Tab title="Management API">
+
+**Configure:** Include `allowed_extra_headers` when creating or updating a client:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my_api",
+    "connection_type": "http",
+    "connection_string": "https://mcp.example.com/mcp",
+    "auth_type": "headers",
+    "headers": {
+      "Authorization": "Bearer service-token"
+    },
+    "allowed_extra_headers": ["x-user-token", "x-tenant-id", "x-request-id"],
+    "tools_to_execute": ["*"]
+  }'
+```
+
+**Send headers:** Include the allowed headers in any inference request:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-user-token: eyJhbGci..." \
+  -H "x-tenant-id: acme-corp" \
+  -d '{
+    "model": "openai/gpt-4o",
+    "messages": [{"role": "user", "content": "Look up my account details"}]
+  }'
+```
+
+</Tab>
+<Tab title="Config File">
+
+**Configure:**
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "my_api",
+        "connection_type": "http",
+        "connection_string": "https://mcp.example.com/mcp",
+        "auth_type": "headers",
+        "headers": {
+          "Authorization": "Bearer service-token"
+        },
+        "allowed_extra_headers": ["x-user-token", "x-tenant-id", "x-request-id"],
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+**Send headers:** Include the allowed headers in any inference request:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-user-token: eyJhbGci..." \
+  -H "x-tenant-id: acme-corp" \
+  -d '{
+    "model": "openai/gpt-4o",
+    "messages": [{"role": "user", "content": "Look up my account details"}]
+  }'
+```
+
+</Tab>
+<Tab title="MCP Gateway (/mcp)">
+
+**Configure** the client as above (Web UI, Management API, or config.json).
+
+**Send headers:** When an external MCP client (e.g., Claude Desktop, Cursor) connects to Bifrost's `/mcp` endpoint, include the allowed headers in that HTTP request. Bifrost forwards them during any tool call made within that session:
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "x-user-token": "eyJhbGci...",
+        "x-tenant-id": "acme-corp"
+      }
+    }
+  }
+}
+```
+
+<Note>
+Header support in MCP client config varies by client. The above JSON format applies to clients that support custom headers (e.g., Claude Desktop, Cursor). Check your MCP client's documentation for the exact configuration syntax.
+</Note>
+
+</Tab>
+<Tab title="Go SDK">
+
+**Configure:**
+
+```go
+schemas.MCPClientConfig{
+    Name:             "my_api",
+    ConnectionType:   schemas.MCPConnectionTypeHTTP,
+    ConnectionString: bifrost.Ptr("https://mcp.example.com/mcp"),
+    AuthType:         schemas.MCPAuthTypeHeaders,
+    Headers: map[string]schemas.EnvVar{
+        "Authorization": {Value: "Bearer service-token"},
+    },
+    AllowedExtraHeaders: schemas.WhiteList{"x-user-token", "x-tenant-id", "x-request-id"},
+    ToolsToExecute: []string{"*"},
+}
+```
+
+**Send headers:** Set `BifrostContextKeyMCPExtraHeaders` on the context before calling `ChatCompletionRequest` or `ExecuteChatMCPTool`:
+
+```go
+bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bifrostCtx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, map[string][]string{
+    "x-user-token": {"eyJhbGci..."},
+    "x-tenant-id":  {"acme-corp"},
+})
+
+response, err := client.ChatCompletionRequest(bifrostCtx, request)
+```
+
+</Tab>
+</Tabs>
+
+---
+
 ## Client State Management
 
 ### Connection States

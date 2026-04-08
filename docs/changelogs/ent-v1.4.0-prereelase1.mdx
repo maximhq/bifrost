@@ -1,0 +1,156 @@
+---
+title: "v1.4.0--prerelease1"
+description: "Enterprise v1.4.0-prerelease1"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease1">
+
+## Changelog
+
+This is a major release that introduces deny-by-default semantics across all allow-list fields (models, keys, tools, providers), a dedicated Provider Keys API, blacklist support in load balancing, redesigned adaptive routing UI, and scoped pricing overrides. **This release contains multiple breaking changes — please review the breaking changes section and migration checklist carefully before upgrading.**
+
+## ⚠️ Breaking Changes
+
+> **v1.5.0 OSS base flips the meaning of empty arrays across all allow-list fields.** Existing deployments with a database are protected by automatic migrations on startup, but any new configuration created after upgrading must follow the new semantics. **Back up your config store database before upgrading — this migration is not revertible.**
+
+| What you write | v1.4.x meaning | v1.5.0 meaning |
+|---|---|---|
+| `[]` (empty array) | Allow **all** | Allow **none** (deny by default) |
+| `["*"]` (wildcard) | N/A | Allow **all** |
+| `["a", "b"]` | Only a and b | Only a and b (unchanged) |
+
+### 1. Provider Key `models` Field
+
+Empty `models` array now means "allow none" instead of "allow all". Use `["*"]` to allow a key to serve all models.
+
+### 2. Virtual Key `allowed_models` Field
+
+Missing or empty `allowed_models` on a VK provider config now blocks all models from that provider. Use `["*"]` to allow all.
+
+### 3. Virtual Key Provider Configs — Deny-by-Default
+
+Virtual Keys with empty or missing `provider_configs` now block all providers. Every VK must explicitly list its permitted providers.
+
+### 4. `allowed_keys` Renamed to `key_ids`
+
+Field renamed in VK provider configs. Same deny-by-default semantics — omitted or empty `key_ids` now blocks all keys. Use `["*"]` to allow all. **Note:** Unlike `allowed_models`, there is no automatic migration for `key_ids`.
+
+### 5. Virtual Key MCP `tools_to_execute` Field
+
+Empty `tools_to_execute` now blocks all tools. The `mcp_configs` list itself acts as a strict allow-list — no `mcp_configs` means all MCP tools are blocked for that VK.
+
+### 6. `weight` Field is Now Optional
+
+`weight` on VK provider configs is now nullable (`*float64`). `null` or omitted means the provider is excluded from weighted routing but still reachable via direct routing or fallbacks.
+
+### 7. Compat Plugin Configuration Changes
+
+- `enable_litellm_fallbacks` option **removed**
+- Replaced with: `compat.convert_text_to_chat`, `compat.convert_chat_to_responses`, `compat.should_drop_params`
+- Response field `extra_fields.litellm_compat` **removed**
+- New response fields: `extra_fields.dropped_compat_plugin_params`, `extra_fields.converted_request_type`
+
+### 8. Image Edits No Longer Supported on Replicate's Image Generation Endpoint
+
+`/v1/images/generations` on Replicate now only handles pure text-to-image generation. Image editing parameters must use `/v1/images/edits`. Note: `/v1/images/edits` on Replicate will also be removed in a follow-up release.
+
+### 9. Provider Keys API Separated from Provider API
+
+- `keys` field **removed** from provider create/update requests and responses
+- New dedicated endpoints: `GET/POST /api/providers/{provider}/keys`, `GET/PUT/DELETE /api/providers/{provider}/keys/{key_id}`
+- Create providers first, then add keys separately
+
+### New Validation: WhiteList Rules
+
+- Wildcard `["*"]` cannot be mixed with other values (HTTP 400)
+- No duplicate values allowed in allow-list fields
+- Applies to: `allowed_models`, `key_ids`, `models`, `tools_to_execute`, `tools_to_auto_execute`, `allowed_extra_headers`
+
+### Quick Migration Checklist
+
+1. Update provider key `models` in config.json — change `[]` to `["*"]`
+2. Add `allowed_models: ["*"]` to every VK provider config
+3. Ensure every VK has at least one provider config entry
+4. Rename `allowed_keys` to `key_ids` and set `["*"]` where needed
+5. Update `tools_to_execute` for MCP configs — change `[]` to `["*"]`
+6. Handle nullable `weight` in API consumers
+7. Fix any invalid WhiteList values (no mixing wildcards, no duplicates)
+8. Migrate key management to dedicated `/api/providers/{provider}/keys` endpoints
+
+## ✨ Features
+
+- **Dedicated Provider Keys API** — Keys are now managed via `/api/providers/{provider}/keys` endpoints instead of being embedded in provider create/update payloads
+- **Deny-by-Default Access Control** — Standardized empty array conventions across all allow-list fields; `[]` means deny all, `["*"]` means allow all
+- **VK Provider Config Key Wildcards** — `key_ids` now supports `["*"]` wildcard to allow all keys; handler resolves wildcard to AllowAllKeys flag without DB key lookups
+- **VK MCP Allow-List** — Virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
+- **MCP Virtual Key Assignment** — MCP configuration now supports assigning virtual keys with per-tool access control, with an option to allow MCP clients to run on all virtual keys
+- **Disable Auto MCP Tool Injection** — Add option to disable automatic MCP tool injection per request
+- **MCP Request-Level Extra Headers** — Support for request-level extra headers in MCP tool execution
+- **MCP Gateway Filtering** — Support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response
+- **Scoped Pricing Overrides** — Support for pricing overrides at a scoped level
+- **StabilityAI on Bedrock** — Added StabilityAI provider support to Bedrock
+- **Plugin Trace Logging** — Plugins can now inject logs at trace level using `ctx.Log(schemas.LogLevelInfo, "Test log")`
+- **Blacklist Support in Load Balancing** — Added model blacklist support to the load balancing plugin
+- **Adaptive Routing UI Redesign** — Redesigned adaptive routing UI with improved layout and Sankey chart visualization
+- **Governance Refactor** — Governance module changes for improved structure
+- **Compat Plugin New Modes** — Chat-to-responses fallback and OpenAI-compatible parameter dropping modes added to compat plugin
+
+## 🐞 Fixed
+
+- **MCP Agent Usage Accumulation** — Fixed accumulated usage not being sent back in MCP agent mode
+- **OpenAI Transcription Formats** — Handle text, vtt, srt response formats in OpenAI transcription response
+- **HuggingFace Load Balancing** — Removed HuggingFace deployment handling from load balancing plugin
+- **Parallelized Model Listing** — Parallelized model listing for providers to speed up startup time
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease1`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.1
+
+require (
+	cloud.google.com/go/bigquery v1.73.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.0
+	github.com/maximhq/bifrost/framework v1.3.0
+	github.com/maximhq/bifrost/plugins/governance v1.5.0
+	github.com/maximhq/bifrost/plugins/logging v1.5.0
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease1
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.35.0
+	google.golang.org/api v0.265.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>
