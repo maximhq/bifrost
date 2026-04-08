@@ -2202,7 +2202,11 @@ func convertResponsesToolChoice(toolChoice schemas.ResponsesToolChoice) *Bedrock
 			}
 			// If Name is nil or empty, return nil as we can't construct a valid tool choice
 			return nil
-		case schemas.ResponsesToolChoiceTypeAuto, schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
+		case schemas.ResponsesToolChoiceTypeAuto:
+			return &BedrockToolChoice{
+				Auto: &BedrockToolChoiceAuto{},
+			}
+		case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
 			return &BedrockToolChoice{
 				Any: &BedrockToolChoiceAny{},
 			}
