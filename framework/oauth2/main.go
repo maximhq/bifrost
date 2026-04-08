@@ -700,11 +700,22 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			// Per RFC 6749 §5.2, only 400 (invalid_grant, unauthorized_client) and 401
-			// signal permanent auth failures that require user re-authorization. All other
-			// status codes — 403, 404, 429, 5xx — are treated as transient and retried.
-			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+			if resp.StatusCode == http.StatusUnauthorized {
 				return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+			}
+			// Per RFC 6749 §5.2, only invalid_grant and unauthorized_client within a 400
+			// require user re-authorization. Other 400s (invalid_request, unsupported_grant_type,
+			// etc.) are configuration or request errors — fail fast without expiring the config.
+			if resp.StatusCode == http.StatusBadRequest {
+				var oauthErr struct {
+					Error string `json:"error"`
+				}
+				if json.Unmarshal(body, &oauthErr) == nil {
+					if oauthErr.Error == "invalid_grant" || oauthErr.Error == "unauthorized_client" {
+						return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+					}
+				}
+				return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 			}
 			// Transient error (rate limit, server error, etc.) — retry
 			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))

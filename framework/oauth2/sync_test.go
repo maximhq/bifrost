@@ -270,3 +270,47 @@ func TestTokenRefreshWorker_429RateLimit_DoesNotMarkExpired(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "authorized", cfg.Status, "429 rate limit must not mark config as expired")
 }
+
+func TestTokenRefreshWorker_400InvalidRequest_DoesNotMarkExpired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":             "invalid_request",
+			"error_description": "Missing required parameter",
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	worker.refreshExpiredTokens(context.Background())
+
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "authorized", cfg.Status, "400 invalid_request must not mark config as expired")
+}
+
+func TestTokenRefreshWorker_400UnauthorizedClient_MarksExpired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":             "unauthorized_client",
+			"error_description": "Client is not authorized for this grant type",
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	worker.refreshExpiredTokens(context.Background())
+
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "expired", cfg.Status, "400 unauthorized_client must mark config as expired")
+}
