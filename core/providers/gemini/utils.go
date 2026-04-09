@@ -557,6 +557,12 @@ var (
 		FinishReasonMalformedFunctionCall: "stop",
 		FinishReasonImageSafety:           "content_filter",
 		FinishReasonUnexpectedToolCall:    "tool_calls",
+		// Vertex AI-specific finish reasons
+		FinishReasonModelArmor:             "content_filter",
+		FinishReasonImageProhibitedContent: "content_filter",
+		FinishReasonImageRecitation:        "content_filter",
+		FinishReasonImageOther:             "content_filter",
+		FinishReasonNoImage:                "stop", // Generation failure, not safety filtering
 	}
 )
 
