@@ -2291,8 +2291,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
-		// Separate defers ensure each cleanup runs even if an earlier one panics (LIFO order)
-		defer reader.Done()
+		// Keep cleanups separate so one panic does not skip the others (LIFO order).
+		// Signal EOF to the client first, then complete trace flushing, then release pooled request state.
 		defer schemas.ReleaseHTTPRequest(httpReq)
 		defer func() {
 			// Complete the trace after streaming finishes
@@ -2301,6 +2301,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				traceCompleter()
 			}
 		}()
+		defer reader.Done()
 
 		// Create encoder for AWS Event Stream if needed
 		var eventStreamEncoder *eventstream.Encoder
