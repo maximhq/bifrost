@@ -39,6 +39,7 @@ import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
+import { ExportPopover } from "./components/exportPopover";
 import { MCPTab } from "./components/mcpTab";
 import { ModelRankingsTab } from "./components/modelRankingsTab";
 import { OverviewTab } from "./components/overviewTab";
@@ -384,65 +385,89 @@ export default function DashboardPage() {
 	const overviewFetchedRef = useRef(false);
 	const overviewLoadingRef = useRef(false);
 	const overviewGenRef = useRef(0);
+	const overviewPromiseRef = useRef<Promise<void> | null>(null);
 
 	const providerFetchedRef = useRef(false);
 	const providerLoadingRef = useRef(false);
 	const providerGenRef = useRef(0);
+	const providerPromiseRef = useRef<Promise<void> | null>(null);
 
 	const mcpFetchedRef = useRef(false);
 	const mcpLoadingRef = useRef(false);
 	const mcpGenRef = useRef(0);
+	const mcpPromiseRef = useRef<Promise<void> | null>(null);
 
 	const rankingsFetchedRef = useRef(false);
 	const rankingsLoadingRef = useRef(false);
 	const rankingsGenRef = useRef(0);
+	const rankingsPromiseRef = useRef<Promise<void> | null>(null);
 
 	const ensureOverviewDataLoaded = useCallback(async () => {
-		if (overviewFetchedRef.current || overviewLoadingRef.current) return;
+		if (overviewFetchedRef.current) return;
+		if (overviewLoadingRef.current) return overviewPromiseRef.current ?? undefined;
 		const gen = overviewGenRef.current;
 		overviewLoadingRef.current = true;
-		try {
-			await fetchOverviewData();
-			if (gen === overviewGenRef.current) overviewFetchedRef.current = true;
-		} finally {
-			if (gen === overviewGenRef.current) overviewLoadingRef.current = false;
-		}
+		const promise = fetchOverviewData().then(
+			() => { if (gen === overviewGenRef.current) overviewFetchedRef.current = true; },
+		).finally(() => {
+			if (gen === overviewGenRef.current) {
+				overviewLoadingRef.current = false;
+				overviewPromiseRef.current = null;
+			}
+		});
+		overviewPromiseRef.current = promise;
+		return promise;
 	}, [fetchOverviewData]);
 
 	const ensureProviderDataLoaded = useCallback(async () => {
-		if (providerFetchedRef.current || providerLoadingRef.current) return;
+		if (providerFetchedRef.current) return;
+		if (providerLoadingRef.current) return providerPromiseRef.current ?? undefined;
 		const gen = providerGenRef.current;
 		providerLoadingRef.current = true;
-		try {
-			await fetchProviderData();
-			if (gen === providerGenRef.current) providerFetchedRef.current = true;
-		} finally {
-			if (gen === providerGenRef.current) providerLoadingRef.current = false;
-		}
+		const promise = fetchProviderData().then(
+			() => { if (gen === providerGenRef.current) providerFetchedRef.current = true; },
+		).finally(() => {
+			if (gen === providerGenRef.current) {
+				providerLoadingRef.current = false;
+				providerPromiseRef.current = null;
+			}
+		});
+		providerPromiseRef.current = promise;
+		return promise;
 	}, [fetchProviderData]);
 
 	const ensureMcpDataLoaded = useCallback(async () => {
-		if (mcpFetchedRef.current || mcpLoadingRef.current) return;
+		if (mcpFetchedRef.current) return;
+		if (mcpLoadingRef.current) return mcpPromiseRef.current ?? undefined;
 		const gen = mcpGenRef.current;
 		mcpLoadingRef.current = true;
-		try {
-			await fetchMcpData();
-			if (gen === mcpGenRef.current) mcpFetchedRef.current = true;
-		} finally {
-			if (gen === mcpGenRef.current) mcpLoadingRef.current = false;
-		}
+		const promise = fetchMcpData().then(
+			() => { if (gen === mcpGenRef.current) mcpFetchedRef.current = true; },
+		).finally(() => {
+			if (gen === mcpGenRef.current) {
+				mcpLoadingRef.current = false;
+				mcpPromiseRef.current = null;
+			}
+		});
+		mcpPromiseRef.current = promise;
+		return promise;
 	}, [fetchMcpData]);
 
 	const ensureRankingsDataLoaded = useCallback(async () => {
-		if (rankingsFetchedRef.current || rankingsLoadingRef.current) return;
+		if (rankingsFetchedRef.current) return;
+		if (rankingsLoadingRef.current) return rankingsPromiseRef.current ?? undefined;
 		const gen = rankingsGenRef.current;
 		rankingsLoadingRef.current = true;
-		try {
-			await fetchRankingsData();
-			if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true;
-		} finally {
-			if (gen === rankingsGenRef.current) rankingsLoadingRef.current = false;
-		}
+		const promise = fetchRankingsData().then(
+			() => { if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true; },
+		).finally(() => {
+			if (gen === rankingsGenRef.current) {
+				rankingsLoadingRef.current = false;
+				rankingsPromiseRef.current = null;
+			}
+		});
+		rankingsPromiseRef.current = promise;
+		return promise;
 	}, [fetchRankingsData]);
 
 	// Reset all lazy-load flags when filters change (not on tab switch)
@@ -579,6 +604,130 @@ export default function DashboardPage() {
 		[setUrlState],
 	);
 
+	// Aggregate data object for export
+	const dashboardData = useMemo(
+		() => ({
+			histogramData,
+			tokenData,
+			costData,
+			modelData,
+			latencyData,
+			providerCostData,
+			providerTokenData,
+			providerLatencyData,
+			rankingsData,
+			mcpHistogramData,
+			mcpCostData,
+			mcpTopToolsData,
+		}),
+		[
+			histogramData,
+			tokenData,
+			costData,
+			modelData,
+			latencyData,
+			providerCostData,
+			providerTokenData,
+			providerLatencyData,
+			rankingsData,
+			mcpHistogramData,
+			mcpCostData,
+			mcpTopToolsData,
+		],
+	);
+
+	// Keep a ref in sync so export callbacks always read the latest data
+	const dashboardDataRef = useRef(dashboardData);
+	dashboardDataRef.current = dashboardData;
+	const getDashboardData = useCallback(() => dashboardDataRef.current, []);
+
+	// Preload all tab data (used by CSV and PDF export)
+	const handlePreloadData = useCallback(async () => {
+		await Promise.all([
+			ensureOverviewDataLoaded(),
+			ensureProviderDataLoaded(),
+			ensureRankingsDataLoaded(),
+			ensureMcpDataLoaded(),
+		]);
+	}, [ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
+
+	// PDF export mode — when true, all TabsContent are force-mounted so
+	// html2canvas can capture every tab.
+	const [pdfMode, setPdfMode] = useState(false);
+	const dashboardMinHeightRef = useRef<string>("");
+	const hiddenTabsRef = useRef<HTMLElement[]>([]);
+
+	// Called by ExportPopover. Loads all data, force-mounts all tabs,
+	// unhides inactive tabs so html2canvas can capture them, then returns
+	// the 4 section DOM elements. Caller must invoke the returned cleanup
+	// function when done capturing.
+	const handlePdfExport = useCallback(async (): Promise<HTMLElement[]> => {
+		// Ensure every tab's data is loaded
+		await handlePreloadData();
+
+		setPdfMode(true);
+
+		// Wait for React to render the force-mounted tabs
+		await new Promise<void>((resolve) => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => resolve());
+			});
+		});
+
+		// Radix sets `hidden` on inactive force-mounted TabsContent.
+		// Temporarily remove it so html2canvas can capture them.
+		const hiddenTabs = document.querySelectorAll<HTMLElement>(
+			'[data-slot="tabs-content"][hidden]',
+		);
+		hiddenTabsRef.current = Array.from(hiddenTabs);
+		for (const tab of hiddenTabs) {
+			tab.removeAttribute("hidden");
+			tab.style.display = "block";
+		}
+
+		// Collapse min-height on the dashboard container so captured
+		// sections wrap tightly around their content (no extra whitespace).
+		const dashboardEl = document.getElementById("dashboard-root");
+		if (dashboardEl) {
+			dashboardMinHeightRef.current = dashboardEl.style.minHeight;
+			dashboardEl.style.minHeight = "0";
+		}
+
+		// Let ResizeObserver-based charts (meter gauge) re-measure
+		window.dispatchEvent(new Event("resize"));
+		await new Promise<void>((resolve) => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => resolve());
+			});
+		});
+
+		const ids = [
+			"dashboard-section-overview",
+			"dashboard-section-provider-usage",
+			"dashboard-section-rankings",
+			"dashboard-section-mcp",
+		];
+		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
+	}, [handlePreloadData]);
+
+	// Cleanup after PDF capture is complete
+	const handlePdfExportDone = useCallback(() => {
+		// Restore minHeight on dashboard container
+		const dashboardEl = document.getElementById("dashboard-root");
+		if (dashboardEl) {
+			dashboardEl.style.minHeight = dashboardMinHeightRef.current;
+		}
+
+		// Re-hide tabs that were temporarily shown for capture
+		for (const tab of hiddenTabsRef.current) {
+			tab.setAttribute("hidden", "");
+			tab.style.display = "";
+		}
+		hiddenTabsRef.current = [];
+
+		setPdfMode(false);
+	}, []);
+
 	// MCP filter change handlers
 	const handleMcpToolNameChange = useCallback(
 		(toolName: string) => {
@@ -599,13 +748,14 @@ export default function DashboardPage() {
 	);
 
 	return (
-		<div className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">
+		<div id="dashboard-root" className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">
 			{/* Header with time filter */}
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2">
 					<h1 className="text-lg font-semibold">Dashboard</h1>
 				</div>
 				<div className="flex items-center gap-2">
+					<ExportPopover getData={getDashboardData} onPreloadData={handlePreloadData} onPdfExport={handlePdfExport} onPdfExportDone={handlePdfExportDone} />
 					{(urlState.tab === "overview" || urlState.tab === "provider-usage" || urlState.tab === "rankings") && (
 						<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
 					)}
@@ -673,7 +823,8 @@ export default function DashboardPage() {
 				</TabsList>
 
 				{/* Overview Tab */}
-				<TabsContent value="overview">
+				<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
+					<div id="dashboard-section-overview">
 					<OverviewTab
 						histogramData={histogramData}
 						tokenData={tokenData}
@@ -705,10 +856,12 @@ export default function DashboardPage() {
 						onCostModelChange={handleCostModelChange}
 						onUsageModelChange={handleUsageModelChange}
 					/>
+					</div>
 				</TabsContent>
 
 				{/* Provider Usage Tab */}
-				<TabsContent value="provider-usage">
+				<TabsContent value="provider-usage" {...(pdfMode && { forceMount: true })}>
+					<div id="dashboard-section-provider-usage">
 					<ProviderUsageTab
 						providerCostData={providerCostData}
 						providerTokenData={providerTokenData}
@@ -735,10 +888,12 @@ export default function DashboardPage() {
 						onProviderTokenProviderChange={handleProviderTokenProviderChange}
 						onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
 					/>
+					</div>
 				</TabsContent>
 
 				{/* Model Rankings Tab */}
-				<TabsContent value="rankings">
+				<TabsContent value="rankings" {...(pdfMode && { forceMount: true })}>
+					<div id="dashboard-section-rankings">
 					<ModelRankingsTab
 						rankingsData={rankingsData}
 						loading={loadingRankings}
@@ -747,10 +902,12 @@ export default function DashboardPage() {
 						startTime={urlState.start_time}
 						endTime={urlState.end_time}
 					/>
+					</div>
 				</TabsContent>
 
 				{/* MCP Tab */}
-				<TabsContent value="mcp">
+				<TabsContent value="mcp" {...(pdfMode && { forceMount: true })}>
+					<div id="dashboard-section-mcp">
 					<MCPTab
 						mcpHistogramData={mcpHistogramData}
 						mcpCostData={mcpCostData}
@@ -765,6 +922,7 @@ export default function DashboardPage() {
 						onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
 						onMcpCostChartToggle={handleMcpCostChartToggle}
 					/>
+					</div>
 				</TabsContent>
 			</Tabs>
 		</div>
