@@ -10,6 +10,12 @@
       "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
       "const": "https://www.getbifrost.ai/schema"
     },
+    "version": {
+      "type": "integer",
+      "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
+      "enum": [1, 2],
+      "default": 2
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
@@ -1917,7 +1923,11 @@
         },
         "mcp_client_id": {
           "type": "integer",
-          "description": "Associated MCP client ID"
+          "description": "Associated MCP client ID (database format)"
+        },
+        "mcp_client_name": {
+          "type": "string",
+          "description": "MCP client name (config file format — resolved to mcp_client_id at startup)"
         },
         "tools_to_execute": {
           "type": "array",
@@ -1927,9 +1937,6 @@
           }
         }
       },
-      "required": [
-        "mcp_client_id"
-      ],
       "additionalProperties": false
     },
     "auth_config": {

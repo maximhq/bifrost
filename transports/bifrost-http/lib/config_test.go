@@ -2,6 +2,31 @@ package lib
 
 /*
 ===================================================================================
+V1 COMPAT TESTS
+===================================================================================
+Tests for applyV1Compat, which normalizes ConfigData when config.json sets
+version: 1, restoring v1.4.x semantics (empty arrays = allow all).
+
+| Test Name                                        | What It Tests                                |
+|--------------------------------------------------|----------------------------------------------|
+| TestApplyV1Compat_ProviderKey_EmptyModels        | nil/[] models → ["*"]                        |
+| TestApplyV1Compat_ProviderKey_WildcardUnchanged  | ["*"] models unchanged                       |
+| TestApplyV1Compat_ProviderKey_ExplicitUnchanged  | Specific model list unchanged                |
+| TestApplyV1Compat_VK_EmptyProviderConfigs        | empty provider_configs → backfill providers  |
+| TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels | allowed_models: [] → ["*"]            |
+| TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs  | key_ids: [] → AllowAllKeys=true             |
+| TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll | AllowAllKeys=true unchanged              |
+| TestApplyV1Compat_VK_EmptyMCPConfigs             | empty mcp_configs → backfill MCP clients    |
+| TestApplyV1Compat_VK_NonEmptyMCPConfigs          | non-empty mcp_configs unchanged              |
+| TestApplyV1Compat_NoGovernance                   | nil governance section — no panic            |
+| TestApplyV1Compat_NoMCP                          | nil mcp section — no MCP backfill            |
+| TestApplyV1Compat_MultipleProviders              | all providers normalized in one pass         |
+| TestVersionField_ParsedFromJSON                  | version field read from config JSON          |
+| TestVersionField_DefaultBehavior                 | omitted version → v2 semantics (no change)   |
+| TestVersionField_Version1_AppliesCompat          | version: 1 → normalization applied           |
+| TestVersionField_Version2_NoCompat               | version: 2 → normalization skipped          |
+
+===================================================================================
 CONFIG HASH TEST SCENARIOS INDEX
 ===================================================================================
 
@@ -17163,4 +17188,414 @@ func TestLoadConfig_PartialClientConfig_DefaultsFillGaps(t *testing.T) {
 	// Verify zero-value fields get defaults
 	require.Equal(t, DefaultClientConfig.MaxRequestBodySizeMB, config.ClientConfig.MaxRequestBodySizeMB,
 		"MaxRequestBodySizeMB should get default when zero in file")
+}
+
+// =============================================================================
+// applyV1Compat unit tests
+// =============================================================================
+
+// makeV1ProviderKey is a helper that builds a schemas.Key for compat tests.
+func makeV1ProviderKey(name string, models schemas.WhiteList) schemas.Key {
+	return schemas.Key{
+		Name:   name,
+		Value:  *schemas.NewEnvVar("env.SOME_API_KEY"),
+		Models: models,
+		Weight: 1.0,
+	}
+}
+
+// makeV1ProviderConfig builds a minimal configstore.ProviderConfig with the given keys.
+func makeV1ProviderConfig(keys ...schemas.Key) configstore.ProviderConfig {
+	return configstore.ProviderConfig{Keys: keys}
+}
+
+// makeV1ConfigData is a convenience constructor for compat tests.
+func makeV1ConfigData(
+	providers map[string]configstore.ProviderConfig,
+	mcp *schemas.MCPConfig,
+	vks []tables.TableVirtualKey,
+) *ConfigData {
+	cd := &ConfigData{
+		Version:   1,
+		Providers: providers,
+		MCP:       mcp,
+	}
+	if len(vks) > 0 {
+		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: vks}
+	}
+	return cd
+}
+
+// TestApplyV1Compat_ProviderKey_EmptyModels verifies that nil and [] models are
+// both normalised to ["*"].
+func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(
+				makeV1ProviderKey("nil-models", nil),
+				makeV1ProviderKey("empty-models", schemas.WhiteList{}),
+			),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	for _, key := range cd.Providers["openai"].Keys {
+		require.Equal(t, schemas.WhiteList{"*"}, key.Models,
+			"key %q: expected models to be normalized to [\"*\"]", key.Name)
+	}
+}
+
+// TestApplyV1Compat_ProviderKey_WildcardUnchanged checks that a key already using
+// ["*"] is left untouched.
+func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("wildcard", schemas.WhiteList{"*"})),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_ProviderKey_ExplicitUnchanged ensures that a specific model
+// list is not altered.
+func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
+	models := schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("specific", models)),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	require.Equal(t, models, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_VK_EmptyProviderConfigs verifies that a VK with no
+// provider_configs gets one entry per configured provider, each with
+// AllowedModels: ["*"] and AllowAllKeys: true.
+func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai":    makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
+			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k2", nil)),
+		},
+		nil,
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "All Access", ProviderConfigs: []tables.TableVirtualKeyProviderConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	vk := cd.Governance.VirtualKeys[0]
+	require.Len(t, vk.ProviderConfigs, 2, "expected one entry per configured provider")
+
+	for _, pc := range vk.ProviderConfigs {
+		require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels,
+			"provider %q: AllowedModels should be [\"*\"]", pc.Provider)
+		require.True(t, pc.AllowAllKeys,
+			"provider %q: AllowAllKeys should be true", pc.Provider)
+	}
+
+	// Providers present in the backfill must match the configured providers.
+	backfilledProviders := make(map[string]bool)
+	for _, pc := range vk.ProviderConfigs {
+		backfilledProviders[pc.Provider] = true
+	}
+	require.True(t, backfilledProviders["openai"])
+	require.True(t, backfilledProviders["anthropic"])
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels checks that an existing
+// provider config entry with allowed_models: [] gets normalised to ["*"].
+func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "Restricted",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{}, AllowAllKeys: true},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels)
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs verifies that a provider config
+// with no keys and AllowAllKeys=false gets AllowAllKeys set to true.
+func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "No Keys",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: false, Keys: nil},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.True(t, pc.AllowAllKeys, "AllowAllKeys should be set to true when Keys is empty")
+}
+
+// TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll ensures a provider config
+// that already has AllowAllKeys=true is left unchanged.
+func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil,
+		[]tables.TableVirtualKey{
+			{
+				ID:   "vk-1",
+				Name: "Already OK",
+				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+					{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+				},
+			},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	pc := cd.Governance.VirtualKeys[0].ProviderConfigs[0]
+	require.True(t, pc.AllowAllKeys)
+	require.Equal(t, schemas.WhiteList{"*"}, pc.AllowedModels)
+}
+
+// TestApplyV1Compat_VK_EmptyMCPConfigs verifies that a VK with no mcp_configs
+// gets one entry per configured MCP client, each with ToolsToExecute: ["*"].
+func TestApplyV1Compat_VK_EmptyMCPConfigs(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{
+				{Name: "tools-a"},
+				{Name: "tools-b"},
+			},
+		},
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "No MCP", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	vk := cd.Governance.VirtualKeys[0]
+	require.Len(t, vk.MCPConfigs, 2, "expected one entry per configured MCP client")
+
+	for _, mc := range vk.MCPConfigs {
+		require.Equal(t, schemas.WhiteList{"*"}, mc.ToolsToExecute,
+			"MCP client %q: ToolsToExecute should be [\"*\"]", mc.MCPClientName)
+	}
+
+	names := make(map[string]bool)
+	for _, mc := range vk.MCPConfigs {
+		names[mc.MCPClientName] = true
+	}
+	require.True(t, names["tools-a"])
+	require.True(t, names["tools-b"])
+}
+
+// TestApplyV1Compat_VK_NonEmptyMCPConfigs confirms that a VK with an existing
+// mcp_configs list is not modified.
+func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
+	existing := []tables.TableVirtualKeyMCPConfig{
+		{MCPClientName: "tools-a", ToolsToExecute: schemas.WhiteList{"tool1"}},
+	}
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "Has MCP", MCPConfigs: existing},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	// Non-empty mcp_configs must be left alone — no backfill.
+	require.Len(t, cd.Governance.VirtualKeys[0].MCPConfigs, 1)
+	require.Equal(t, schemas.WhiteList{"tool1"}, cd.Governance.VirtualKeys[0].MCPConfigs[0].ToolsToExecute)
+}
+
+// TestApplyV1Compat_NoGovernance verifies the function does not panic when the
+// governance section is absent.
+func TestApplyV1Compat_NoGovernance(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
+		},
+		nil, nil,
+	)
+
+	require.NotPanics(t, func() { applyV1Compat(cd) })
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+}
+
+// TestApplyV1Compat_NoMCP verifies that an empty mcp_configs on a VK is NOT
+// backfilled when the top-level mcp section is absent.
+func TestApplyV1Compat_NoMCP(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		nil, // no MCP config
+		[]tables.TableVirtualKey{
+			{ID: "vk-1", Name: "No MCP Section", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
+		},
+	)
+
+	applyV1Compat(cd)
+
+	require.Empty(t, cd.Governance.VirtualKeys[0].MCPConfigs,
+		"MCPConfigs should remain empty when no MCP clients are configured")
+}
+
+// TestApplyV1Compat_MultipleProviders ensures all providers are normalised in a
+// single pass, even when some already have wildcard models.
+func TestApplyV1Compat_MultipleProviders(t *testing.T) {
+	cd := makeV1ConfigData(
+		map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(
+				makeV1ProviderKey("empty", schemas.WhiteList{}),
+				makeV1ProviderKey("nil", nil),
+			),
+			"anthropic": makeV1ProviderConfig(
+				makeV1ProviderKey("wildcard", schemas.WhiteList{"*"}),
+				makeV1ProviderKey("specific", schemas.WhiteList{"claude-3-5-sonnet-20241022"}),
+			),
+		},
+		nil, nil,
+	)
+
+	applyV1Compat(cd)
+
+	for _, k := range cd.Providers["openai"].Keys {
+		require.Equal(t, schemas.WhiteList{"*"}, k.Models, "openai key %q should be [*]", k.Name)
+	}
+	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["anthropic"].Keys[0].Models, "wildcard unchanged")
+	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.Providers["anthropic"].Keys[1].Models, "specific unchanged")
+}
+
+// =============================================================================
+// Version field JSON parsing + integration with LoadConfig
+// =============================================================================
+
+// TestVersionField_ParsedFromJSON verifies that the version field is correctly
+// read from a config.json file.
+func TestVersionField_ParsedFromJSON(t *testing.T) {
+	for _, tc := range []struct {
+		json    string
+		wantVer int
+	}{
+		{`{"version": 1, "providers": {}}`, 1},
+		{`{"version": 2, "providers": {}}`, 2},
+		{`{"providers": {}}`, 0}, // omitted → zero value
+	} {
+		var cd ConfigData
+		require.NoError(t, json.Unmarshal([]byte(tc.json), &cd))
+		require.Equal(t, tc.wantVer, cd.Version, "input: %s", tc.json)
+	}
+}
+
+// TestVersionField_DefaultBehavior verifies that when version is omitted (or 2),
+// provider key models are NOT normalised — empty stays empty.
+func TestVersionField_DefaultBehavior(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		// Version intentionally omitted — defaults to 0, treated as v2
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	// v2 semantics: empty models stays empty (deny all) — must NOT be promoted to ["*"]
+	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	require.True(t, ok, "openai provider should be present")
+	require.Len(t, openaiCfg.Keys, 1)
+	require.Empty(t, openaiCfg.Keys[0].Models,
+		"v2 semantics: empty models must NOT be normalised to [\"*\"]")
+}
+
+// TestVersionField_Version1_AppliesCompat verifies that version: 1 in config.json
+// causes empty provider key models to be promoted to ["*"] before the config is
+// ingested into the store.
+func TestVersionField_Version1_AppliesCompat(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		Version: 1,
+		Providers: map[string]configstore.ProviderConfig{
+			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	require.True(t, ok, "openai provider should be present")
+	require.Len(t, openaiCfg.Keys, 1)
+	require.Equal(t, schemas.WhiteList{"*"}, openaiCfg.Keys[0].Models,
+		"v1 semantics: empty models must be normalised to [\"*\"]")
+}
+
+// TestVersionField_Version2_NoCompat verifies that an explicit version: 2 also
+// skips normalisation (same as omitting the field).
+func TestVersionField_Version2_NoCompat(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	cd := &ConfigData{
+		Version: 2,
+		Providers: map[string]configstore.ProviderConfig{
+			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+		},
+	}
+	createConfigFile(t, tempDir, cd)
+
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	defer config.Close(ctx)
+
+	anthropicCfg, ok := config.Providers[schemas.Anthropic]
+	require.True(t, ok, "anthropic provider should be present")
+	require.Len(t, anthropicCfg.Keys, 1)
+	require.Empty(t, anthropicCfg.Keys[0].Models,
+		"v2 semantics: empty models must NOT be normalised")
 }
