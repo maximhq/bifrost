@@ -2402,6 +2402,21 @@ func HandleMultipleListModelsRequests(
 		wg.Add(1)
 		go func(k schemas.Key) {
 			defer wg.Done()
+			// Should never panic, but if it does, we need to handle it gracefully
+			defer func() {
+				if r := recover(); r != nil {
+					getLogger().Error("panic in listModelsByKey for key %s (%s): %v", k.Name, k.ID, r)
+					results <- schemas.ListModelsByKeyResult{
+						Err: &schemas.BifrostError{
+							IsBifrostError: true,
+							Error: &schemas.ErrorField{
+								Message: "internal error while listing models for key",
+							},
+						},
+						KeyID: k.ID,
+					}
+				}
+			}()
 			resp, bifrostErr := listModelsByKey(ctx, k, request)
 			results <- schemas.ListModelsByKeyResult{Response: resp, Err: bifrostErr, KeyID: k.ID}
 		}(key)
