@@ -268,7 +268,6 @@
               "cli-agents/librechat",
               "cli-agents/claude-code",
               "cli-agents/claude-for-office",
-              "cli-agents/claude-desktop",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
