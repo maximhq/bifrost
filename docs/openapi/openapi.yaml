@@ -66,7 +66,6 @@ servers:
 security:
   - BearerAuth: []
   - BasicAuth: []
-  - VirtualKeyAuth: []
   - ApiKeyAuth: []
 
 tags:
@@ -772,7 +771,7 @@ components:
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Only supported on inference endpoints (`/v1/*`), not on management APIs.
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
       type: apiKey

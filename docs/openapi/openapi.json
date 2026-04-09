@@ -33,9 +33,6 @@
       "BasicAuth": []
     },
     {
-      "VirtualKeyAuth": []
-    },
-    {
       "ApiKeyAuth": []
     }
   ],
@@ -236,7 +233,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/chat/completions": {
@@ -528,7 +539,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/completions": {
@@ -817,7 +842,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/responses": {
@@ -1496,7 +1535,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/rerank": {
@@ -1548,7 +1601,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/embeddings": {
@@ -1600,7 +1667,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/audio/speech": {
@@ -1693,7 +1774,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/audio/transcriptions": {
@@ -1823,7 +1918,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/generations": {
@@ -2255,7 +2364,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/edits": {
@@ -2681,7 +2804,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/variations": {
@@ -2906,7 +3043,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos": {
@@ -3135,7 +3286,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "videoList",
@@ -3330,7 +3495,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}": {
@@ -3521,7 +3700,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "videoDelete",
@@ -3602,7 +3795,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}/content": {
@@ -3686,7 +3893,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}/remix": {
@@ -3896,7 +4117,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/responses/input_tokens": {
@@ -3948,7 +4183,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches": {
@@ -4000,7 +4249,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listBatches",
@@ -4076,7 +4339,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}": {
@@ -4138,7 +4415,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}/cancel": {
@@ -4259,7 +4550,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}/results": {
@@ -4382,7 +4687,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files": {
@@ -4444,7 +4763,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listFiles",
@@ -4542,7 +4875,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files/{file_id}": {
@@ -4662,7 +5009,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteFile",
@@ -4736,7 +5097,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files/{file_id}/content": {
@@ -4799,7 +5174,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers": {
@@ -4955,7 +5344,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listContainers",
@@ -5122,7 +5525,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}": {
@@ -5243,7 +5660,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteContainer",
@@ -5320,7 +5751,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files": {
@@ -5459,7 +5904,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listContainerFiles",
@@ -5611,7 +6070,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files/{file_id}": {
@@ -5718,7 +6191,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteContainerFile",
@@ -5805,7 +6292,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files/{file_id}/content": {
@@ -5877,7 +6378,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/chat/completions": {
@@ -5934,7 +6449,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/completions": {
@@ -5991,7 +6520,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/responses": {
@@ -6048,7 +6591,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/embeddings": {
@@ -6105,7 +6662,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/speech": {
@@ -6162,7 +6733,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/transcriptions": {
@@ -6219,7 +6804,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/generations": {
@@ -6409,7 +7008,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/edits": {
@@ -6603,7 +7216,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/variations": {
@@ -6715,7 +7342,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/chat/completions/{job_id}": {
@@ -6762,7 +7403,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/completions/{job_id}": {
@@ -6809,7 +7464,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/responses/{job_id}": {
@@ -6856,7 +7525,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/embeddings/{job_id}": {
@@ -6903,7 +7586,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/speech/{job_id}": {
@@ -6950,7 +7647,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/transcriptions/{job_id}": {
@@ -6997,7 +7708,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/generations/{job_id}": {
@@ -7044,7 +7769,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/edits/{job_id}": {
@@ -7091,7 +7830,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/variations/{job_id}": {
@@ -7138,7 +7891,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/chat/completions": {
@@ -7463,7 +8230,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/chat/completions": {
@@ -7775,7 +8556,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/completions": {
@@ -8064,7 +8859,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/completions": {
@@ -8371,7 +9180,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/responses": {
@@ -9083,7 +9906,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/responses": {
@@ -9780,7 +10617,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/responses/input_tokens": {
@@ -9832,7 +10683,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/embeddings": {
@@ -9884,7 +10749,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/embeddings": {
@@ -9954,7 +10833,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/audio/speech": {
@@ -10060,7 +10953,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/audio/speech": {
@@ -10184,7 +11091,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/audio/transcriptions": {
@@ -10314,7 +11235,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/audio/transcriptions": {
@@ -10462,7 +11397,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/models": {
@@ -10504,7 +11453,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/models": {
@@ -10564,7 +11527,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches": {
@@ -10616,7 +11593,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListBatches",
@@ -10683,7 +11674,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches/{batch_id}": {
@@ -10744,7 +11749,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches/{batch_id}/cancel": {
@@ -10864,7 +11883,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/images/generations": {
@@ -11178,7 +12211,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/images/generations": {
@@ -11512,7 +12559,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files": {
@@ -11636,7 +12697,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListFiles",
@@ -11721,7 +12796,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files/{file_id}": {
@@ -11840,7 +12929,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteFile",
@@ -11913,7 +13016,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files/{file_id}/content": {
@@ -11975,7 +13092,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers": {
@@ -12131,7 +13262,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListContainers",
@@ -12294,7 +13439,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}": {
@@ -12414,7 +13573,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteContainer",
@@ -12490,7 +13663,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files": {
@@ -12628,7 +13815,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListContainerFiles",
@@ -12777,7 +13978,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files/{file_id}": {
@@ -12883,7 +14098,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteContainerFile",
@@ -12969,7 +14198,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files/{file_id}/content": {
@@ -13040,7 +14283,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages": {
@@ -13266,7 +14523,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/complete": {
@@ -13433,7 +14704,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/models": {
@@ -13539,7 +14824,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/count_tokens": {
@@ -13639,7 +14938,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches": {
@@ -13829,7 +15142,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "anthropicListBatches",
@@ -14015,7 +15342,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}": {
@@ -14178,7 +15519,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}/cancel": {
@@ -14341,7 +15696,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}/results": {
@@ -14440,7 +15809,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files": {
@@ -14585,7 +15968,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "anthropicListFiles",
@@ -14734,7 +16131,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files/{file_id}/content": {
@@ -14894,7 +16305,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files/{file_id}": {
@@ -15002,7 +16427,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:generateContent": {
@@ -15065,7 +16504,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -15128,7 +16581,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:embedContent": {
@@ -15191,7 +16658,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:countTokens": {
@@ -15307,7 +16788,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:predict": {
@@ -15375,7 +16870,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models": {
@@ -15435,7 +16944,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/upload/v1beta/files": {
@@ -15587,7 +17110,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/files": {
@@ -15721,7 +17258,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/files/{file_id}": {
@@ -15837,7 +17388,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "geminiDeleteFile",
@@ -15889,7 +17454,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/converse": {
@@ -15952,7 +17531,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/converse-stream": {
@@ -16112,7 +17705,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/invoke": {
@@ -16175,7 +17782,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/invoke-with-response-stream": {
@@ -16239,7 +17860,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs": {
@@ -16291,7 +17926,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "bedrockListBatchJobs",
@@ -16417,7 +18066,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs/{jobIdentifier}": {
@@ -16470,7 +18133,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs/{jobIdentifier}/stop": {
@@ -16531,7 +18208,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v2/chat": {
@@ -16918,7 +18609,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v2/embed": {
@@ -16970,7 +18675,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v1/tokenize": {
@@ -17022,7 +18741,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/completions": {
@@ -17311,7 +19044,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/chat/completions": {
@@ -17603,7 +19350,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/embeddings": {
@@ -17655,7 +19416,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/models": {
@@ -17697,7 +19472,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/responses": {
@@ -18376,7 +20165,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/responses/input_tokens": {
@@ -18428,7 +20231,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/audio/speech": {
@@ -18516,7 +20333,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/audio/transcriptions": {
@@ -18646,7 +20477,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/anthropic/v1/messages": {
@@ -18839,7 +20684,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models": {
@@ -18899,7 +20758,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models/{model}:generateContent": {
@@ -18962,7 +20835,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -19025,7 +20912,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/bedrock/model/{modelId}/converse": {
@@ -19088,7 +20989,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/bedrock/model/{modelId}/converse-stream": {
@@ -19248,7 +21163,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v2/chat": {
@@ -19635,7 +21564,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v2/embed": {
@@ -19687,7 +21630,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v1/tokenize": {
@@ -19739,7 +21696,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/completions": {
@@ -20028,7 +21999,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/chat/completions": {
@@ -20320,7 +22305,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/embeddings": {
@@ -20372,7 +22371,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/models": {
@@ -20414,7 +22427,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/responses": {
@@ -21093,7 +23120,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/responses/input_tokens": {
@@ -21145,7 +23186,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/audio/speech": {
@@ -21233,7 +23288,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/audio/transcriptions": {
@@ -21363,7 +23432,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/anthropic/v1/messages": {
@@ -21556,7 +23639,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/anthropic/v1/messages/count_tokens": {
@@ -21656,7 +23753,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models": {
@@ -21716,7 +23827,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models/{model}:generateContent": {
@@ -21779,7 +23904,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -21842,7 +23981,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/bedrock/model/{modelId}/converse": {
@@ -21905,7 +24058,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/bedrock/model/{modelId}/converse-stream": {
@@ -22065,7 +24232,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v2/chat": {
@@ -22452,7 +24633,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v2/embed": {
@@ -22504,7 +24699,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v1/tokenize": {
@@ -22556,7 +24765,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/completions": {
@@ -22845,7 +25068,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/chat/completions": {
@@ -23137,7 +25374,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/embeddings": {
@@ -23189,7 +25440,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/models": {
@@ -23231,7 +25496,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/responses": {
@@ -23910,7 +26189,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/responses/input_tokens": {
@@ -23962,7 +26255,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/audio/speech": {
@@ -24050,7 +26357,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/audio/transcriptions": {
@@ -24180,7 +26501,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/anthropic/v1/messages": {
@@ -24373,7 +26708,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models": {
@@ -24433,7 +26782,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models/{model}:generateContent": {
@@ -24496,7 +26859,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -24559,7 +26936,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/bedrock/model/{modelId}/converse": {
@@ -24622,7 +27013,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/bedrock/model/{modelId}/converse-stream": {
@@ -24782,7 +27187,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v2/chat": {
@@ -25169,7 +27588,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v2/embed": {
@@ -25221,7 +27654,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v1/tokenize": {
@@ -25273,7 +27720,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/health": {
@@ -28825,7 +31286,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/api/mcp/clients": {
@@ -37788,7 +40263,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "mcpServerSSE",
@@ -37808,7 +40297,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/metrics": {
@@ -37850,7 +40353,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "x-bf-vk",
-        "description": "Bifrost Virtual Key for governance, routing, and access control. Only supported on inference endpoints (`/v1/*`), not on management APIs.\nExample: `sk-bf-*` prefixed keys.\n"
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).\nExample: `sk-bf-*` prefixed keys.\n"
       },
       "ApiKeyAuth": {
         "type": "apiKey",

@@ -10,7 +10,7 @@ speech:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/audio/speech`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -45,24 +45,29 @@ speech:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-speech:
   post:
     operationId: azureCreateSpeech
     summary: Create speech (Azure OpenAI TTS)
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
     requestBody:
       required: true
       content:
@@ -97,6 +102,11 @@ azure-speech:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 transcriptions:
   post:
     operationId: openaiCreateTranscription
@@ -106,7 +116,7 @@ transcriptions:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/audio/transcriptions`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -128,24 +138,29 @@ transcriptions:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-transcriptions:
   post:
     operationId: azureCreateTranscription
     summary: Create transcription (Azure OpenAI)
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
     requestBody:
       required: true
       content:
@@ -166,3 +181,8 @@ azure-transcriptions:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

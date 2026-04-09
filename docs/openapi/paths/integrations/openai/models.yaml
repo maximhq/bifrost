@@ -9,7 +9,7 @@ models:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/models`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     responses:
       '200':
         description: Successful response
@@ -22,24 +22,29 @@ models:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-models:
   get:
     operationId: azureListModels
     summary: List models (Azure OpenAI)
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response
@@ -51,3 +56,8 @@ azure-models:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
