@@ -47,7 +47,7 @@ import {
 	validateRoutingRules
 } from "@/lib/utils/celConverterRouting";
 import { Plus, Save, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";

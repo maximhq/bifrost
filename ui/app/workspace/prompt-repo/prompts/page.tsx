@@ -1,9 +1,13 @@
-"use client";
-
-import { redirect, useSearchParams } from "next/navigation";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 
 export default function PromptsPage() {
-	const searchParams = useSearchParams();
-	const queryString = searchParams.toString();
-	redirect(`/workspace/prompt-repo${queryString ? `?${queryString}` : ""}`);
+	const navigate = useNavigate();
+	const { searchStr } = useLocation();
+
+	useEffect(() => {
+		navigate({ to: `/workspace/prompt-repo${searchStr}`, replace: true });
+	}, [navigate, searchStr]);
+
+	return null;
 }
