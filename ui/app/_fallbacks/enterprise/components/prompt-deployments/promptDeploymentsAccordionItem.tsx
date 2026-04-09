@@ -27,8 +27,8 @@ export function PromptDeploymentsAccordionItem({
 				deploymentsOpen ? "min-h-0 grow overflow-hidden" : "shrink-0 grow-0",
 			)}
 		>
-			<AccordionTrigger data-testid="prompt-deployments-trigger" className="text-muted-foreground w-full min-w-0 shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline">
-				<span className="min-w-0 flex-1 text-left">Deployments</span>
+			<AccordionTrigger data-testid="prompt-deployments-trigger" className="text-muted-foreground w-full min-w-0 shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline [&[data-state=open]>svg]:rotate-180">
+				<span className="min-w-0 flex-1 text-left font-semibold">Deployments</span>
 			</AccordionTrigger>
 			<AccordionContent
 				containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"

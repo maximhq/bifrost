@@ -14,16 +14,28 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
-export function ValueEditor({ value, handleOnChange, operator, fieldData, type }: ValueEditorProps) {
+type CELValueEditorContext = {
+	validateRegex?: (pattern: string) => string | null;
+	menuPosition?: "absolute" | "fixed";
+	menuPortalTarget?: HTMLElement | null;
+};
+
+export function ValueEditor({
+	value,
+	handleOnChange,
+	operator,
+	fieldData,
+	type,
+	context,
+}: ValueEditorProps & { context?: CELValueEditorContext }) {
 	// Compute all conditions upfront before any early returns
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";
 	const isNullOperator = operator === "null" || operator === "notNull";
 
-	// Get validateRegex from context if provided
-	const validateRegex: ((pattern: string) => string | null) | undefined = context?.validateRegex;
-	const menuPosition: "absolute" | "fixed" | undefined = context?.menuPosition;
-	const menuPortalTarget: HTMLElement | null | undefined = context?.menuPortalTarget;
+	const validateRegex = context?.validateRegex;
+	const menuPosition = context?.menuPosition;
+	const menuPortalTarget = context?.menuPortalTarget;
 
 	// Get valueEditorType, handling both string and function types
 	const valueEditorType =

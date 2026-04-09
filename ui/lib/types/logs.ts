@@ -460,6 +460,9 @@ export interface LogEntry {
   fallback_index: number;
   attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
   selected_key_id?: string | null;
+	selected_prompt_id?: string; // Selected prompt ID (prompts plugin)
+	selected_prompt_name?: string; // Resolved prompt display name (prompts plugin)
+	selected_prompt_version?: string; // Resolved prompt version number as string (prompts plugin)
   team_name?: string;
   team_id?: string;
   customer_name?: string;

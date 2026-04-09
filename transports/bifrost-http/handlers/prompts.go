@@ -831,6 +831,12 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		if len(req.ModelParams) == 0 {
 			req.ModelParams = version.ModelParams
 		}
+		if len(req.Variables) == 0 && len(version.Variables) > 0 {
+			req.Variables = make(tables.PromptVariables, len(version.Variables))
+			for key := range version.Variables {
+				req.Variables[key] = ""
+			}
+		}
 	} else {
 		// Use provided messages
 		for _, msg := range req.Messages {
@@ -904,7 +910,9 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 	session.ModelParams = req.ModelParams
 	session.Provider = req.Provider
 	session.Model = req.Model
-	session.Variables = req.Variables
+	if req.Variables != nil {
+		session.Variables = req.Variables
+	}
 
 	// Update messages
 	var messages []tables.TablePromptSessionMessage

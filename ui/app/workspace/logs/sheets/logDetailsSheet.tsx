@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
-import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
+import { useGetPromptQuery } from "@/lib/store/apis/promptsApi";
 import type { LogEntry } from "@/lib/types/logs";
 import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import { LogDetailView } from "./logDetailView";
 
 interface LogDetailSheetProps {
@@ -39,7 +40,15 @@ export function LogDetailSheet({
 		skip: !open || !log?.id,
 		pollingInterval,
 	});
+
 	const shouldPoll = isError || fullLog?.status === "processing";
+
+	const isFullDataReady = log != null && (isError || (fullLog?.id === log.id && !isLoading));
+	// Prefer full log when loaded; otherwise list row — enables prompt fetch in parallel with getLogById
+	const selectedPromptId = log ? (fullLog?.id === log.id ? fullLog : log).selected_prompt_id : undefined;
+	const { data: selectedPromptData } = useGetPromptQuery(selectedPromptId ?? "", {
+		skip: !open || !selectedPromptId,
+	});
 
 	useEffect(() => {
 		setPollingInterval(shouldPoll ? 2000 : 0);
@@ -51,9 +60,10 @@ export function LogDetailSheet({
 
 	if (!log) return null;
 
+
 	// Show a loader only on the initial fetch, not during background polling refetches.
-	const isFullDataReady = fullLog?.id === log.id && !isLoading;
-	const displayLog = isFullDataReady ? fullLog : log;
+	const displayLog: LogEntry = isFullDataReady && fullLog ? fullLog : log;
+	const resolvedSelectedPromptName = selectedPromptData?.prompt?.name ?? displayLog.selected_prompt_name ?? "";
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -66,6 +76,7 @@ export function LogDetailSheet({
 				) : (
 					<LogDetailView
 						log={displayLog}
+						resolvedSelectedPromptName={resolvedSelectedPromptName}
 						handleDelete={handleDelete}
 						onClose={() => onOpenChange(false)}
 						onFilterByParentRequestId={onFilterByParentRequestId}
