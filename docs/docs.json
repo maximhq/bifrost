@@ -165,6 +165,7 @@
               "mcp/overview",
               "mcp/connecting-to-servers",
               "mcp/oauth",
+              "mcp/per-user-oauth",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",

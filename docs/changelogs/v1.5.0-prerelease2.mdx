@@ -19,6 +19,7 @@ description: "v1.5.0-prerelease2 changelog - 2026-04-08"
 <Update label="Bifrost(HTTP)" description="1.5.0-prerelease2">
 ## ✨ Features
 
+- **Model Alias** — Map model names to provider-specific identifiers (deployment names, inference profile ARNs, fine-tuned model IDs, custom model names, etc.) via per-key alias config
 - **Realtime Support** — Add WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers
 - **Fireworks AI Provider** — Add Fireworks AI as a first-class provider with native completions, responses, embeddings, and image generations (thanks [@ivanetchart](https://github.com/ivanetchart)!)
 - **Per-User OAuth Consent** — Add per-user OAuth consent flow with identity selection and MCP authentication
@@ -48,8 +49,24 @@ description: "v1.5.0-prerelease2 changelog - 2026-04-08"
 - **Data Race Fix** — Fix race in data reading from fasthttp request for integrations
 - **Model Listing** — Unify /api/models and /api/models/details listing behavior
 
+<Warning>
+**v1.5.0 contains multiple breaking changes.** See the [v1.5.0 Migration Guide](/migration-guides/v1.5.0) for full before/after examples and a migration checklist.
+</Warning>
+
+## Breaking Changes in This Release
+
+This prerelease introduces 3 additional breaking changes on top of those in prerelease1. See the **[v1.5.0 Migration Guide](/migration-guides/v1.5.0)** for full before/after examples, automatic migration details, and a step-by-step checklist.
+
+| # | Breaking Change | Affected |
+|---|---|---|
+| [9](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) | Provider `deployments` removed — migrate Azure, Bedrock, Vertex, and Replicate deployment maps to the unified top-level `aliases` field | `config.json`, REST API, Go SDK |
+| [10](/migration-guides/v1.5.0#breaking-change-10-go-sdk-extrafields-model-fields-renamed) | Go SDK: `ExtraFields.ModelRequested` replaced by `OriginalModelRequested` + `ResolvedModelUsed` | Go SDK |
+| [11](/migration-guides/v1.5.0#breaking-change-11-go-sdk-streamaccumulatorresult-field-renamed) | Go SDK: `StreamAccumulatorResult.Model` replaced by `RequestedModel` + `ResolvedModel` | Go SDK |
+
+---
 </Update>
 <Update label="Core" description="1.5.1">
+- feat: add model alias support — map model names to provider-specific identifiers per key
 - feat: add Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
 - feat: add realtime provider interfaces, schemas, and engine hooks
 - feat: add session log storage and realtime request normalization
@@ -72,6 +89,7 @@ description: "v1.5.0-prerelease2 changelog - 2026-04-08"
 
 </Update>
 <Update label="Framework" description="1.3.1">
+- feat: add model alias storage and encryption in key config
 - feat: add per-user OAuth consent flow with identity selection and MCP authentication
 - feat: add access profiles for fine-grained permission control
 - feat: add user level OAuth for MCP gateway
