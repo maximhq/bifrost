@@ -58,8 +58,12 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ## Enterprise Deployments
 
-Bifrost supports enterprise-grade, private deployments for teams running production AI systems at scale.
-In addition to private networking, custom security controls, and governance, enterprise deployments unlock advanced capabilities including adaptive load balancing, clustering, guardrails, MCP gateway and and other features designed for enterprise-grade scale and reliability.
+Bifrost supports enterprise-grade, private deployments for teams running
+production AI systems at scale. In addition to private networking, custom
+security controls, and governance, enterprise deployments unlock advanced
+capabilities including adaptive load balancing, clustering, guardrails, MCP
+gateway, user-level governance, large payload optimization and and other
+features designed for enterprise-grade scale and reliability.
 
 <img src=".github/assets/features.png" alt="Book a Demo" width="100%" style="margin-top:5px;"/>
 

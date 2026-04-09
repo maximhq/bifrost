@@ -10,6 +10,34 @@ Bifrost's key management system goes beyond simple API key storage. It provides 
 
 When you configure multiple keys for a provider, Bifrost automatically distributes requests using sophisticated selection algorithms that consider key weights, model compatibility, and deployment mappings.
 
+## Enterprise API Key Catalog
+
+Bifrost Enterprise also exposes a dedicated API key catalog for managing gateway-issued API keys at scale. This is separate from provider keys: provider keys are used for upstream routing, while the enterprise API key catalog is used for issuing, searching, and governing access to Bifrost itself.
+
+The list endpoint supports server-side search and pagination:
+
+```bash
+curl "http://localhost:8080/api/api-keys?search=prod&limit=25&offset=0"
+```
+
+```json
+{
+  "api_keys": [
+    {
+      "id": 9,
+      "name": "prod-agent-key",
+      "key_prefix": "bf_prod_"
+    }
+  ],
+  "count": 1,
+  "total_count": 1,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+The enterprise dashboard uses the same wrapped response shape for searchable CRUD workflows, so large API key inventories remain manageable without loading the full catalog into memory.
+
 ## How Key Selection Works
 
 Bifrost follows a precise selection process for every request:
