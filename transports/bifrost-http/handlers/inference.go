@@ -1569,6 +1569,18 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	go func() {
 		defer func() {
 			schemas.ReleaseHTTPRequest(httpReq)
+			// Retrieve and run transport post-hook completer before closing the stream
+			// so errors can still be communicated to the client as SSE events.
+			// Must retrieve here (not before goroutine) because TransportInterceptorMiddleware
+			// sets BifrostContextKeyTransportPostHookCompleter after next(ctx) returns.
+			if postHookCompleter, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(func() error); ok && postHookCompleter != nil {
+				if err := postHookCompleter(); err != nil {
+					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
+					if marshalErr == nil {
+						reader.SendError(errorJSON)
+					}
+				}
+			}
 			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL

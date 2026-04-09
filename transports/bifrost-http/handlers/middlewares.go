@@ -354,15 +354,17 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			next(ctx)
 
 			// For streaming responses, store a callback to run post-hooks after the stream ends.
-			// The streaming handler calls this before traceCompleter.
+			// The streaming handler calls this BEFORE reader.Done() so that errors can
+			// still be sent as SSE events. applyResponse=false because the response is
+			// already on the wire and mutating ctx.Response would corrupt the chunked stream.
 			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
-				ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, func() {
-					runTransportPostHooks(ctx, plugins, bifrostCtx)
+				ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, func() error {
+					return runTransportPostHooks(ctx, plugins, bifrostCtx, false)
 				})
 				return
 			}
 
-			runTransportPostHooks(ctx, plugins, bifrostCtx)
+			_ = runTransportPostHooks(ctx, plugins, bifrostCtx, true)
 		}
 	}
 }
@@ -377,7 +379,8 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 // BifrostContext lifecycle. These logs are merged into the trace by the
 // TracingMiddleware at trace completion, alongside core-level plugin logs
 // which travel through BifrostContext → Trace → AttachPluginLogs.
-func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext) {
+func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext, applyResponse bool) error {
+	shouldApplyShortCircuit := applyResponse
 	httpResp := schemas.AcquireHTTPResponse()
 	defer schemas.ReleaseHTTPResponse(httpResp)
 	fasthttpResponseToHTTPResponse(ctx, httpResp)
@@ -404,8 +407,10 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
 				}
 			}
-			applyHTTPResponseToCtx(ctx, httpResp)
-			return
+			if shouldApplyShortCircuit {
+				applyHTTPResponseToCtx(ctx, httpResp)
+			}
+			return fmt.Errorf("HTTPTransportPostHook plugin %s: %w", pluginName, err)
 		}
 	}
 	// Drain post-hook plugin logs and merge with pre-hook logs
@@ -416,7 +421,10 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
 		}
 	}
-	applyHTTPResponseToCtx(ctx, httpResp)
+	if shouldApplyShortCircuit {
+		applyHTTPResponseToCtx(ctx, httpResp)
+	}
+	return nil
 }
 
 // getBifrostContextFromFastHTTP gets or creates a BifrostContext from fasthttp context.
@@ -519,6 +527,12 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 	resp.StatusCode = ctx.Response.StatusCode()
 	for key, value := range ctx.Response.Header.All() {
 		resp.Headers[string(key)] = string(value)
+	}
+	// Skip response body copy for streaming (SSE) responses — the body is an active
+	// io.Reader consumed by fasthttp's writeBodyChunked. Calling Body() would race
+	// with the chunked writer (Body() drains and closes the bodyStream).
+	if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+		return
 	}
 	// Skip response body copy when large payload/response mode is active — the response is
 	// streamed directly to the client and materializing it here would spike memory.
@@ -924,10 +938,6 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 
 			// Store a trace completion callback for streaming handlers to use
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func() {
-				// Run deferred HTTPTransportPostHook for streaming responses
-				if postHookCompleter, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(func()); ok {
-					postHookCompleter()
-				}
 				// Attach transport plugin logs before completing the trace (streaming path)
 				if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
 					tracer.AttachPluginLogs(traceID, transportLogs)
