@@ -87,6 +87,12 @@ const (
 	pollingInterval     = 2 * time.Second
 )
 
+// useDeploymentsEndpoint returns whether the key uses the deployments endpoint.
+// Nil ReplicateKeyConfig is treated as false (default models/predictions behavior).
+func useDeploymentsEndpoint(key schemas.Key) bool {
+	return key.ReplicateKeyConfig != nil && key.ReplicateKeyConfig.UseDeploymentsEndpoint
+}
+
 // createPrediction creates a new prediction on Replicate API
 // Supports both sync (with Prefer: wait header) and async modes
 // stripPrefer should be true for streaming requests to exclude the Prefer header
@@ -275,7 +281,7 @@ func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostCont
 	client := provider.client
 	extraHeaders := provider.networkConfig.ExtraHeaders
 
-	if key.ReplicateKeyConfig == nil || !key.ReplicateKeyConfig.UseDeploymentsEndpoint {
+	if !useDeploymentsEndpoint(key) {
 		return ToBifrostListModelsResponse(
 			&ReplicateDeploymentListResponse{},
 			providerName,
@@ -430,7 +436,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		request.Model,
 		provider.customProviderConfig,
 		schemas.TextCompletionRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// create prediction
@@ -522,7 +528,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		request.Model,
 		provider.customProviderConfig,
 		schemas.TextCompletionStreamRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction
@@ -768,7 +774,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ChatCompletionRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// create prediction
@@ -860,7 +866,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ChatCompletionStreamRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction
@@ -1124,7 +1130,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ResponsesRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// create prediction
@@ -1211,7 +1217,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ResponsesStreamRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction
@@ -1724,7 +1730,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageGenerationRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction with appropriate mode
@@ -1818,7 +1824,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageGenerationStreamRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 	// Create prediction
 	prediction, _, _, _, err := createPrediction(
@@ -2128,7 +2134,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageEditRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction with appropriate mode
@@ -2222,7 +2228,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		request.Model,
 		provider.customProviderConfig,
 		schemas.ImageEditStreamRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction
@@ -2515,7 +2521,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 		request.Model,
 		provider.customProviderConfig,
 		schemas.VideoGenerationRequest,
-		key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		useDeploymentsEndpoint(key),
 	)
 
 	// Create prediction with appropriate mode

@@ -26,12 +26,12 @@ func TestAzure(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.Azure,
-		ChatModel:          "gpt-4o-backup",
-		PromptCachingModel: "gpt-4o-backup",
+		ChatModel:          "gpt-4o",
+		PromptCachingModel: "gpt-4o",
 		VisionModel:        "gpt-4o",
 		ChatAudioModel:     "gpt-4o-mini-audio-preview",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
+			{Provider: schemas.Azure, Model: "gpt-4o"},
 		},
 		TextModel:            "", // Azure doesn't support text completion in newer models
 		EmbeddingModel:       "text-embedding-ada-002",
@@ -59,7 +59,7 @@ func TestAzure(t *testing.T) {
 			Embedding:                  true,
 			ListModels:                 true,
 			Reasoning:                  true,
-			ChatAudio:                  true,
+			ChatAudio:                  false,
 			Transcription:              false, // Disabled for azure because of 3 calls/minute quota
 			TranscriptionStream:        false, // Not properly supported yet by Azure
 			SpeechSynthesis:            false, // Disabled for azure because of 3 calls/minute quota

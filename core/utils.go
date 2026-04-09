@@ -157,10 +157,6 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.VertexKeyConfig == nil {
 			return fmt.Errorf("vertex_key_config is required")
 		}
-	case schemas.Replicate:
-		if key.ReplicateKeyConfig == nil {
-			return fmt.Errorf("replicate_key_config is required")
-		}
 	case schemas.VLLM:
 		if key.VLLMKeyConfig == nil {
 			return fmt.Errorf("vllm_key_config is required")

@@ -27,7 +27,7 @@ func TestVertex(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Vertex,
-		ChatModel:            "google/gemini-2.0-flash-001",
+		ChatModel:            "gemini-2.5-pro",
 		PromptCachingModel:   "claude-sonnet-4-5",
 		VisionModel:          "claude-sonnet-4-5",
 		TextModel:            "", // Vertex doesn't support text completion in newer models

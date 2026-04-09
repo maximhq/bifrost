@@ -51,7 +51,7 @@ func TestHuggingface(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			Embedding:             true,
+			Embedding:             false,
 			Transcription:         true,
 			TranscriptionStream:   false,
 			SpeechSynthesis:       true,

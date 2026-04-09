@@ -30,7 +30,7 @@ func TestXAI(t *testing.T) {
 		TextModel:            "grok-3",
 		VisionModel:          "grok-4-1-fast-reasoning",
 		EmbeddingModel:       "", // XAI doesn't support embedding
-		ImageGenerationModel: "grok-2-image",
+		ImageGenerationModel: "grok-imagine-image",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             true,
 			SimpleChat:                 true,
