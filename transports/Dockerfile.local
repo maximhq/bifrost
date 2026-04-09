@@ -18,7 +18,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
   
   # --- Go Build Stage: Compile the Go binary using local modules ---
-  FROM golang:1.26.1-alpine3.23 AS builder
+  FROM golang:1.26.2-alpine3.23 AS builder
   WORKDIR /build
   
   # Install dependencies including gcc for CGO and sqlite
@@ -75,7 +75,7 @@
   # musl: C standard library (required for CGO binaries)
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
-  RUN apk add --no-cache musl libgcc ca-certificates wget
+  RUN apk add --no-cache musl libgcc ca-certificates wget zlib=1.3.2-r0
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
