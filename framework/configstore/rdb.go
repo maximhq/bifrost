@@ -2186,6 +2186,22 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
+		// Delete per-user OAuth pending flows tied to this VK
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TablePerUserOAuthPendingFlow{}).Error; err != nil {
+			return err
+		}
+		// Delete per-user OAuth sessions tied to this VK
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TablePerUserOAuthSession{}).Error; err != nil {
+			return err
+		}
+		// Delete upstream OAuth user sessions tied to this VK
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserSession{}).Error; err != nil {
+			return err
+		}
+		// Delete upstream OAuth user tokens tied to this VK
+		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableOauthUserToken{}).Error; err != nil {
+			return err
+		}
 		// Delete budgets owned by this virtual key
 		if err := tx.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableBudget{}).Error; err != nil {
 			return err

@@ -277,7 +277,7 @@ type TablePerUserOAuthSession struct {
 	RefreshTokenHash string           `gorm:"type:varchar(64);index" json:"-"`                   // SHA-256 hash for secure lookups (not unique — refresh tokens are optional)
 	ClientID         string           `gorm:"type:varchar(255);not null;index" json:"client_id"` // Which OAuth client registered this session
 	VirtualKeyID     *string          `gorm:"type:varchar(255);index" json:"virtual_key_id"`     // Linked VK identity (set when VK is present during auth)
-	VirtualKey       *TableVirtualKey `gorm:"foreignKey:VirtualKeyID" json:"-"`                  // Linked VK identity (server-only, not serialized)
+	VirtualKey       *TableVirtualKey `gorm:"foreignKey:VirtualKeyID" json:"-"` // Linked VK identity (server-only, not serialized)
 	UserID           *string          `gorm:"type:varchar(255);index" json:"user_id"`            // Linked enterprise user identity (set when user ID is present)
 	ExpiresAt        time.Time        `gorm:"index;not null" json:"expires_at"`
 	EncryptionStatus string           `gorm:"type:varchar(20);default:'plain_text'" json:"-"`

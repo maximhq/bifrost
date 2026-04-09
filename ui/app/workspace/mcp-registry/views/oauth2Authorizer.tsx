@@ -32,6 +32,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const [errorMessage, setErrorMessage] = useState<string | null>(null)
 	const popupRef = useRef<Window | null>(null)
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+	const isCompletingRef = useRef(false)
 
 	// RTK Query hooks
 	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery()
@@ -47,6 +48,10 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	// Handle successful OAuth completion
 	const handleOAuthComplete = useCallback(async () => {
+		// Guard against concurrent calls (race between postMessage and polling)
+		if (isCompletingRef.current) return
+		isCompletingRef.current = true
+
 		// Close popup if still open
 		if (popupRef.current && !popupRef.current.closed) {
 			popupRef.current.close()
@@ -130,6 +135,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	// Open popup and start polling
 	const openPopup = useCallback(() => {
+		// Reset completion guard for each fresh OAuth attempt
+		isCompletingRef.current = false
+
 		// Close any existing popup
 		if (popupRef.current && !popupRef.current.closed) {
 			popupRef.current.close()
@@ -196,6 +204,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	const handleRetry = () => {
 		setErrorMessage(null)
+		isCompletingRef.current = false
 		if (isPerUserOauth) {
 			setStatus("confirm")
 		} else {
@@ -206,6 +215,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 	const handleCancel = () => {
 		stopPolling()
+		isCompletingRef.current = false
 		if (popupRef.current && !popupRef.current.closed) {
 			popupRef.current.close()
 		}
