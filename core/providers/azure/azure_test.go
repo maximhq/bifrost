@@ -29,7 +29,7 @@ func TestAzure(t *testing.T) {
 		ChatModel:          "gpt-4o-backup",
 		PromptCachingModel: "gpt-4o-backup",
 		VisionModel:        "gpt-4o",
-		ChatAudioModel: "gpt-4o-mini-audio-preview",
+		ChatAudioModel:     "gpt-4o-mini-audio-preview",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
 		},
@@ -41,43 +41,45 @@ func TestAzure(t *testing.T) {
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
 		VideoGenerationModel: "sora-2",
+		PassthroughModel:     "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              true,
-			ImageBase64:           true,
-			MultipleImages:        true,
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			ListModels:            true,
-			Reasoning:             true,
-			ChatAudio:             true,
-			Transcription:         false, // Disabled for azure because of 3 calls/minute quota	
-			TranscriptionStream:   false, // Not properly supported yet by Azure
-			SpeechSynthesis:       false, // Disabled for azure because of 3 calls/minute quota
-			SpeechSynthesisStream: false, // Disabled for azure because of 3 calls/minute quota
-			StructuredOutputs:     true,  // Structured outputs with nullable enum support
-			PromptCaching:         true,
-			ImageGeneration:       false, // Skipped for Azure
-			ImageGenerationStream: false, // Skipped for Azure
-			ImageEdit:             false, // Model not deployed on Azure endpoint
-			ImageEditStream:       false, // Model not deployed on Azure endpoint
-			ImageVariation:        false, // Not supported by Azure
-			VideoGeneration:       false, // disabled for now because of long running operations
-			VideoDownload:         false,
-			VideoRetrieve:         false,
-			VideoRemix:            false,
-			VideoList:             false,
-			VideoDelete:           false,
-			InterleavedThinking:  true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   true,
+			ImageBase64:                true,
+			MultipleImages:             true,
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			ListModels:                 true,
+			Reasoning:                  true,
+			ChatAudio:                  true,
+			Transcription:              false, // Disabled for azure because of 3 calls/minute quota
+			TranscriptionStream:        false, // Not properly supported yet by Azure
+			SpeechSynthesis:            false, // Disabled for azure because of 3 calls/minute quota
+			SpeechSynthesisStream:      false, // Disabled for azure because of 3 calls/minute quota
+			StructuredOutputs:          true,  // Structured outputs with nullable enum support
+			PromptCaching:              true,
+			ImageGeneration:            false, // Skipped for Azure
+			ImageGenerationStream:      false, // Skipped for Azure
+			ImageEdit:                  false, // Model not deployed on Azure endpoint
+			ImageEditStream:            false, // Model not deployed on Azure endpoint
+			ImageVariation:             false, // Not supported by Azure
+			VideoGeneration:            false, // disabled for now because of long running operations
+			VideoDownload:              false,
+			VideoRetrieve:              false,
+			VideoRemix:                 false,
+			VideoList:                  false,
+			VideoDelete:                false,
+			InterleavedThinking:        true,
+			PassthroughAPI:             true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}
