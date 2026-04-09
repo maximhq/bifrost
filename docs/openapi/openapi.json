@@ -25,6 +25,20 @@
       }
     }
   ],
+  "security": [
+    {
+      "BearerAuth": []
+    },
+    {
+      "BasicAuth": []
+    },
+    {
+      "VirtualKeyAuth": []
+    },
+    {
+      "ApiKeyAuth": []
+    }
+  ],
   "tags": [
     {
       "name": "Models",
@@ -37821,6 +37835,30 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token authentication. Use your provider API key or Bifrost authentication token.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      },
+      "BasicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Basic authentication using username and password.\n"
+      },
+      "VirtualKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-bf-vk",
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Only supported on inference endpoints (`/v1/*`), not on management APIs.\nExample: `sk-bf-*` prefixed keys.\n"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "API key authentication via the `x-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      }
+    },
     "parameters": {
       "AsyncJobId": {
         "name": "job_id",

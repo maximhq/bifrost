@@ -63,6 +63,12 @@ servers:
         default: http://localhost:8080
         description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
 
+security:
+  - BearerAuth: []
+  - BasicAuth: []
+  - VirtualKeyAuth: []
+  - ApiKeyAuth: []
+
 tags:
   # Unified Inference API
   - name: Models
@@ -749,6 +755,33 @@ paths:
     $ref: './paths/management/infrastructure.yaml#/metrics'
 
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Use your provider API key or Bifrost authentication token.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: |
+        Basic authentication using username and password.
+    VirtualKeyAuth:
+      type: apiKey
+      in: header
+      name: x-bf-vk
+      description: |
+        Bifrost Virtual Key for governance, routing, and access control. Only supported on inference endpoints (`/v1/*`), not on management APIs.
+        Example: `sk-bf-*` prefixed keys.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        API key authentication via the `x-api-key` header.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+
   parameters:
     AsyncJobId:
       $ref: './paths/inference/async.yaml#/components/parameters/AsyncJobId'

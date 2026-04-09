@@ -54,7 +54,7 @@ Specify the virtual key identifier for governance, routing, and access control.
 <Tab title="Gateway (cURL)">
 ```bash
 curl --location 'http://localhost:8080/v1/chat/completions' \
---header 'x-bf-vk: vk-engineering-main' \
+--header 'x-bf-vk: sk-bf-*' \
 --header 'Content-Type: application/json' \
 --data '{
     "model": "openai/gpt-4o-mini",
@@ -65,7 +65,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 <Tab title="Go SDK">
 ```go
 ctx := context.Background()
-ctx = context.WithValue(ctx, schemas.BifrostContextKeyVirtualKey, "vk-engineering-main")
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyVirtualKey, "sk-bf-*")
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
