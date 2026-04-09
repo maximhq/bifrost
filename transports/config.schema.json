@@ -2913,6 +2913,25 @@
           "description": "Redis database number (default: 0)",
           "default": 0
         },
+        "use_tls": {
+          "type": "boolean",
+          "description": "Use TLS for the Redis/Valkey connection (optional)",
+          "default": false
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Skip TLS certificate verification for Redis/Valkey connections. Use only when a trusted CA cannot be configured.",
+          "default": false
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for Redis/Valkey TLS connections"
+        },
+        "cluster_mode": {
+          "type": "boolean",
+          "description": "Use Redis Cluster mode. Required for cluster configuration endpoints; when enabled, db must be 0.",
+          "default": false
+        },
         "pool_size": {
           "type": "integer",
           "description": "Maximum number of socket connections (optional)"

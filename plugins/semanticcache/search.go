@@ -69,7 +69,7 @@ func (plugin *Plugin) performLegacyDirectSearch(ctx *schemas.BifrostContext, req
 	var cursor *string
 	results, _, err := plugin.store.GetAll(searchCtx, plugin.config.VectorStoreNamespace, filters, selectFields, cursor, 1)
 	if err != nil {
-		if errors.Is(err, vectorstore.ErrNotFound) {
+		if errors.Is(err, vectorstore.ErrNotFound) || errors.Is(err, vectorstore.ErrQuerySyntax) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to search for legacy direct hash match: %w", err)

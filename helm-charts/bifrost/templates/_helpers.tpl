@@ -624,6 +624,18 @@ false
 {{- if .Values.vectorStore.redis.external.contextTimeout }}
 {{- $_ := set $redisConfig "context_timeout" .Values.vectorStore.redis.external.contextTimeout }}
 {{- end }}
+{{- if .Values.vectorStore.redis.external.useTls }}
+{{- $_ := set $redisConfig "use_tls" true }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.insecureSkipVerify }}
+{{- $_ := set $redisConfig "insecure_skip_verify" true }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.caCertPem }}
+{{- $_ := set $redisConfig "ca_cert_pem" .Values.vectorStore.redis.external.caCertPem }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.clusterMode }}
+{{- $_ := set $redisConfig "cluster_mode" true }}
+{{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $redisConfig }}
 {{- else if eq .Values.vectorStore.type "qdrant" }}
