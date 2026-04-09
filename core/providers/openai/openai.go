@@ -90,6 +90,118 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	return provider.networkConfig.BaseURL + path
 }
 
+func (provider *OpenAIProvider) shouldForceResponsesToChatFallback() bool {
+	return provider.customProviderConfig != nil && provider.customProviderConfig.SupportsResponsesAPI != nil && !*provider.customProviderConfig.SupportsResponsesAPI
+}
+
+func (provider *OpenAIProvider) canAutoFallbackResponsesToChat() bool {
+	return provider.customProviderConfig != nil && provider.customProviderConfig.SupportsResponsesAPI == nil
+}
+
+func shouldRetryResponsesAsChat(err *schemas.BifrostError) bool {
+	if err == nil {
+		return false
+	}
+
+	if err.StatusCode != nil {
+		switch *err.StatusCode {
+		case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone, http.StatusNotImplemented:
+			return true
+		}
+	}
+
+	if err.Error == nil {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error.Message))
+	for _, unsupportedMarker := range []string{
+		strings.ToLower(schemas.ErrProviderResponseHTML),
+		strings.ToLower(schemas.ErrProviderResponseUnmarshal),
+		strings.ToLower(schemas.ErrProviderResponseEmpty),
+	} {
+		if strings.Contains(message, unsupportedMarker) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func responsesFallbackErrorMessage(err *schemas.BifrostError) string {
+	if err == nil || err.Error == nil {
+		return "unknown responses API error"
+	}
+
+	return err.Error.Message
+}
+
+func (provider *OpenAIProvider) responsesToChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	chatRequest := request.ToChatRequest()
+	if provider.disableStore {
+		if chatRequest.Params == nil {
+			chatRequest.Params = &schemas.ChatParameters{}
+		}
+		chatRequest.Params.Store = schemas.Ptr(false)
+	}
+
+	chatResponse, err := HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest),
+		chatRequest,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		provider.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return chatResponse.ToBifrostResponsesResponse(), nil
+}
+
+func (provider *OpenAIProvider) responsesStreamToChatCompletion(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+
+	var authHeader map[string]string
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+
+	chatRequest := request.ToChatRequest()
+	if provider.disableStore {
+		if chatRequest.Params == nil {
+			chatRequest.Params = &schemas.ChatParameters{}
+		}
+		chatRequest.Params.Store = schemas.Ptr(false)
+	}
+
+	return HandleOpenAIChatCompletionStreaming(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionStreamRequest),
+		chatRequest,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
+}
+
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
@@ -1379,6 +1491,11 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	if provider.shouldForceResponsesToChatFallback() {
+		provider.logger.Debug("custom provider %s is configured with supports_responses_api=false; using chat completions fallback for responses requests", provider.GetProviderKey())
+		return provider.responsesToChatCompletion(ctx, key, request)
+	}
+
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
@@ -1386,7 +1503,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	return HandleOpenAIResponsesRequest(
+	response, err := HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
@@ -1400,6 +1517,12 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		nil,
 		provider.logger,
 	)
+	if err != nil && provider.canAutoFallbackResponsesToChat() && shouldRetryResponsesAsChat(err) {
+		provider.logger.Warn("custom provider %s does not appear to support the OpenAI responses API cleanly; retrying via chat completions fallback: %s", provider.GetProviderKey(), responsesFallbackErrorMessage(err))
+		return provider.responsesToChatCompletion(ctx, key, request)
+	}
+
+	return response, err
 }
 
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
@@ -1545,6 +1668,12 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
+
+	if provider.shouldForceResponsesToChatFallback() {
+		provider.logger.Debug("custom provider %s is configured with supports_responses_api=false; using chat completions fallback for streaming responses requests", provider.GetProviderKey())
+		return provider.responsesStreamToChatCompletion(ctx, postHookRunner, key, request)
+	}
+
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -1557,7 +1686,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	// Use shared streaming logic
-	return HandleOpenAIResponsesStreaming(
+	streamChan, err := HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
@@ -1574,6 +1703,12 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		provider.logger,
 	)
+	if err != nil && provider.canAutoFallbackResponsesToChat() && shouldRetryResponsesAsChat(err) {
+		provider.logger.Warn("custom provider %s does not appear to support the OpenAI responses API cleanly for streaming; retrying via chat completions fallback: %s", provider.GetProviderKey(), responsesFallbackErrorMessage(err))
+		return provider.responsesStreamToChatCompletion(ctx, postHookRunner, key, request)
+	}
+
+	return streamChan, err
 }
 
 // HandleOpenAIResponsesStreaming handles streaming for OpenAI-compatible APIs.
