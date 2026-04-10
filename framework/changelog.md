@@ -1,3 +1,6 @@
-fix: don't mark oauth config expired on transient refresh failures
-fix: only treat invalid_grant and unauthorized_client as permanent OAuth errors
-feat: add tiered and priority pricing support — 272k token tier fields, 200k priority variants, and priority-rate selection based on service_tier in responses
+- feat: add end-to-end support for /v1/ocr endpoint with Mistral OCR (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: add 272k token tier and priority tier support in pricing
+- feat: add TLS and cluster mode support for Redis connections
+- fix: correctly apply pricing_sync_interval and support env variables in pricing_url (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- fix: don't mark OAuth config expired on transient network failures
+- fix: valkey-search query syntax handling

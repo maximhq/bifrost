@@ -1,0 +1,1 @@
+- feat: add OCR endpoint logging support

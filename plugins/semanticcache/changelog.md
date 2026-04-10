@@ -1,0 +1,2 @@
+- feat: add TLS and cluster mode support for Redis connections
+- fix: valkey-search query syntax handling
