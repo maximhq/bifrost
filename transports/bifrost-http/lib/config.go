@@ -160,6 +160,10 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("failed to unmarshal config data: %w", err)
 	}
 
+	if temp.Client != nil && temp.ClientConfigAlias != nil && !reflect.DeepEqual(temp.Client, temp.ClientConfigAlias) {
+		return fmt.Errorf("config contains conflicting client blocks: both 'client' and 'client_config' are set with different values")
+	}
+
 	// Set simple fields
 	// Backward compatibility: accept both `client` (schema key) and
 	// `client_config` (legacy/common user key) as the client config source.
