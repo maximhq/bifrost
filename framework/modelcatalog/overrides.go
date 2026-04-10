@@ -244,24 +244,6 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.
 	if override.CacheReadInputTokenCostAbove200kTokens != nil {
 		patched.CacheReadInputTokenCostAbove200kTokens = override.CacheReadInputTokenCostAbove200kTokens
 	}
-	if override.InputCostPerTokenAbove272kTokens != nil {
-		patched.InputCostPerTokenAbove272kTokens = override.InputCostPerTokenAbove272kTokens
-	}
-	if override.InputCostPerTokenAbove272kTokensPriority != nil {
-		patched.InputCostPerTokenAbove272kTokensPriority = override.InputCostPerTokenAbove272kTokensPriority
-	}
-	if override.OutputCostPerTokenAbove272kTokens != nil {
-		patched.OutputCostPerTokenAbove272kTokens = override.OutputCostPerTokenAbove272kTokens
-	}
-	if override.OutputCostPerTokenAbove272kTokensPriority != nil {
-		patched.OutputCostPerTokenAbove272kTokensPriority = override.OutputCostPerTokenAbove272kTokensPriority
-	}
-	if override.CacheReadInputTokenCostAbove272kTokens != nil {
-		patched.CacheReadInputTokenCostAbove272kTokens = override.CacheReadInputTokenCostAbove272kTokens
-	}
-	if override.CacheReadInputTokenCostAbove272kTokensPriority != nil {
-		patched.CacheReadInputTokenCostAbove272kTokensPriority = override.CacheReadInputTokenCostAbove272kTokensPriority
-	}
 	if override.CacheReadInputTokenCost != nil {
 		patched.CacheReadInputTokenCost = override.CacheReadInputTokenCost
 	}

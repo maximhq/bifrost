@@ -445,14 +445,6 @@ type ProviderPricingOverride struct {
 	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
 
-	// Pricing above 272k tokens
-	InputCostPerTokenAbove272kTokens          *float64 `json:"input_cost_per_token_above_272k_tokens,omitempty"`
-	InputCostPerTokenAbove272kTokensPriority  *float64 `json:"input_cost_per_token_above_272k_tokens_priority,omitempty"`
-	OutputCostPerTokenAbove272kTokens         *float64 `json:"output_cost_per_token_above_272k_tokens,omitempty"`
-	OutputCostPerTokenAbove272kTokensPriority *float64 `json:"output_cost_per_token_above_272k_tokens_priority,omitempty"`
-	CacheReadInputTokenCostAbove272kTokens    *float64 `json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove272kTokensPriority *float64 `json:"cache_read_input_token_cost_above_272k_tokens_priority,omitempty"`
-
 	// Cache and batch pricing
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
