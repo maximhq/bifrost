@@ -21,10 +21,8 @@ const (
 
 // syncPricing syncs pricing data from URL to database and updates cache
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
-	mc.logger.Debug("starting pricing data synchronization for governance")
 	if mc.shouldSyncGate != nil {
 		if !mc.shouldSyncGate(ctx) {
-			mc.logger.Debug("pricing sync cancelled by custom gate")
 			return nil
 		}
 	}
@@ -39,7 +37,7 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 			return fmt.Errorf("failed to get pricing records: %w", pricingErr)
 		}
 		if len(pricingRecords) > 0 {
-			mc.logger.Error("failed to load pricing data from URL, but existing data found in database: %v", err)
+			mc.logger.Warn("failed to fetch pricing from URL, falling back to existing database records: %v", err)
 			return nil
 		} else {
 			return fmt.Errorf("failed to load pricing data from URL and no existing data in database: %w", err)
@@ -83,7 +81,7 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 	// Populate model params cache from pricing datasheet max_output_tokens
 	mc.populateModelParamsFromPricing(pricingData)
 
-	mc.logger.Info("successfully synced %d pricing records", len(pricingData))
+	mc.logger.Debug("successfully synced %d pricing records", len(pricingData))
 	return nil
 }
 
@@ -188,7 +186,7 @@ func (mc *ModelCatalog) loadPricingFromDatabase(ctx context.Context) error {
 		mc.pricingData[key] = pricing
 	}
 
-	mc.logger.Debug("loaded %d pricing records into cache", len(pricingRecords))
+	mc.logger.Debug("loaded %d pricing records from database into memory", len(mc.pricingData))
 	return nil
 }
 
@@ -227,6 +225,35 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	go mc.syncWorker(ctx)
 }
 
+// withDistributedLock acquires a named distributed lock and executes fn under it.
+// Pass retries=0 to block until acquired (Lock); pass retries>0 to use LockWithRetry.
+func (mc *ModelCatalog) withDistributedLock(ctx context.Context, key string, retries int, fn func() error) error {
+	lock, err := mc.distributedLockManager.NewLock(key)
+	if err != nil {
+		return fmt.Errorf("failed to create lock %q: %w", key, err)
+	}
+	if retries > 0 {
+		if err := lock.LockWithRetry(ctx, retries); err != nil {
+			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
+		}
+	} else {
+		if err := lock.Lock(ctx); err != nil {
+			return fmt.Errorf("failed to acquire lock %q: %w", key, err)
+		}
+	}
+	// Use a fresh context for unlock so that a cancelled or timed-out work context
+	// does not prevent the lock row from being deleted. If we reused ctx and it was
+	// already cancelled when the defer fires, ReleaseLock's DB call would fail
+	// silently and the lock would stay in the database until TTL expiry (30s),
+	// blocking every other node from acquiring it during that window.
+	defer func() {
+		if err := lock.Unlock(context.Background()); err != nil {
+			mc.logger.Warn("failed to release distributed lock %q: %v", key, err)
+		}
+	}()
+	return fn()
+}
+
 // syncTick performs a single sync tick with proper lock management
 // if the last sync was more than the sync interval ago, sync pricing and model parameters in parallel
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
@@ -236,44 +263,44 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	mc.syncMu.RUnlock()
 
 	if time.Since(lastSync) >= interval {
-		lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
-		if err != nil {
-			mc.logger.Error("failed to create model catalog pricing sync lock: %v", err)
-			return
-		}
-		if err := lock.Lock(ctx); err != nil {
-			mc.logger.Error("failed to acquire model catalog pricing sync lock: %v", err)
-			return
-		}
-		defer lock.Unlock(ctx)
-		// Sync pricing and model parameters in parallel
-		var wg sync.WaitGroup
-		var pricingErr, paramsErr error
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			if err := mc.syncPricing(ctx); err != nil {
-				mc.logger.Error("background pricing sync failed: %v", err)
-				pricingErr = err
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			if err := mc.syncModelParameters(ctx); err != nil {
-				mc.logger.Error("background model parameters sync failed: %v", err)
-				paramsErr = err
-			}
-		}()
-		wg.Wait()
+		mc.logger.Debug("starting model catalog background sync")
+		if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
+			// Sync pricing and model parameters in parallel
+			var wg sync.WaitGroup
+			var pricingErr, paramsErr error
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				if err := mc.syncPricing(ctx); err != nil {
+					mc.logger.Error("background pricing sync failed: %v", err)
+					pricingErr = err
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				if err := mc.syncModelParameters(ctx); err != nil {
+					mc.logger.Error("background model parameters sync failed: %v", err)
+					paramsErr = err
+				}
+			}()
+			wg.Wait()
 
-		if pricingErr == nil && paramsErr == nil {
-			if mc.afterSyncHook != nil {
-				mc.afterSyncHook(ctx)
+			if pricingErr == nil && paramsErr == nil {
+				if mc.afterSyncHook != nil {
+					mc.afterSyncHook(ctx)
+				}
+				mc.syncMu.Lock()
+				mc.lastSyncedAt = time.Now()
+				mc.syncMu.Unlock()
 			}
-			mc.syncMu.Lock()
-			mc.lastSyncedAt = time.Now()
-			mc.syncMu.Unlock()
+			if pricingErr != nil {
+				return pricingErr
+			}
+			return paramsErr
+		}); err != nil {
+			mc.logger.Error("failed to run model catalog sync: %v", err)
 		}
+		mc.logger.Debug("model catalog background sync completed")
 	}
 }
 

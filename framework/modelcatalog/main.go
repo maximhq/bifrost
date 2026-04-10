@@ -79,6 +79,21 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
 
+	// Initialize syncCtx early so background startup goroutines can use it and
+	// Cleanup() can cancel them. startSyncWorker is still called at the end after
+	// cold-start paths have completed.
+	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
+
+	// If Init returns an error the caller never owns mc and will never call
+	// Cleanup(), so cancel syncCtx to stop any background goroutines that were
+	// already spawned before the failure.
+	initSucceeded := false
+	defer func() {
+		if !initSucceeded {
+			mc.syncCancel()
+		}
+	}()
+
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
 		// Per-model lazy load when the in-memory cache misses (eviction, new models, or if
@@ -99,14 +114,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			}
 			return &providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
 		})
-		lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create model catalog pricing sync lock: %w", err)
-		}
-		if err := lock.LockWithRetry(ctx, 10); err != nil {
-			return nil, fmt.Errorf("failed to acquire model catalog pricing sync lock: %w", err)
-		}
-		defer lock.Unlock(ctx)
 		var wg sync.WaitGroup
 		var pricingErr, paramsErr error
 		wg.Add(2)
@@ -121,15 +128,21 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			mc.mu.RUnlock()
 			if hasPricingData {
 				mc.logger.Info("existing pricing data found in database, syncing from URL in background")
+				mc.wg.Add(1)
 				go func() {
-					if err := mc.syncPricing(context.Background()); err != nil {
+					defer mc.wg.Done()
+					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_pricing_startup_sync", 10, func() error {
+						return mc.syncPricing(mc.syncCtx)
+					}); err != nil {
 						mc.logger.Warn("background startup pricing sync failed: %v", err)
 					} else {
 						mc.logger.Info("background startup pricing sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.syncPricing(ctx); err != nil {
+				if err := mc.withDistributedLock(ctx, "model_catalog_pricing_startup_sync", 10, func() error {
+					return mc.syncPricing(ctx)
+				}); err != nil {
 					pricingErr = fmt.Errorf("failed to sync pricing data: %w", err)
 				}
 			}
@@ -143,15 +156,21 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			}
 			if n > 0 {
 				mc.logger.Info("existing model parameters found in database (%d records), syncing from URL in background", n)
+				mc.wg.Add(1)
 				go func() {
-					if err := mc.syncModelParameters(context.Background()); err != nil {
+					defer mc.wg.Done()
+					if err := mc.withDistributedLock(mc.syncCtx, "model_catalog_params_startup_sync", 10, func() error {
+						return mc.syncModelParameters(mc.syncCtx)
+					}); err != nil {
 						mc.logger.Warn("background startup model parameters sync failed: %v", err)
 					} else {
 						mc.logger.Info("background startup model parameters sync completed successfully")
 					}
 				}()
 			} else {
-				if err := mc.syncModelParameters(ctx); err != nil {
+				if err := mc.withDistributedLock(ctx, "model_catalog_params_startup_sync", 10, func() error {
+					return mc.syncModelParameters(ctx)
+				}); err != nil {
 					paramsErr = fmt.Errorf("failed to sync model parameters data: %w", err)
 				}
 			}
@@ -185,8 +204,8 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}
 
 	// Start background sync worker
-	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
+	initSucceeded = true
 	return mc, nil
 }
 
@@ -230,6 +249,7 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	if config.PricingURL != nil {
 		mc.pricingURL = *config.PricingURL
 	}
+
 	mc.syncInterval = DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
 		mc.syncInterval = *config.PricingSyncInterval

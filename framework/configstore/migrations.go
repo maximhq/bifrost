@@ -377,6 +377,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddWhitelistedRoutesJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelPricingUniqueIndex(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6138,6 +6141,59 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_whitelisted_routes_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelPricingUniqueIndex ensures the composite unique index (model, provider, mode)
+// exists on governance_model_pricing so that atomic ON CONFLICT upserts work correctly.
+func migrationAddModelPricingUniqueIndex(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_pricing_unique_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Remove duplicate rows before creating the unique index.
+			// The old find-then-insert path could have produced duplicates on
+			// multinode deployments, and CREATE UNIQUE INDEX will fail on a table
+			// that still contains them. Keep the row with the lowest ID for each
+			// (model, provider, mode) combination.
+			result := tx.Exec(`
+				DELETE FROM governance_model_pricing
+				WHERE id NOT IN (
+					SELECT MIN(id)
+					FROM governance_model_pricing
+					GROUP BY model, provider, mode
+				)
+			`)
+			if result.Error != nil {
+				return fmt.Errorf("failed to deduplicate model pricing rows: %w", result.Error)
+			}
+			if result.RowsAffected > 0 {
+				log.Printf("[migration] removed %d duplicate row(s) from governance_model_pricing before creating unique index", result.RowsAffected)
+			}
+
+			if !mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				if err := mg.CreateIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
+					return fmt.Errorf("failed to create unique index idx_model_provider_mode: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasIndex(&tables.TableModelPricing{}, "idx_model_provider_mode") {
+				if err := mg.DropIndex(&tables.TableModelPricing{}, "idx_model_provider_mode"); err != nil {
+					return fmt.Errorf("failed to drop unique index idx_model_provider_mode: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_pricing_unique_index migration: %s", err.Error())
 	}
 	return nil
 }

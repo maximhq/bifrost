@@ -1509,8 +1509,8 @@ func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMode
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
-// Uses a find-then-create-or-update pattern so it works regardless of dialect
-// (SQLite vs PostgreSQL) and constraint naming.
+// Uses a single atomic ON CONFLICT statement to avoid deadlocks in multinode deployments
+// where multiple nodes may attempt concurrent upserts for the same model on startup.
 func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1520,22 +1520,10 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 	}
 	db := txDB.WithContext(ctx)
 
-	var existing tables.TableModelPricing
-	err := db.Where("model = ? AND provider = ? AND mode = ?", pricing.Model, pricing.Provider, pricing.Mode).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// No existing row: create
-			if err := db.Create(pricing).Error; err != nil {
-				return s.parseGormError(err)
-			}
-			return nil
-		}
-		return s.parseGormError(err)
-	}
-
-	// Existing row: update by setting ID and saving (full replace)
-	pricing.ID = existing.ID
-	if err := db.Save(pricing).Error; err != nil {
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
+		UpdateAll: true,
+	}).Create(pricing).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -1700,6 +1688,8 @@ func (s *RDBConfigStore) GetModelParametersByModel(ctx context.Context, model st
 }
 
 // UpsertModelParameters inserts or updates model parameters for a specific model.
+// Uses a single atomic ON CONFLICT statement to avoid deadlocks in multinode deployments
+// where multiple nodes may attempt concurrent upserts for the same model on startup.
 func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1709,20 +1699,10 @@ func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tabl
 	}
 	db := txDB.WithContext(ctx)
 
-	var existing tables.TableModelParameters
-	err := db.Where("model = ?", params.Model).First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			if err := db.Create(params).Error; err != nil {
-				return s.parseGormError(err)
-			}
-			return nil
-		}
-		return s.parseGormError(err)
-	}
-
-	params.ID = existing.ID
-	if err := db.Save(params).Error; err != nil {
+	if err := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "model"}},
+		UpdateAll: true,
+	}).Create(params).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
