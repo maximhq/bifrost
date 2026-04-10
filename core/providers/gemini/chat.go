@@ -86,6 +86,10 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
+		// If promptFeedback is present, the prompt was blocked by safety filters
+		if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+			return createErrorResponse(response, "content_filter", false)
+		}
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
 		return createErrorResponse(response, finishReason, false)
 	}
@@ -299,6 +303,10 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
+		// If promptFeedback is present, the prompt was blocked by safety filters
+		if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+			return createErrorResponse(response, "content_filter", true), nil, true
+		}
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
 		return createErrorResponse(response, finishReason, true), nil, true
 	}
@@ -504,7 +512,12 @@ func isErrorFinishReason(reason FinishReason) bool {
 		reason == FinishReasonProhibitedContent ||
 		reason == FinishReasonSPII ||
 		reason == FinishReasonImageSafety ||
-		reason == FinishReasonUnexpectedToolCall
+		reason == FinishReasonUnexpectedToolCall ||
+		// Vertex AI-specific
+		reason == FinishReasonModelArmor ||
+		reason == FinishReasonImageProhibitedContent ||
+		reason == FinishReasonImageRecitation ||
+		reason == FinishReasonImageOther
 }
 
 // createErrorResponse creates a complete BifrostChatResponse for error cases

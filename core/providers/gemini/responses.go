@@ -158,8 +158,68 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
 
+	// Handle prompt blocked by safety filters (empty candidates with promptFeedback)
+	if len(response.Candidates) == 0 && response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+		bifrostResp.StopReason = schemas.Ptr("content_filter")
+		bifrostResp.Status = schemas.Ptr("failed")
+		// Include block reason message as error output if available
+		if response.PromptFeedback.BlockReasonMessage != "" {
+			errorText := fmt.Sprintf("Error: %s - %s", response.PromptFeedback.BlockReason, response.PromptFeedback.BlockReasonMessage)
+			bifrostResp.Output = []schemas.ResponsesMessage{
+				{
+					ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Status: schemas.Ptr("completed"),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesOutputMessageContentTypeText,
+								Text: &errorText,
+							},
+						},
+					},
+				},
+			}
+		}
+		return bifrostResp
+	}
+
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
+		candidate := response.Candidates[0]
+
+		// Map finish reason to stop reason
+		if candidate.FinishReason != "" {
+			stopReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+			bifrostResp.StopReason = &stopReason
+
+			if isErrorFinishReason(candidate.FinishReason) {
+				bifrostResp.Status = schemas.Ptr("failed")
+				// Include finishMessage as error output if available
+				if candidate.FinishMessage != "" {
+					errorText := fmt.Sprintf("Error: %s - %s", candidate.FinishReason, candidate.FinishMessage)
+					bifrostResp.Output = []schemas.ResponsesMessage{
+						{
+							ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+							Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+							Status: schemas.Ptr("completed"),
+							Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+							Content: &schemas.ResponsesMessageContent{
+								ContentBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesOutputMessageContentTypeText,
+										Text: &errorText,
+									},
+								},
+							},
+						},
+					}
+					return bifrostResp
+				}
+			}
+		}
+
 		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
@@ -933,24 +993,42 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 		}
 
 		// Check for finish reason (indicates end of generation)
-		// Only close if we've actually started emitting content (text, tool calls, etc.)
-		// This prevents emitting response.completed for empty chunks with just finishReason
-		if candidate.FinishReason != "" && len(state.ItemIDs) > 0 {
-			// Check for grounding metadata (web search results)
-			if candidate.GroundingMetadata != nil && !state.HasEmittedWebSearch {
-				// Emit web search events before closing
-				webSearchResponses := emitWebSearchFromGroundingMetadata(
-					candidate.GroundingMetadata,
-					state,
-					sequenceNumber+len(responses),
-				)
-				responses = append(responses, webSearchResponses...)
-			}
+		if candidate.FinishReason != "" {
+			if len(state.ItemIDs) > 0 {
+				// Close any open items normally
+				// Check for grounding metadata (web search results)
+				if candidate.GroundingMetadata != nil && !state.HasEmittedWebSearch {
+					webSearchResponses := emitWebSearchFromGroundingMetadata(
+						candidate.GroundingMetadata,
+						state,
+						sequenceNumber+len(responses),
+					)
+					responses = append(responses, webSearchResponses...)
+				}
 
-			// Close any open items
-			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
-			responses = append(responses, closeResponses...)
+				closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
+				responses = append(responses, closeResponses...)
+			} else if isErrorFinishReason(candidate.FinishReason) {
+				// Safety-filtered with no prior content — still need to emit completed with content_filter
+				closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
+				responses = append(responses, closeResponses...)
+			} else {
+				// Any other finishReason with no prior content (e.g., NO_IMAGE) —
+				// still close the stream so clients don't hang waiting for completed.
+				closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
+				responses = append(responses, closeResponses...)
+			}
 		}
+	} else if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+		// Prompt blocked — no candidates at all. Emit completed with content_filter.
+		// Use the actual BlockReason as the finish reason if it's a known safety reason,
+		// otherwise fall back to SAFETY so it still maps to content_filter.
+		blockFinishReason := FinishReason(response.PromptFeedback.BlockReason)
+		if _, ok := geminiFinishReasonToBifrost[blockFinishReason]; !ok {
+			blockFinishReason = FinishReasonSafety
+		}
+		closeResponses := closeGeminiOpenItems(state, nil, response.UsageMetadata, sequenceNumber+len(responses), blockFinishReason, response.PromptFeedback.BlockReasonMessage)
+		responses = append(responses, closeResponses...)
 	}
 
 	return responses, nil

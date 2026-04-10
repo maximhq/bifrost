@@ -99,6 +99,100 @@ func TestGemini(t *testing.T) {
 	})
 }
 
+// TestChatSafetyFilteringGap proves that safety/content filtering information
+// is incomplete in the Chat Completions API path.
+//
+// What works:
+// - candidates[0].finishReason = SAFETY → finish_reason = "content_filter" ✓ (existing test covers this)
+//
+// What's broken:
+// - Empty candidates + promptFeedback → treated as "stop" instead of "content_filter"
+// - Vertex-specific finish reasons (MODEL_ARMOR, IMAGE_PROHIBITED_CONTENT, etc.) → not mapped
+// - finishMessage not propagated to the client
+//
+// Refs:
+// - Vertex AI: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerateContentResponse
+// - Gemini API: https://ai.google.dev/api/generate-content
+func TestChatSafetyFilteringGap(t *testing.T) {
+	t.Run("NonStream_PromptBlocked_WrongFinishReason", func(t *testing.T) {
+		// When prompt is blocked: candidates empty, promptFeedback present
+		// Current code falls into "empty candidates" → FinishReasonMalformedFunctionCall → "stop"
+		// Should be "content_filter"
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-chat-blocked-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates:   []*gemini.Candidate{},
+			PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+				BlockReason:        "SAFETY",
+				BlockReasonMessage: "Prompt was blocked due to safety reasons",
+				SafetyRatings: []*gemini.SafetyRating{
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Probability: "HIGH", Blocked: true},
+				},
+			},
+		}
+
+		bifrostResp := response.ToBifrostChatResponse()
+		require.NotNil(t, bifrostResp)
+		require.NotEmpty(t, bifrostResp.Choices)
+
+		finishReason := bifrostResp.Choices[0].FinishReason
+		require.NotNil(t, finishReason)
+		// BUG: currently returns "stop" (from MalformedFunctionCall fallback)
+		// Should return "content_filter" because promptFeedback.blockReason = SAFETY
+		assert.Equal(t, "content_filter", *finishReason,
+			"Prompt blocked by safety should return content_filter, not stop")
+	})
+
+	t.Run("Stream_PromptBlocked_WrongFinishReason", func(t *testing.T) {
+		// Same issue in streaming path
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-chat-stream-blocked-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates:   []*gemini.Candidate{},
+			PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+				BlockReason:        "SAFETY",
+				BlockReasonMessage: "Prompt blocked",
+			},
+		}
+
+		bifrostResp, _, _ := response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.NotNil(t, bifrostResp)
+		require.NotEmpty(t, bifrostResp.Choices)
+
+		finishReason := bifrostResp.Choices[0].FinishReason
+		require.NotNil(t, finishReason)
+		assert.Equal(t, "content_filter", *finishReason,
+			"Prompt blocked by safety should return content_filter in streaming too")
+	})
+
+	t.Run("NonStream_VertexModelArmor", func(t *testing.T) {
+		// MODEL_ARMOR is Vertex AI-specific — represents all Vertex-only finishReason values
+		// (MODEL_ARMOR, IMAGE_PROHIBITED_CONTENT, IMAGE_RECITATION, IMAGE_OTHER, NO_IMAGE)
+		// since they share the same code path through isErrorFinishReason() + geminiFinishReasonToBifrost map
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-chat-armor-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:         0,
+					FinishReason:  "MODEL_ARMOR",
+					FinishMessage: "Blocked by Model Armor",
+					Content:       &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		bifrostResp := response.ToBifrostChatResponse()
+		require.NotNil(t, bifrostResp)
+		require.NotEmpty(t, bifrostResp.Choices)
+
+		finishReason := bifrostResp.Choices[0].FinishReason
+		require.NotNil(t, finishReason)
+		assert.Equal(t, "content_filter", *finishReason,
+			"Vertex MODEL_ARMOR should map to content_filter")
+	})
+}
+
 // TestEmptyCandidatesRegression is a regression test for PR #1018
 // Ensures empty/filtered candidates never return empty choices arrays
 func TestEmptyCandidatesRegression(t *testing.T) {
@@ -198,6 +292,389 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRealAPISafetyResponse replicates the response structure observed from a real
+// Gemini API call that triggered safety filtering. Key observation: the content field
+// is completely absent (nil), not an empty object — this differs from our synthetic test fixtures.
+func TestRealAPISafetyResponse(t *testing.T) {
+	realResponse := &gemini.GenerateContentResponse{
+		ResponseID:   "resp-real-safety-1",
+		ModelVersion: "gemini-2.5-pro",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:        0,
+				FinishReason: gemini.FinishReasonSafety,
+				Content:      nil, // Real API omits content entirely, not empty
+				SafetyRatings: []*gemini.SafetyRating{
+					{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Probability: "MEDIUM"},
+					{Category: "HARM_CATEGORY_HATE_SPEECH", Probability: "NEGLIGIBLE"},
+					{Category: "HARM_CATEGORY_HARASSMENT", Probability: "NEGLIGIBLE"},
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Probability: "NEGLIGIBLE"},
+				},
+			},
+		},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 100,
+			TotalTokenCount:  100,
+		},
+	}
+
+	t.Run("Chat_NonStream", func(t *testing.T) {
+		resp := realResponse.ToBifrostChatResponse()
+		require.NotNil(t, resp)
+		require.NotEmpty(t, resp.Choices)
+		require.NotNil(t, resp.Choices[0].FinishReason)
+		assert.Equal(t, "content_filter", *resp.Choices[0].FinishReason)
+	})
+
+	t.Run("Chat_Stream", func(t *testing.T) {
+		resp, _, _ := realResponse.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.NotNil(t, resp)
+		require.NotEmpty(t, resp.Choices)
+		require.NotNil(t, resp.Choices[0].FinishReason)
+		assert.Equal(t, "content_filter", *resp.Choices[0].FinishReason)
+	})
+
+	t.Run("Responses_NonStream", func(t *testing.T) {
+		resp := realResponse.ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, resp)
+		require.NotNil(t, resp.StopReason)
+		assert.Equal(t, "content_filter", *resp.StopReason)
+	})
+
+	t.Run("Responses_Stream", func(t *testing.T) {
+		state := &gemini.GeminiResponsesStreamState{
+			ItemIDs:             make(map[int]string),
+			ToolCallIDs:         make(map[int]string),
+			ToolCallNames:       make(map[int]string),
+			ToolArgumentBuffers: make(map[int]string),
+			TextOutputIndex:     -1,
+		}
+
+		responses, err := realResponse.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		var completed *schemas.BifrostResponsesResponse
+		for _, r := range responses {
+			if r.Type == schemas.ResponsesStreamResponseTypeCompleted && r.Response != nil {
+				completed = r.Response
+			}
+		}
+		require.NotNil(t, completed, "response.completed must be emitted")
+		require.NotNil(t, completed.StopReason)
+		assert.Equal(t, "content_filter", *completed.StopReason)
+	})
+}
+
+// TestResponsesSafetyFilteringGap proves that safety/content filtering information
+// is lost in the Responses API path (both streaming and non-streaming).
+//
+// Per Vertex AI Gemini docs (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerateContentResponse):
+// - Output filtered: candidates[0].finishReason = "SAFETY", content empty
+// - Prompt blocked: candidates empty, promptFeedback.blockReason set
+// - Streaming filtered: finishReason arrives on chunk with no content parts
+//
+// Per Gemini Developer API docs (https://ai.google.dev/api/generate-content):
+// - Same structure but fewer finishReason/blockReason enum values
+//
+// Vertex AI-specific additions (not in Gemini Developer API):
+// - finishReason: MODEL_ARMOR, IMAGE_PROHIBITED_CONTENT, IMAGE_RECITATION, IMAGE_OTHER, NO_IMAGE
+// - blockReason: MODEL_ARMOR, JAILBREAK
+// - safetyRating: probabilityScore, severity, severityScore (float fields)
+// - candidate.finishMessage: human-readable error detail
+func TestResponsesSafetyFilteringGap(t *testing.T) {
+	// Helper to create a fresh stream state
+	newStreamState := func() *gemini.GeminiResponsesStreamState {
+		return &gemini.GeminiResponsesStreamState{
+			ItemIDs:             make(map[int]string),
+			ToolCallIDs:         make(map[int]string),
+			ToolCallNames:       make(map[int]string),
+			ToolArgumentBuffers: make(map[int]string),
+			TextOutputIndex:     -1,
+		}
+	}
+
+	// Helper to find response.completed event from stream responses
+	findCompleted := func(responses []*schemas.BifrostResponsesStreamResponse) (*schemas.BifrostResponsesResponse, bool) {
+		for _, resp := range responses {
+			if resp.Type == schemas.ResponsesStreamResponseTypeCompleted && resp.Response != nil {
+				return resp.Response, true
+			}
+		}
+		return nil, false
+	}
+
+	// =====================================================================
+	// Non-streaming Responses path: ToResponsesBifrostResponsesResponse()
+	// =====================================================================
+
+	t.Run("NonStream_OutputFiltered_StopReasonMissing", func(t *testing.T) {
+		// Gemini returns finishReason=SAFETY with empty content when output is filtered
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-safety-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:        0,
+					FinishReason: gemini.FinishReasonSafety,
+					Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+					SafetyRatings: []*gemini.SafetyRating{
+						{
+							Category:    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+							Probability: "HIGH",
+							Blocked:     true,
+						},
+					},
+				},
+			},
+		}
+
+		bifrostResp := response.ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, bifrostResp, "Response should not be nil")
+
+		if bifrostResp.StopReason == nil {
+			t.Error("BUG: StopReason is nil — safety filtering info lost in Responses non-stream path")
+		} else {
+			assert.Equal(t, "content_filter", *bifrostResp.StopReason,
+				"StopReason should be content_filter for SAFETY finish reason")
+		}
+	})
+
+	t.Run("NonStream_PromptBlocked_NoErrorInfo", func(t *testing.T) {
+		// When prompt is blocked, Gemini returns empty candidates with promptFeedback
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-blocked-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates:   []*gemini.Candidate{}, // Empty — prompt was blocked
+			PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+				BlockReason:        "SAFETY",
+				BlockReasonMessage: "Prompt was blocked due to safety reasons",
+				SafetyRatings: []*gemini.SafetyRating{
+					{
+						Category:    "HARM_CATEGORY_DANGEROUS_CONTENT",
+						Probability: "HIGH",
+						Blocked:     true,
+					},
+				},
+			},
+		}
+
+		bifrostResp := response.ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, bifrostResp, "Response should not be nil")
+
+		if bifrostResp.StopReason == nil {
+			t.Error("BUG: StopReason is nil — prompt block info lost in Responses non-stream path")
+		} else {
+			assert.Equal(t, "content_filter", *bifrostResp.StopReason)
+		}
+
+		if bifrostResp.Status == nil || *bifrostResp.Status != "failed" {
+			t.Error("BUG: Status should be 'failed' for blocked prompts")
+		}
+	})
+
+	// =====================================================================
+	// Streaming Responses path: ToBifrostResponsesStream()
+	// =====================================================================
+
+	t.Run("Stream_OutputFiltered_NoCompletedEvent", func(t *testing.T) {
+		// Streaming: Gemini sends finishReason=SAFETY on a chunk with no content
+		// When there's no prior content, state.ItemIDs is empty, so closeGeminiOpenItems is skipped
+		state := newStreamState()
+
+		filteredChunk := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-safety-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:        0,
+					FinishReason: gemini.FinishReasonSafety,
+					Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		responses, err := filteredChunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		completed, hasCompleted := findCompleted(responses)
+		if !hasCompleted {
+			t.Fatal("BUG: No response.completed event emitted — safety filtering info lost in streaming path when no prior content exists")
+		}
+		if completed.StopReason == nil {
+			t.Error("BUG: StopReason missing from response.completed event")
+		} else {
+			assert.Equal(t, "content_filter", *completed.StopReason)
+		}
+	})
+
+	t.Run("Stream_PromptBlocked_NoCandidates", func(t *testing.T) {
+		// Streaming: prompt blocked — no candidates at all, only promptFeedback
+		state := newStreamState()
+
+		blockedChunk := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-blocked-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates:   []*gemini.Candidate{},
+			PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+				BlockReason:        "SAFETY",
+				BlockReasonMessage: "Prompt blocked by safety filter",
+			},
+		}
+
+		responses, err := blockedChunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		_, hasCompleted := findCompleted(responses)
+		if !hasCompleted {
+			t.Error("BUG: No response.completed event for blocked prompt — promptFeedback info lost in streaming path")
+		}
+	})
+
+	t.Run("Stream_PromptBlocked_UnknownBlockReason_FallsBackToSafety", func(t *testing.T) {
+		// Vertex AI can return BlockReasons not in geminiFinishReasonToBifrost (e.g., JAILBREAK).
+		// The code should fall back to FinishReasonSafety so it still maps to content_filter.
+		state := newStreamState()
+
+		blockedChunk := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-jailbreak-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates:   []*gemini.Candidate{},
+			PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{
+				BlockReason:        "JAILBREAK",
+				BlockReasonMessage: "Prompt identified as jailbreak attempt",
+			},
+		}
+
+		responses, err := blockedChunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		completed, hasCompleted := findCompleted(responses)
+		require.True(t, hasCompleted, "response.completed must be emitted for unknown block reason")
+		require.NotNil(t, completed.StopReason)
+		assert.Equal(t, "content_filter", *completed.StopReason,
+			"Unknown block reason should fall back to content_filter via FinishReasonSafety")
+	})
+
+	// =====================================================================
+	// Vertex AI-specific scenarios
+	// These finish reasons / block reasons are only returned by Vertex AI,
+	// not by the Gemini Developer API (ai.google.dev).
+	// Ref: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerateContentResponse
+	// =====================================================================
+
+	t.Run("NonStream_VertexModelArmor", func(t *testing.T) {
+		// MODEL_ARMOR represents all Vertex AI-specific finishReason values
+		// (MODEL_ARMOR, IMAGE_PROHIBITED_CONTENT, IMAGE_RECITATION, IMAGE_OTHER, NO_IMAGE)
+		// since they share the same code path through isErrorFinishReason() + geminiFinishReasonToBifrost map
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-model-armor-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:         0,
+					FinishReason:  "MODEL_ARMOR",
+					FinishMessage: "Content blocked by Model Armor policy",
+					Content:       &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		bifrostResp := response.ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, bifrostResp)
+
+		require.NotNil(t, bifrostResp.StopReason, "StopReason should be set for Vertex MODEL_ARMOR")
+		assert.Equal(t, "content_filter", *bifrostResp.StopReason)
+	})
+
+	t.Run("Stream_VertexModelArmor_NoContent", func(t *testing.T) {
+		// Streaming with Vertex-specific finishReason and no prior content emitted
+		state := newStreamState()
+
+		chunk := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-armor-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:         0,
+					FinishReason:  "MODEL_ARMOR",
+					FinishMessage: "Blocked by Model Armor",
+					Content:       &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		responses, err := chunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		completed, hasCompleted := findCompleted(responses)
+		require.True(t, hasCompleted, "response.completed should be emitted for Vertex MODEL_ARMOR")
+		require.NotNil(t, completed.StopReason)
+		assert.Equal(t, "content_filter", *completed.StopReason)
+	})
+
+	t.Run("Stream_NoImage_NoContent_StillCompletes", func(t *testing.T) {
+		// NO_IMAGE is not in isErrorFinishReason (it's a generation failure, not safety).
+		// But streaming must still emit response.completed so clients don't hang.
+		state := newStreamState()
+
+		chunk := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-stream-noimage-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:        0,
+					FinishReason: gemini.FinishReasonNoImage,
+					Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		responses, err := chunk.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+
+		completed, hasCompleted := findCompleted(responses)
+		require.True(t, hasCompleted, "response.completed must be emitted for NO_IMAGE even with no prior content")
+		require.NotNil(t, completed.StopReason)
+		assert.Equal(t, "stop", *completed.StopReason,
+			"NO_IMAGE should map to stop, not content_filter")
+	})
+
+	t.Run("NonStream_VertexFinishMessage_NotPropagated", func(t *testing.T) {
+		// Vertex AI returns finishMessage with detailed error description
+		// This should be visible to the client somehow (e.g., as error output text)
+		response := &gemini.GenerateContentResponse{
+			ResponseID:   "resp-finish-msg-1",
+			ModelVersion: "gemini-2.0-flash",
+			Candidates: []*gemini.Candidate{
+				{
+					Index:         0,
+					FinishReason:  gemini.FinishReasonSafety,
+					FinishMessage: "Content was blocked because it violated safety policy XYZ",
+					Content:       &gemini.Content{Role: "model", Parts: []*gemini.Part{}},
+				},
+			},
+		}
+
+		bifrostResp := response.ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, bifrostResp)
+
+		// finishMessage should be propagated — check if any output contains the message
+		hasErrorMessage := false
+		for _, msg := range bifrostResp.Output {
+			if msg.Content != nil {
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Text != nil && strings.Contains(*block.Text, "safety policy") {
+						hasErrorMessage = true
+					}
+				}
+			}
+		}
+		if !hasErrorMessage {
+			t.Error("BUG: Vertex finishMessage not propagated to output in Responses non-stream path")
+		}
+	})
 }
 
 func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
