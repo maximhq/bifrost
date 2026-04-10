@@ -21,12 +21,12 @@ export function extractVariablesFromText(text: string): string[] {
 
 /**
  * Extract all unique Jinja2 variable names from an array of Messages.
- * Scans content of every message (system, user, assistant, tool).
+ * Scans authored prompt messages, including assistant examples.
  */
 export function extractVariablesFromMessages(messages: Message[]): string[] {
   const vars = new Set<string>()
   for (const msg of messages) {
-    if(msg.role === MessageRole.ASSISTANT || msg.role === MessageRole.TOOL) continue;
+    if (msg.role === MessageRole.TOOL) continue
     const content = msg.content
     if (!content) continue
     for (const v of extractVariablesFromText(content)) {
