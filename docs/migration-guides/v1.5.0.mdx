@@ -319,15 +319,6 @@ The database migration runs automatically on startup, migrating existing deploym
           "gpt-4o-mini": "my-mini-deployment"
         }
       }]
-    "ollama": {
-      "keys": [
-        {
-          "id": "ollama-local",
-          "models": ["*"],
-          "weight": 1.0,
-          "ollama_key_config": { "url": "http://localhost:11434" }
-        }
-      ]
     }
   }
 }
@@ -468,6 +459,42 @@ result.Model
 result.RequestedModel // original alias from the caller
 result.ResolvedModel  // actual model identifier used by the provider
 ```
+
+---
+
+## Opting Out: `version: 1` Compatibility Mode
+
+If you are not ready to adopt the new deny-by-default semantics, you can add a single field to `config.json` to restore v1.4.x behavior for all allow-list fields loaded from that file:
+
+```json
+{
+  "version": 1,
+  "providers": { ... }
+}
+```
+
+| Value | Behavior |
+|---|---|
+| `2` (default, omitted) | v1.5.0 semantics — empty = deny all, `["*"]` = allow all |
+| `1` | v1.4.x semantics — empty = allow all |
+
+**What `version: 1` normalizes at startup** (before any other processing):
+
+| Field | Without `version: 1` | With `version: 1` |
+|---|---|---|
+| Provider key `models: []` | Deny all models | Allow all models (→ `["*"]`) |
+| VK `provider_configs: []` | No providers allowed | All configured providers added with `allowed_models: ["*"]` |
+| VK provider config `allowed_models: []` | Deny all models | Allow all models (→ `["*"]`) |
+| VK provider config `key_ids: []` | No keys allowed | All keys allowed (→ `key_ids: ["*"]`) |
+| VK `mcp_configs: []` | No MCP tools allowed | All configured MCP clients added with `tools_to_execute: ["*"]` |
+
+<Note>
+`version: 1` only applies to configuration loaded from `config.json`. Virtual Keys created or updated via the REST API always use v1.5.0 semantics regardless of this setting. The automatic database migration that runs on startup is also unaffected.
+</Note>
+
+<Warning>
+`version: 1` is a temporary compatibility shim. Plan to migrate your `config.json` to explicit `["*"]` wildcards and remove the `version` field before the next major release.
+</Warning>
 
 ---
 

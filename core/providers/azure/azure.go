@@ -309,15 +309,6 @@ func (provider *AzureProvider) completeRequest(
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	// Validate Azure key configuration
-	if key.AzureKeyConfig == nil {
-		return nil, providerUtils.NewConfigurationError("azure key config not set")
-	}
-
-	if key.AzureKeyConfig.Endpoint.GetValue() == "" {
-		return nil, providerUtils.NewConfigurationError("endpoint not set")
-	}
-
 	// Get API version
 	apiVersion := key.AzureKeyConfig.APIVersion
 	if apiVersion == nil {

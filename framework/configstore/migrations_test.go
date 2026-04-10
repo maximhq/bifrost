@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -883,4 +884,209 @@ func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
 			assert.Equal(t, firstHash, secondHash, "Hash should remain unchanged after idempotent migration run")
 		})
 	}
+}
+
+// setupKeyDBWithLegacyDeploymentColumns creates an in-memory SQLite database
+// with the config_keys table including legacy deployment columns and NO aliases_json.
+// This simulates the pre-aliases, post-encryption database state.
+func setupKeyDBWithLegacyDeploymentColumns(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	// Create migrations table (required by the migrator)
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+
+	// Create config_keys table with legacy deployment columns and encryption_status
+	// but WITHOUT aliases_json — simulating a DB from before the aliases migration
+	err = db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			provider_id INTEGER NOT NULL,
+			provider VARCHAR(50),
+			key_id VARCHAR(255) NOT NULL UNIQUE,
+			value TEXT NOT NULL,
+			models_json TEXT,
+			blacklisted_models_json TEXT,
+			weight REAL,
+			enabled BOOLEAN DEFAULT true,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			config_hash VARCHAR(255),
+			azure_endpoint TEXT,
+			azure_api_version TEXT,
+			azure_client_id TEXT,
+			azure_client_secret TEXT,
+			azure_tenant_id TEXT,
+			azure_scopes TEXT,
+			azure_deployments_json TEXT,
+			vertex_project_id TEXT,
+			vertex_project_number TEXT,
+			vertex_region TEXT,
+			vertex_auth_credentials TEXT,
+			vertex_deployments_json TEXT,
+			bedrock_access_key TEXT,
+			bedrock_secret_key TEXT,
+			bedrock_session_token TEXT,
+			bedrock_region TEXT,
+			bedrock_arn TEXT,
+			bedrock_role_arn TEXT,
+			bedrock_external_id TEXT,
+			bedrock_role_session_name TEXT,
+			bedrock_batch_s3_config TEXT,
+			bedrock_deployments_json TEXT,
+			replicate_deployments_json TEXT,
+			replicate_use_deployments_endpoint BOOLEAN,
+			vllm_url TEXT,
+			vllm_model_name TEXT,
+			use_for_batch_api BOOLEAN DEFAULT false,
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text',
+			ollama_url TEXT,
+			sgl_url TEXT
+		)
+	`).Error
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM migrations")
+		db.Exec("DROP TABLE IF EXISTS config_keys")
+	})
+
+	return db
+}
+
+// TestMigrationDropDeploymentColumnsAndAddAliases_EncryptedRows tests that the
+// aliases migration correctly handles rows where encryption_status is 'encrypted'
+// but deployment columns contain plaintext JSON (because those columns were never
+// in the encryption list). This was the root cause of the base64 decode crash.
+func TestMigrationDropDeploymentColumnsAndAddAliases_EncryptedRows(t *testing.T) {
+	if !encrypt.IsEnabled() {
+		t.Skip("encryption not enabled, skipping encrypted rows test")
+	}
+
+	db := setupKeyDBWithLegacyDeploymentColumns(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	// Encrypt the key values (simulating what EncryptPlaintextRows would have done)
+	encVal1, err := encrypt.Encrypt("sk-azure-key-1")
+	require.NoError(t, err)
+	encVal2, err := encrypt.Encrypt("sk-vertex-key-1")
+	require.NoError(t, err)
+	encVal3, err := encrypt.Encrypt("sk-replicate-key-1")
+	require.NoError(t, err)
+
+	// Insert encrypted rows with PLAINTEXT deployment JSON.
+	// azure_deployments_json, vertex_deployments_json, and replicate_deployments_json
+	// were never in the encryption list, so they remain plaintext even though the row
+	// is marked as encrypted.
+	err = db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json,
+			azure_deployments_json, encryption_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'encrypted', ?, ?)`,
+		"azure-key-1", 1, "azure", "ak-1", encVal1, `["*"]`,
+		`{"gpt-4":"dep-gpt4","gpt-3.5":"dep-gpt35"}`, now, now,
+	).Error
+	require.NoError(t, err)
+
+	err = db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json,
+			vertex_deployments_json, encryption_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'encrypted', ?, ?)`,
+		"vertex-key-1", 2, "vertex", "vk-1", encVal2, `["*"]`,
+		`{"gemini-pro":"dep-gemini"}`, now, now,
+	).Error
+	require.NoError(t, err)
+
+	err = db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json,
+			replicate_deployments_json, encryption_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'encrypted', ?, ?)`,
+		"replicate-key-1", 3, "replicate", "rk-1", encVal3, `["*"]`,
+		`{"llama":"dep-llama"}`, now, now,
+	).Error
+	require.NoError(t, err)
+
+	// Run the aliases migration — this should NOT crash with base64 decode error.
+	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db)
+	require.NoError(t, err, "migration should not crash on encrypted rows with plaintext deployment data")
+
+	// Verify aliases_json was populated and is readable via GORM hooks
+	var keys []tables.TableKey
+	err = db.Order("name").Find(&keys).Error
+	require.NoError(t, err)
+	require.Len(t, keys, 3)
+
+	// Azure key should have its deployment data migrated to aliases
+	assert.Equal(t, "azure-key-1", keys[0].Name)
+	assert.NotNil(t, keys[0].Aliases)
+
+	// Vertex key
+	assert.Equal(t, "vertex-key-1", keys[2].Name)
+	assert.NotNil(t, keys[2].Aliases)
+
+	// Replicate key — sorted alphabetically, it's between azure and vertex
+	assert.Equal(t, "replicate-key-1", keys[1].Name)
+	assert.NotNil(t, keys[1].Aliases)
+}
+
+// TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted tests the branch
+// where bedrock_deployments_json is already encrypted before migration. The migration
+// should detect it's already encrypted (Decrypt succeeds) and NOT double-encrypt it.
+func TestMigrationDropDeploymentColumnsAndAddAliases_BedrockEncrypted(t *testing.T) {
+	if !encrypt.IsEnabled() {
+		t.Skip("encryption not enabled, skipping bedrock encrypted test")
+	}
+
+	db := setupKeyDBWithLegacyDeploymentColumns(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	// Encrypt the key value
+	encVal, err := encrypt.Encrypt("sk-bedrock-key-1")
+	require.NoError(t, err)
+
+	// Encrypt the deployments JSON (simulating bedrock which WAS in the encryption list)
+	bedrockDeployments := `{"claude":"dep-claude","claude-instant":"dep-instant"}`
+	encDeployments, err := encrypt.Encrypt(bedrockDeployments)
+	require.NoError(t, err)
+
+	// Insert a bedrock row where bedrock_deployments_json is already encrypted
+	err = db.Exec(`
+		INSERT INTO config_keys (
+			name, provider_id, provider, key_id, value, models_json,
+			bedrock_deployments_json, encryption_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'encrypted', ?, ?)`,
+		"bedrock-key-1", 4, "bedrock", "bk-1", encVal, `["*"]`,
+		encDeployments, now, now,
+	).Error
+	require.NoError(t, err)
+
+	// Run the aliases migration — should detect already-encrypted data and skip re-encryption
+	err = migrationDropDeploymentColumnsAndAddAliases(ctx, db)
+	require.NoError(t, err, "migration should handle already-encrypted bedrock deployments")
+
+	// Verify aliases_json was populated and is readable via GORM hooks (AfterFind decrypts)
+	var keys []tables.TableKey
+	err = db.Find(&keys).Error
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+
+	assert.Equal(t, "bedrock-key-1", keys[0].Name)
+	assert.NotNil(t, keys[0].Aliases)
+
+	// Verify the aliases contain the original deployment data (not double-encrypted)
+	aliases := keys[0].Aliases
+	assert.Contains(t, aliases, "claude")
+	assert.Equal(t, "dep-claude", aliases["claude"])
+	assert.Equal(t, "dep-instant", aliases["claude-instant"])
 }
