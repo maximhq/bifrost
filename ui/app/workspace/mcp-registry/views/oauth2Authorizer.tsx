@@ -30,7 +30,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 }) => {
 	const [status, setStatus] = useState<"pending" | "polling" | "success" | "failed">("pending")
 	const [errorMessage, setErrorMessage] = useState<string | null>(null)
-	const popupRef = useRef<Window | null>(null)
+	const popupRef = useRef<Window | null>(initialPopup ?? null)
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
 	// RTK Query hooks
@@ -127,10 +127,6 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			await checkOAuthStatus()
 		}, 2000) // Poll every 2 seconds
 	}, [checkOAuthStatus, handleOAuthFailed])
-
-	useEffect(() => {
-		popupRef.current = initialPopup ?? null
-	}, [initialPopup])
 
 	// Open popup and start polling
 	const openPopup = useCallback(() => {

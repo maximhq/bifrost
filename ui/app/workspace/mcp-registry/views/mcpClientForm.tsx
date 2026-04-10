@@ -79,6 +79,11 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setOauthFlow(null);
 			setIsLoading(false);
 			oauthPopupRef.current = null;
+		} else {
+			if (oauthPopupRef.current && !oauthPopupRef.current.closed) {
+				oauthPopupRef.current.close();
+			}
+			oauthPopupRef.current = null;
 		}
 	}, [open]);
 
