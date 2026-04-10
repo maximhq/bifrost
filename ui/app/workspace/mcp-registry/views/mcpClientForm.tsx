@@ -16,7 +16,7 @@ import { parseArrayFromText } from "@/lib/utils/array";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface ClientFormProps {
@@ -63,6 +63,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		oauthConfigId: string;
 		mcpClientId: string;
 	} | null>(null);
+	const oauthPopupRef = useRef<Window | null>(null);
 	const { toast } = useToast();
 
 	// RTK Query mutations
@@ -77,8 +78,18 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setScopesText("");
 			setOauthFlow(null);
 			setIsLoading(false);
+			oauthPopupRef.current = null;
 		}
 	}, [open]);
+
+	const openOAuthPopupShell = () => {
+		const width = 600;
+		const height = 700;
+		const left = window.screen.width / 2 - width / 2;
+		const top = window.screen.height / 2 - height / 2;
+
+		return window.open("", "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+	};
 
 	const handleChange = (
 		field: keyof CreateMCPClientRequest,
@@ -216,6 +227,20 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			return;
 		}
 
+		let popupWindow: Window | null = null;
+		if (form.auth_type === "oauth") {
+			popupWindow = openOAuthPopupShell();
+			if (!popupWindow) {
+				toast({
+					title: "Popup blocked",
+					description: "Please allow popups and try again.",
+					variant: "destructive",
+				});
+				return;
+			}
+			oauthPopupRef.current = popupWindow;
+		}
+
 		setIsLoading(true);
 
 		// Prepare the payload
@@ -258,6 +283,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					mcpClientId: response.mcp_client_id,
 				});
 			} else {
+				if (popupWindow && !popupWindow.closed) {
+					popupWindow.close();
+				}
+				oauthPopupRef.current = null;
 				setIsLoading(false);
 				toast({
 					title: "Success",
@@ -267,6 +296,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				onClose();
 			}
 		} catch (error) {
+			if (popupWindow && !popupWindow.closed) {
+				popupWindow.close();
+			}
+			oauthPopupRef.current = null;
 			setIsLoading(false);
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
 		}
@@ -605,6 +638,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					authorizeUrl={oauthFlow.authorizeUrl}
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
+					initialPopup={oauthPopupRef.current}
 				/>
 			)}
 		</Sheet>

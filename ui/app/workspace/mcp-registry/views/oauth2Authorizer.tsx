@@ -15,6 +15,7 @@ interface OAuth2AuthorizerProps {
 	authorizeUrl: string
 	oauthConfigId: string
 	mcpClientId: string
+	initialPopup?: Window | null
 }
 
 export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
@@ -25,6 +26,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	authorizeUrl,
 	oauthConfigId,
 	mcpClientId,
+	initialPopup,
 }) => {
 	const [status, setStatus] = useState<"pending" | "polling" | "success" | "failed">("pending")
 	const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -126,12 +128,14 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		}, 2000) // Poll every 2 seconds
 	}, [checkOAuthStatus, handleOAuthFailed])
 
+	useEffect(() => {
+		popupRef.current = initialPopup ?? null
+	}, [initialPopup])
+
 	// Open popup and start polling
 	const openPopup = useCallback(() => {
 		// Close any existing popup
-		if (popupRef.current && !popupRef.current.closed) {
-			popupRef.current.close()
-		}
+		let popupWindow = popupRef.current
 
 		// Open OAuth popup
 		const width = 600
@@ -139,17 +143,32 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const left = window.screen.width / 2 - width / 2
 		const top = window.screen.height / 2 - height / 2
 
-		popupRef.current = window.open(
-			authorizeUrl,
-			"oauth_popup",
-			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
-		)
+		if (!popupWindow || popupWindow.closed) {
+			popupWindow = window.open(
+				authorizeUrl,
+				"oauth_popup",
+				`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+			)
+		} else {
+			popupWindow.location.href = authorizeUrl
+			popupWindow.focus()
+		}
+
+		if (!popupWindow) {
+			const message = "Popup blocked. Please allow popups and try again."
+			setStatus("failed")
+			setErrorMessage(message)
+			onError(message)
+			return
+		}
+
+		popupRef.current = popupWindow
 
 		setStatus("polling")
 
 		// Start polling OAuth status
 		startPolling()
-	}, [authorizeUrl, startPolling])
+	}, [authorizeUrl, onError, startPolling])
 
 	// Listen for postMessage from OAuth callback popup
 	useEffect(() => {
