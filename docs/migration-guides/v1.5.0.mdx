@@ -3,7 +3,7 @@ title: "Migrating to v1.5.0"
 description: "Breaking changes and migration instructions for the v1.5.0 release"
 ---
 
-v1.5.0 introduces several breaking changes across provider key configuration, Virtual Key semantics, the REST API, and plugins. This page consolidates every breaking change with before/after examples and a migration checklist.
+v1.5.0 introduces several breaking changes across provider key configuration, Virtual Key semantics, the Go SDK, and the REST API. This page consolidates every breaking change with before/after examples and a migration checklist.
 
 <Warning>
 **Make a database backup before upgrading.** Automatic database migrations run on startup and are not revertible. A backup is the only way to restore a previous state if anything goes wrong. A database successfully migrated to v1.5.0 cannot be used to run v1.4.x.
@@ -21,6 +21,7 @@ The following automatic migrations run on upgrade:
 - Virtual Key provider configs with `allowed_models: []` are converted to `allowed_models: ["*"]`
 - Virtual Keys with no `provider_configs` are backfilled with all currently configured providers (`allowed_models: ["*"]`, `key_ids: ["*"]`)
 - Virtual Keys with no `mcp_configs` are backfilled with all currently connected MCP clients (`tools_to_execute: ["*"]`)
+- Per-provider `deployments` maps (Azure, Bedrock, Vertex, Replicate) are migrated into the unified `aliases` field
 
 **The automatic migration only protects your existing data.** Any new configuration created after upgrading — via `config.json` or the REST API — must follow the new semantics described below.
 
@@ -275,28 +276,29 @@ Support for image editing via `/v1/images/edits` on Replicate is also being remo
 
 ---
 
-## Breaking Change 9: Ollama and SGL Per-Key URL Configuration
+## Breaking Change 9: Provider `deployments` Removed — Migrate to `aliases`
 
-**Who is affected:** Anyone running Ollama or SGL providers configured with `network_config.base_url` and no keys.
+The per-provider `deployments` map has been removed from `azure_key_config`, `vertex_key_config`, `bedrock_key_config`, and `replicate_key_config`. A single top-level `aliases` field on each key replaces all of them. Aliases work across all providers and map any model name to a provider-specific identifier (deployment name, inference profile ARN, fine-tuned model ID, etc.).
 
-### What changed
+The database migration runs automatically on startup, migrating existing deployment data into `aliases`. Only `config.json` files need to be updated manually.
 
-Ollama and SGL previously used a single provider-level `base_url` and required no API keys. In v1.5.0, both providers use a **per-key URL model** — each key must include an `ollama_key_config` (or `sgl_key_config`) with the server `url`. This enables load balancing across multiple Ollama/SGL instances.
-
-- `network_config.base_url` is no longer used at runtime for Ollama/SGL — the URL must be on each key
-- Ollama/SGL keys now **require** `ollama_key_config.url` / `sgl_key_config.url`
-- The key management endpoints (`POST/PUT/DELETE /api/providers/{provider}/keys`) are now enabled for Ollama and SGL
-
-<Note>
-If you are running Bifrost with a database, existing Ollama/SGL providers are automatically migrated on startup. For each provider that has a `network_config.base_url`, the migration creates a default key with that URL. Only `config.json` files need to be updated manually.
-</Note>
+### Azure
 
 **Before:**
 ```json
 {
   "providers": {
-    "ollama": {
-      "network_config": { "base_url": "http://localhost:11434" }
+    "azure": {
+      "keys": [{
+        "value": "env.AZURE_API_KEY",
+        "azure_key_config": {
+          "endpoint": "env.AZURE_ENDPOINT",
+          "deployments": {
+            "gpt-4o": "my-gpt4o-deployment",
+            "gpt-4o-mini": "my-mini-deployment"
+          }
+        }
+      }]
     }
   }
 }
@@ -306,6 +308,17 @@ If you are running Bifrost with a database, existing Ollama/SGL providers are au
 ```json
 {
   "providers": {
+    "azure": {
+      "keys": [{
+        "value": "env.AZURE_API_KEY",
+        "azure_key_config": {
+          "endpoint": "env.AZURE_ENDPOINT"
+        },
+        "aliases": {
+          "gpt-4o": "my-gpt4o-deployment",
+          "gpt-4o-mini": "my-mini-deployment"
+        }
+      }]
     "ollama": {
       "keys": [
         {
@@ -320,16 +333,141 @@ If you are running Bifrost with a database, existing Ollama/SGL providers are au
 }
 ```
 
-The same pattern applies to SGL — replace `ollama_key_config` with `sgl_key_config`. Server URLs support the `env.` prefix for environment variables.
+### Bedrock
+
+**Before:**
+```json
+{
+  "bedrock_key_config": {
+    "region": "env.AWS_REGION",
+    "deployments": {
+      "claude-3-5-sonnet": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "bedrock_key_config": {
+    "region": "env.AWS_REGION"
+  },
+  "aliases": {
+    "claude-3-5-sonnet": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+  }
+}
+```
+
+### Vertex
+
+**Before:**
+```json
+{
+  "vertex_key_config": {
+    "project_id": "env.VERTEX_PROJECT_ID",
+    "project_number": "env.VERTEX_PROJECT_NUMBER",
+    "region": "env.VERTEX_REGION",
+    "auth_credentials": "env.VERTEX_AUTH_CREDENTIALS",
+    "deployments": {
+      "gemini-2.0-flash": "projects/my-project/locations/us-central1/endpoints/123456"
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "vertex_key_config": {
+    "project_id": "env.VERTEX_PROJECT_ID",
+    "project_number": "env.VERTEX_PROJECT_NUMBER",
+    "region": "env.VERTEX_REGION",
+    "auth_credentials": "env.VERTEX_AUTH_CREDENTIALS"
+  },
+  "aliases": {
+    "gemini-2.0-flash": "projects/my-project/locations/us-central1/endpoints/123456"
+  }
+}
+```
+
+### Replicate
+
+The Replicate key config is also restructured. The `deployments` map is gone. A new boolean `use_deployments_endpoint` controls whether requests are routed through the [Deployments API](https://replicate.com/docs/reference/http#deployments.predictions.create) (private, fixed hardware) or the standard Models API.
+
+**Before:**
+```json
+{
+  "replicate_key_config": {
+    "deployments": {
+      "my-model": "owner/model-name/version-hash"
+    }
+  }
+}
+```
+
+**After:**
+```json
+{
+  "replicate_key_config": {
+    "use_deployments_endpoint": true
+  },
+  "aliases": {
+    "my-model": "owner/model-name"
+  }
+}
+```
+
+| Old field | New field | Notes |
+|---|---|---|
+| `replicate_key_config.deployments` | Removed | Use top-level `aliases` |
+| _(new)_ | `replicate_key_config.use_deployments_endpoint` | `bool`, default `false` |
 
 ---
 
-## Breaking Change 10: Go SDK Changes
+## Breaking Change 10: Go SDK — `ExtraFields` Model Fields Renamed
 
-If you import Bifrost's Go packages directly:
+`ModelRequested string` has been replaced by two fields on `BifrostResponseExtraFields` and `BifrostErrorExtraFields`.
 
-- **`HuggingFaceKeyConfig` removed** from the `Key` struct — remove any references to `HuggingFaceKeyConfig` or `huggingface_key_config`
-- **`providerRequiresKey()` signature changed** — the `providerKey` parameter was removed; it now only accepts `*CustomProviderConfig`
+**Before:**
+```go
+model := response.ExtraFields.ModelRequested
+```
+
+**After:**
+```go
+// The alias the caller passed as "model" in the request
+original := response.ExtraFields.OriginalModelRequested
+
+// The actual identifier sent to the provider API
+// Equals OriginalModelRequested when no alias is configured
+resolved := response.ExtraFields.ResolvedModelUsed
+```
+
+The same rename applies to `BifrostErrorExtraFields`.
+
+**JSON tag changes:**
+
+| Old | New |
+|---|---|
+| `"model_requested"` | `"original_model_requested"` + `"resolved_model_used"` |
+
+---
+
+## Breaking Change 11: Go SDK — `StreamAccumulatorResult` Field Renamed
+
+`Model string` has been replaced by two fields on `StreamAccumulatorResult` (returned by tracer streaming accumulation methods).
+
+**Before:**
+```go
+result.Model
+```
+
+**After:**
+```go
+result.RequestedModel // original alias from the caller
+result.ResolvedModel  // actual model identifier used by the provider
+```
 
 ---
 
@@ -361,7 +499,7 @@ Update any client code that processes `weight` to accept `null` in addition to n
 </Step>
 
 <Step title="Fix invalid WhiteList values">
-Ensure no list mixes `"*"` with specific values and no list has duplicate entries.
+Ensure no list mixes `"*"` with specific values (e.g., `["*", "gpt-4o"]`) and no list has duplicate entries.
 </Step>
 
 <Step title="Migrate key management to dedicated endpoints">
@@ -372,12 +510,16 @@ Stop sending `keys` in provider create/update payloads and stop reading `keys` f
 Replace `enable_litellm_fallbacks` with the appropriate combination of `convert_text_to_chat`, `convert_chat_to_responses`, and `should_drop_params`.
 </Step>
 
-<Step title="Migrate Ollama/SGL from base_url to per-key URLs">
-Move `network_config.base_url` into per-key `ollama_key_config.url` / `sgl_key_config.url` in `config.json`. Database users are auto-migrated on startup, but `config.json` must be updated manually.
+<Step title="Migrate provider deployments to aliases">
+Remove `deployments` from `azure_key_config`, `vertex_key_config`, `bedrock_key_config`, and `replicate_key_config`. Move those mappings to the top-level `aliases` field on each key. For Replicate, set `use_deployments_endpoint: true` if you were using the deployments endpoint.
 </Step>
 
-<Step title="Update Go SDK references (if applicable)">
-Remove any references to `HuggingFaceKeyConfig` / `huggingface_key_config` from the `Key` struct. Update any direct calls to `providerRequiresKey()` — the `providerKey` parameter has been removed.
+<Step title="Update Go SDK references to ExtraFields.ModelRequested">
+Replace `ExtraFields.ModelRequested` with `ExtraFields.OriginalModelRequested` (and optionally read `ExtraFields.ResolvedModelUsed`). Update JSON consumers reading `"model_requested"` to use `"original_model_requested"` and `"resolved_model_used"`.
+</Step>
+
+<Step title="Update Go SDK references to StreamAccumulatorResult.Model">
+Replace `.Model` with `.RequestedModel` (and optionally `.ResolvedModel`) on any `StreamAccumulatorResult` usage.
 </Step>
 </Steps>
 
@@ -387,7 +529,7 @@ Remove any references to `HuggingFaceKeyConfig` / `huggingface_key_config` from 
 
 **All requests returning 403/blocked after upgrade**
 
-A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. Check Bifrost logs — a blocked request logs which rule denied it. Fix: add `"models": ["*"]` on provider keys and `"allowed_models": ["*"]` on VK provider configs.
+A provider key has `models: []`, a Virtual Key has no `provider_configs`, or a provider config has `allowed_models: []`. Check Bifrost logs — a blocked request logs which rule denied it. Fix: add `"models": ["*"]` on provider keys, `"allowed_models": ["*"]` on VK provider configs.
 
 **MCP tools not being injected / tool calls blocked**
 
@@ -399,12 +541,16 @@ A whitelist validation failure — either mixing `"*"` with specific values, or 
 
 **"No keys available" or key selection errors**
 
-A provider config with `key_ids` omitted or `[]` now blocks all keys. Add `"key_ids": ["*"]`.
+A provider config with `key_ids` omitted or `[]` now blocks all keys (`allow_all_keys: false`). Add `"key_ids": ["*"]`.
 
 **Provider create/update errors about `keys` field**
 
 The `keys` field has been removed. Remove it from provider payloads and use `/api/providers/{provider}/keys` instead.
 
-**Ollama/SGL requests fail with "no base URL configured"**
+**Replicate requests failing after upgrade**
 
-Ollama/SGL keys must have `ollama_key_config.url` / `sgl_key_config.url` set. Database users are auto-migrated. For `config.json`, add the key config manually — see Breaking Change 9 for examples.
+If you used `replicate_key_config.deployments`, move the mappings to the top-level `aliases` field and set `use_deployments_endpoint: true` if you were targeting the Deployments API.
+
+**Go SDK compilation errors on `ModelRequested` or `StreamAccumulatorResult.Model`**
+
+Rename to `OriginalModelRequested`/`ResolvedModelUsed` on ExtraFields, and `RequestedModel`/`ResolvedModel` on StreamAccumulatorResult.

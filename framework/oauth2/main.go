@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,11 +21,17 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+const (
+	maxTokenRetries = 3
+	networkTimeout  = 30 * time.Second
+)
+
 // OAuth2Provider implements the schemas.OAuth2Provider interface
 // It provides OAuth 2.0 authentication functionality with database persistence
 type OAuth2Provider struct {
-	configStore configstore.ConfigStore
-	mu          sync.RWMutex
+	configStore    configstore.ConfigStore
+	mu             sync.RWMutex
+	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; doubles each attempt (1×, 2×, 4×)
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -34,7 +41,8 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 	}
 	SetLogger(logger)
 	return &OAuth2Provider{
-		configStore: configStore,
+		configStore:    configStore,
+		retryBaseDelay: time.Second,
 	}
 }
 
@@ -72,6 +80,7 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 	if time.Now().After(token.ExpiresAt) {
 		// Attempt automatic refresh
 		if err := p.RefreshAccessToken(ctx, oauthConfigID); err != nil {
+			p.markExpiredIfPermanent(ctx, oauthConfig, err)
 			return "", fmt.Errorf("token expired and refresh failed: %w", err)
 		}
 		// Reload token after refresh
@@ -112,6 +121,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 
 	// Call OAuth provider's token endpoint with refresh_token
 	newTokenResponse, err := p.exchangeRefreshToken(
+		ctx,
 		oauthConfig.TokenURL,
 		oauthConfig.ClientID,
 		oauthConfig.ClientSecret,
@@ -507,6 +517,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 
 	// Exchange code for tokens with PKCE verifier
 	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
+		ctx,
 		oauthConfig.TokenURL,
 		code,
 		oauthConfig.ClientID,
@@ -575,7 +586,7 @@ func (p *OAuth2Provider) buildAuthorizeURLWithPKCE(authorizeURL, clientID, redir
 }
 
 // exchangeCodeForTokens exchanges authorization code for access/refresh tokens
-func (p *OAuth2Provider) exchangeCodeForTokens(tokenURL, code, clientID, clientSecret, redirectURI string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeCodeForTokens(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -585,11 +596,11 @@ func (p *OAuth2Provider) exchangeCodeForTokens(tokenURL, code, clientID, clientS
 		data.Set("client_secret", clientSecret)
 	}
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
 }
 
 // exchangeCodeForTokensWithPKCE exchanges authorization code for access/refresh tokens with PKCE verifier
-func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(ctx context.Context, tokenURL, code, clientID, clientSecret, redirectURI, codeVerifier string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -602,74 +613,143 @@ func (p *OAuth2Provider) exchangeCodeForTokensWithPKCE(tokenURL, code, clientID,
 		data.Set("client_secret", clientSecret)
 	}
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
+}
+
+// markExpiredIfPermanent marks oauth_config.status as "expired" when a refresh failure
+// is a permanent auth rejection (PermanentOAuthError). Transient failures are ignored —
+// the TokenRefreshWorker will retry on the next tick.
+func (p *OAuth2Provider) markExpiredIfPermanent(ctx context.Context, oauthConfig *tables.TableOauthConfig, err error) {
+	var permErr *PermanentOAuthError
+	if errors.As(err, &permErr) {
+		oauthConfig.Status = "expired"
+		updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if updateErr := p.configStore.UpdateOauthConfig(updateCtx, oauthConfig); updateErr != nil {
+			logger.Error("Failed to update oauth config status: %s, error: %s", oauthConfig.ID, updateErr.Error())
+		}
+	}
 }
 
 // exchangeRefreshToken exchanges refresh token for new access token
-func (p *OAuth2Provider) exchangeRefreshToken(tokenURL, clientID, clientSecret, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) exchangeRefreshToken(ctx context.Context, tokenURL, clientID, clientSecret, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", clientID)
 	data.Set("client_secret", clientSecret)
 
-	return p.callTokenEndpoint(tokenURL, data)
+	return p.callTokenEndpoint(ctx, tokenURL, data)
 }
 
-// callTokenEndpoint makes a POST request to the OAuth token endpoint
-func (p *OAuth2Provider) callTokenEndpoint(tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+// PermanentOAuthError indicates the OAuth provider rejected the request in a way
+// that requires user re-authorization (e.g. revoked refresh token, invalid_grant).
+// Distinct from transient network failures which should be retried.
+type PermanentOAuthError struct {
+	StatusCode int
+	Body       string
+}
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
+func (e *PermanentOAuthError) Error() string {
+	return fmt.Sprintf("permanent oauth error (status %d): %s", e.StatusCode, e.Body)
+}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResponse schemas.OAuth2TokenExchangeResponse
-
-	// Try to parse as JSON first
-	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		// If JSON parsing fails, try to parse as URL-encoded form data
-		// (GitHub's OAuth endpoint may return application/x-www-form-urlencoded)
-		formValues, parseErr := url.ParseQuery(string(body))
-		if parseErr != nil {
-			return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
-		}
-
-		tokenResponse.AccessToken = formValues.Get("access_token")
-		tokenResponse.RefreshToken = formValues.Get("refresh_token")
-		tokenResponse.TokenType = formValues.Get("token_type")
-		tokenResponse.Scope = formValues.Get("scope")
-
-		// Parse expires_in if present
-		if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
-			fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+// sleepIfNotLastAttempt waits with exponential backoff between retry attempts.
+// No-ops on the final attempt to avoid sleeping before returning an error.
+// Respects context cancellation so worker shutdown is not delayed.
+func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Duration) {
+	if attempt < maxTokenRetries-1 {
+		select {
+		case <-time.After(time.Duration(1<<attempt) * baseDelay):
+		case <-ctx.Done():
 		}
 	}
+}
 
-	// Validate that we got an access token
-	if tokenResponse.AccessToken == "" {
-		return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
+// callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
+// Transport errors and 5xx responses are retried up to maxTokenRetries times with
+// exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
+func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
+	client := &http.Client{Timeout: networkTimeout}
+	var lastErr error
+
+	for attempt := range maxTokenRetries {
+		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			// Propagate context cancellation immediately — no point retrying.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			// Transport error (DNS failure, timeout, connection refused) — retry
+			lastErr = fmt.Errorf("token request failed: %w", err)
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusUnauthorized {
+				return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+			}
+			// Per RFC 6749 §5.2, only invalid_grant and unauthorized_client within a 400
+			// require user re-authorization. Other 400s (invalid_request, unsupported_grant_type,
+			// etc.) are configuration or request errors — fail fast without expiring the config.
+			if resp.StatusCode == http.StatusBadRequest {
+				var oauthErr struct {
+					Error string `json:"error"`
+				}
+				if json.Unmarshal(body, &oauthErr) == nil {
+					if oauthErr.Error == "invalid_grant" || oauthErr.Error == "unauthorized_client" {
+						return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+					}
+				}
+				return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+			}
+			// Transient error (rate limit, server error, etc.) — retry
+			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
+			continue
+		}
+
+		// Try to parse as JSON first
+		var tokenResponse schemas.OAuth2TokenExchangeResponse
+		if err := json.Unmarshal(body, &tokenResponse); err != nil {
+			// Fall back to URL-encoded form data (GitHub's OAuth endpoint returns this format)
+			formValues, parseErr := url.ParseQuery(string(body))
+			if parseErr != nil {
+				return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+			}
+			tokenResponse.AccessToken = formValues.Get("access_token")
+			tokenResponse.RefreshToken = formValues.Get("refresh_token")
+			tokenResponse.TokenType = formValues.Get("token_type")
+			tokenResponse.Scope = formValues.Get("scope")
+			if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
+				fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+			}
+		}
+
+		if tokenResponse.AccessToken == "" {
+			return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
+		}
+
+		return &tokenResponse, nil
 	}
 
-	return &tokenResponse, nil
+	return nil, fmt.Errorf("token request failed after %d attempts: %w", maxTokenRetries, lastErr)
 }
 
 // generateSecureRandomString generates a cryptographically secure random string

@@ -139,6 +139,13 @@
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         },
+        "whitelisted_routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
+        },
         "hide_deleted_virtual_keys_in_filters": {
           "type": "boolean",
           "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
@@ -245,6 +252,9 @@
           "$ref": "#/$defs/provider_with_vllm_config"
         },
         "huggingface": {
+          "$ref": "#/$defs/provider"
+        },
+        "fireworks": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -2904,6 +2914,25 @@
           "type": "integer",
           "description": "Redis database number (default: 0)",
           "default": 0
+        },
+        "use_tls": {
+          "type": "boolean",
+          "description": "Use TLS for the Redis/Valkey connection (optional)",
+          "default": false
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Skip TLS certificate verification for Redis/Valkey connections. Use only when a trusted CA cannot be configured.",
+          "default": false
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for Redis/Valkey TLS connections"
+        },
+        "cluster_mode": {
+          "type": "boolean",
+          "description": "Use Redis Cluster mode. Required for cluster configuration endpoints; when enabled, db must be 0.",
+          "default": false
         },
         "pool_size": {
           "type": "integer",

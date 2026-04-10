@@ -8,14 +8,14 @@ generate-content:
       Generates content using Google Gemini API format.
       The model is specified in the URL path.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action (e.g., gemini-pro:generateContent)
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action (e.g., gemini-pro:generateContent)
     requestBody:
       required: true
       content:
@@ -42,6 +42,11 @@ generate-content:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 stream-generate-content:
   post:
     operationId: geminiStreamGenerateContent
@@ -50,14 +55,14 @@ stream-generate-content:
       Streams content generation using Google Gemini API format.
       The model is specified in the URL path.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action (e.g., gemini-pro:streamGenerateContent)
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action (e.g., gemini-pro:streamGenerateContent)
     requestBody:
       required: true
       content:
@@ -84,6 +89,11 @@ stream-generate-content:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 embed-content:
   post:
     operationId: geminiEmbedContent
@@ -91,14 +101,14 @@ embed-content:
     description: |
       Creates embeddings using Google Gemini API format.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action (e.g., embedding-001:embedContent)
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action (e.g., embedding-001:embedContent)
     requestBody:
       required: true
       content:
@@ -125,6 +135,11 @@ embed-content:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 count-tokens:
   post:
     operationId: geminiCountTokens
@@ -132,14 +147,14 @@ count-tokens:
     description: |
       Counts tokens using Google Gemini API format.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action (e.g., gemini-pro:countTokens)
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action (e.g., gemini-pro:countTokens)
     requestBody:
       required: true
       content:
@@ -166,6 +181,11 @@ count-tokens:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 image-generation:
   post:
     operationId: geminiGenerateImage
@@ -174,16 +194,16 @@ image-generation:
       For Imagen models, use the `:predict` suffix (e.g., `imagen-3.0-generate-001:predict`).
       For Gemini models, use `:generateContent` with `generationConfig.responseModalities: ["IMAGE"]` in the request body.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: |
-          Model name with action suffix. For Imagen models, use `:predict` (e.g., `imagen-3.0-generate-001:predict`).
-          For Gemini models with image generation, use `:generateContent` (e.g., `gemini-1.5-pro:generateContent`).
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        Model name with action suffix. For Imagen models, use `:predict` (e.g., `imagen-3.0-generate-001:predict`).
+        For Gemini models with image generation, use `:generateContent` (e.g., `gemini-1.5-pro:generateContent`).
     requestBody:
       required: true
       content:
@@ -214,3 +234,8 @@ image-generation:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

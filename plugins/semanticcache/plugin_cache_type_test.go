@@ -266,6 +266,7 @@ type directFastPathStore struct {
 	getAllCalls    int
 	lastGetChunkID string
 	lastGetAllCtx  context.Context
+	getAllErr      error
 }
 
 func newDirectFastPathStore() *directFastPathStore {
@@ -301,6 +302,9 @@ func (s *directFastPathStore) GetChunks(ctx context.Context, namespace string, i
 func (s *directFastPathStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
 	s.getAllCalls++
 	s.lastGetAllCtx = ctx
+	if s.getAllErr != nil {
+		return nil, nil, s.getAllErr
+	}
 	return nil, nil, vectorstore.ErrNotSupported
 }
 
@@ -819,6 +823,39 @@ func TestPerformDirectSearchDisablesScanFallbackForLegacyLookup(t *testing.T) {
 	}
 	if !vectorstore.IsScanFallbackDisabled(store.lastGetAllCtx) {
 		t.Fatal("expected legacy direct lookup to disable scan fallback")
+	}
+}
+
+func TestPerformLegacyDirectSearchTreatsQuerySyntaxErrorAsMiss(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	store.getAllErr = vectorstore.ErrQuerySyntax
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	ctx := CreateContextWithCacheKey("legacy-query-syntax")
+	_, err := plugin.prepareDirectCacheLookup(ctx, req, "legacy-query-syntax")
+	if err != nil {
+		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	}
+
+	shortCircuit, err := plugin.performLegacyDirectSearch(ctx, req, "legacy-query-syntax")
+	if err != nil {
+		t.Fatalf("performLegacyDirectSearch failed: %v", err)
+	}
+	if shortCircuit != nil {
+		t.Fatal("expected query syntax incompatibility to be treated as a miss")
+	}
+	if store.getAllCalls != 1 {
+		t.Fatalf("expected one legacy GetAll call, got %d", store.getAllCalls)
 	}
 }
 

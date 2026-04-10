@@ -263,6 +263,9 @@ false
 {{- if .Values.bifrost.client.loggingHeaders }}
 {{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.whitelistedRoutes }}
+{{- $_ := set $client "whitelisted_routes" .Values.bifrost.client.whitelistedRoutes }}
+{{- end }}
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
@@ -621,6 +624,18 @@ false
 {{- if .Values.vectorStore.redis.external.contextTimeout }}
 {{- $_ := set $redisConfig "context_timeout" .Values.vectorStore.redis.external.contextTimeout }}
 {{- end }}
+{{- if .Values.vectorStore.redis.external.useTls }}
+{{- $_ := set $redisConfig "use_tls" true }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.insecureSkipVerify }}
+{{- $_ := set $redisConfig "insecure_skip_verify" true }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.caCertPem }}
+{{- $_ := set $redisConfig "ca_cert_pem" .Values.vectorStore.redis.external.caCertPem }}
+{{- end }}
+{{- if .Values.vectorStore.redis.external.clusterMode }}
+{{- $_ := set $redisConfig "cluster_mode" true }}
+{{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $redisConfig }}
 {{- else if eq .Values.vectorStore.type "qdrant" }}
@@ -873,15 +888,13 @@ false
 {{- /* Custom plugins */ -}}
 {{- if .Values.bifrost.plugins.custom }}
 {{- range .Values.bifrost.plugins.custom }}
-{{- if .enabled }}
-{{- $customPlugin := dict "enabled" true "name" .name }}
+{{- $customPlugin := dict "enabled" .enabled "name" .name }}
 {{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
 {{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
 {{- $plugins = append $plugins $customPlugin }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- if $plugins }}

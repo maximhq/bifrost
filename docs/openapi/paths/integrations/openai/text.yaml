@@ -10,7 +10,7 @@ text-completions:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/completions`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -32,24 +32,29 @@ text-completions:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-text-completions:
   post:
     operationId: azureCreateTextCompletion
     summary: Create text completion (Azure OpenAI)
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
     requestBody:
       required: true
       content:
@@ -70,3 +75,8 @@ azure-text-completions:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

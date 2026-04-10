@@ -113,8 +113,15 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		OutputCostPerTokenBatches:         entry.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:         entry.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:        entry.OutputCostPerTokenPriority,
-		InputCostPerTokenAbove200kTokens:  entry.InputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokens: entry.OutputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokens:         entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority: entry.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
+		// Costs - 272k Tier
+		InputCostPerTokenAbove272kTokens:          entry.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:  entry.InputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenAbove272kTokens:         entry.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority: entry.OutputCostPerTokenAbove272kTokensPriority,
 		// Costs - Character
 		InputCostPerCharacter: entry.InputCostPerCharacter,
 		// Costs - 128k Tier
@@ -129,11 +136,14 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		CacheReadInputTokenCost:                            entry.CacheReadInputTokenCost,
 		CacheCreationInputTokenCostAbove200kTokens:         entry.CacheCreationInputTokenCostAbove200kTokens,
 		CacheReadInputTokenCostAbove200kTokens:             entry.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokensPriority:     entry.CacheReadInputTokenCostAbove200kTokensPriority,
 		CacheCreationInputTokenCostAbove1hr:                entry.CacheCreationInputTokenCostAbove1hr,
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   entry.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    entry.CacheReadInputTokenCostPriority,
 		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
+		CacheReadInputTokenCostAbove272kTokens:             entry.CacheReadInputTokenCostAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensPriority:     entry.CacheReadInputTokenCostAbove272kTokensPriority,
 
 		// Costs - Image
 		InputCostPerImage:                             entry.InputCostPerImage,
@@ -188,8 +198,15 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		OutputCostPerTokenBatches:         pricing.OutputCostPerTokenBatches,
 		InputCostPerTokenPriority:         pricing.InputCostPerTokenPriority,
 		OutputCostPerTokenPriority:        pricing.OutputCostPerTokenPriority,
-		InputCostPerTokenAbove200kTokens:  pricing.InputCostPerTokenAbove200kTokens,
-		OutputCostPerTokenAbove200kTokens: pricing.OutputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokens:         pricing.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority: pricing.InputCostPerTokenAbove200kTokensPriority,
+		OutputCostPerTokenAbove200kTokens:         pricing.OutputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokensPriority: pricing.OutputCostPerTokenAbove200kTokensPriority,
+		// Costs - 272k Tier
+		InputCostPerTokenAbove272kTokens:          pricing.InputCostPerTokenAbove272kTokens,
+		InputCostPerTokenAbove272kTokensPriority:  pricing.InputCostPerTokenAbove272kTokensPriority,
+		OutputCostPerTokenAbove272kTokens:         pricing.OutputCostPerTokenAbove272kTokens,
+		OutputCostPerTokenAbove272kTokensPriority: pricing.OutputCostPerTokenAbove272kTokensPriority,
 		// Costs - Character
 		InputCostPerCharacter: pricing.InputCostPerCharacter,
 		// Costs - 128k Tier
@@ -204,11 +221,14 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CacheReadInputTokenCost:                            pricing.CacheReadInputTokenCost,
 		CacheCreationInputTokenCostAbove200kTokens:         pricing.CacheCreationInputTokenCostAbove200kTokens,
 		CacheReadInputTokenCostAbove200kTokens:             pricing.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokensPriority:     pricing.CacheReadInputTokenCostAbove200kTokensPriority,
 		CacheCreationInputTokenCostAbove1hr:                pricing.CacheCreationInputTokenCostAbove1hr,
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   pricing.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    pricing.CacheReadInputTokenCostPriority,
 		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
+		CacheReadInputTokenCostAbove272kTokens:             pricing.CacheReadInputTokenCostAbove272kTokens,
+		CacheReadInputTokenCostAbove272kTokensPriority:     pricing.CacheReadInputTokenCostAbove272kTokensPriority,
 
 		// Costs - Image
 		InputCostPerImage:                             pricing.InputCostPerImage,

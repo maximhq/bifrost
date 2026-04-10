@@ -26,6 +26,7 @@ ModelProvider:
     - nebius
     - xai
     - runway
+    - fireworks
 
 Fallback:
   type: object

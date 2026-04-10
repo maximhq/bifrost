@@ -1,0 +1,162 @@
+---
+title: "v1.5.0-prerelease2"
+description: "v1.5.0-prerelease2 changelog - 2026-04-08"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.0-prerelease2
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.0-prerelease2
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.0-prerelease2
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.0-prerelease2">
+## ✨ Features
+
+- **Model Alias** — Map model names to provider-specific identifiers (deployment names, inference profile ARNs, fine-tuned model IDs, custom model names, etc.) via per-key alias config
+- **Realtime Support** — Add WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers
+- **Fireworks AI Provider** — Add Fireworks AI as a first-class provider with native completions, responses, embeddings, and image generations (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- **Per-User OAuth Consent** — Add per-user OAuth consent flow with identity selection and MCP authentication
+- **Prompts Plugin** — New prompts plugin with direct key header resolver and selective message inclusion when committing prompt sessions
+- **Access Profiles** — Add access profiles for fine-grained permission control
+- **Bedrock Embeddings & Image Gen** — Add embeddings, image gen, edit and variation support to Bedrock
+- **EnvVar Improvements** — Add IsSet method to EnvVar and auto-redact env-backed values in JSON serialization
+- **Logging Tracking Fields** — Add support for tracking userId, teamId, customerId, and businessUnitId in logging
+- **Virtual Keys Export** — Add sorting and CSV export to virtual keys table
+- **Path Whitelisting** — Allow path whitelisting from security config
+- **Server Bootstrap Timer** — Add server bootstrap timer for startup diagnostics
+
+## 🐞 Fixed
+
+- **Bedrock Tool Choice** — Fix bedrock tool choice conversion to auto
+- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors in bedrock streaming
+- **Bedrock SigV4 Service** — Correct SigV4 service name for agent runtime rerank
+- **MCP Tool Logs** — Fix MCP tool logs not being captured correctly
+- **Routing Rule Targets** — Preserve routing rule targets for genai and bedrock paths
+- **Provider Budget Duplication** — Fix provider level multiline budget duplication issue
+- **Vertex Endpoint** — Fix vertex endpoint correction
+- **Gemini Thinking Budget** — Fix thinking budget validation for gemini models
+- **SQLite Migrations** — Fix SQLite migration connections, error handling, and disable foreign key checks during migration
+- **Tool Parameter Schemas** — Preserve explicit empty tool parameter schemas for openai passthrough
+- **List Models Output** — Include raw model ID in list-models output alongside aliases
+- **Config Schema** — Fix config schema for bedrock key config
+- **Data Race Fix** — Fix race in data reading from fasthttp request for integrations
+- **Model Listing** — Unify /api/models and /api/models/details listing behavior
+
+<Warning>
+**v1.5.0 contains multiple breaking changes.** See the [v1.5.0 Migration Guide](/migration-guides/v1.5.0) for full before/after examples and a migration checklist.
+</Warning>
+
+## Breaking Changes in This Release
+
+This prerelease introduces 3 additional breaking changes on top of those in prerelease1. See the **[v1.5.0 Migration Guide](/migration-guides/v1.5.0)** for full before/after examples, automatic migration details, and a step-by-step checklist.
+
+| # | Breaking Change | Affected |
+|---|---|---|
+| [9](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) | Provider `deployments` removed — migrate Azure, Bedrock, Vertex, and Replicate deployment maps to the unified top-level `aliases` field | `config.json`, REST API, Go SDK |
+| [10](/migration-guides/v1.5.0#breaking-change-10-go-sdk-extrafields-model-fields-renamed) | Go SDK: `ExtraFields.ModelRequested` replaced by `OriginalModelRequested` + `ResolvedModelUsed` | Go SDK |
+| [11](/migration-guides/v1.5.0#breaking-change-11-go-sdk-streamaccumulatorresult-field-renamed) | Go SDK: `StreamAccumulatorResult.Model` replaced by `RequestedModel` + `ResolvedModel` | Go SDK |
+
+---
+</Update>
+<Update label="Core" description="1.5.1">
+- feat: add model alias support — map model names to provider-specific identifiers per key
+- feat: add Fireworks AI as a first-class provider (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add realtime provider interfaces, schemas, and engine hooks
+- feat: add session log storage and realtime request normalization
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add IsSet method to EnvVar and improve provider auth validation
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: add prompts plugin with direct key header resolver
+- feat: add embeddings, image gen, edit and variation to bedrock
+- feat: allow path whitelisting from security config
+- fix: auto-redact env-backed values in EnvVar JSON serialization
+- fix: bedrock tool choice conversion to auto
+- fix: MCP tool logs not being captured correctly
+- fix: preserve explicit empty tool parameter schemas for openai passthrough
+- fix: correct SigV4 service name for bedrock agent runtime rerank
+- fix: include raw model ID in list-models output alongside aliases
+- fix: vertex endpoint correction
+- fix: bedrock streaming retry for retryable AWS exceptions and stale connections
+- fix: thinking budget validation for gemini models
+- fix: add empty arguments guard in bedrock utils
+
+</Update>
+<Update label="Framework" description="1.3.1">
+- feat: add model alias storage and encryption in key config
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add access profiles for fine-grained permission control
+- feat: add user level OAuth for MCP gateway
+- feat: add IsSet method to EnvVar and improve provider auth validation
+- feat: add session log storage and realtime request normalization
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: add prompts plugin with direct key header resolver
+- feat: add Fireworks AI provider support (thanks [@ivanetchart](https://github.com/ivanetchart)!)
+- feat: add sorting and CSV export to virtual keys table
+- feat: allow path whitelisting from security config
+- fix: auto-redact env-backed values in EnvVar JSON serialization
+- fix: MCP tool logs not being captured correctly
+- fix: SQLite migration connections and error handling
+- fix: disable SQLite foreign key checks during migration
+- fix: add retry mechanism to model catalog pricing sync lock
+- fix: increases buffer size for custom plugin installs from URLs
+
+</Update>
+<Update label="governance" description="1.5.1">
+- feat: add realtime WebSocket, WebRTC, and client secret handlers
+- feat: add access profiles for fine-grained permission control
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- fix: SQLite migration connections and error handling + vk not found message
+- fix: preserve routing rule targets for genai and bedrock paths
+
+</Update>
+<Update label="jsonparser" description="1.5.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>
+<Update label="litellmcompat" description="0.1.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>
+<Update label="logging" description="1.5.1">
+- feat: add realtime turn logging
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+- feat: allow path whitelisting from security config
+- fix: MCP tool logs not being captured correctly
+
+</Update>
+<Update label="maxim" description="1.6.1">
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add support for image generation requests
+- feat: add realtime turn logging
+- feat: add support for tracking userId, teamId, customerId, and businessUnitId
+
+</Update>
+<Update label="mocker" description="1.5.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>
+<Update label="otel" description="1.2.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>
+<Update label="prompts" description="1.0.1">
+- feat: add prompts plugin with direct key header resolver
+- feat: add per-user OAuth consent flow with identity selection and MCP authentication
+- feat: add selective message inclusion when committing prompt sessions
+
+</Update>
+<Update label="semanticcache" description="1.5.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>
+<Update label="telemetry" description="1.5.1">
+- chore: upgraded core to v1.5.1 and framework to v1.3.1
+
+</Update>

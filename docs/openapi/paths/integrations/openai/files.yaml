@@ -9,7 +9,7 @@ files:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -27,6 +27,11 @@ files:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: openaiListFiles
     summary: List files (OpenAI format)
@@ -35,33 +40,33 @@ files:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: purpose
-        in: query
-        schema:
-          type: string
-        description: Filter by purpose
-      - name: limit
-        in: query
-        schema:
-          type: integer
-        description: Maximum files to return
-      - name: after
-        in: query
-        schema:
-          type: string
-        description: Cursor for pagination
-      - name: order
-        in: query
-        schema:
-          type: string
-          enum: [asc, desc]
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Filter by provider
+    - name: purpose
+      in: query
+      schema:
+        type: string
+      description: Filter by purpose
+    - name: limit
+      in: query
+      schema:
+        type: integer
+      description: Maximum files to return
+    - name: after
+      in: query
+      schema:
+        type: string
+      description: Cursor for pagination
+    - name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Filter by provider
     responses:
       '200':
         description: Successful response
@@ -74,6 +79,11 @@ files:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files-by-id:
   get:
     operationId: openaiRetrieveFile
@@ -83,19 +93,19 @@ files-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the file
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the file
     responses:
       '200':
         description: Successful response
@@ -107,6 +117,11 @@ files-by-id:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: openaiDeleteFile
     summary: Delete file (OpenAI format)
@@ -115,19 +130,19 @@ files-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID to delete
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the file
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID to delete
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the file
     responses:
       '200':
         description: Successful response
@@ -140,6 +155,11 @@ files-by-id:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files-content:
   get:
     operationId: openaiGetFileContent
@@ -149,19 +169,19 @@ files-content:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}/content`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the file
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the file
     responses:
       '200':
         description: Successful response
@@ -174,3 +194,8 @@ files-content:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

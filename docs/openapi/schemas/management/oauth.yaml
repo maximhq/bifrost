@@ -2,12 +2,13 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth]
+  enum: [none, headers, oauth, per_user_oauth]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
     - headers: Header-based authentication (API keys, custom headers, etc.)
-    - oauth: OAuth 2.0 authentication
+    - oauth: OAuth 2.0 authentication (shared admin token)
+    - per_user_oauth: Per-user OAuth 2.1 (each end-user authenticates individually)
 
 OAuthConfigRequest:
   type: object
@@ -130,3 +131,175 @@ OAuthToken:
       type: string
       format: date-time
       description: When the token was last refreshed
+
+# Per-User OAuth 2.1 Authorization Server schemas
+
+PerUserOAuthClientRegistrationRequest:
+  type: object
+  description: |
+    Dynamic Client Registration request per RFC 7591.
+    MCP clients (Claude Code, Cursor, etc.) call this to obtain a client_id
+    before initiating the authorization flow.
+  required:
+    - redirect_uris
+  properties:
+    client_name:
+      type: string
+      description: Human-readable name of the client application
+      example: Claude Code
+    redirect_uris:
+      type: array
+      items:
+        type: string
+      description: List of allowed redirect URIs for this client
+      example: ["http://localhost:54321/callback"]
+    grant_types:
+      type: array
+      items:
+        type: string
+      description: Supported grant types. Defaults to ["authorization_code"]
+      example: ["authorization_code"]
+    response_types:
+      type: array
+      items:
+        type: string
+      description: Supported response types
+      example: ["code"]
+    token_endpoint_auth_method:
+      type: string
+      description: Token endpoint authentication method. Always "none" (public client)
+      example: none
+    scope:
+      type: string
+      description: Space-separated list of requested scopes
+      example: "mcp:read mcp:write"
+
+PerUserOAuthClientRegistrationResponse:
+  type: object
+  description: Dynamic Client Registration response per RFC 7591
+  properties:
+    client_id:
+      type: string
+      description: Issued client identifier
+      example: "550e8400-e29b-41d4-a716-446655440000"
+    client_name:
+      type: string
+      description: Human-readable name of the client application
+    redirect_uris:
+      type: array
+      items:
+        type: string
+      description: Registered redirect URIs
+    grant_types:
+      type: array
+      items:
+        type: string
+      description: Registered grant types
+    response_types:
+      type: array
+      items:
+        type: string
+      description: Registered response types
+    token_endpoint_auth_method:
+      type: string
+      description: Token endpoint authentication method (always "none")
+
+PerUserOAuthTokenResponse:
+  type: object
+  description: OAuth 2.1 token response from the token endpoint
+  properties:
+    access_token:
+      type: string
+      description: Bifrost-issued access token (24h TTL). Use as Bearer token on /mcp requests.
+    token_type:
+      type: string
+      description: Token type, always "Bearer"
+      example: Bearer
+    expires_in:
+      type: integer
+      description: Seconds until the access token expires (86400 for 24h)
+      example: 86400
+    scope:
+      type: string
+      description: Space-separated scopes granted
+
+ProtectedResourceMetadata:
+  type: object
+  description: |
+    OAuth 2.0 Protected Resource Metadata per RFC 9728.
+    Returned by /.well-known/oauth-protected-resource to tell MCP clients
+    which authorization server(s) protect the /mcp endpoint.
+  properties:
+    resource:
+      type: string
+      description: URL of the protected resource (Bifrost's /mcp endpoint)
+      example: "https://your-bifrost-domain.com/mcp"
+    authorization_servers:
+      type: array
+      items:
+        type: string
+      description: List of authorization server issuer URLs
+      example: ["https://your-bifrost-domain.com"]
+    scopes_supported:
+      type: array
+      items:
+        type: string
+      description: Scopes supported by this resource
+      example: ["mcp:read", "mcp:write"]
+    bearer_methods_supported:
+      type: array
+      items:
+        type: string
+      description: Supported methods for passing Bearer tokens
+      example: ["header"]
+
+AuthorizationServerMetadata:
+  type: object
+  description: |
+    OAuth 2.0 Authorization Server Metadata per RFC 8414.
+    Returned by /.well-known/oauth-authorization-server to let MCP clients
+    discover Bifrost's OAuth endpoints and capabilities.
+  properties:
+    issuer:
+      type: string
+      description: Authorization server issuer URL (Bifrost base URL)
+      example: "https://your-bifrost-domain.com"
+    authorization_endpoint:
+      type: string
+      description: Authorization endpoint URL
+      example: "https://your-bifrost-domain.com/api/oauth/per-user/authorize"
+    token_endpoint:
+      type: string
+      description: Token endpoint URL
+      example: "https://your-bifrost-domain.com/api/oauth/per-user/token"
+    registration_endpoint:
+      type: string
+      description: Dynamic client registration endpoint URL
+      example: "https://your-bifrost-domain.com/api/oauth/per-user/register"
+    response_types_supported:
+      type: array
+      items:
+        type: string
+      example: ["code"]
+    grant_types_supported:
+      type: array
+      items:
+        type: string
+      example: ["authorization_code"]
+    code_challenge_methods_supported:
+      type: array
+      items:
+        type: string
+      description: Supported PKCE methods (only S256)
+      example: ["S256"]
+    token_endpoint_auth_methods_supported:
+      type: array
+      items:
+        type: string
+      description: Supported token endpoint auth methods (public clients only)
+      example: ["none"]
+    scopes_supported:
+      type: array
+      items:
+        type: string
+      example: ["mcp:read", "mcp:write"]

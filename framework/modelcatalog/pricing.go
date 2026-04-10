@@ -19,6 +19,7 @@ type costInput struct {
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
 	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
+	isPriority          bool // true when service_tier == "priority"
 }
 
 // CalculateCost calculates the cost of a Bifrost response.
@@ -66,7 +67,7 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	if !exists {
 		return 0
 	}
-	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens)
+	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, false)
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
@@ -106,19 +107,19 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	// Route to the appropriate compute function
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
-		return computeTextCost(pricing, input.usage)
+		return computeTextCost(pricing, input.usage, input.isPriority)
 	case schemas.EmbeddingRequest:
-		return computeEmbeddingCost(pricing, input.usage)
+		return computeEmbeddingCost(pricing, input.usage, input.isPriority)
 	case schemas.RerankRequest:
-		return computeRerankCost(pricing, input.usage)
+		return computeRerankCost(pricing, input.usage, input.isPriority)
 	case schemas.SpeechRequest:
-		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars)
+		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.isPriority)
 	case schemas.TranscriptionRequest:
-		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails)
+		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.isPriority)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality)
+		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.isPriority)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
-		return computeVideoCost(pricing, input.usage, input.videoSeconds)
+		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.isPriority)
 	default:
 		return 0
 	}
@@ -137,12 +138,15 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
 		input.usage = result.ChatResponse.Usage
+		input.isPriority = result.ChatResponse.ServiceTier != nil && *result.ChatResponse.ServiceTier == "priority"
 
 	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesResponse.Usage)
+		input.isPriority = result.ResponsesResponse.ServiceTier != nil && *result.ResponsesResponse.ServiceTier == "priority"
 
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		input.usage = responsesUsageToBifrostUsage(result.ResponsesStreamResponse.Response.Usage)
+		input.isPriority = result.ResponsesStreamResponse.Response.ServiceTier != nil && *result.ResponsesStreamResponse.Response.ServiceTier == "priority"
 
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
@@ -262,7 +266,7 @@ func extractTranscriptionUsage(u *schemas.TranscriptionUsage) (*schemas.BifrostL
 // ---------------------------------------------------------------------------
 
 // computeTextCost handles chat, text completion, and responses requests.
-func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) float64 {
+func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, isPriority bool) float64 {
 	if usage == nil {
 		return 0
 	}
@@ -279,10 +283,10 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
 	}
 
-	inputRate := tieredInputRate(pricing, totalTokens)
-	outputRate := tieredOutputRate(pricing, totalTokens)
-	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, totalTokens)
-	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, totalTokens)
+	inputRate := tieredInputRate(pricing, totalTokens, isPriority)
+	outputRate := tieredOutputRate(pricing, totalTokens, isPriority)
+	cacheReadInputRate := tieredCacheReadInputTokenRate(pricing, totalTokens, isPriority)
+	cacheCreationInputRate := tieredCacheCreationInputTokenRate(pricing, totalTokens, isPriority)
 
 	// Clamp cached token counts to avoid negative billing on malformed provider payloads
 	if cachedReadTokens > promptTokens {
@@ -318,20 +322,20 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 }
 
 // computeEmbeddingCost handles embedding requests (input-only).
-func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) float64 {
+func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, isPriority bool) float64 {
 	if usage == nil {
 		return 0
 	}
-	return float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens)
+	return float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, isPriority)
 }
 
 // computeRerankCost handles rerank requests.
-func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage) float64 {
+func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, isPriority bool) float64 {
 	if usage == nil {
 		return 0
 	}
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, usage.TotalTokens)
+	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.TotalTokens, isPriority)
+	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, usage.TotalTokens, isPriority)
 
 	searchCost := 0.0
 	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
@@ -349,7 +353,7 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // input text rather than per token. PromptTokens from usage is treated as the character count
 // since TTS providers report their billable unit in that field.
 // Output falls back to per-second duration when no audio token rate is configured.
-func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int) float64 {
+func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTextInputChars int, isPriority bool) float64 {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: per-character rate takes precedence for TTS/audio models
@@ -358,14 +362,14 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 		if pricing.InputCostPerCharacter != nil {
 			inputCost = float64(audioTextInputChars) * *pricing.InputCostPerCharacter
 		} else {
-			inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, totalTokens)
+			inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, totalTokens, isPriority)
 		}
 	} else if usage != nil && usage.PromptTokens > 0 {
-		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens)
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Output: audio tokens first, then per-second fallback
-	outputCost := computeAudioOutputCost(pricing, usage, audioSeconds, totalTokens)
+	outputCost := computeAudioOutputCost(pricing, usage, audioSeconds, totalTokens, isPriority)
 
 	return inputCost + outputCost
 }
@@ -373,16 +377,16 @@ func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // computeTranscriptionCost handles transcription (STT) requests.
 // Input is audio, output is text (CompletionTokens).
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
+func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, isPriority bool) float64 {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: audio tokens/details first, then per-second fallback
-	inputCost := computeAudioInputCost(pricing, usage, audioSeconds, audioTokenDetails, totalTokens)
+	inputCost := computeAudioInputCost(pricing, usage, audioSeconds, audioTokenDetails, totalTokens, isPriority)
 
 	// Output: text tokens
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens, isPriority)
 	}
 
 	return inputCost + outputCost
@@ -390,16 +394,16 @@ func computeTranscriptionCost(pricing *configstoreTables.TableModelPricing, usag
 
 // computeAudioInputCost calculates input cost for audio: audio token details first,
 // then generic input tokens, then per-second duration fallback.
-func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int) float64 {
+func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, totalTokens int, isPriority bool) float64 {
 	// Audio token detail pricing (audio + text token breakdown)
 	if audioTokenDetails != nil && (audioTokenDetails.AudioTokens > 0 || audioTokenDetails.TextTokens > 0) {
-		return float64(audioTokenDetails.AudioTokens)*tieredAudioTokenInputRate(pricing, totalTokens) +
-			float64(audioTokenDetails.TextTokens)*tieredInputRate(pricing, totalTokens)
+		return float64(audioTokenDetails.AudioTokens)*tieredAudioTokenInputRate(pricing, totalTokens, isPriority) +
+			float64(audioTokenDetails.TextTokens)*tieredInputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Generic input tokens
 	if usage != nil && usage.PromptTokens > 0 {
-		return float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens)
+		return float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Per-second duration fallback
@@ -414,10 +418,10 @@ func computeAudioInputCost(pricing *configstoreTables.TableModelPricing, usage *
 
 // computeAudioOutputCost calculates output cost for audio: audio tokens first,
 // then generic output tokens, then per-second duration fallback.
-func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, totalTokens int) float64 {
+func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *int, totalTokens int, isPriority bool) float64 {
 	// Audio-specific output tokens
 	if usage != nil && usage.CompletionTokens > 0 {
-		return float64(usage.CompletionTokens) * tieredAudioTokenOutputRate(pricing, totalTokens)
+		return float64(usage.CompletionTokens) * tieredAudioTokenOutputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Per-second duration fallback
@@ -434,21 +438,21 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 // Input and output are calculated independently — each tries token-based pricing first,
 // then per-pixel pricing, falling back to per-image count pricing.
 // imageQuality must be one of "low", "medium", "high", "auto" to use quality-specific rates; other values use base rates.
-func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string) float64 {
+func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, isPriority bool) float64 {
 	if imageUsage == nil {
 		return 0
 	}
 
 	totalTokens := imageUsage.TotalTokens
 	pixels := parseImagePixels(imageSize)
-	inputCost := computeImageInputCost(pricing, imageUsage, totalTokens, pixels)
-	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels, imageQuality)
+	inputCost := computeImageInputCost(pricing, imageUsage, totalTokens, pixels, isPriority)
+	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels, imageQuality, isPriority)
 
 	return inputCost + outputCost
 }
 
 // computeImageInputCost calculates input cost: tokens first, then per-pixel, then per-image count fallback.
-func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int) float64 {
+func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, isPriority bool) float64 {
 	// Try token-based pricing first
 	var inputTextTokens, inputImageTokens int
 	if imageUsage.InputTokensDetails != nil {
@@ -459,8 +463,8 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 	}
 
 	if inputTextTokens > 0 || inputImageTokens > 0 {
-		return float64(inputTextTokens)*tieredInputRate(pricing, totalTokens) +
-			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens)
+		return float64(inputTextTokens)*tieredInputRate(pricing, totalTokens, isPriority) +
+			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Per-pixel pricing fallback
@@ -478,7 +482,7 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
 // imageQuality: "low", "medium", "high", "auto" use quality-specific rates when available; other values use base/size-tier rates.
-func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, imageQuality string) float64 {
+func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, imageQuality string, isPriority bool) float64 {
 	// Try token-based pricing first
 	var outputTextTokens, outputImageTokens int
 	if imageUsage.OutputTokensDetails != nil {
@@ -489,8 +493,8 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	}
 
 	if outputTextTokens > 0 || outputImageTokens > 0 {
-		return float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens) +
-			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens)
+		return float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, isPriority) +
+			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, isPriority)
 	}
 
 	// Per-pixel pricing fallback
@@ -558,13 +562,13 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 
 // computeVideoCost handles video generation requests.
 // Input and output are calculated independently — tokens first, then per-second fallback.
-func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int) float64 {
+func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, videoSeconds *int, isPriority bool) float64 {
 	totalTokens := safeTotalTokens(usage)
 
 	// Input: text prompt tokens first, then per-second fallback
 	inputCost := 0.0
 	if usage != nil && usage.PromptTokens > 0 {
-		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens)
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, totalTokens, isPriority)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
 		if rate := tieredVideoInputPerSecondRate(pricing, totalTokens); rate > 0 {
 			inputCost = float64(*videoSeconds) * rate
@@ -574,7 +578,7 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	// Output: completion tokens first, then per-second fallback
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, totalTokens, isPriority)
 	} else if videoSeconds != nil && *videoSeconds > 0 {
 		if pricing.OutputCostPerVideoPerSecond != nil {
 			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
@@ -591,46 +595,80 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 // ---------------------------------------------------------------------------
 
 // tieredInputRate returns the effective per-token input rate based on total token count.
-func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
-	if totalTokens > TokenTierAbove200K && pricing.InputCostPerTokenAbove200kTokens != nil {
-		return *pricing.InputCostPerTokenAbove200kTokens
+// When isPriority is true, priority-specific tier rates are preferred where available.
+func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
+	if totalTokens > TokenTierAbove272K {
+		if isPriority && pricing.InputCostPerTokenAbove272kTokensPriority != nil {
+			return *pricing.InputCostPerTokenAbove272kTokensPriority
+		}
+		if pricing.InputCostPerTokenAbove272kTokens != nil {
+			return *pricing.InputCostPerTokenAbove272kTokens
+		}
+	}
+	if totalTokens > TokenTierAbove200K {
+		if isPriority && pricing.InputCostPerTokenAbove200kTokensPriority != nil {
+			return *pricing.InputCostPerTokenAbove200kTokensPriority
+		}
+		if pricing.InputCostPerTokenAbove200kTokens != nil {
+			return *pricing.InputCostPerTokenAbove200kTokens
+		}
 	}
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
+	}
+	if isPriority && pricing.InputCostPerTokenPriority != nil {
+		return *pricing.InputCostPerTokenPriority
 	}
 	return pricing.InputCostPerToken
 }
 
 // tieredOutputRate returns the effective per-token output rate based on total token count.
-func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
-	if totalTokens > TokenTierAbove200K && pricing.OutputCostPerTokenAbove200kTokens != nil {
-		return *pricing.OutputCostPerTokenAbove200kTokens
+// When isPriority is true, priority-specific tier rates are preferred where available.
+func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
+	if totalTokens > TokenTierAbove272K {
+		if isPriority && pricing.OutputCostPerTokenAbove272kTokensPriority != nil {
+			return *pricing.OutputCostPerTokenAbove272kTokensPriority
+		}
+		if pricing.OutputCostPerTokenAbove272kTokens != nil {
+			return *pricing.OutputCostPerTokenAbove272kTokens
+		}
+	}
+	if totalTokens > TokenTierAbove200K {
+		if isPriority && pricing.OutputCostPerTokenAbove200kTokensPriority != nil {
+			return *pricing.OutputCostPerTokenAbove200kTokensPriority
+		}
+		if pricing.OutputCostPerTokenAbove200kTokens != nil {
+			return *pricing.OutputCostPerTokenAbove200kTokens
+		}
 	}
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
+	}
+	if isPriority && pricing.OutputCostPerTokenPriority != nil {
+		return *pricing.OutputCostPerTokenPriority
 	}
 	return pricing.OutputCostPerToken
 }
 
 // tieredImageInputRate returns the effective rate for image tokens on the input side.
 // Falls back to the general tieredInputRate when no image-specific rate is configured.
-func tieredImageInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
+func tieredImageInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerImageAbove128kTokens != nil {
 		return *pricing.InputCostPerImageAbove128kTokens
 	}
 	if pricing.InputCostPerImageToken != nil {
 		return *pricing.InputCostPerImageToken
 	}
-	return tieredInputRate(pricing, totalTokens)
+	return tieredInputRate(pricing, totalTokens, isPriority)
 }
 
 // tieredImageOutputRate returns the effective rate for image tokens on the output side.
 // Falls back to the general tieredOutputRate when no image-specific rate is configured.
-func tieredImageOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
+func tieredImageOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
 	if pricing.OutputCostPerImageToken != nil {
 		return *pricing.OutputCostPerImageToken
 	}
-	return tieredOutputRate(pricing, totalTokens)
+	return tieredOutputRate(pricing, totalTokens, isPriority)
 }
 
 // tieredAudioInputPerSecondRate returns the effective per-second rate for audio input.
@@ -660,40 +698,56 @@ func tieredVideoInputPerSecondRate(pricing *configstoreTables.TableModelPricing,
 
 // tieredAudioTokenInputRate returns the effective per-token rate for audio input tokens.
 // Falls back to the general tieredInputRate when no audio-specific rate is configured.
-func tieredAudioTokenInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
+func tieredAudioTokenInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
 	if pricing.InputCostPerAudioToken != nil {
 		return *pricing.InputCostPerAudioToken
 	}
-	return tieredInputRate(pricing, totalTokens)
+	return tieredInputRate(pricing, totalTokens, isPriority)
 }
 
 // tieredAudioTokenOutputRate returns the effective per-token rate for audio output tokens.
 // Falls back to the general tieredOutputRate when no audio-specific rate is configured.
-func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
+func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
 	if pricing.OutputCostPerAudioToken != nil {
 		return *pricing.OutputCostPerAudioToken
 	}
-	return tieredOutputRate(pricing, totalTokens)
+	return tieredOutputRate(pricing, totalTokens, isPriority)
 }
 
-func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
-	if totalTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
-		return *pricing.CacheReadInputTokenCostAbove200kTokens
+func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
+	if totalTokens > TokenTierAbove272K {
+		if isPriority && pricing.CacheReadInputTokenCostAbove272kTokensPriority != nil {
+			return *pricing.CacheReadInputTokenCostAbove272kTokensPriority
+		}
+		if pricing.CacheReadInputTokenCostAbove272kTokens != nil {
+			return *pricing.CacheReadInputTokenCostAbove272kTokens
+		}
+	}
+	if totalTokens > TokenTierAbove200K {
+		if isPriority && pricing.CacheReadInputTokenCostAbove200kTokensPriority != nil {
+			return *pricing.CacheReadInputTokenCostAbove200kTokensPriority
+		}
+		if pricing.CacheReadInputTokenCostAbove200kTokens != nil {
+			return *pricing.CacheReadInputTokenCostAbove200kTokens
+		}
+	}
+	if isPriority && pricing.CacheReadInputTokenCostPriority != nil {
+		return *pricing.CacheReadInputTokenCostPriority
 	}
 	if pricing.CacheReadInputTokenCost != nil {
 		return *pricing.CacheReadInputTokenCost
 	}
-	return tieredInputRate(pricing, totalTokens)
+	return tieredInputRate(pricing, totalTokens, isPriority)
 }
 
-func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int) float64 {
+func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, isPriority bool) float64 {
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
 	if pricing.CacheCreationInputTokenCost != nil {
 		return *pricing.CacheCreationInputTokenCost
 	}
-	return tieredInputRate(pricing, totalTokens)
+	return tieredInputRate(pricing, totalTokens, isPriority)
 }
 
 func safeTotalTokens(usage *schemas.BifrostLLMUsage) int {

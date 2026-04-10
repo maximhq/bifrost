@@ -380,9 +380,21 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 	)
 }
 
-// Embedding is not supported by the OpenRouter provider.
+// Embedding performs an embedding request to the OpenRouter API.
 func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
+	return openai.HandleOpenAIEmbeddingRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 // Speech is not supported by the OpenRouter provider.

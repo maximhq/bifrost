@@ -312,6 +312,51 @@ func TestOpenAIResponsesRequest_MarshalJSON_InputArrayForm(t *testing.T) {
 	}
 }
 
+func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Fireworks,
+		Model:    "accounts/fireworks/models/deepseek-v3p2",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			PreviousResponseID: schemas.Ptr("resp_previous"),
+			MaxToolCalls:       schemas.Ptr(2),
+			Store:              schemas.Ptr(true),
+		},
+	}
+
+	request := ToOpenAIResponsesRequest(bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+
+	if got, ok := jsonMap["previous_response_id"].(string); !ok || got != "resp_previous" {
+		t.Fatalf("expected previous_response_id to be preserved, got %#v", jsonMap["previous_response_id"])
+	}
+	if got, ok := jsonMap["max_tool_calls"].(float64); !ok || got != 2 {
+		t.Fatalf("expected max_tool_calls to be preserved, got %#v", jsonMap["max_tool_calls"])
+	}
+	if got, ok := jsonMap["store"].(bool); !ok || !got {
+		t.Fatalf("expected store=true to be preserved, got %#v", jsonMap["store"])
+	}
+}
+
 func TestOpenAIResponsesRequest_MarshalJSON_FieldShadowingBehavior(t *testing.T) {
 	// This test verifies that the field shadowing pattern works correctly
 	// by ensuring that the aux struct properly shadows Input and Reasoning fields

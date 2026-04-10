@@ -405,7 +405,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		// Return OAuth flow initiation response
+		// Return OAuth flow initiation response with actionable next-step hints
+		// so API/CLI users know how to complete the flow without consulting docs.
+		completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
+		statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
 		SendJSON(ctx, map[string]any{
 			"status":          "pending_oauth",
 			"message":         "OAuth authorization required",
@@ -413,6 +416,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			"authorize_url":   flowInitiation.AuthorizeURL,
 			"expires_at":      flowInitiation.ExpiresAt,
 			"mcp_client_id":   req.ClientID,
+			"complete_url":    completeURL,
+			"status_url":      statusURL,
+			"next_steps": []string{
+				"1. Open authorize_url in a browser to approve access",
+				"2. Poll status_url to check when status becomes 'authorized'",
+				"3. POST complete_url to activate the MCP client",
+			},
 		})
 		return
 	}

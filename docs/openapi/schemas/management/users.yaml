@@ -1,0 +1,239 @@
+UserObject:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique user identifier
+    name:
+      type: string
+      description: User's display name
+    email:
+      type: string
+      format: email
+      description: User's email address
+    role_id:
+      type: integer
+      nullable: true
+      description: ID of the assigned RBAC role
+    role:
+      type: object
+      nullable: true
+      description: RBAC role details
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        is_system_role:
+          type: boolean
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateUserRequest:
+  type: object
+  required:
+    - name
+    - email
+  properties:
+    name:
+      type: string
+      description: User's display name
+    email:
+      type: string
+      format: email
+      description: User's email address (must be unique)
+    role_id:
+      type: integer
+      description: Optional RBAC role ID to assign
+
+UserResponse:
+  type: object
+  properties:
+    user:
+      $ref: '#/UserObject'
+
+ListUsersResponse:
+  type: object
+  properties:
+    users:
+      type: array
+      items:
+        $ref: '#/UserObject'
+    total:
+      type: integer
+      description: Total number of users matching the query
+    page:
+      type: integer
+      description: Current page number
+    limit:
+      type: integer
+      description: Number of users per page
+    total_pages:
+      type: integer
+      description: Total number of pages
+    has_more:
+      type: boolean
+      description: Whether more pages are available
+
+# ---- User Permissions ----
+
+PermissionsResponse:
+  type: object
+  properties:
+    permissions:
+      type: object
+      description: >
+        Map of resource names to their permitted operations.
+        When SCIM is disabled, returns full permissions for all resources.
+      additionalProperties:
+        type: object
+        additionalProperties:
+          type: boolean
+
+# ---- User Role ----
+
+AssignUserRoleRequest:
+  type: object
+  required:
+    - role_id
+  properties:
+    role_id:
+      type: integer
+      description: ID of the RBAC role to assign
+
+# ---- User Teams ----
+
+UserTeamEntry:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Team ID
+    name:
+      type: string
+      description: Team name
+    source:
+      type: string
+      description: How the user was added to this team (e.g. "manual", "scim_sync")
+
+UserTeamsResponse:
+  type: object
+  properties:
+    teams:
+      type: array
+      items:
+        $ref: '#/UserTeamEntry'
+
+UpdateUserTeamsRequest:
+  type: object
+  required:
+    - team_ids
+  properties:
+    team_ids:
+      type: array
+      items:
+        type: string
+      description: List of team IDs to assign (replaces existing manual assignments; synced memberships are preserved)
+
+# ---- Teams ----
+
+TeamObject:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Team ID (derived from name)
+    name:
+      type: string
+      description: Team name
+    member_count:
+      type: integer
+      description: Number of members in the team
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateTeamRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+      description: Team name (must be unique)
+
+UpdateTeamRequest:
+  type: object
+  properties:
+    description:
+      type: string
+      description: Updated team description
+
+CreateTeamResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+
+ListTeamsResponse:
+  type: object
+  properties:
+    teams:
+      type: array
+      items:
+        $ref: '#/TeamObject'
+    total:
+      type: integer
+    page:
+      type: integer
+    limit:
+      type: integer
+    total_pages:
+      type: integer
+      description: Total number of pages
+    has_more:
+      type: boolean
+      description: Whether more pages are available
+
+# ---- Team Members ----
+
+TeamMemberObject:
+  type: object
+  properties:
+    user_id:
+      type: string
+    user_name:
+      type: string
+    user_email:
+      type: string
+    source:
+      type: string
+      description: How the member was added (e.g. "manual", "scim_sync")
+
+TeamMembersResponse:
+  type: object
+  properties:
+    members:
+      type: array
+      items:
+        $ref: '#/TeamMemberObject'
+
+AddTeamMemberRequest:
+  type: object
+  required:
+    - user_id
+  properties:
+    user_id:
+      type: string
+      description: ID of the user to add to the team
