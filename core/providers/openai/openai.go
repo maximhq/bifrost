@@ -7045,7 +7045,17 @@ func (provider *OpenAIProvider) Passthrough(
 		path = after
 	}
 
-	url := provider.networkConfig.BaseURL + "/v1" + path
+	// For custom providers with non-standard base URLs (e.g. chatgpt.com/backend-api/codex),
+	// don't inject /v1/ — the base_url already contains the full path prefix.
+	// Standard OpenAI base URLs end with openai.com or contain /v1 already.
+	var url string
+	if strings.Contains(provider.networkConfig.BaseURL, "/v1") ||
+		strings.HasSuffix(provider.networkConfig.BaseURL, "openai.com") ||
+		strings.HasSuffix(provider.networkConfig.BaseURL, "openai.com/") {
+		url = provider.networkConfig.BaseURL + "/v1" + path
+	} else {
+		url = provider.networkConfig.BaseURL + path
+	}
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
