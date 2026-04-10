@@ -733,6 +733,10 @@ vectorStore:
       username: ""
       password: ""
       database: 0
+      useTls: false                # Enable TLS for Redis connection
+      insecureSkipVerify: false    # Skip TLS certificate verification
+      caCertPem: ""                # PEM-encoded CA certificate to trust for Redis TLS
+      clusterMode: false           # Use Redis Cluster mode (required for AWS MemoryDB)
       # Connection pool tuning (optional)
       # poolSize: 10             # Maximum number of socket connections
       # maxActiveConns: 0        # Maximum number of active connections

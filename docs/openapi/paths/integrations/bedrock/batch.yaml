@@ -7,7 +7,7 @@ batch-jobs:
     description: |
       Creates a batch inference job using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     requestBody:
       required: true
       content:
@@ -33,35 +33,41 @@ batch-jobs:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: bedrockListBatchJobs
     summary: List batch inference jobs (Bedrock format)
     description: |
       Lists batch inference jobs using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: maxResults
-        in: query
-        schema:
-          type: integer
-        description: Maximum number of results to return
-      - name: nextToken
-        in: query
-        schema:
-          type: string
-        description: Token for pagination
-      - name: statusEquals
-        in: query
-        schema:
-          type: string
-          enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating, Scheduled]
-        description: Filter by status
-      - name: nameContains
-        in: query
-        schema:
-          type: string
-        description: Filter by job name containing this string
+    - name: maxResults
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of results to return
+    - name: nextToken
+      in: query
+      schema:
+        type: string
+      description: Token for pagination
+    - name: statusEquals
+      in: query
+      schema:
+        type: string
+        enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating, 
+            Scheduled]
+      description: Filter by status
+    - name: nameContains
+      in: query
+      schema:
+        type: string
+      description: Filter by job name containing this string
     responses:
       '200':
         description: Successful response
@@ -82,6 +88,11 @@ batch-jobs:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 batch-job-by-id:
   get:
     operationId: bedrockRetrieveBatchJob
@@ -89,14 +100,14 @@ batch-job-by-id:
     description: |
       Retrieves a batch inference job using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: jobIdentifier
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Job identifier
+    - name: jobIdentifier
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Job identifier
     responses:
       '200':
         description: Successful response
@@ -117,6 +128,11 @@ batch-job-by-id:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 batch-job-cancel:
   post:
     operationId: bedrockCancelBatchJob
@@ -124,14 +140,14 @@ batch-job-cancel:
     description: |
       Cancels a batch inference job using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: jobIdentifier
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Job identifier to cancel
+    - name: jobIdentifier
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Job identifier to cancel
     responses:
       '200':
         description: Successful response
@@ -151,3 +167,8 @@ batch-job-cancel:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

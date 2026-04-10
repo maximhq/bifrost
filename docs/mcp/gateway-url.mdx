@@ -289,6 +289,22 @@ The MCP Server dynamically updates its tool registry from the tool manager.
 
 ---
 
+## Per-User OAuth for MCP Clients
+
+When at least one MCP server is configured with `per_user_oauth`, the `/mcp` endpoint automatically advertises OAuth support via standard discovery headers. OAuth-capable MCP clients (Claude Code, Cursor, and others) detect this automatically — no manual configuration is needed on the client side.
+
+When an unauthenticated client connects, Bifrost responds with a `401` that points to the discovery endpoints:
+
+```
+WWW-Authenticate: Bearer resource_metadata="https://your-bifrost-domain/.well-known/oauth-protected-resource"
+```
+
+The client then fetches the OAuth metadata and kicks off a consent flow where the user can attach an identity and connect their upstream services. Subsequent requests use a Bifrost-issued session token as the Bearer credential.
+
+See [Per-User OAuth →](./per-user-oauth) for the full flow and identity options.
+
+---
+
 ## Security Considerations
 
 <Warning>

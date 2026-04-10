@@ -7,7 +7,7 @@ chat:
     description: |
       Sends a chat request using Cohere v2 API format.
     tags:
-      - Cohere Integration
+    - Cohere Integration
     requestBody:
       required: true
       content:
@@ -36,3 +36,8 @@ chat:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

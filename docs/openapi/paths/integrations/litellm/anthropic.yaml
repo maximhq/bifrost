@@ -8,7 +8,7 @@ messages:
     description: |
       Creates a message using Anthropic-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -37,3 +37,8 @@ messages:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

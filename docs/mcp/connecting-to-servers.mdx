@@ -16,8 +16,8 @@ Bifrost supports three connection protocols, each with different authentication 
 | Type | Description | Best For | Auth Support |
 |------|-------------|----------|--------------|
 | **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts | None |
-| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions | Headers, OAuth 2.0 |
-| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools | Headers, OAuth 2.0 |
+| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions | Headers, OAuth 2.0, Per-User OAuth |
+| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools | Headers, OAuth 2.0, Per-User OAuth |
 
 ### STDIO Connections
 
@@ -50,9 +50,10 @@ STDIO connections launch external processes and communicate via standard input/o
 
 HTTP connections communicate with MCP servers via HTTP requests. Ideal for remote services and microservices.
 
-HTTP connections support two authentication methods:
+HTTP connections support three authentication methods:
 - **Header-based authentication**: Static headers (API keys, custom tokens)
-- **OAuth 2.0**: Dynamic token-based authentication with automatic token refresh
+- **OAuth 2.0**: Shared token managed by an admin, with automatic refresh
+- **Per-User OAuth**: Each end-user authenticates with their own credentials
 
 #### Header-Based Authentication
 
@@ -107,10 +108,22 @@ Use OAuth 2.0 for secure, user-based authentication with automatic token refresh
 [→ Learn more about OAuth authentication →](./oauth)
 
 **Use Cases:**
-- User-delegated access
-- Third-party service integrations
-- Secure credential management
+- Shared service integrations where all users access the same account
+- Admin-managed third-party connections
 - Compliance with OAuth 2.0 standards
+
+#### Per-User OAuth
+
+Use per-user OAuth when each end-user should access the upstream service under their own account (e.g., each user's personal Notion workspace or GitHub repos). Bifrost acts as an OAuth 2.1 Authorization Server — users authenticate through a consent flow and their tokens are stored per-identity.
+
+Per-user OAuth is configured through the Web UI only (Bifrost runs a test OAuth flow and pre-fetches tools at setup time).
+
+[→ Learn more about Per-User OAuth →](./per-user-oauth)
+
+**Use Cases:**
+- Multi-tenant apps where users access their own data
+- Personal integrations (Notion, GitHub, Google Drive)
+- Scenarios requiring per-user audit trails and token isolation
 
 **Overall HTTP Use Cases:**
 - Remote API integrations
@@ -120,7 +133,7 @@ Use OAuth 2.0 for secure, user-based authentication with automatic token refresh
 
 ### SSE Connections
 
-Server-Sent Events (SSE) connections provide real-time, persistent connections to MCP servers. Like HTTP connections, SSE supports both header-based and OAuth authentication.
+Server-Sent Events (SSE) connections provide real-time, persistent connections to MCP servers. Like HTTP connections, SSE supports header-based authentication, OAuth 2.0, and per-user OAuth.
 
 #### Header-Based Authentication
 
@@ -159,7 +172,13 @@ Server-Sent Events (SSE) connections provide real-time, persistent connections t
 - Real-time market data
 - Live system monitoring
 - Event-driven workflows
-- User-authenticated streaming connections
+- Shared streaming connections managed by an admin
+
+#### Per-User OAuth
+
+Same as HTTP — each user authenticates under their own account. Configured through the Web UI only.
+
+[→ Learn more about Per-User OAuth →](./per-user-oauth)
 
 [→ Learn more about OAuth authentication →](./oauth)
 

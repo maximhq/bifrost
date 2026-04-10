@@ -25,6 +25,17 @@
       }
     }
   ],
+  "security": [
+    {
+      "BearerAuth": []
+    },
+    {
+      "BasicAuth": []
+    },
+    {
+      "ApiKeyAuth": []
+    }
+  ],
   "tags": [
     {
       "name": "Models",
@@ -222,7 +233,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/chat/completions": {
@@ -514,7 +539,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/completions": {
@@ -803,7 +842,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/responses": {
@@ -1482,7 +1535,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/rerank": {
@@ -1534,7 +1601,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/embeddings": {
@@ -1586,7 +1667,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/audio/speech": {
@@ -1679,7 +1774,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/audio/transcriptions": {
@@ -1809,7 +1918,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/generations": {
@@ -2241,7 +2364,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/edits": {
@@ -2667,7 +2804,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/images/variations": {
@@ -2892,7 +3043,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos": {
@@ -3121,7 +3286,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "videoList",
@@ -3316,7 +3495,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}": {
@@ -3507,7 +3700,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "videoDelete",
@@ -3588,7 +3795,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}/content": {
@@ -3672,7 +3893,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/videos/{video_id}/remix": {
@@ -3882,7 +4117,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/responses/input_tokens": {
@@ -3934,7 +4183,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches": {
@@ -3986,7 +4249,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listBatches",
@@ -4062,7 +4339,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}": {
@@ -4124,7 +4415,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}/cancel": {
@@ -4245,7 +4550,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/batches/{batch_id}/results": {
@@ -4368,7 +4687,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files": {
@@ -4430,7 +4763,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listFiles",
@@ -4528,7 +4875,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files/{file_id}": {
@@ -4648,7 +5009,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteFile",
@@ -4722,7 +5097,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/files/{file_id}/content": {
@@ -4785,7 +5174,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers": {
@@ -4941,7 +5344,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listContainers",
@@ -5108,7 +5525,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}": {
@@ -5229,7 +5660,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteContainer",
@@ -5306,7 +5751,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files": {
@@ -5445,7 +5904,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listContainerFiles",
@@ -5597,7 +6070,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files/{file_id}": {
@@ -5704,7 +6191,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "deleteContainerFile",
@@ -5791,7 +6292,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/containers/{container_id}/files/{file_id}/content": {
@@ -5863,7 +6378,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/chat/completions": {
@@ -5920,7 +6449,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/completions": {
@@ -5977,7 +6520,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/responses": {
@@ -6034,7 +6591,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/embeddings": {
@@ -6091,7 +6662,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/speech": {
@@ -6148,7 +6733,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/transcriptions": {
@@ -6205,7 +6804,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/generations": {
@@ -6395,7 +7008,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/edits": {
@@ -6589,7 +7216,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/variations": {
@@ -6701,7 +7342,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/chat/completions/{job_id}": {
@@ -6748,7 +7403,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/completions/{job_id}": {
@@ -6795,7 +7464,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/responses/{job_id}": {
@@ -6842,7 +7525,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/embeddings/{job_id}": {
@@ -6889,7 +7586,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/speech/{job_id}": {
@@ -6936,7 +7647,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/audio/transcriptions/{job_id}": {
@@ -6983,7 +7708,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/generations/{job_id}": {
@@ -7030,7 +7769,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/edits/{job_id}": {
@@ -7077,7 +7830,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/v1/async/images/variations/{job_id}": {
@@ -7124,7 +7891,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/chat/completions": {
@@ -7449,7 +8230,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/chat/completions": {
@@ -7761,7 +8556,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/completions": {
@@ -8050,7 +8859,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/completions": {
@@ -8357,7 +9180,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/responses": {
@@ -9069,7 +9906,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/responses": {
@@ -9766,7 +10617,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/responses/input_tokens": {
@@ -9818,7 +10683,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/embeddings": {
@@ -9870,7 +10749,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/embeddings": {
@@ -9940,7 +10833,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/audio/speech": {
@@ -10046,7 +10953,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/audio/speech": {
@@ -10170,7 +11091,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/audio/transcriptions": {
@@ -10300,7 +11235,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/audio/transcriptions": {
@@ -10448,7 +11397,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/models": {
@@ -10490,7 +11453,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/models": {
@@ -10550,7 +11527,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches": {
@@ -10602,7 +11593,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListBatches",
@@ -10669,7 +11674,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches/{batch_id}": {
@@ -10730,7 +11749,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/batches/{batch_id}/cancel": {
@@ -10850,7 +11883,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/images/generations": {
@@ -11164,7 +12211,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/openai/deployments/{deployment-id}/images/generations": {
@@ -11498,7 +12559,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files": {
@@ -11622,7 +12697,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListFiles",
@@ -11707,7 +12796,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files/{file_id}": {
@@ -11826,7 +12929,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteFile",
@@ -11899,7 +13016,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/files/{file_id}/content": {
@@ -11961,7 +13092,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers": {
@@ -12117,7 +13262,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListContainers",
@@ -12280,7 +13439,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}": {
@@ -12400,7 +13573,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteContainer",
@@ -12476,7 +13663,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files": {
@@ -12614,7 +13815,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "openaiListContainerFiles",
@@ -12763,7 +13978,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files/{file_id}": {
@@ -12869,7 +14098,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "openaiDeleteContainerFile",
@@ -12955,7 +14198,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/openai/v1/containers/{container_id}/files/{file_id}/content": {
@@ -13026,7 +14283,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages": {
@@ -13252,7 +14523,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/complete": {
@@ -13419,7 +14704,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/models": {
@@ -13525,7 +14824,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/count_tokens": {
@@ -13625,7 +14938,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches": {
@@ -13815,7 +15142,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "anthropicListBatches",
@@ -14001,7 +15342,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}": {
@@ -14164,7 +15519,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}/cancel": {
@@ -14327,7 +15696,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/messages/batches/{batch_id}/results": {
@@ -14426,7 +15809,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files": {
@@ -14571,7 +15968,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "anthropicListFiles",
@@ -14720,7 +16131,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files/{file_id}/content": {
@@ -14880,7 +16305,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/anthropic/v1/files/{file_id}": {
@@ -14988,7 +16427,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:generateContent": {
@@ -15051,7 +16504,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -15114,7 +16581,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:embedContent": {
@@ -15177,7 +16658,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:countTokens": {
@@ -15293,7 +16788,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models/{model}:predict": {
@@ -15361,7 +16870,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/models": {
@@ -15421,7 +16944,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/upload/v1beta/files": {
@@ -15573,7 +17110,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/files": {
@@ -15707,7 +17258,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/genai/v1beta/files/{file_id}": {
@@ -15823,7 +17388,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "delete": {
         "operationId": "geminiDeleteFile",
@@ -15875,7 +17454,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/converse": {
@@ -15938,7 +17531,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/converse-stream": {
@@ -16098,7 +17705,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/invoke": {
@@ -16161,7 +17782,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model/{modelId}/invoke-with-response-stream": {
@@ -16225,7 +17860,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs": {
@@ -16277,7 +17926,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "bedrockListBatchJobs",
@@ -16403,7 +18066,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs/{jobIdentifier}": {
@@ -16456,7 +18133,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/bedrock/model-invocation-jobs/{jobIdentifier}/stop": {
@@ -16517,7 +18208,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v2/chat": {
@@ -16904,7 +18609,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v2/embed": {
@@ -16956,7 +18675,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/cohere/v1/tokenize": {
@@ -17008,7 +18741,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/completions": {
@@ -17297,7 +19044,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/chat/completions": {
@@ -17589,7 +19350,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/embeddings": {
@@ -17641,7 +19416,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/models": {
@@ -17683,7 +19472,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/responses": {
@@ -18362,7 +20165,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/responses/input_tokens": {
@@ -18414,7 +20231,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/audio/speech": {
@@ -18502,7 +20333,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/v1/audio/transcriptions": {
@@ -18632,7 +20477,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/anthropic/v1/messages": {
@@ -18825,7 +20684,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models": {
@@ -18885,7 +20758,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models/{model}:generateContent": {
@@ -18948,7 +20835,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -19011,7 +20912,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/bedrock/model/{modelId}/converse": {
@@ -19074,7 +20989,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/bedrock/model/{modelId}/converse-stream": {
@@ -19234,7 +21163,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v2/chat": {
@@ -19621,7 +21564,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v2/embed": {
@@ -19673,7 +21630,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/litellm/cohere/v1/tokenize": {
@@ -19725,7 +21696,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/completions": {
@@ -20014,7 +21999,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/chat/completions": {
@@ -20306,7 +22305,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/embeddings": {
@@ -20358,7 +22371,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/models": {
@@ -20400,7 +22427,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/responses": {
@@ -21079,7 +23120,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/responses/input_tokens": {
@@ -21131,7 +23186,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/audio/speech": {
@@ -21219,7 +23288,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/v1/audio/transcriptions": {
@@ -21349,7 +23432,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/anthropic/v1/messages": {
@@ -21542,7 +23639,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/anthropic/v1/messages/count_tokens": {
@@ -21642,7 +23753,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models": {
@@ -21702,7 +23827,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models/{model}:generateContent": {
@@ -21765,7 +23904,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -21828,7 +23981,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/bedrock/model/{modelId}/converse": {
@@ -21891,7 +24058,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/bedrock/model/{modelId}/converse-stream": {
@@ -22051,7 +24232,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v2/chat": {
@@ -22438,7 +24633,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v2/embed": {
@@ -22490,7 +24699,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/langchain/cohere/v1/tokenize": {
@@ -22542,7 +24765,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/completions": {
@@ -22831,7 +25068,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/chat/completions": {
@@ -23123,7 +25374,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/embeddings": {
@@ -23175,7 +25440,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/models": {
@@ -23217,7 +25496,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/responses": {
@@ -23896,7 +26189,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/responses/input_tokens": {
@@ -23948,7 +26255,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/audio/speech": {
@@ -24036,7 +26357,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/v1/audio/transcriptions": {
@@ -24166,7 +26501,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/anthropic/v1/messages": {
@@ -24359,7 +26708,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models": {
@@ -24419,7 +26782,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models/{model}:generateContent": {
@@ -24482,7 +26859,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/genai/v1beta/models/{model}:streamGenerateContent": {
@@ -24545,7 +26936,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/bedrock/model/{modelId}/converse": {
@@ -24608,7 +27013,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/bedrock/model/{modelId}/converse-stream": {
@@ -24768,7 +27187,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v2/chat": {
@@ -25155,7 +27588,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v2/embed": {
@@ -25207,7 +27654,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/pydanticai/cohere/v1/tokenize": {
@@ -25259,7 +27720,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/health": {
@@ -28811,7 +31286,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/api/mcp/clients": {
@@ -29527,6 +32016,70 @@
         }
       }
     },
+    "/api/mcp/client/{id}/complete-oauth": {
+      "post": {
+        "operationId": "completeMCPClientOAuth",
+        "summary": "Complete MCP client OAuth flow",
+        "description": "Completes the OAuth flow for an MCP client after the user has authorized the request.\nThis endpoint should be called after the OAuth provider redirects back to the callback endpoint\nand the OAuth token has been stored. It retrieves the pending MCP client configuration and\nestablishes the connection with the OAuth-provided credentials.\n",
+        "tags": [
+          "MCP",
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP client connected successfully with OAuth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OAuth not authorized yet or MCP client not found in pending OAuth clients",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "MCP client not found in pending OAuth clients or OAuth config not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/oauth/callback": {
       "get": {
         "operationId": "handleOAuthCallback",
@@ -29684,6 +32237,1107 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/register": {
+      "post": {
+        "operationId": "registerPerUserOAuthClient",
+        "summary": "Register OAuth client (RFC 7591)",
+        "description": "Dynamic Client Registration per RFC 7591. MCP clients (Claude Code, Cursor, etc.)\ncall this endpoint to obtain a `client_id` before initiating the authorization flow.\n\nThis endpoint is only available when at least one MCP client is configured with\n`auth_type: per_user_oauth`. Returns `404` otherwise.\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Dynamic Client Registration request per RFC 7591.\nMCP clients (Claude Code, Cursor, etc.) call this to obtain a client_id\nbefore initiating the authorization flow.\n",
+                "required": [
+                  "redirect_uris"
+                ],
+                "properties": {
+                  "client_name": {
+                    "type": "string",
+                    "description": "Human-readable name of the client application",
+                    "example": "Claude Code"
+                  },
+                  "redirect_uris": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "List of allowed redirect URIs for this client",
+                    "example": [
+                      "http://localhost:54321/callback"
+                    ]
+                  },
+                  "grant_types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Supported grant types. Defaults to [\"authorization_code\"]",
+                    "example": [
+                      "authorization_code"
+                    ]
+                  },
+                  "response_types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Supported response types",
+                    "example": [
+                      "code"
+                    ]
+                  },
+                  "token_endpoint_auth_method": {
+                    "type": "string",
+                    "description": "Token endpoint authentication method. Always \"none\" (public client)",
+                    "example": "none"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "description": "Space-separated list of requested scopes",
+                    "example": "mcp:read mcp:write"
+                  }
+                }
+              },
+              "example": {
+                "client_name": "Claude Code",
+                "redirect_uris": [
+                  "http://localhost:54321/callback"
+                ],
+                "grant_types": [
+                  "authorization_code"
+                ],
+                "response_types": [
+                  "code"
+                ],
+                "token_endpoint_auth_method": "none"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Client registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Dynamic Client Registration response per RFC 7591",
+                  "properties": {
+                    "client_id": {
+                      "type": "string",
+                      "description": "Issued client identifier",
+                      "example": "550e8400-e29b-41d4-a716-446655440000"
+                    },
+                    "client_name": {
+                      "type": "string",
+                      "description": "Human-readable name of the client application"
+                    },
+                    "redirect_uris": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Registered redirect URIs"
+                    },
+                    "grant_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Registered grant types"
+                    },
+                    "response_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Registered response types"
+                    },
+                    "token_endpoint_auth_method": {
+                      "type": "string",
+                      "description": "Token endpoint authentication method (always \"none\")"
+                    }
+                  }
+                },
+                "example": {
+                  "client_id": "550e8400-e29b-41d4-a716-446655440000",
+                  "client_name": "Claude Code",
+                  "redirect_uris": [
+                    "http://localhost:54321/callback"
+                  ],
+                  "grant_types": [
+                    "authorization_code"
+                  ],
+                  "token_endpoint_auth_method": "none"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user OAuth MCP clients configured",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/authorize": {
+      "get": {
+        "operationId": "authorizePerUserOAuth",
+        "summary": "Authorization endpoint (OAuth 2.1)",
+        "description": "OAuth 2.1 authorization endpoint. Validates the request parameters, creates a\nbrowser-bound `PendingFlow` record (15-minute TTL), and redirects the user to\nthe Bifrost consent screen at `/oauth/consent?flow_id=xxx`.\n\n**PKCE is required** — `code_challenge` and `code_challenge_method=S256` must\nbe provided. Plain code challenges are not supported.\n\nA `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to\nbind the consent flow to the initiating browser session (CSRF protection).\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "response_type",
+            "in": "query",
+            "required": true,
+            "description": "Must be `code`",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "description": "Client ID obtained from the registration endpoint",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "required": true,
+            "description": "Must match a URI registered for this client",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "required": true,
+            "description": "PKCE code challenge (Base64URL-encoded SHA-256 of the code verifier)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "required": true,
+            "description": "Must be `S256`",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "S256"
+              ]
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "Opaque value to maintain state between request and callback (CSRF protection)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to consent screen at `/oauth/consent?flow_id=xxx`",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "URL of the consent screen"
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`__bifrost_flow_secret` HttpOnly SameSite=Lax cookie for browser binding"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user OAuth MCP clients configured, or unknown client_id",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/token": {
+      "post": {
+        "operationId": "exchangePerUserOAuthToken",
+        "summary": "Token endpoint (OAuth 2.1)",
+        "description": "OAuth 2.1 token endpoint. Exchanges a single-use authorization code (5-minute TTL)\nfor a Bifrost-issued access token (24-hour TTL) using PKCE verification.\n\nThe request body must be `application/x-www-form-urlencoded`.\n\nThe returned `access_token` is the Bearer token to use on subsequent `/mcp` requests.\nIt carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their\nidentity (Virtual Key or User ID) from the consent flow.\n\nAuthentication is not required — this is part of the unauthenticated OAuth bootstrap flow.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grant_type",
+                  "code",
+                  "code_verifier"
+                ],
+                "properties": {
+                  "grant_type": {
+                    "type": "string",
+                    "description": "Must be `authorization_code`",
+                    "enum": [
+                      "authorization_code"
+                    ]
+                  },
+                  "code": {
+                    "type": "string",
+                    "description": "Authorization code received in the redirect callback"
+                  },
+                  "redirect_uri": {
+                    "type": "string",
+                    "description": "Must match the redirect_uri used in the authorize request (if provided)"
+                  },
+                  "client_id": {
+                    "type": "string",
+                    "description": "Client ID (optional — code is already bound to the client)"
+                  },
+                  "code_verifier": {
+                    "type": "string",
+                    "description": "PKCE code verifier — the raw secret whose SHA-256 matches the code_challenge"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token issued successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "OAuth 2.1 token response from the token endpoint",
+                  "properties": {
+                    "access_token": {
+                      "type": "string",
+                      "description": "Bifrost-issued access token (24h TTL). Use as Bearer token on /mcp requests."
+                    },
+                    "token_type": {
+                      "type": "string",
+                      "description": "Token type, always \"Bearer\"",
+                      "example": "Bearer"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "description": "Seconds until the access token expires (86400 for 24h)",
+                      "example": 86400
+                    },
+                    "scope": {
+                      "type": "string",
+                      "description": "Space-separated scopes granted"
+                    }
+                  }
+                },
+                "example": {
+                  "access_token": "abc123xyz...",
+                  "token_type": "Bearer",
+                  "expires_in": 86400,
+                  "scope": "mcp:read mcp:write"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid grant, expired code, PKCE failure, or unsupported grant type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_grant",
+                        "invalid_request",
+                        "unsupported_grant_type"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user OAuth MCP clients configured",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error or session creation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "server_error"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/upstream/authorize": {
+      "get": {
+        "operationId": "authorizeUpstreamPerUserOAuth",
+        "summary": "Upstream OAuth proxy — authorize with upstream service",
+        "description": "Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)\non behalf of the current user. Used during the consent flow (via \"Connect\" buttons\non the MCPs page) and at runtime when a tool call is made to an unauthenticated service.\n\n**Consent flow** — provide `flow_id` (from the pending consent flow). The browser-binding\ncookie (`__bifrost_flow_secret`) is validated.\n\n**Runtime flow** — provide `session` (the Bifrost session ID from the token endpoint).\nUsed when a service was skipped during consent and needs to be connected later.\n\nOn success, redirects the user to the upstream provider's authorize URL. After the user\ngrants access, the upstream callback lands at `/api/oauth/callback`, stores the upstream\ntoken against the user's identity, and redirects back to the consent screen (consent flow)\nor returns an authorization success page (runtime flow).\n\nAuthentication is not required — cookie/session validation is performed instead.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "mcp_client_id",
+            "in": "query",
+            "required": true,
+            "description": "ID of the per-user OAuth MCP client to authenticate with",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flow_id",
+            "in": "query",
+            "required": false,
+            "description": "Pending consent flow ID. Required if `session` is not provided.\nThe `__bifrost_flow_secret` cookie must be present and match the flow.\n",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "description": "Bifrost session ID (from the token endpoint). Required if `flow_id` is not provided.\nUsed for runtime (post-consent) upstream authorization.\n",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to upstream OAuth provider's authorize URL",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Upstream provider authorization URL with PKCE parameters"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired flow/session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser-binding cookie mismatch (CSRF protection)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "MCP client not found or not configured for per-user OAuth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store is disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/consent": {
+      "get": {
+        "operationId": "getConsentIdentityPage",
+        "summary": "Consent identity selection page",
+        "description": "Renders the identity selection screen where the user chooses how to identify\nthemselves for the session: Virtual Key, User ID, or Skip (session-only auth).\n\nThe `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`\nmust be present — it binds the consent flow to the initiating browser.\n\nThe Skip option is only shown when `enforce_auth_on_inference` is `false` in config.\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "query",
+            "required": true,
+            "description": "Pending flow ID from the authorize redirect",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "description": "Error message to display (used on redirect-back from failed form submissions)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Identity selection HTML page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or expired flow_id",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser-binding cookie mismatch",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/consent/mcps": {
+      "get": {
+        "operationId": "getConsentMCPsPage",
+        "summary": "Consent MCP services page",
+        "description": "Renders the MCP services connection screen. Shows all per-user OAuth MCP servers\navailable on the user's Virtual Key (or all servers if no VK was selected).\nEach service shows a \"Connect\" link or a \"Connected ✓\" badge.\n\nRequires the `__bifrost_flow_secret` browser-binding cookie.\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "parameters": [
+          {
+            "name": "flow_id",
+            "in": "query",
+            "required": true,
+            "description": "Pending flow ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP services connection HTML page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or expired flow_id",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser-binding cookie mismatch",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/consent/vk": {
+      "post": {
+        "operationId": "submitConsentVirtualKey",
+        "summary": "Submit Virtual Key identity",
+        "description": "Validates the submitted Virtual Key and links it to the pending flow as the user's\nidentity. On success, redirects to the MCPs page. On failure, redirects back to the\nidentity page with an error message.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "flow_id",
+                  "vk"
+                ],
+                "properties": {
+                  "flow_id": {
+                    "type": "string",
+                    "description": "Pending flow ID"
+                  },
+                  "vk": {
+                    "type": "string",
+                    "description": "Virtual Key value (validated against the database)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` on failure.\n",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/consent/user-id": {
+      "post": {
+        "operationId": "submitConsentUserID",
+        "summary": "Submit User ID identity",
+        "description": "Links a self-declared User ID to the pending flow as the user's identity.\nOn success, redirects to the MCPs page.\n\nThe User ID is self-declared with no server-side verification — it matches\nthe trust model of the `X-Bf-User-Id` header in the LLM Gateway path.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "flow_id",
+                  "user_id"
+                ],
+                "properties": {
+                  "flow_id": {
+                    "type": "string",
+                    "description": "Pending flow ID"
+                  },
+                  "user_id": {
+                    "type": "string",
+                    "description": "Self-declared user identifier (max 255 characters)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` on failure.\n",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/consent/skip": {
+      "post": {
+        "operationId": "skipConsentIdentity",
+        "summary": "Skip identity selection",
+        "description": "Skips identity selection and proceeds directly to the MCPs page. Upstream service\ntokens will be stored against the session token only (not a persistent identity),\nso they will not carry over to other sessions or the LLM Gateway.\n\nOnly available when `enforce_auth_on_inference` is `false` in config. Returns a\nredirect back to the identity page with an error if auth enforcement is enabled.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "flow_id"
+                ],
+                "properties": {
+                  "flow_id": {
+                    "type": "string",
+                    "description": "Pending flow ID"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to\n`/oauth/consent?flow_id=xxx&error=...` if identity enforcement is required.\n",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/per-user/consent/submit": {
+      "post": {
+        "operationId": "submitConsent",
+        "summary": "Finalize consent flow",
+        "description": "Finalizes the consent flow atomically:\n1. Creates a `TablePerUserOAuthSession` (24h Bifrost session token)\n2. Transfers upstream tokens from the flow proxy to the session\n3. Issues a single-use `TablePerUserOAuthCode` (5-minute TTL, PKCE-bound)\n4. Deletes the `PendingFlow`\n5. Redirects to the MCP client's `redirect_uri` with `code` and `state`\n\nThe MCP client then exchanges the code at `/api/oauth/per-user/token`.\n\nRequest body is `application/x-www-form-urlencoded` (browser form submission).\n",
+        "tags": [
+          "Per-User OAuth",
+          "Consent Flow"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "flow_id"
+                ],
+                "properties": {
+                  "flow_id": {
+                    "type": "string",
+                    "description": "Pending flow ID"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "302": {
+            "description": "Redirect to the MCP client's registered `redirect_uri` with\n`?code=xxx&state=yyy` query parameters.\n",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "MCP client callback URL with code and state"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser-binding cookie mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Consent flow already submitted (duplicate submission prevention)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Consent flow expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "getOAuthProtectedResourceMetadata",
+        "summary": "Protected Resource Metadata (RFC 9728)",
+        "description": "Returns the OAuth 2.0 Protected Resource Metadata document per RFC 9728.\n\nMCP clients fetch this after receiving a `401` response from `/mcp` (with a\n`WWW-Authenticate: Bearer resource_metadata=\".../.well-known/oauth-protected-resource\"`\nheader). The response tells the client which authorization server(s) protect the\n`/mcp` resource so it can proceed with discovery.\n\nReturns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Protected resource metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "OAuth 2.0 Protected Resource Metadata per RFC 9728.\nReturned by /.well-known/oauth-protected-resource to tell MCP clients\nwhich authorization server(s) protect the /mcp endpoint.\n",
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "description": "URL of the protected resource (Bifrost's /mcp endpoint)",
+                      "example": "https://your-bifrost-domain.com/mcp"
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of authorization server issuer URLs",
+                      "example": [
+                        "https://your-bifrost-domain.com"
+                      ]
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Scopes supported by this resource",
+                      "example": [
+                        "mcp:read",
+                        "mcp:write"
+                      ]
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Supported methods for passing Bearer tokens",
+                      "example": [
+                        "header"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "resource": "https://your-bifrost-domain.com/mcp",
+                  "authorization_servers": [
+                    "https://your-bifrost-domain.com"
+                  ],
+                  "scopes_supported": [
+                    "mcp:read",
+                    "mcp:write"
+                  ],
+                  "bearer_methods_supported": [
+                    "header"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user OAuth MCP clients configured",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "operationId": "getOAuthAuthorizationServerMetadata",
+        "summary": "Authorization Server Metadata (RFC 8414)",
+        "description": "Returns the OAuth 2.0 Authorization Server Metadata document per RFC 8414.\n\nAfter fetching the Protected Resource Metadata, MCP clients fetch this endpoint\nto discover Bifrost's OAuth endpoints (register, authorize, token) and capabilities\n(PKCE methods, grant types, etc.).\n\nReturns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.\n",
+        "tags": [
+          "OAuth",
+          "Per-User OAuth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorization server metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "OAuth 2.0 Authorization Server Metadata per RFC 8414.\nReturned by /.well-known/oauth-authorization-server to let MCP clients\ndiscover Bifrost's OAuth endpoints and capabilities.\n",
+                  "properties": {
+                    "issuer": {
+                      "type": "string",
+                      "description": "Authorization server issuer URL (Bifrost base URL)",
+                      "example": "https://your-bifrost-domain.com"
+                    },
+                    "authorization_endpoint": {
+                      "type": "string",
+                      "description": "Authorization endpoint URL",
+                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/authorize"
+                    },
+                    "token_endpoint": {
+                      "type": "string",
+                      "description": "Token endpoint URL",
+                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/token"
+                    },
+                    "registration_endpoint": {
+                      "type": "string",
+                      "description": "Dynamic client registration endpoint URL",
+                      "example": "https://your-bifrost-domain.com/api/oauth/per-user/register"
+                    },
+                    "response_types_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "example": [
+                        "code"
+                      ]
+                    },
+                    "grant_types_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "example": [
+                        "authorization_code"
+                      ]
+                    },
+                    "code_challenge_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Supported PKCE methods (only S256)",
+                      "example": [
+                        "S256"
+                      ]
+                    },
+                    "token_endpoint_auth_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Supported token endpoint auth methods (public clients only)",
+                      "example": [
+                        "none"
+                      ]
+                    },
+                    "scopes_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "example": [
+                        "mcp:read",
+                        "mcp:write"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "issuer": "https://your-bifrost-domain.com",
+                  "authorization_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/authorize",
+                  "token_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/token",
+                  "registration_endpoint": "https://your-bifrost-domain.com/api/oauth/per-user/register",
+                  "response_types_supported": [
+                    "code"
+                  ],
+                  "grant_types_supported": [
+                    "authorization_code"
+                  ],
+                  "code_challenge_methods_supported": [
+                    "S256"
+                  ],
+                  "token_endpoint_auth_methods_supported": [
+                    "none"
+                  ],
+                  "scopes_supported": [
+                    "mcp:read",
+                    "mcp:write"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user OAuth MCP clients configured",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -37774,7 +41428,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "mcpServerSSE",
@@ -37794,7 +41462,21 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
       }
     },
     "/metrics": {
@@ -37821,6 +41503,30 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token authentication. Use your provider API key or Bifrost authentication token.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      },
+      "BasicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Basic authentication using username and password.\n"
+      },
+      "VirtualKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-bf-vk",
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).\nExample: `sk-bf-*` prefixed keys.\n"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "API key authentication via the `x-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      }
+    },
     "parameters": {
       "AsyncJobId": {
         "name": "job_id",
@@ -37845,6 +41551,16 @@
     "responses": {
       "BadRequest": {
         "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
         "content": {
           "application/json": {
             "schema": {
@@ -49582,9 +53298,10 @@
         "enum": [
           "none",
           "headers",
-          "oauth"
+          "oauth",
+          "per_user_oauth"
         ],
-        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Header-based authentication (API keys, custom headers, etc.)\n- oauth: OAuth 2.0 authentication\n"
+        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Header-based authentication (API keys, custom headers, etc.)\n- oauth: OAuth 2.0 authentication (shared admin token)\n- per_user_oauth: Per-user OAuth 2.1 (each end-user authenticates individually)\n"
       },
       "OAuthConfigRequest": {
         "type": "object",

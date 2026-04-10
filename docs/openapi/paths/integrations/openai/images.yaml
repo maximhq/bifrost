@@ -6,12 +6,12 @@ image-generation:
     summary: Create image
     description: |
       Generates images from text prompts using OpenAI-compatible format.
-  
+
       **Note:** Azure OpenAI deployments are also supported via the Azure integration endpoint.
-      
+
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/images/generations`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -35,6 +35,11 @@ image-generation:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-image-generation:
   post:
     operationId: azureCreateImage
@@ -42,20 +47,20 @@ azure-image-generation:
     description: |
       Generates images from text prompts using Azure OpenAI deployment.
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
-        description: Azure API version
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
+      description: Azure API version
     requestBody:
       required: true
       content:
@@ -76,3 +81,8 @@ azure-image-generation:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

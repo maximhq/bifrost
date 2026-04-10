@@ -9,7 +9,7 @@ text-completions:
       Creates a text completion using OpenAI-compatible format via LiteLLM.
       This is the legacy completions API.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -31,6 +31,11 @@ text-completions:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 chat-completions:
   post:
     operationId: litellmOpenAIChatCompletions
@@ -38,7 +43,7 @@ chat-completions:
     description: |
       Creates a chat completion using OpenAI-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -60,6 +65,11 @@ chat-completions:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 embeddings:
   post:
     operationId: litellmOpenAIEmbeddings
@@ -67,7 +77,7 @@ embeddings:
     description: |
       Creates embeddings using OpenAI-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -86,6 +96,11 @@ embeddings:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 models:
   get:
     operationId: litellmOpenAIListModels
@@ -93,7 +108,7 @@ models:
     description: |
       Lists available models using OpenAI-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     responses:
       '200':
         description: Successful response
@@ -106,6 +121,11 @@ models:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 responses:
   post:
     operationId: litellmOpenAIResponses
@@ -114,7 +134,7 @@ responses:
       Creates a response using OpenAI Responses API format via LiteLLM.
       Supports streaming via SSE.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -136,6 +156,11 @@ responses:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 responses-input-tokens:
   post:
     operationId: litellmOpenAICountInputTokens
@@ -143,7 +168,7 @@ responses-input-tokens:
     description: |
       Counts the number of tokens in a Responses API request via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -162,6 +187,11 @@ responses-input-tokens:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 speech:
   post:
     operationId: litellmOpenAISpeech
@@ -169,7 +199,7 @@ speech:
     description: |
       Generates audio from text using OpenAI TTS via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -192,6 +222,11 @@ speech:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 transcriptions:
   post:
     operationId: litellmOpenAITranscriptions
@@ -199,7 +234,7 @@ transcriptions:
     description: |
       Transcribes audio into text using OpenAI Whisper via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -220,3 +255,8 @@ transcriptions:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

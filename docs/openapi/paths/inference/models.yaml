@@ -5,24 +5,24 @@ models:
     description: |
       Lists available models. If provider is not specified, lists all models from all configured providers.
     tags:
-      - Models
+    - Models
     parameters:
-      - name: provider
-        in: query
-        description: Filter by provider (e.g., openai, anthropic, bedrock)
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
-      - name: page_size
-        in: query
-        description: Maximum number of models to return
-        schema:
-          type: integer
-          minimum: 0
-      - name: page_token
-        in: query
-        description: Token for pagination
-        schema:
-          type: string
+    - name: provider
+      in: query
+      description: Filter by provider (e.g., openai, anthropic, bedrock)
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: page_size
+      in: query
+      description: Maximum number of models to return
+      schema:
+        type: integer
+        minimum: 0
+    - name: page_token
+      in: query
+      description: Token for pagination
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response
@@ -34,3 +34,8 @@ models:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
