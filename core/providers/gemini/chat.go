@@ -227,47 +227,48 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 				})
 			}
 		}
-
-		// Build the choice with message
-		message := &schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleAssistant,
-		}
-
-		if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-			contentStr = contentBlocks[0].Text
-			contentBlocks = nil
-		}
-
-		message.Content = &schemas.ChatMessageContent{
-			ContentStr:    contentStr,
-			ContentBlocks: contentBlocks,
-		}
-
-		if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
-			message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				ToolCalls:        toolCalls,
-				ReasoningDetails: reasoningDetails,
-			}
-		}
-
-		// Convert finish reason to Bifrost format.
-		// Gemini uses "STOP" for both normal text completions and tool call responses —
-		// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
-		// tool calls are present so downstream consumers see a uniform signal.
-		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
-		if len(toolCalls) > 0 && finishReason == "stop" {
-			finishReason = "tool_calls"
-		}
-
-		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
-			Index:        0,
-			FinishReason: &finishReason,
-			LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
-			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-				Message: message,
-			},
-		})
 	}
+
+	// Build the choice with message — always create a choice for a valid candidate,
+	// even when all output was reasoning/thinking tokens with no visible content.
+	message := &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+	}
+
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
+	}
+
+	message.Content = &schemas.ChatMessageContent{
+		ContentStr:    contentStr,
+		ContentBlocks: contentBlocks,
+	}
+
+	if len(toolCalls) > 0 || len(reasoningDetails) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+			ToolCalls:        toolCalls,
+			ReasoningDetails: reasoningDetails,
+		}
+	}
+
+	// Convert finish reason to Bifrost format.
+	// Gemini uses "STOP" for both normal text completions and tool call responses —
+	// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
+	// tool calls are present so downstream consumers see a uniform signal.
+	finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+	if len(toolCalls) > 0 && finishReason == "stop" {
+		finishReason = "tool_calls"
+	}
+
+	bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
+		Index:        0,
+		FinishReason: &finishReason,
+		LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+			Message: message,
+		},
+	})
 
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
