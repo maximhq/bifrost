@@ -262,7 +262,7 @@ export function HeadersTable<T extends HeaderValue>({
 									</TableCell>
 									<TableCell className="p-2">
 										{!disabled && (
-											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8">
+											<Button type="button" variant="ghost" size="icon" onClick={() => handleDelete(key, index)} className="h-8 w-8" aria-label="Delete header">
 												<Trash className="h-4 w-4" />
 											</Button>
 										)}
