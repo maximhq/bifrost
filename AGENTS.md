@@ -641,7 +641,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 ## Code Style
 
 - **Go**: `gofmt`/`goimports`. No custom linter config.
-- **TypeScript/React**: Prettier. TanStack Router.
+- **TypeScript/React**: Oxfmt. TanStack Router.
 - **JSON tags**: `snake_case` matching provider API conventions.
 - **Error strings**: Lowercase, no trailing punctuation (Go convention).
 - **Provider types**: Prefixed with provider name in PascalCase (`AnthropicChatRequest`, `GeminiEmbeddingResponse`).
@@ -714,7 +714,7 @@ This document defines the standards, structure, and best practices for writing f
 
 ### Tooling
 
-- `prettier` → Code formatting
+- `Oxfmt` → Code formatting
 - `vitest` → Testing
 
 ---

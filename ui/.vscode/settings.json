@@ -1,12 +1,12 @@
 {
 	"editor.formatOnSave": true,
-	"editor.defaultFormatter": "esbenp.prettier-vscode",
+	"editor.defaultFormatter": "nicolo-ribaudo.oxc",
 	"[typescriptreact]": {
-		"editor.defaultFormatter": "esbenp.prettier-vscode",
+		"editor.defaultFormatter": "nicolo-ribaudo.oxc",
 		"editor.formatOnSave": true
 	},
 	"[typescript]": {
-		"editor.defaultFormatter": "esbenp.prettier-vscode",
+		"editor.defaultFormatter": "nicolo-ribaudo.oxc",
 		"editor.formatOnSave": true
 	}
 }
