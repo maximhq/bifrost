@@ -1497,8 +1497,9 @@ func TestResponsesShellCallOutput_RoundTrip_Timeout(t *testing.T) {
 }
 
 func TestResponsesMessage_ShellCall_FullRoundTrip(t *testing.T) {
-	// Real shell_call output item the model emits.
-	jsonData := `{"id":"sc_abc","type":"shell_call","call_id":"call_xyz","status":"completed","action":{"commands":["echo","hi"]},"environment":{"type":"local"}}`
+	// Real shell_call output item the model emits, including the optional
+	// `environment` echo and `created_by` so we cover the full envelope.
+	jsonData := `{"id":"sc_abc","type":"shell_call","call_id":"call_xyz","status":"completed","action":{"commands":["echo","hi"]},"environment":{"type":"local"},"created_by":"user_123"}`
 
 	var msg schemas.ResponsesMessage
 	if err := json.Unmarshal([]byte(jsonData), &msg); err != nil {
@@ -1519,12 +1520,34 @@ func TestResponsesMessage_ShellCall_FullRoundTrip(t *testing.T) {
 		t.Errorf("commands not preserved: %#v", shell.Commands)
 	}
 
+	if msg.ResponsesToolMessage.ResponsesShellToolCall == nil {
+		t.Fatal("expected ResponsesShellToolCall to be populated on the message")
+	}
+	env := msg.ResponsesToolMessage.ResponsesShellToolCall.Environment
+	if env == nil || env.Type != "local" {
+		t.Errorf("environment not preserved on unmarshal: %#v", env)
+	}
+	createdBy := msg.ResponsesToolMessage.ResponsesShellToolCall.CreatedBy
+	if createdBy == nil || *createdBy != "user_123" {
+		t.Errorf("created_by not preserved on unmarshal: %#v", createdBy)
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("failed to marshal: %v", err)
 	}
-	if !strings.Contains(string(data), `"commands":["echo","hi"]`) {
-		t.Errorf("marshaled message lost commands: %s", string(data))
+
+	// Compare as parsed maps so we don't depend on key order, and so dropped
+	// fields are caught explicitly instead of swallowed by substring checks.
+	var expected, actual map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+		t.Fatalf("failed to parse expected JSON: %v", err)
+	}
+	if err := json.Unmarshal(data, &actual); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+	if !mapsEqual(expected, actual) {
+		t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
 	}
 }
 

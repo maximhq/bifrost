@@ -739,6 +739,7 @@ type ResponsesToolMessage struct {
 	*ResponsesMCPToolCall
 	*ResponsesCustomToolCall
 	*ResponsesImageGenerationCall
+	*ResponsesShellToolCall
 
 	// MCP-specific
 	*ResponsesMCPListTools
@@ -1223,6 +1224,24 @@ type ResponsesLocalShellToolCallAction struct {
 // -----------------------------------------------------------------------------
 // Shell Tool (next-generation, supersedes LocalShell)
 // -----------------------------------------------------------------------------
+
+// ResponsesShellToolCall holds the shell_call output item fields that aren't
+// already covered by the ResponsesMessage envelope (id/type/status) or by
+// ResponsesToolMessage (call_id/action). It's embedded into ResponsesToolMessage
+// so JSON unmarshal allocates it on demand whenever a shell_call payload arrives.
+type ResponsesShellToolCall struct {
+	Environment *ResponsesShellCallEnvironment `json:"environment,omitempty"`
+	CreatedBy   *string                        `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallEnvironment is the environment echo on a shell_call output
+// item. It is intentionally distinct from ResponsesToolShellEnvironment (which
+// also carries Skills on the tool definition side); on the call item OpenAI
+// only echoes the type. Type is left as a free string so unmodelled container
+// variants still pass through without losing the discriminator.
+type ResponsesShellCallEnvironment struct {
+	Type string `json:"type"` // "local" | container variants
+}
 
 // ResponsesShellToolCallAction is the action payload for a "shell_call" output
 // item. Unlike the legacy local-shell action, it has no "type" discriminator
