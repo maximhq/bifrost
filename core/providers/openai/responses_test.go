@@ -1205,6 +1205,73 @@ func TestResponsesTool_MarshalUnmarshal_LocalShellTool(t *testing.T) {
 	})
 }
 
+func TestToOpenAIResponsesRequest_PreservesShellTool(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.4",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeShell,
+					ResponsesToolShell: &schemas.ResponsesToolShell{
+						Environment: &schemas.ResponsesToolShellEnvironment{
+							Type: "local",
+							Skills: []schemas.ResponsesToolShellSkill{
+								{
+									Name:        schemas.Ptr("csv-workbench"),
+									Description: schemas.Ptr("Analyze CSV files"),
+									Path:        schemas.Ptr("/abs/path/to/csv-workbench"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIResponsesRequest(bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	var shellTool *schemas.ResponsesTool
+	for i := range result.Tools {
+		if result.Tools[i].Type == schemas.ResponsesToolTypeShell {
+			shellTool = &result.Tools[i]
+			break
+		}
+	}
+
+	if shellTool == nil {
+		t.Fatal("expected shell tool to survive filterUnsupportedTools, but it was dropped")
+	}
+	if shellTool.ResponsesToolShell == nil || shellTool.ResponsesToolShell.Environment == nil {
+		t.Fatal("expected shell tool environment to be preserved")
+	}
+	if shellTool.ResponsesToolShell.Environment.Type != "local" {
+		t.Errorf("environment type mismatch: expected local, got %s", shellTool.ResponsesToolShell.Environment.Type)
+	}
+	if len(shellTool.ResponsesToolShell.Environment.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(shellTool.ResponsesToolShell.Environment.Skills))
+	}
+	skill := shellTool.ResponsesToolShell.Environment.Skills[0]
+	if skill.Name == nil || *skill.Name != "csv-workbench" {
+		t.Error("skill name not preserved")
+	}
+	if skill.Path == nil || *skill.Path != "/abs/path/to/csv-workbench" {
+		t.Error("skill path not preserved")
+	}
+}
+
 func TestResponsesTool_MarshalUnmarshal_ShellTool(t *testing.T) {
 	t.Run("shell tool local env - round trip", func(t *testing.T) {
 		jsonData := `{"type":"shell","environment":{"type":"local"}}`
