@@ -2,14 +2,12 @@ package openai
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/bytedance/sonic"
 
@@ -114,23 +112,16 @@ func testResponsesBody(text string) []byte {
 	return body
 }
 
-func TestResponses_CustomProviderFallsBackToChatCompletion(t *testing.T) {
+func TestResponses_CustomProviderConfiguredUnsupported_DoesNotFallbackInsideProvider(t *testing.T) {
 	t.Parallel()
 
 	var chatHits atomic.Int32
 	var responsesHits atomic.Int32
-	var requestBody atomic.Value
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
-		}
-
 		switch r.URL.Path {
 		case "/v1/chat/completions":
 			chatHits.Add(1)
-			requestBody.Store(string(bodyBytes))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(testChatCompletionBody("fallback response"))
 		case "/v1/responses":
@@ -150,74 +141,39 @@ func TestResponses_CustomProviderFallsBackToChatCompletion(t *testing.T) {
 		SupportsResponsesAPI: schemas.Ptr(false),
 	})
 
-	response, bifrostErr := provider.Responses(testOpenAIResponsesCtx(), schemas.Key{}, testOpenAIResponsesRequest())
-	if bifrostErr != nil {
-		t.Fatalf("Responses returned error: %v", bifrostErr.Error)
+	ctx := testOpenAIResponsesCtx()
+	response, bifrostErr := provider.Responses(ctx, schemas.Key{}, testOpenAIResponsesRequest())
+	if bifrostErr == nil {
+		t.Fatal("expected provider-level responses call to fail without compat fallback")
 	}
-	if response == nil {
-		t.Fatal("Responses returned nil response")
+	if response != nil {
+		t.Fatalf("expected nil response on provider-level failure, got %+v", response)
 	}
-	if chatHits.Load() != 1 {
-		t.Fatalf("expected one chat completion request, got %d", chatHits.Load())
+	if chatHits.Load() != 0 {
+		t.Fatalf("expected zero chat completion requests, got %d", chatHits.Load())
 	}
-	if responsesHits.Load() != 0 {
-		t.Fatalf("expected zero responses endpoint requests, got %d", responsesHits.Load())
+	if responsesHits.Load() != 1 {
+		t.Fatalf("expected one responses endpoint request, got %d", responsesHits.Load())
 	}
-
-	body, _ := requestBody.Load().(string)
-	if !strings.Contains(body, `"messages"`) {
-		t.Fatalf("expected chat completion payload to contain messages, got %s", body)
-	}
-	if strings.Contains(body, `"input"`) {
-		t.Fatalf("expected chat completion payload to omit responses input, got %s", body)
-	}
-	if !strings.Contains(body, `"max_completion_tokens":`) {
-		t.Fatalf("expected chat completion payload to contain max_completion_tokens, got %s", body)
-	}
-	if strings.Contains(body, `"max_output_tokens"`) {
-		t.Fatalf("expected chat completion payload to omit max_output_tokens, got %s", body)
-	}
-
-	if response.ExtraFields.Provider != schemas.ModelProvider("lmstudio") {
-		t.Fatalf("expected provider to remain lmstudio, got %s", response.ExtraFields.Provider)
-	}
-	if response.ExtraFields.RequestType != schemas.ResponsesRequest {
-		t.Fatalf("expected request type %s, got %s", schemas.ResponsesRequest, response.ExtraFields.RequestType)
-	}
-	if response.Model != "test-model" {
-		t.Fatalf("expected model test-model, got %s", response.Model)
-	}
-	if len(response.Output) == 0 || response.Output[0].Content == nil || len(response.Output[0].Content.ContentBlocks) == 0 {
-		t.Fatalf("expected converted responses output, got %+v", response.Output)
-	}
-	if got := response.Output[0].Content.ContentBlocks[0].Text; got == nil || *got != "fallback response" {
-		t.Fatalf("expected converted output text fallback response, got %+v", got)
+	if ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback) != nil {
+		t.Fatalf("expected no fallback marker on provider-only path, got %v", ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback))
 	}
 }
 
-func TestResponses_CustomProviderAutoFallsBackAfterUnsupportedResponsesError(t *testing.T) {
+func TestResponses_CustomProviderRuntimeUnsupported_DoesNotFallbackInsideProvider(t *testing.T) {
 	t.Parallel()
 
 	var chatHits atomic.Int32
 	var responsesHits atomic.Int32
-	var chatRequestBody atomic.Value
-	var responsesRequestBody atomic.Value
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
-		}
-
 		switch r.URL.Path {
 		case "/v1/responses":
 			responsesHits.Add(1)
-			responsesRequestBody.Store(string(bodyBytes))
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"message":"responses endpoint unsupported"}}`))
 		case "/v1/chat/completions":
 			chatHits.Add(1)
-			chatRequestBody.Store(string(bodyBytes))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(testChatCompletionBody("auto fallback response"))
 		default:
@@ -232,35 +188,22 @@ func TestResponses_CustomProviderAutoFallsBackAfterUnsupportedResponsesError(t *
 		IsKeyLess:         true,
 	})
 
-	response, bifrostErr := provider.Responses(testOpenAIResponsesCtx(), schemas.Key{}, testOpenAIResponsesRequest())
-	if bifrostErr != nil {
-		t.Fatalf("Responses returned error: %v", bifrostErr.Error)
+	ctx := testOpenAIResponsesCtx()
+	response, bifrostErr := provider.Responses(ctx, schemas.Key{}, testOpenAIResponsesRequest())
+	if bifrostErr == nil {
+		t.Fatal("expected provider-level responses call to fail without runtime compat retry")
 	}
-	if response == nil {
-		t.Fatal("Responses returned nil response")
+	if response != nil {
+		t.Fatalf("expected nil response on provider-level failure, got %+v", response)
 	}
 	if responsesHits.Load() != 1 {
-		t.Fatalf("expected one native responses attempt before fallback, got %d", responsesHits.Load())
+		t.Fatalf("expected one native responses attempt, got %d", responsesHits.Load())
 	}
-	if chatHits.Load() != 1 {
-		t.Fatalf("expected one chat completion fallback request, got %d", chatHits.Load())
+	if chatHits.Load() != 0 {
+		t.Fatalf("expected zero chat completion fallback requests, got %d", chatHits.Load())
 	}
-
-	responsesBody, _ := responsesRequestBody.Load().(string)
-	if !strings.Contains(responsesBody, `"input"`) {
-		t.Fatalf("expected initial responses payload to contain input, got %s", responsesBody)
-	}
-
-	chatBody, _ := chatRequestBody.Load().(string)
-	if !strings.Contains(chatBody, `"messages"`) {
-		t.Fatalf("expected fallback chat payload to contain messages, got %s", chatBody)
-	}
-	if strings.Contains(chatBody, `"input"`) {
-		t.Fatalf("expected fallback chat payload to omit responses input, got %s", chatBody)
-	}
-
-	if got := response.Output[0].Content.ContentBlocks[0].Text; got == nil || *got != "auto fallback response" {
-		t.Fatalf("expected converted output text auto fallback response, got %+v", got)
+	if ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback) != nil {
+		t.Fatalf("expected no fallback marker on provider-only path, got %v", ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback))
 	}
 }
 
@@ -336,45 +279,22 @@ func TestResponses_CustomProviderUsesNativeResponsesWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestResponsesStream_CustomProviderAutoFallsBackToChatCompletionStream(t *testing.T) {
+func TestResponsesStream_CustomProviderRuntimeUnsupported_DoesNotFallbackInsideProvider(t *testing.T) {
 	t.Parallel()
 
 	var chatHits atomic.Int32
 	var responsesHits atomic.Int32
-	var requestBody atomic.Value
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
-		}
-
 		switch r.URL.Path {
 		case "/v1/chat/completions":
 			chatHits.Add(1)
-			requestBody.Store(string(bodyBytes))
 			w.Header().Set("Content-Type", "text/event-stream")
-			flusher, ok := w.(http.Flusher)
-			if !ok {
-				t.Fatal("response writer does not implement http.Flusher")
-			}
-
-			chunks := []string{
-				`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
-				`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"fallback stream"}}]}`,
-				`{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			}
-
-			for _, chunk := range chunks {
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
-				flusher.Flush()
-			}
-			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-			flusher.Flush()
+			_, _ = w.Write([]byte("unused"))
 		case "/v1/responses":
 			responsesHits.Add(1)
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"message":"unexpected responses endpoint"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"responses endpoint unsupported"}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -389,42 +309,20 @@ func TestResponsesStream_CustomProviderAutoFallsBackToChatCompletionStream(t *te
 
 	ctx := testOpenAIResponsesCtx()
 	streamChan, bifrostErr := provider.ResponsesStream(ctx, noopOpenAIPostHookRunner, schemas.Key{}, testOpenAIResponsesRequest())
-	if bifrostErr != nil {
-		t.Fatalf("ResponsesStream returned error: %v", bifrostErr.Error)
+	if bifrostErr == nil {
+		t.Fatal("expected provider-level responses stream call to fail without runtime compat retry")
 	}
-
-	responses := collectResponsesStream(t, streamChan)
-	if chatHits.Load() != 1 {
-		t.Fatalf("expected one chat completion stream request, got %d", chatHits.Load())
+	if streamChan != nil {
+		t.Fatal("expected nil stream when provider-level stream setup fails")
+	}
+	if chatHits.Load() != 0 {
+		t.Fatalf("expected zero chat completion stream requests, got %d", chatHits.Load())
 	}
 	if responsesHits.Load() != 1 {
-		t.Fatalf("expected one native responses stream attempt before fallback, got %d", responsesHits.Load())
+		t.Fatalf("expected one native responses stream attempt, got %d", responsesHits.Load())
 	}
-
-	body, _ := requestBody.Load().(string)
-	if !strings.Contains(body, `"messages"`) {
-		t.Fatalf("expected streaming chat payload to contain messages, got %s", body)
-	}
-	if strings.Contains(body, `"input"`) {
-		t.Fatalf("expected streaming chat payload to omit responses input, got %s", body)
-	}
-
-	seenTypes := map[schemas.ResponsesStreamResponseType]bool{}
-	for _, response := range responses {
-		seenTypes[response.Type] = true
-	}
-
-	if !seenTypes[schemas.ResponsesStreamResponseTypeCreated] {
-		t.Fatalf("expected response.created event, got %#v", seenTypes)
-	}
-	if !seenTypes[schemas.ResponsesStreamResponseTypeOutputTextDelta] {
-		t.Fatalf("expected response.output_text.delta event, got %#v", seenTypes)
-	}
-	if !seenTypes[schemas.ResponsesStreamResponseTypeCompleted] {
-		t.Fatalf("expected response.completed event, got %#v", seenTypes)
-	}
-	if ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback) != true {
-		t.Fatalf("expected fallback context marker to be set, got %v", ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback))
+	if ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback) != nil {
+		t.Fatalf("expected no fallback marker on provider-only path, got %v", ctx.Value(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback))
 	}
 }
 
@@ -482,32 +380,5 @@ func TestResponses_NativeOpenAIStillUsesResponsesEndpoint(t *testing.T) {
 	}
 	if got := response.Output[0].Content.ContentBlocks[0].Text; got == nil || *got != "native response" {
 		t.Fatalf("expected native output text native response, got %+v", got)
-	}
-}
-
-func collectResponsesStream(t *testing.T, stream chan *schemas.BifrostStreamChunk) []*schemas.BifrostResponsesStreamResponse {
-	t.Helper()
-
-	responses := make([]*schemas.BifrostResponsesStreamResponse, 0)
-	timeout := time.After(3 * time.Second)
-
-	for {
-		select {
-		case chunk, ok := <-stream:
-			if !ok {
-				return responses
-			}
-			if chunk == nil {
-				continue
-			}
-			if chunk.BifrostError != nil {
-				t.Fatalf("unexpected stream error: %+v", chunk.BifrostError)
-			}
-			if chunk.BifrostResponsesStreamResponse != nil {
-				responses = append(responses, chunk.BifrostResponsesStreamResponse)
-			}
-		case <-timeout:
-			t.Fatal("timed out waiting for stream to complete")
-		}
 	}
 }

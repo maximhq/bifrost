@@ -106,7 +106,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %w", err)
 		}
-		return litellmcompat.Init(*litellmConfig, logger)
+		return litellmcompat.InitWithModelCatalog(*litellmConfig, logger, bifrostConfig.ModelCatalog)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
@@ -201,7 +201,10 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 6. Litellmcompat (if configured in PluginConfigs)
+	// 6. Litellmcompat (if configured in PluginConfigs).
+	// Keep this late in the built-in chain so governance/caching hooks can inspect the
+	// original request shape before compat rewrites. Downstream plugins can still inspect
+	// the fallback context markers when a Responses request is bridged to Chat.
 	litellmcompatConfig := s.getPluginConfig(litellmcompat.PluginName)
 	if litellmcompatConfig != nil && litellmcompatConfig.Enabled {
 		s.registerPluginWithStatus(ctx, litellmcompat.PluginName, nil, litellmcompatConfig.Config, false)
@@ -221,7 +224,6 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 
 	return nil
 }
-
 
 // loadCustomPlugins loads plugins from PluginConfigs
 func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {

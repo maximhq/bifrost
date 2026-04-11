@@ -1,6 +1,10 @@
 package schemas
 
-import "testing"
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
 
 func TestToChatMessages_PreservesDeveloperRole(t *testing.T) {
 	messages := []ResponsesMessage{
@@ -251,6 +255,109 @@ func TestToChatRequest_PreservesStringToolChoiceAutoAndNone(t *testing.T) {
 				t.Fatalf("expected tool choice %q, got %q", choice, *chatReq.Params.ToolChoice.ChatToolChoiceStr)
 			}
 		})
+	}
+}
+
+func TestToChatFallbackRequest_PreservesUserAndStructuredOutputFormat(t *testing.T) {
+	user := "user-123"
+	verbosity := "high"
+	formatType := "json_schema"
+	schemaType := "object"
+	req := &BifrostResponsesRequest{
+		Params: &ResponsesParameters{
+			User: &user,
+			Text: &ResponsesTextConfig{
+				Verbosity: &verbosity,
+				Format: &ResponsesTextConfigFormat{
+					Type: formatType,
+					JSONSchema: &ResponsesTextConfigFormatJSONSchema{
+						Type: &schemaType,
+					},
+				},
+			},
+		},
+	}
+
+	chatReq := req.ToChatFallbackRequest()
+	if chatReq == nil || chatReq.Params == nil {
+		t.Fatal("expected non-nil chat fallback request params")
+	}
+	if chatReq.Params.User == nil || *chatReq.Params.User != user {
+		t.Fatalf("expected user %q to be preserved, got %+v", user, chatReq.Params.User)
+	}
+	if chatReq.Params.ResponseFormat == nil {
+		t.Fatal("expected structured output format to be forwarded")
+	}
+	if chatReq.Params.Verbosity == nil || *chatReq.Params.Verbosity != verbosity {
+		t.Fatalf("expected verbosity %q to be preserved, got %+v", verbosity, chatReq.Params.Verbosity)
+	}
+	responseFormat, ok := (*chatReq.Params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected response_format to be a map, got %T", *chatReq.Params.ResponseFormat)
+	}
+	if got, _ := responseFormat["type"].(string); got != formatType {
+		t.Fatalf("expected response_format type %q, got %q", formatType, got)
+	}
+}
+
+func TestChatFallbackWarnings_ReportsDroppedCompatibilityFeatures(t *testing.T) {
+	truncation := "auto"
+	developer := ResponsesInputMessageRoleDeveloper
+	choiceType := ResponsesToolChoiceTypeAllowedTools
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{{Role: &developer}},
+		Params: &ResponsesParameters{
+			Truncation: &truncation,
+			Tools:      []ResponsesTool{{Type: ResponsesToolTypeWebSearch, Name: Ptr("search")}},
+			ToolChoice: &ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &ResponsesToolChoiceStruct{Type: choiceType},
+			},
+		},
+	}
+
+	warnings := req.ChatFallbackWarnings()
+	if len(warnings) < 3 {
+		t.Fatalf("expected multiple compatibility warnings, got %#v", warnings)
+	}
+
+	joined := strings.Join(warnings, "\n")
+	if !containsWarning(joined, "developer role") {
+		t.Fatalf("expected developer-role warning, got %#v", warnings)
+	}
+	if !containsWarning(joined, "non-function tools") {
+		t.Fatalf("expected tool warning, got %#v", warnings)
+	}
+	if !containsWarning(joined, "tool_choice type") {
+		t.Fatalf("expected tool_choice warning, got %#v", warnings)
+	}
+	if !containsWarning(joined, "truncation") {
+		t.Fatalf("expected truncation warning, got %#v", warnings)
+	}
+}
+
+func containsWarning(joined string, fragment string) bool {
+	return strings.Contains(joined, fragment)
+}
+
+func TestDefaultResponsesToChatCompletionRetryPolicy_UsesUnsupportedEndpointSignals(t *testing.T) {
+	policy := DefaultResponsesToChatCompletionRetryPolicy()
+	if policy == nil {
+		t.Fatal("expected default retry policy")
+	}
+
+	notFound := http.StatusNotFound
+	if !policy.ShouldRetry(&BifrostError{StatusCode: &notFound}) {
+		t.Fatal("expected 404 to trigger runtime fallback retry")
+	}
+
+	unsupportedResponseErr := &BifrostError{Error: &ErrorField{Message: ErrProviderResponseHTML}}
+	if !policy.ShouldRetry(unsupportedResponseErr) {
+		t.Fatal("expected provider HTML response marker to trigger runtime fallback retry")
+	}
+
+	unauthorized := http.StatusUnauthorized
+	if policy.ShouldRetry(&BifrostError{StatusCode: &unauthorized}) {
+		t.Fatal("expected 401 to remain a hard failure")
 	}
 }
 

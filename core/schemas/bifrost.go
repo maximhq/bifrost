@@ -2,6 +2,7 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,94 +162,98 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeySessionToken                        BifrostContextKey = "bifrost-session-token"                // string (session token for authentication - set by auth middleware)
-	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                              // string
-	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                         // string (explicit key name selection)
-	BifrostContextKeyAPIKeyID                            BifrostContextKey = "x-bf-api-key-id"                      // string (explicit key ID selection, takes priority over name)
-	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                           // string
-	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"                  // string
-	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"                   // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"              // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"            // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"    // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"  // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"           // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"         // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"       // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"     // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceUserID                    BifrostContextKey = "bifrost-governance-user-id"           // string (to store the user ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"   // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name" // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"      // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"            // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"          // time.Duration (per-chunk idle timeout for streaming)
-	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"           // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                // map[string][]string
-	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"               // string
-	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
-	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
-	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
-	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
-	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
-	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
-	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
-	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
-	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
-	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
-	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
-	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
-	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
-	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
-	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
-	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
-	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
-	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                 // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
-	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
-	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyRawRequestResponseForLogging        BifrostContextKey = "bifrost-raw-request-response-for-logging"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
-	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
-	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
-	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
-	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
-	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
-	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
-	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
-	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
-	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
-	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
-	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
-	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
-	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
-	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"               // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
-	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length"       // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
-	BifrostContextKeyLargePayloadContentType             BifrostContextKey = "bifrost-large-payload-content-type"         // string (set by enterprise - DO NOT SET THIS MANUALLY)) original content type for large payload passthrough
-	BifrostContextKeyLargePayloadMetadata                BifrostContextKey = "bifrost-large-payload-metadata"             // *LargePayloadMetadata (set by bifrost - DO NOT SET THIS MANUALLY)) routing metadata for large payloads
-	BifrostContextKeyLargePayloadRequestThreshold        BifrostContextKey = "bifrost-large-payload-request-threshold"    // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) request threshold used by transport heuristics
-	BifrostContextKeyLargeResponseMode                   BifrostContextKey = "bifrost-large-response-mode"                // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large response streaming mode is active
-	BifrostContextKeyLargePayloadRequestPreview          BifrostContextKey = "bifrost-large-payload-request-preview"      // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated request body preview for logging
-	BifrostContextKeyLargePayloadResponsePreview         BifrostContextKey = "bifrost-large-payload-response-preview"     // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated response body preview for logging
-	BifrostContextKeyLargeResponseReader                 BifrostContextKey = "bifrost-large-response-reader"              // io.ReadCloser (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large responses
-	BifrostContextKeyLargeResponseContentLength          BifrostContextKey = "bifrost-large-response-content-length"      // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large responses
-	BifrostContextKeyLargeResponseContentType            BifrostContextKey = "bifrost-large-response-content-type"        // string (set by bifrost - DO NOT SET THIS MANUALLY)) upstream content type for large responses
-	BifrostContextKeyLargeResponseContentDisposition     BifrostContextKey = "bifrost-large-response-content-disposition" // string (set by bifrost - DO NOT SET THIS MANUALLY)) downstream content disposition for large responses
-	BifrostContextKeyLargeResponseThreshold              BifrostContextKey = "bifrost-large-response-threshold"           // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) threshold for response streaming
-	BifrostContextKeyLargePayloadPrefetchSize            BifrostContextKey = "bifrost-large-payload-prefetch-size"        // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
-	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
-	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
-	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
-	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
-	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
-	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                         // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
+	BifrostContextKeySessionToken                            BifrostContextKey = "bifrost-session-token"                // string (session token for authentication - set by auth middleware)
+	BifrostContextKeyVirtualKey                              BifrostContextKey = "x-bf-vk"                              // string
+	BifrostContextKeyAPIKeyName                              BifrostContextKey = "x-bf-api-key"                         // string (explicit key name selection)
+	BifrostContextKeyAPIKeyID                                BifrostContextKey = "x-bf-api-key-id"                      // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyRequestID                               BifrostContextKey = "request-id"                           // string
+	BifrostContextKeyFallbackRequestID                       BifrostContextKey = "fallback-request-id"                  // string
+	BifrostContextKeyDirectKey                               BifrostContextKey = "bifrost-direct-key"                   // Key struct
+	BifrostContextKeySelectedKeyID                           BifrostContextKey = "bifrost-selected-key-id"              // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedKeyName                         BifrostContextKey = "bifrost-selected-key-name"            // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyID                  BifrostContextKey = "bifrost-governance-virtual-key-id"    // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyName                BifrostContextKey = "bifrost-governance-virtual-key-name"  // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamID                        BifrostContextKey = "bifrost-governance-team-id"           // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamName                      BifrostContextKey = "bifrost-governance-team-name"         // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerID                    BifrostContextKey = "bifrost-governance-customer-id"       // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerName                  BifrostContextKey = "bifrost-governance-customer-name"     // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceUserID                        BifrostContextKey = "bifrost-governance-user-id"           // string (to store the user ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingRuleID                 BifrostContextKey = "bifrost-governance-routing-rule-id"   // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingRuleName               BifrostContextKey = "bifrost-governance-routing-rule-name" // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceIncludeOnlyKeys               BifrostContextKey = "bf-governance-include-only-keys"      // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyNumberOfRetries                         BifrostContextKey = "bifrost-number-of-retries"            // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyFallbackIndex                           BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                      BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyStreamIdleTimeout                       BifrostContextKey = "bifrost-stream-idle-timeout"          // time.Duration (per-chunk idle timeout for streaming)
+	BifrostContextKeySkipKeySelection                        BifrostContextKey = "bifrost-skip-key-selection"           // bool (will pass an empty key to the provider)
+	BifrostContextKeyExtraHeaders                            BifrostContextKey = "bifrost-extra-headers"                // map[string][]string
+	BifrostContextKeyURLPath                                 BifrostContextKey = "bifrost-extra-url-path"               // string
+	BifrostContextKeyUseRawRequestBody                       BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeySendBackRawRequest                      BifrostContextKey = "bifrost-send-back-raw-request"                        // bool
+	BifrostContextKeySendBackRawResponse                     BifrostContextKey = "bifrost-send-back-raw-response"                       // bool
+	BifrostContextKeyIntegrationType                         BifrostContextKey = "bifrost-integration-type"                             // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
+	BifrostContextKeyIsResponsesToChatCompletionFallback     BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback"     // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResponsesToChatCompletionFallbackReason BifrostContextKey = "bifrost-responses-to-chat-completion-fallback-reason" // ResponsesToChatCompletionFallbackReason (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostMCPAgentOriginalRequestID                         BifrostContextKey = "bifrost-mcp-agent-original-request-id"                // string (to store the original request ID for MCP agent mode)
+	BifrostContextKeyParentMCPRequestID                      BifrostContextKey = "bf-parent-mcp-request-id"                             // string (parent request ID for nested tool calls from executeCode)
+	BifrostContextKeyStructuredOutputToolName                BifrostContextKey = "bifrost-structured-output-tool-name"                  // string (to store the name of the structured output tool (set by bifrost))
+	BifrostContextKeyUserAgent                               BifrostContextKey = "bifrost-user-agent"                                   // string (set by bifrost)
+	BifrostContextKeyTraceID                                 BifrostContextKey = "bifrost-trace-id"                                     // string (trace ID for distributed tracing - set by tracing middleware)
+	BifrostContextKeySpanID                                  BifrostContextKey = "bifrost-span-id"                                      // string (current span ID for child span creation - set by tracer)
+	BifrostContextKeyParentSpanID                            BifrostContextKey = "bifrost-parent-span-id"                               // string (parent span ID from W3C traceparent header - set by tracing middleware)
+	BifrostContextKeyStreamStartTime                         BifrostContextKey = "bifrost-stream-start-time"                            // time.Time (start time for streaming TTFT calculation - set by bifrost)
+	BifrostContextKeyTracer                                  BifrostContextKey = "bifrost-tracer"                                       // Tracer (tracer instance for completing deferred spans - set by bifrost)
+	BifrostContextKeyDeferTraceCompletion                    BifrostContextKey = "bifrost-defer-trace-completion"                       // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
+	BifrostContextKeyTraceCompleter                          BifrostContextKey = "bifrost-trace-completer"                              // func() (callback to complete trace after streaming - set by tracing middleware)
+	BifrostContextKeyPostHookSpanFinalizer                   BifrostContextKey = "bifrost-posthook-span-finalizer"                      // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
+	BifrostContextKeyAccumulatorID                           BifrostContextKey = "bifrost-accumulator-id"                               // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
+	BifrostContextKeyHasEmittedMessageDelta                  BifrostContextKey = "bifrost-has-emitted-message-delta"                    // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
+	BifrostContextKeySkipDBUpdate                            BifrostContextKey = "bifrost-skip-db-update"                               // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernancePluginName                    BifrostContextKey = "governance-plugin-name"                               // string (name of the governance plugin that processed the request - set by bifrost)
+	BifrostContextKeyIsEnterprise                            BifrostContextKey = "is-enterprise"                                        // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyAvailableProviders                      BifrostContextKey = "available-providers"                                  // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyRawRequestResponseForLogging            BifrostContextKey = "bifrost-raw-request-response-for-logging"             // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyRetryDBFetch                            BifrostContextKey = "bifrost-retry-db-fetch"                               // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyIsCustomProvider                        BifrostContextKey = "bifrost-is-custom-provider"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyCustomProviderMetadata                  BifrostContextKey = "bifrost-custom-provider-metadata"                     // *CustomProviderContextMetadata (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyCustomProviderConfig                    BifrostContextKey = "bifrost-custom-provider-config"                       // *CustomProviderConfig (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyResponsesToChatCompletionCompatState    BifrostContextKey = "bifrost-responses-to-chat-completion-compat-state"    // *ResponsesToChatCompletionCompatState (set by bifrost/plugins - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyHTTPRequestType                         BifrostContextKey = "bifrost-http-request-type"                            // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyPassthroughExtraParams                  BifrostContextKey = "bifrost-passthrough-extra-params"                     // bool
+	BifrostContextKeyRoutingEnginesUsed                      BifrostContextKey = "bifrost-routing-engines-used"                         // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
+	BifrostContextKeyRoutingEngineLogs                       BifrostContextKey = "bifrost-routing-engine-logs"                          // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
+	BifrostContextKeySkipPluginPipeline                      BifrostContextKey = "bifrost-skip-plugin-pipeline"                         // bool - skip plugin pipeline for the request
+	BifrostIsAsyncRequest                                    BifrostContextKey = "bifrost-is-async-request"                             // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
+	BifrostContextKeyRequestHeaders                          BifrostContextKey = "bifrost-request-headers"                              // map[string]string (all request headers with lowercased keys)
+	BifrostContextKeySkipListModelsGovernanceFiltering       BifrostContextKey = "bifrost-skip-list-models-governance-filtering"        // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySCIMClaims                              BifrostContextKey = "scim_claims"
+	BifrostContextKeyUserID                                  BifrostContextKey = "user_id"
+	BifrostContextKeyTargetUserID                            BifrostContextKey = "target_user_id"
+	BifrostContextKeyIsAzureUserAgent                        BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
+	BifrostContextKeyVideoOutputRequested                    BifrostContextKey = "bifrost-video-output-requested"
+	BifrostContextKeyValidateKeys                            BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
+	BifrostContextKeyProviderResponseHeaders                 BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
+	BifrostContextKeyLargePayloadMode                        BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
+	BifrostContextKeyLargePayloadReader                      BifrostContextKey = "bifrost-large-payload-reader"               // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
+	BifrostContextKeyLargePayloadContentLength               BifrostContextKey = "bifrost-large-payload-content-length"       // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
+	BifrostContextKeyLargePayloadContentType                 BifrostContextKey = "bifrost-large-payload-content-type"         // string (set by enterprise - DO NOT SET THIS MANUALLY)) original content type for large payload passthrough
+	BifrostContextKeyLargePayloadMetadata                    BifrostContextKey = "bifrost-large-payload-metadata"             // *LargePayloadMetadata (set by bifrost - DO NOT SET THIS MANUALLY)) routing metadata for large payloads
+	BifrostContextKeyLargePayloadRequestThreshold            BifrostContextKey = "bifrost-large-payload-request-threshold"    // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) request threshold used by transport heuristics
+	BifrostContextKeyLargeResponseMode                       BifrostContextKey = "bifrost-large-response-mode"                // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large response streaming mode is active
+	BifrostContextKeyLargePayloadRequestPreview              BifrostContextKey = "bifrost-large-payload-request-preview"      // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated request body preview for logging
+	BifrostContextKeyLargePayloadResponsePreview             BifrostContextKey = "bifrost-large-payload-response-preview"     // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated response body preview for logging
+	BifrostContextKeyLargeResponseReader                     BifrostContextKey = "bifrost-large-response-reader"              // io.ReadCloser (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large responses
+	BifrostContextKeyLargeResponseContentLength              BifrostContextKey = "bifrost-large-response-content-length"      // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large responses
+	BifrostContextKeyLargeResponseContentType                BifrostContextKey = "bifrost-large-response-content-type"        // string (set by bifrost - DO NOT SET THIS MANUALLY)) upstream content type for large responses
+	BifrostContextKeyLargeResponseContentDisposition         BifrostContextKey = "bifrost-large-response-content-disposition" // string (set by bifrost - DO NOT SET THIS MANUALLY)) downstream content disposition for large responses
+	BifrostContextKeyLargeResponseThreshold                  BifrostContextKey = "bifrost-large-response-threshold"           // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) threshold for response streaming
+	BifrostContextKeyLargePayloadPrefetchSize                BifrostContextKey = "bifrost-large-payload-prefetch-size"        // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
+	BifrostContextKeyDeferredUsage                           BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
+	BifrostContextKeyDeferredLargePayloadMetadata            BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
+	BifrostContextKeySSEReaderFactory                        BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
+	BifrostContextKeySessionID                               BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
+	BifrostContextKeySessionTTL                              BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
+	BifrostContextKeyMCPLogID                                BifrostContextKey = "bifrost-mcp-log-id"                         // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
 )
 
 const (
@@ -697,6 +702,157 @@ type BifrostResponse struct {
 	PassthroughResponse           *BifrostPassthroughResponse
 }
 
+type ResponsesToChatCompletionFallbackReason string
+
+const (
+	ResponsesToChatCompletionFallbackReasonConfiguredUnsupported ResponsesToChatCompletionFallbackReason = "configured_unsupported"
+	ResponsesToChatCompletionFallbackReasonRuntimeUnsupported    ResponsesToChatCompletionFallbackReason = "runtime_unsupported"
+)
+
+type CustomProviderContextMetadata struct {
+	ProviderKey          ModelProvider
+	BaseProviderType     ModelProvider
+	SupportsResponsesAPI *bool
+}
+
+type ResponsesToChatCompletionRetryPolicy struct {
+	UnsupportedStatusCodes     []int
+	UnsupportedErrorSubstrings []string
+}
+
+type ResponsesToChatCompletionCompatState struct {
+	OriginalRequestType RequestType
+	OriginalModel       string
+	IsStreaming         bool
+	RetryEligible       bool
+	RetryPolicy         *ResponsesToChatCompletionRetryPolicy
+	Active              bool
+	FallbackReason      ResponsesToChatCompletionFallbackReason
+	FallbackRequest     *BifrostRequest
+	Warnings            []string
+}
+
+func GetCustomProviderContextMetadata(ctx context.Context) (*CustomProviderContextMetadata, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	metadata, ok := ctx.Value(BifrostContextKeyCustomProviderMetadata).(*CustomProviderContextMetadata)
+	if !ok || metadata == nil {
+		return nil, false
+	}
+
+	return metadata, true
+}
+
+func SetResponsesToChatCompletionCompatState(ctx *BifrostContext, state *ResponsesToChatCompletionCompatState) {
+	if ctx == nil {
+		return
+	}
+
+	if state == nil {
+		ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionCompatState)
+		return
+	}
+
+	ctx.SetValue(BifrostContextKeyResponsesToChatCompletionCompatState, state)
+}
+
+func ClearResponsesToChatCompletionCompatState(ctx *BifrostContext) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionCompatState)
+}
+
+func GetResponsesToChatCompletionCompatState(ctx context.Context) (*ResponsesToChatCompletionCompatState, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	state, ok := ctx.Value(BifrostContextKeyResponsesToChatCompletionCompatState).(*ResponsesToChatCompletionCompatState)
+	if !ok || state == nil {
+		return nil, false
+	}
+
+	return state, true
+}
+
+func ActivateResponsesToChatCompletionCompatState(ctx *BifrostContext, reason ResponsesToChatCompletionFallbackReason) (*ResponsesToChatCompletionCompatState, bool) {
+	state, ok := GetResponsesToChatCompletionCompatState(ctx)
+	if !ok || state == nil {
+		return nil, false
+	}
+
+	state.Active = true
+	state.RetryEligible = false
+	state.FallbackReason = reason
+	SetResponsesToChatCompletionFallback(ctx, reason)
+
+	return state, true
+}
+
+func SetResponsesToChatCompletionFallback(ctx *BifrostContext, reason ResponsesToChatCompletionFallbackReason) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.SetValue(BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	if reason == "" {
+		ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionFallbackReason)
+		return
+	}
+	ctx.SetValue(BifrostContextKeyResponsesToChatCompletionFallbackReason, reason)
+}
+
+func ClearResponsesToChatCompletionFallback(ctx *BifrostContext) {
+	if ctx == nil {
+		return
+	}
+
+	ctx.ClearValue(BifrostContextKeyIsResponsesToChatCompletionFallback)
+	ctx.ClearValue(BifrostContextKeyResponsesToChatCompletionFallbackReason)
+}
+
+func GetResponsesToChatCompletionFallback(ctx context.Context) (ResponsesToChatCompletionFallbackReason, bool) {
+	if ctx == nil {
+		return "", false
+	}
+
+	isFallback, ok := ctx.Value(BifrostContextKeyIsResponsesToChatCompletionFallback).(bool)
+	if !ok || !isFallback {
+		return "", false
+	}
+
+	switch reason := ctx.Value(BifrostContextKeyResponsesToChatCompletionFallbackReason).(type) {
+	case ResponsesToChatCompletionFallbackReason:
+		return reason, true
+	case string:
+		return ResponsesToChatCompletionFallbackReason(reason), true
+	default:
+		return "", true
+	}
+}
+
+func ApplyResponsesToChatCompletionFallbackMetadata(ctx context.Context, response *BifrostResponse, bifrostErr *BifrostError) {
+	reason, ok := GetResponsesToChatCompletionFallback(ctx)
+	if !ok {
+		return
+	}
+
+	if response != nil {
+		extraFields := response.GetExtraFields()
+		extraFields.ResponsesToChatCompletionFallback = true
+		extraFields.ResponsesToChatCompletionFallbackReason = string(reason)
+	}
+
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.ResponsesToChatCompletionFallback = true
+		bifrostErr.ExtraFields.ResponsesToChatCompletionFallbackReason = string(reason)
+	}
+}
+
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.ListModelsResponse != nil:
@@ -796,18 +952,20 @@ type BifrostMCPResponse struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType             RequestType        `json:"request_type"`
-	Provider                ModelProvider      `json:"provider,omitempty"`
-	ModelRequested          string             `json:"model_requested,omitempty"`
-	ModelDeployment         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
-	Latency                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawRequest              interface{}        `json:"raw_request,omitempty"`
-	RawResponse             interface{}        `json:"raw_response,omitempty"`
-	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
-	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
-	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
-	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	RequestType                             RequestType        `json:"request_type"`
+	Provider                                ModelProvider      `json:"provider,omitempty"`
+	ModelRequested                          string             `json:"model_requested,omitempty"`
+	ModelDeployment                         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
+	Latency                                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex                              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest                              interface{}        `json:"raw_request,omitempty"`
+	RawResponse                             interface{}        `json:"raw_response,omitempty"`
+	CacheDebug                              *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors                             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+	LiteLLMCompat                           bool               `json:"litellm_compat,omitempty"`
+	ResponsesToChatCompletionFallback       bool               `json:"responses_to_chat_completion_fallback,omitempty"`
+	ResponsesToChatCompletionFallbackReason string             `json:"responses_to_chat_completion_fallback_reason,omitempty"`
+	ProviderResponseHeaders                 map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -968,11 +1126,13 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider,omitempty"`
-	ModelRequested string        `json:"model_requested,omitempty"`
-	RequestType    RequestType   `json:"request_type,omitempty"`
-	RawRequest     interface{}   `json:"raw_request,omitempty"`
-	RawResponse    interface{}   `json:"raw_response,omitempty"`
-	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
-	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+	Provider                                ModelProvider `json:"provider,omitempty"`
+	ModelRequested                          string        `json:"model_requested,omitempty"`
+	RequestType                             RequestType   `json:"request_type,omitempty"`
+	RawRequest                              interface{}   `json:"raw_request,omitempty"`
+	RawResponse                             interface{}   `json:"raw_response,omitempty"`
+	LiteLLMCompat                           bool          `json:"litellm_compat,omitempty"`
+	ResponsesToChatCompletionFallback       bool          `json:"responses_to_chat_completion_fallback,omitempty"`
+	ResponsesToChatCompletionFallbackReason string        `json:"responses_to_chat_completion_fallback_reason,omitempty"`
+	KeyStatuses                             []KeyStatus   `json:"key_statuses,omitempty"`
 }

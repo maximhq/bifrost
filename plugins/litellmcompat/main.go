@@ -83,9 +83,12 @@ func (p *LiteLLMCompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostC
 // it converts them to chat completion requests.
 func (p *LiteLLMCompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	tc := &TransformContext{}
+	schemas.ClearResponsesToChatCompletionFallback(ctx)
+	schemas.ClearResponsesToChatCompletionCompatState(ctx)
 
 	// Apply request transforms in sequence
 	req = transformTextToChatRequest(ctx, req, tc, p.modelCatalog, p.logger)
+	req = transformResponsesToChatRequest(ctx, req, p.logger)
 
 	// Store the transform context for use in PostHook
 	ctx.SetValue(TransformContextKey, tc)
@@ -99,24 +102,30 @@ func (p *LiteLLMCompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schem
 func (p *LiteLLMCompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Retrieve the transform context
 	transformCtxValue := ctx.Value(TransformContextKey)
-	if transformCtxValue == nil {
-		return result, bifrostErr, nil
-	}
-	tc, ok := transformCtxValue.(*TransformContext)
-	if !ok || tc == nil {
-		return result, bifrostErr, nil
+	var tc *TransformContext
+	if transformCtxValue != nil {
+		transformCtx, ok := transformCtxValue.(*TransformContext)
+		if ok {
+			tc = transformCtx
+		}
 	}
 
 	// Apply response transforms in sequence
 	// Note: tool-call content runs before text-to-chat because text-to-chat may convert
 	// the response type, and tool-call content needs to operate on chat responses
 	if result != nil {
-		result = transformTextToChatResponse(ctx, result, tc, p.logger)
+		if tc != nil {
+			result = transformTextToChatResponse(ctx, result, tc, p.logger)
+		}
+		result = transformResponsesToChatResponse(ctx, result, p.logger)
 	}
 
 	// Transform error metadata if there's an error
 	if bifrostErr != nil {
-		bifrostErr = transformTextToChatError(ctx, bifrostErr, tc)
+		if tc != nil {
+			bifrostErr = transformTextToChatError(ctx, bifrostErr, tc)
+		}
+		bifrostErr = transformResponsesToChatError(ctx, bifrostErr)
 	}
 
 	return result, bifrostErr, nil
