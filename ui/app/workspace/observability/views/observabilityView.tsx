@@ -45,12 +45,12 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "maxim",
 		name: "Maxim",
-		icon: <img alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.png`} width={19} height={19} />,
+		icon: <img alt="Maxim" src={`/maxim-logo${resolvedTheme === "dark" ? "-dark" : ""}.webp`} width={19} height={19} />,
 	},
 	{
 		id: "datadog",
 		name: "Datadog",
-		icon: <img alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} className="-ml-0.5" />,
+		icon: <img alt="Datadog" src="/images/datadog-logo.webp" width={32} height={32} className="-ml-0.5" />,
 	},
 	{
 		id: "bigquery",

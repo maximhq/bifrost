@@ -34,7 +34,7 @@ import {
 import { LogEntry } from "@/lib/types/logs";
 import { Link } from "@tanstack/react-router";
 import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
-import moment from "moment";
+import { addMilliseconds, format } from "date-fns";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
@@ -211,13 +211,11 @@ export function LogDetailView({
 				<div className="space-y-4">
 					<BlockHeader title="Timings" />
 					<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-						<LogEntryDetailsView className="w-full" label="Start Timestamp" value={moment(log.timestamp).format("YYYY-MM-DD HH:mm:ss A")} />
+						<LogEntryDetailsView className="w-full" label="Start Timestamp" value={format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa")} />
 						<LogEntryDetailsView
 							className="w-full"
 							label="End Timestamp"
-							value={moment(log.timestamp)
-								.add(log.latency || 0, "ms")
-								.format("YYYY-MM-DD HH:mm:ss A")}
+							value={format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")}
 						/>
 						<LogEntryDetailsView
 							className="w-full"

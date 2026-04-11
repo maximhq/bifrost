@@ -68,8 +68,8 @@ import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { differenceInDays } from "date-fns";
 import { ChevronRight } from "lucide-react";
-import moment from "moment";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
@@ -1000,13 +1000,13 @@ export default function AppSidebar() {
 	};
 
 	// Always render the light theme version for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";
-	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.png" : "/bifrost-icon.png";
+	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
+	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.webp" : "/bifrost-icon.webp";
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
 	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.png" : "/images/new-release-image.png";
+	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.webp" : "/images/new-release-image.webp";
 
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
@@ -1087,7 +1087,7 @@ export default function AppSidebar() {
 			setUserPopoverOpen(false);
 			await logout().unwrap();
 			navigate("/login");
-		} catch (error) {
+		} catch {
 			// Even if logout fails on server, redirect to login
 			navigate("/login");
 		}
@@ -1095,7 +1095,7 @@ export default function AppSidebar() {
 
 	const trialDaysRemaining = useMemo(() => {
 		if (IS_ENTERPRISE && TRIAL_EXPIRY) {
-			const daysRemaining = moment(TRIAL_EXPIRY).diff(moment(), "days");
+			const daysRemaining = differenceInDays(new Date(TRIAL_EXPIRY), new Date());
 			return daysRemaining > 0 ? daysRemaining : 0;
 		}
 		return null;

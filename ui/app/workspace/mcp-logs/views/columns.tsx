@@ -4,7 +4,7 @@ import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown, Trash2 } from "lucide-react";
-import moment from "moment";
+import { format, isValid } from "date-fns";
 
 // Helper function to validate status and return a safe Status value
 const getValidatedStatus = (status: string): Status => {
@@ -41,7 +41,8 @@ export const createMCPColumns = (
 		size: 180,
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
-			return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+			const date = new Date(timestamp);
+				return <div className="text-xs">{isValid(date) ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "Invalid date"}</div>;
 		},
 	},
 	{
