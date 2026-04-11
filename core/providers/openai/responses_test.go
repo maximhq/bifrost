@@ -1496,6 +1496,27 @@ func TestResponsesShellCallOutput_RoundTrip_Timeout(t *testing.T) {
 	}
 }
 
+func TestResponsesToolMessageOutput_OutcomeKeyDoesNotHijackFallback(t *testing.T) {
+	// A hypothetical future tool output whose first element happens to have an
+	// "outcome" key but is NOT a shell_call_output (no stdout/stderr). The
+	// shell probe should skip it and let the generic ContentBlock fallback
+	// handle the payload instead of silently decoding into shell items.
+	jsonData := `[{"outcome":"approved","type":"some_future_tool","text":"ok"}]`
+
+	var output schemas.ResponsesToolMessageOutputStruct
+	if err := json.Unmarshal([]byte(jsonData), &output); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if len(output.ResponsesShellCallOutputItems) != 0 {
+		t.Errorf("outcome-without-stdout should not decode as shell output, got %d items",
+			len(output.ResponsesShellCallOutputItems))
+	}
+	if output.ResponsesFunctionToolCallOutputBlocks == nil {
+		t.Error("expected generic ContentBlock fallback to take over, but it was empty")
+	}
+}
+
 func TestResponsesMessage_ShellCall_FullRoundTrip(t *testing.T) {
 	// Real shell_call output item the model emits, including the optional
 	// `environment` echo and `created_by` so we cover the full envelope.

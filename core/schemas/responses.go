@@ -885,11 +885,18 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		return nil
 	}
 	// shell_call_output emits an array of {outcome, stderr, stdout} objects.
-	// Detect by peeking at the first element for an "outcome" key, since the
-	// generic ContentBlock array fallback would otherwise swallow it silently.
+	// Detect by peeking at the first element for all three discriminating
+	// keys; the generic ContentBlock array fallback would otherwise swallow
+	// a real shell output silently. We require outcome AND stdout AND stderr
+	// together (all three are non-optional in the OpenAI schema) so that a
+	// future tool output that happens to reuse the name "outcome" is not
+	// misrouted here — it will fall through to the ContentBlock fallback.
 	var probe []map[string]any
 	if err := Unmarshal(data, &probe); err == nil && len(probe) > 0 {
-		if _, hasOutcome := probe[0]["outcome"]; hasOutcome {
+		_, hasOutcome := probe[0]["outcome"]
+		_, hasStdout := probe[0]["stdout"]
+		_, hasStderr := probe[0]["stderr"]
+		if hasOutcome && hasStdout && hasStderr {
 			var items []ResponsesShellCallOutputItem
 			if err := Unmarshal(data, &items); err != nil {
 				return fmt.Errorf("failed to unmarshal shell call output items: %w", err)
