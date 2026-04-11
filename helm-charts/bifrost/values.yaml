@@ -108,17 +108,15 @@ podDisruptionBudget:
   # Ensures a minimum number of pods remain available during voluntary disruptions
   # (e.g., node drains, cluster upgrades, spot instance evictions)
   enabled: false
-  # Minimum number of pods that must remain available during disruption
-  # Can be an integer (e.g., 1) or a percentage string (e.g., "50%")
-  # Only one of minAvailable or maxUnavailable can be set
-  minAvailable: 1
-  # Maximum number of pods that can be unavailable during disruption
-  # Can be an integer (e.g., 1) or a percentage string (e.g., "25%")
+  # Set exactly one of minAvailable or maxUnavailable (not both).
+  # Can be an integer (e.g., 1) or a percentage string (e.g., "50%").
+  # If neither is set, defaults to minAvailable: 1.
+  # minAvailable: 1
   # maxUnavailable: 1
   # Unhealthy pod eviction policy (requires Kubernetes 1.27+)
-  # Options: IfHealthy (default), AlwaysAllow
+  # Options: IfHealthyBudget (default), AlwaysAllow
   # AlwaysAllow allows eviction of unhealthy pods even if it violates the budget
-  # unhealthyPodEvictionPolicy: IfHealthy
+  # unhealthyPodEvictionPolicy: IfHealthyBudget
 
 autoscaling:
   enabled: false

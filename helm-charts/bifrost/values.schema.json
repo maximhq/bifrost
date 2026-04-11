@@ -187,9 +187,12 @@
         },
         "unhealthyPodEvictionPolicy": {
           "type": "string",
-          "enum": ["IfHealthy", "AlwaysAllow"],
+          "enum": ["IfHealthyBudget", "AlwaysAllow"],
           "description": "Policy for evicting unhealthy pods (Kubernetes 1.27+)"
         }
+      },
+      "not": {
+        "required": ["minAvailable", "maxUnavailable"]
       }
     },
     "autoscaling": {
