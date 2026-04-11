@@ -1,3 +1,4 @@
 - feat: add next-step hints to OAuth MCP client creation response
 - feat: added azure passthrough support
-- feat: add 272k token priority tier handling in pricing
+- feat: add 272k token tier pricing support in pricing
+- feat: added flex and priority tier support in pricing
