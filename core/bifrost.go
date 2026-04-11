@@ -5178,12 +5178,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 		response.ResponsesResponse = responsesResponse
 	case schemas.CountTokensRequest:
 		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
@@ -5204,18 +5206,6 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.OCRRequest:
-		var customProviderConfig *schemas.CustomProviderConfig
-		if config != nil {
-			customProviderConfig = config.CustomProviderConfig
-		}
-		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.OCRRequest); bifrostError != nil {
-			bifrostError.ExtraFields.Provider = provider.GetProviderKey()
-			bifrostError.ExtraFields.RequestType = schemas.OCRRequest
-			if req.BifrostRequest.OCRRequest != nil {
-				bifrostError.ExtraFields.ModelRequested = req.BifrostRequest.OCRRequest.Model
-			}
-			return nil, bifrostError
-		}
 		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
 		if bifrostError != nil {
 			return nil, bifrostError

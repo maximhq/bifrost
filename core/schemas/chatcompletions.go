@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"time"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -29,21 +30,37 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                      string                     `json:"id"`
-	Choices                 []BifrostResponseChoice    `json:"choices"`
-	Created                 int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model                   string                     `json:"model"`
-	Object                  string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier             *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint       string                     `json:"system_fingerprint"`
-	Usage                   *BifrostLLMUsage           `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams             map[string]interface{}     `json:"-"`
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// BackfillParams populates response fields from the request that are needed
+func (cr *BifrostChatResponse) BackfillParams(request *BifrostChatRequest) {
+	if cr == nil || request == nil {
+		return
+	}
+	if cr.Model == "" {
+		cr.Model = request.Model
+	}
+	if cr.Object == "" {
+		cr.Object = "chat.completion"
+	}
+	if cr.Created == 0 {
+		cr.Created = int(time.Now().Unix())
+	}
 }
 
 // ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
@@ -63,7 +80,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
@@ -96,7 +113,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
@@ -132,7 +149,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				RequestType:             TextCompletionRequest,
 				ChunkIndex:              cr.ExtraFields.ChunkIndex,
 				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,

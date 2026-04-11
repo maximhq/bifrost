@@ -446,6 +446,12 @@ func ValidateCountTokensResponse(t *testing.T, response *schemas.BifrostCountTok
 
 // validateChatBasicStructure checks the basic structure of the chat response
 func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check that Object field is not empty (should be "chat.completion" or "chat.completion.chunk")
+	if response.Object == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Object field is empty in chat completion response")
+	}
+
 	// Check choice count
 	if expectations.ExpectedChoiceCount > 0 {
 		actualCount := 0
@@ -831,6 +837,12 @@ func collectTextCompletionResponseMetrics(response *schemas.BifrostTextCompletio
 
 // validateResponsesBasicStructure checks the basic structure of the Responses API response
 func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check that Object field is not empty (should be "response")
+	if response.Object == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Object field is empty in responses response")
+	}
+
 	// Check choice count
 	if expectations.ExpectedChoiceCount > 0 {
 		actualCount := 0

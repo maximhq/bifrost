@@ -70,27 +70,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 
 // GetProviderKey returns the provider identifier for Mistral.
 func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
-	return provider.reportedProviderKey()
-}
-
-func (provider *MistralProvider) baseProviderKey() schemas.ModelProvider {
 	return schemas.Mistral
-}
-
-func (provider *MistralProvider) reportedProviderKey() schemas.ModelProvider {
-	return providerUtils.GetProviderName(provider.baseProviderKey(), provider.customProviderConfig)
-}
-
-// Shared OpenAI-compatible converters key Mistral compatibility off the base provider,
-// while Bifrost still needs the custom alias for provider identity and reporting.
-func (provider *MistralProvider) normalizeChatRequestProvider(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if request == nil {
-		return nil
-	}
-
-	normalizedRequest := *request
-	normalizedRequest.Provider = provider.baseProviderKey()
-	return &normalizedRequest
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -180,8 +160,6 @@ func (provider *MistralProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	request = provider.normalizeChatRequestProvider(request)
-
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -203,8 +181,6 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // Uses Mistral's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	request = provider.normalizeChatRequestProvider(request)
-
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
