@@ -525,6 +525,8 @@ const (
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
+	ResponsesMessageTypeShellCall            ResponsesMessageType = "shell_call"
+	ResponsesMessageTypeShellCallOutput      ResponsesMessageType = "shell_call_output"
 	ResponsesMessageTypeMCPCall              ResponsesMessageType = "mcp_call"
 	ResponsesMessageTypeCustomToolCall       ResponsesMessageType = "custom_tool_call"
 	ResponsesMessageTypeCustomToolCallOutput ResponsesMessageType = "custom_tool_call_output"
@@ -748,6 +750,7 @@ type ResponsesToolMessageActionStruct struct {
 	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
 	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
 	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
+	ResponsesShellToolCallAction      *ResponsesShellToolCallAction
 	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
 }
 
@@ -764,6 +767,9 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return MarshalSorted(action.ResponsesLocalShellToolCallAction)
 	}
+	if action.ResponsesShellToolCallAction != nil {
+		return MarshalSorted(action.ResponsesShellToolCallAction)
+	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
@@ -771,6 +777,23 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
+	// The next-gen shell tool's action has no "type" discriminator — only a
+	// "commands" array (plus optional timeout_ms / max_output_length). Detect
+	// it by the presence of a "commands" key when "type" is absent.
+	var keyProbe map[string]any
+	if err := Unmarshal(data, &keyProbe); err == nil {
+		_, hasType := keyProbe["type"]
+		_, hasCommands := keyProbe["commands"]
+		if !hasType && hasCommands {
+			var shellToolCallAction ResponsesShellToolCallAction
+			if err := Unmarshal(data, &shellToolCallAction); err != nil {
+				return fmt.Errorf("failed to unmarshal shell tool call action: %w", err)
+			}
+			action.ResponsesShellToolCallAction = &shellToolCallAction
+			return nil
+		}
+	}
+
 	// First, peek at the type field to determine which variant to unmarshal
 	var typeStruct struct {
 		Type string `json:"type"`
@@ -836,11 +859,15 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
+	ResponsesShellCallOutputItems         []ResponsesShellCallOutputItem
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
 		return MarshalSorted(*output.ResponsesToolCallOutputStr)
+	}
+	if output.ResponsesShellCallOutputItems != nil {
+		return MarshalSorted(output.ResponsesShellCallOutputItems)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
 		return MarshalSorted(output.ResponsesFunctionToolCallOutputBlocks)
@@ -855,6 +882,20 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 	if err := Unmarshal(data, &str); err == nil {
 		output.ResponsesToolCallOutputStr = &str
 		return nil
+	}
+	// shell_call_output emits an array of {outcome, stderr, stdout} objects.
+	// Detect by peeking at the first element for an "outcome" key, since the
+	// generic ContentBlock array fallback would otherwise swallow it silently.
+	var probe []map[string]any
+	if err := Unmarshal(data, &probe); err == nil && len(probe) > 0 {
+		if _, hasOutcome := probe[0]["outcome"]; hasOutcome {
+			var items []ResponsesShellCallOutputItem
+			if err := Unmarshal(data, &items); err != nil {
+				return fmt.Errorf("failed to unmarshal shell call output items: %w", err)
+			}
+			output.ResponsesShellCallOutputItems = items
+			return nil
+		}
 	}
 	var array []ResponsesMessageContentBlock
 	if err := Unmarshal(data, &array); err == nil {
@@ -1177,6 +1218,35 @@ type ResponsesLocalShellToolCallAction struct {
 	TimeoutMS        *int     `json:"timeout_ms,omitempty"`
 	User             *string  `json:"user,omitempty"`
 	WorkingDirectory *string  `json:"working_directory,omitempty"`
+}
+
+// -----------------------------------------------------------------------------
+// Shell Tool (next-generation, supersedes LocalShell)
+// -----------------------------------------------------------------------------
+
+// ResponsesShellToolCallAction is the action payload for a "shell_call" output
+// item. Unlike the legacy local-shell action, it has no "type" discriminator
+// and uses a plural "commands" array.
+type ResponsesShellToolCallAction struct {
+	Commands        []string `json:"commands"`
+	TimeoutMS       *int     `json:"timeout_ms,omitempty"`
+	MaxOutputLength *int     `json:"max_output_length,omitempty"`
+}
+
+// ResponsesShellCallOutputItem is one entry in a shell_call_output's "output"
+// array, capturing stdout/stderr and how the command finished.
+type ResponsesShellCallOutputItem struct {
+	Outcome   ResponsesShellCallOutputOutcome `json:"outcome"`
+	Stderr    string                          `json:"stderr"`
+	Stdout    string                          `json:"stdout"`
+	CreatedBy *string                         `json:"created_by,omitempty"`
+}
+
+// ResponsesShellCallOutputOutcome describes whether a shell command completed
+// with an exit code or hit a timeout. ExitCode is only set when Type == "exit".
+type ResponsesShellCallOutputOutcome struct {
+	Type     string `json:"type"` // "exit" | "timeout"
+	ExitCode *int   `json:"exit_code,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
