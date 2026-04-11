@@ -1,0 +1,3 @@
+- refactor: add BackfillParams methods to BifrostChatResponse and BifrostResponsesResponse for populating missing response fields
+- refactor: remove custom provider key normalization and redundant OCR validation from Mistral provider
+- fix: minor formatting inconsistencies in response type constants
