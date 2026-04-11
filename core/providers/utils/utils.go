@@ -2149,6 +2149,7 @@ func CreateBifrostTextCompletionChunkResponse(
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
 		ID:     id,
+		Model:  model,
 		Object: "text_completion",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{
