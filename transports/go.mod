@@ -12,15 +12,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.4.17
-	github.com/maximhq/bifrost/framework v1.2.36
-	github.com/maximhq/bifrost/plugins/governance v1.4.36
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.25
-	github.com/maximhq/bifrost/plugins/logging v1.4.36
-	github.com/maximhq/bifrost/plugins/maxim v1.5.36
-	github.com/maximhq/bifrost/plugins/otel v1.1.35
-	github.com/maximhq/bifrost/plugins/semanticcache v1.4.34
-	github.com/maximhq/bifrost/plugins/telemetry v1.4.36
+	github.com/maximhq/bifrost/core v1.4.18
+	github.com/maximhq/bifrost/framework v1.2.37
+	github.com/maximhq/bifrost/plugins/governance v1.4.37
+	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.26
+	github.com/maximhq/bifrost/plugins/logging v1.4.37
+	github.com/maximhq/bifrost/plugins/maxim v1.5.37
+	github.com/maximhq/bifrost/plugins/otel v1.1.36
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.35
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.37
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
@@ -111,7 +111,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.4.35 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.4.36 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect

@@ -2,7 +2,7 @@ module github.com/maximhq/bifrost/plugins/jsonparser
 
 go 1.26.2
 
-require github.com/maximhq/bifrost/core v1.4.17
+require github.com/maximhq/bifrost/core v1.4.18
 
 require (
 	cloud.google.com/go v0.123.0 // indirect

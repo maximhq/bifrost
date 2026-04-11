@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/maxim
 go 1.26.2
 
 require (
-	github.com/maximhq/bifrost/core v1.4.17
-	github.com/maximhq/bifrost/framework v1.2.36
+	github.com/maximhq/bifrost/core v1.4.18
+	github.com/maximhq/bifrost/framework v1.2.37
 	github.com/maximhq/maxim-go v0.2.1
 )
 
@@ -115,8 +115,6 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
-	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect

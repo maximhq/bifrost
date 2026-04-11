@@ -1233,6 +1233,17 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
   fi
+
+  # governance_model_pricing.base_model (added in v1.4.20)
+  if column_exists_postgres "governance_model_pricing" "base_model"; then
+    echo "UPDATE governance_model_pricing SET base_model = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET base_model = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # config_client.whitelisted_routes_json (added in v1.4.20 - JSON serialized []string)
+  if column_exists_postgres "config_client" "whitelisted_routes_json"; then
+    echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1726,6 +1737,11 @@ append_dynamic_columns_sqlite() {
     if column_exists_sqlite "$config_db" "governance_model_pricing" "architecture"; then
       echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
+    fi
+
+    # config_client.whitelisted_routes_json (added in v1.4.20 - JSON serialized []string)
+    if column_exists_sqlite "$config_db" "config_client" "whitelisted_routes_json"; then
+      echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
     fi
   fi
 }
