@@ -1413,6 +1413,22 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copyOutput := *original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput
 				copy.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput = &copyOutput
 			}
+
+			if original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems != nil {
+				items := make([]ResponsesShellCallOutputItem, len(original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems))
+				for i, item := range original.ResponsesToolMessage.Output.ResponsesShellCallOutputItems {
+					if item.Outcome.ExitCode != nil {
+						exitCode := *item.Outcome.ExitCode
+						item.Outcome.ExitCode = &exitCode
+					}
+					if item.CreatedBy != nil {
+						createdBy := *item.CreatedBy
+						item.CreatedBy = &createdBy
+					}
+					items[i] = item
+				}
+				copy.ResponsesToolMessage.Output.ResponsesShellCallOutputItems = items
+			}
 		}
 
 		// Deep copy Action
@@ -1453,6 +1469,20 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction
 			}
 
+			if original.ResponsesToolMessage.Action.ResponsesShellToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+				copyAction.Commands = append([]string(nil), copyAction.Commands...)
+				if copyAction.TimeoutMS != nil {
+					timeoutMS := *copyAction.TimeoutMS
+					copyAction.TimeoutMS = &timeoutMS
+				}
+				if copyAction.MaxOutputLength != nil {
+					maxOutputLength := *copyAction.MaxOutputLength
+					copyAction.MaxOutputLength = &maxOutputLength
+				}
+				copy.ResponsesToolMessage.Action.ResponsesShellToolCallAction = &copyAction
+			}
+
 			if original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
@@ -1479,6 +1509,35 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesFileSearchToolCall = &copyToolCall
+		}
+
+		if original.ResponsesToolMessage.ResponsesShellToolCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesShellToolCall
+			if copyCall.Environment != nil {
+				envCopy := *copyCall.Environment
+				if envCopy.ContainerID != nil {
+					containerID := *envCopy.ContainerID
+					envCopy.ContainerID = &containerID
+				}
+				copyCall.Environment = &envCopy
+			}
+			if copyCall.CreatedBy != nil {
+				createdBy := *copyCall.CreatedBy
+				copyCall.CreatedBy = &createdBy
+			}
+			if copyCall.MaxOutputLength != nil {
+				maxOutputLength := *copyCall.MaxOutputLength
+				copyCall.MaxOutputLength = &maxOutputLength
+			}
+			if copyCall.Caller != nil {
+				callerCopy := *copyCall.Caller
+				if callerCopy.CallerID != nil {
+					callerID := *callerCopy.CallerID
+					callerCopy.CallerID = &callerID
+				}
+				copyCall.Caller = &callerCopy
+			}
+			copy.ResponsesToolMessage.ResponsesShellToolCall = &copyCall
 		}
 
 		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {

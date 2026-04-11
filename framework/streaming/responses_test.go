@@ -535,3 +535,60 @@ func TestBuildResponsesMessageItemDoneKeepsStreamedText(t *testing.T) {
 	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
 	require.Equal(t, "hello world", *msgs[0].Content.ContentBlocks[0].Text)
 }
+
+func TestDeepCopyResponsesMessagePreservesShellFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"id":"sh_1","type":"shell_call","status":"completed","call_id":"call_1","action":{"commands":["ls -la"],"timeout_ms":1000},"environment":{"type":"container_reference","container_id":"cntr_1"},"created_by":"resp_1"}`,
+		`{"type":"shell_call_output","call_id":"call_1","max_output_length":500,"output":[{"stdout":"a.txt","stderr":"","outcome":{"type":"exit","exit_code":0}}]}`,
+		`{"type":"shell_call","call_id":"call_1","action":{"commands":["ls"]},"caller":{"type":"program","caller_id":"call_prog_1"}}`,
+		`{"type":"shell_call_output","call_id":"call_1","output":[{"stdout":"a.txt","stderr":"","outcome":{"type":"exit","exit_code":0}}],"caller":{"type":"direct"}}`,
+	} {
+		var msg schemas.ResponsesMessage
+		require.NoError(t, schemas.Unmarshal([]byte(raw), &msg))
+		copied, err := schemas.Marshal(deepCopyResponsesMessage(msg))
+		require.NoError(t, err)
+		require.JSONEq(t, raw, string(copied))
+	}
+}
+
+func TestDeepCopyResponsesShellActionDoesNotSharePointers(t *testing.T) {
+	var msg schemas.ResponsesMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"shell_call","call_id":"call_1","action":{"commands":["ls"],"timeout_ms":1000,"max_output_length":500}}`), &msg))
+	copied := deepCopyResponsesMessage(msg)
+	action := copied.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+	*action.TimeoutMS = 1
+	*action.MaxOutputLength = 2
+	action.Commands[0] = "pwd"
+
+	original := msg.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+	require.Equal(t, 1000, *original.TimeoutMS)
+	require.Equal(t, 500, *original.MaxOutputLength)
+	require.Equal(t, "ls", original.Commands[0])
+}
+
+func TestDeepCopyResponsesStreamResponsePreservesShellEventFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"response.shell_call_command.done","sequence_number":14,"output_index":0,"command_index":1,"command":"echo hello"}`,
+		`{"type":"response.shell_call_output_content.delta","sequence_number":17,"output_index":1,"item_id":"sho_1","command_index":0,"delta":{"stdout":"hello\n","stderr":"oops\n"}}`,
+		`{"type":"response.shell_call_output_content.done","sequence_number":18,"output_index":1,"item_id":"sho_1","command_index":0,"output":[{"stdout":"hello\n","stderr":"","outcome":{"type":"exit","exit_code":0}}]}`,
+	} {
+		var original schemas.BifrostResponsesStreamResponse
+		require.NoError(t, schemas.Unmarshal([]byte(raw), &original))
+		copied := deepCopyResponsesStreamResponse(&original)
+
+		want, err := schemas.Marshal(&original)
+		require.NoError(t, err)
+		got, err := schemas.Marshal(copied)
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), string(got))
+
+		if copied.ShellOutputDelta != nil {
+			*copied.ShellOutputDelta.Stdout = "mutated"
+			require.Equal(t, "hello\n", *original.ShellOutputDelta.Stdout)
+		}
+		if copied.ShellOutput != nil {
+			*copied.ShellOutput[0].Outcome.ExitCode = 9
+			require.Equal(t, 0, *original.ShellOutput[0].Outcome.ExitCode)
+		}
+	}
+}

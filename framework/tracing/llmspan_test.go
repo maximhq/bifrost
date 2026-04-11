@@ -376,3 +376,21 @@ func TestPopulateResponsesResponseAttributesOmitsFinishReasonsWhenStopReasonNil(
 		t.Fatalf("%s = %v, want absent when stop_reason is nil", schemas.AttrFinishReason, got)
 	}
 }
+
+func TestExtractResponsesInputMessagesIncludesShellItems(t *testing.T) {
+	var messages []schemas.ResponsesMessage
+	raw := `[{"type":"shell_call","call_id":"call_1","action":{"commands":["ls"]}},{"type":"shell_call_output","call_id":"call_1","output":[{"stdout":"a.txt","stderr":"warn","outcome":{"type":"exit","exit_code":0}}]}]`
+	if err := schemas.Unmarshal([]byte(raw), &messages); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	summaries := extractResponsesInputMessages(messages)
+	if len(summaries) != 2 {
+		t.Fatalf("got %d summaries, want 2: %+v", len(summaries), summaries)
+	}
+	if summaries[0].Content != "[shell_call]" {
+		t.Errorf("shell_call summary = %q", summaries[0].Content)
+	}
+	if summaries[1].Content != "a.txt\nwarn" || summaries[1].ToolCallID != "call_1" {
+		t.Errorf("shell_call_output summary = %+v", summaries[1])
+	}
+}
