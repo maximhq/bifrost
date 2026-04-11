@@ -335,6 +335,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPriorityTierPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4988,6 +4991,55 @@ func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) er
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running priority tier pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFlexTierPricingColumns adds pricing columns for the flex service tier
+func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_flex_tier_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_flex",
+				"output_cost_per_token_flex",
+				"cache_read_input_token_cost_flex",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_flex",
+				"output_cost_per_token_flex",
+				"cache_read_input_token_cost_flex",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
 	}
 	return nil
 }
