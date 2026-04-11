@@ -1344,6 +1344,7 @@ const (
 	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
 	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
 	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
+	ResponsesToolTypeShell              ResponsesToolType = "shell"
 	ResponsesToolTypeCustom             ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
 	ResponsesToolTypeMemory             ResponsesToolType = "memory"
@@ -1399,6 +1400,7 @@ type ResponsesTool struct {
 	*ResponsesToolCodeInterpreter
 	*ResponsesToolImageGeneration
 	*ResponsesToolLocalShell
+	*ResponsesToolShell
 	*ResponsesToolCustom
 	*ResponsesToolWebSearchPreview
 }
@@ -1486,6 +1488,10 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	case ResponsesToolTypeLocalShell:
 		if t.ResponsesToolLocalShell != nil {
 			typeBytes, err = MarshalSorted(t.ResponsesToolLocalShell)
+		}
+	case ResponsesToolTypeShell:
+		if t.ResponsesToolShell != nil {
+			typeBytes, err = MarshalSorted(t.ResponsesToolShell)
 		}
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
@@ -1615,6 +1621,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolLocalShell = &localShellTool
+
+	case ResponsesToolTypeShell:
+		var shellTool ResponsesToolShell
+		if err := Unmarshal(data, &shellTool); err != nil {
+			return err
+		}
+		t.ResponsesToolShell = &shellTool
 
 	case ResponsesToolTypeCustom:
 		var customTool ResponsesToolCustom
@@ -2013,6 +2026,46 @@ type ResponsesToolImageGenerationInputImageMask struct {
 // ResponsesToolLocalShell represents a tool local shell
 type ResponsesToolLocalShell struct {
 	// No unique fields needed since Type is now in the top-level struct
+}
+
+// ResponsesToolShell represents the next-generation shell tool that supersedes
+// ResponsesToolLocalShell. It carries an Environment which determines whether
+// the shell runs locally (client-side executor) or in a hosted container, and
+// can advertise skills to the model.
+//
+// See: https://platform.openai.com/docs/guides/tools-shell
+//
+// SCOPE: This implementation only models the "local" environment variant
+// (with optional local skills). Hosted container variants ("container_auto",
+// "container_reference"), inline skill bundles, network policies, and
+// container_reference skill_id payloads are intentionally NOT modelled here.
+// Environment.Type is left as a free string so unknown variants can still
+// pass the type check, but any container-specific fields they carry will be
+// silently dropped on round-trip — extending hosted container support is
+// left to a follow-up PR.
+type ResponsesToolShell struct {
+	Environment *ResponsesToolShellEnvironment `json:"environment,omitempty"`
+}
+
+// ResponsesToolShellEnvironment carries the shell execution environment.
+// Only the "local" variant is fully supported in this struct (see
+// ResponsesToolShell scope note above). Type is kept as a free string to
+// avoid hard-rejecting hosted container payloads.
+type ResponsesToolShellEnvironment struct {
+	Type string `json:"type"` // Currently fully supported: "local"
+
+	// Skills lists local skills the model can invoke. Valid for the "local"
+	// environment variant.
+	Skills []ResponsesToolShellSkill `json:"skills,omitempty"`
+}
+
+// ResponsesToolShellSkill describes a local skill bundle on disk that the
+// model can be informed about. The model is then expected to read the
+// skill's manifest (e.g. SKILL.md) via the shell tool.
+type ResponsesToolShellSkill struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Path        *string `json:"path,omitempty"`
 }
 
 // ResponsesToolCustom represents a custom tool

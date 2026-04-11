@@ -1205,6 +1205,88 @@ func TestResponsesTool_MarshalUnmarshal_LocalShellTool(t *testing.T) {
 	})
 }
 
+func TestResponsesTool_MarshalUnmarshal_ShellTool(t *testing.T) {
+	t.Run("shell tool local env - round trip", func(t *testing.T) {
+		jsonData := `{"type":"shell","environment":{"type":"local"}}`
+
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.Type != schemas.ResponsesToolTypeShell {
+			t.Errorf("type mismatch: expected %s, got %s", schemas.ResponsesToolTypeShell, tool.Type)
+		}
+		if tool.ResponsesToolShell == nil {
+			t.Fatal("expected ResponsesToolShell to be populated")
+		}
+		if tool.ResponsesToolShell.Environment == nil {
+			t.Fatal("expected Environment to be populated")
+		}
+		if tool.ResponsesToolShell.Environment.Type != "local" {
+			t.Errorf("environment type mismatch: expected local, got %s", tool.ResponsesToolShell.Environment.Type)
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+		if !mapsEqual(expected, actual) {
+			t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+
+	t.Run("shell tool local env with skills - round trip preserves skills", func(t *testing.T) {
+		jsonData := `{"type":"shell","environment":{"type":"local","skills":[{"name":"csv-workbench","description":"Analyze CSV files","path":"/abs/path/to/csv-workbench"}]}}`
+
+		var tool schemas.ResponsesTool
+		if err := json.Unmarshal([]byte(jsonData), &tool); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if tool.ResponsesToolShell == nil || tool.ResponsesToolShell.Environment == nil {
+			t.Fatal("expected ResponsesToolShell.Environment to be populated")
+		}
+		skills := tool.ResponsesToolShell.Environment.Skills
+		if len(skills) != 1 {
+			t.Fatalf("expected 1 skill, got %d", len(skills))
+		}
+		if skills[0].Name == nil || *skills[0].Name != "csv-workbench" {
+			t.Errorf("skill name mismatch")
+		}
+		if skills[0].Path == nil || *skills[0].Path != "/abs/path/to/csv-workbench" {
+			t.Errorf("skill path mismatch")
+		}
+		if skills[0].Description == nil || *skills[0].Description != "Analyze CSV files" {
+			t.Errorf("skill description mismatch")
+		}
+
+		data, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+
+		var expected, actual map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &expected); err != nil {
+			t.Fatalf("failed to unmarshal expected JSON: %v", err)
+		}
+		if err := json.Unmarshal(data, &actual); err != nil {
+			t.Fatalf("failed to unmarshal actual JSON: %v", err)
+		}
+		if !mapsEqual(expected, actual) {
+			t.Errorf("round-trip mismatch\nexpected: %s\nactual:   %s", jsonData, string(data))
+		}
+	})
+}
+
 func TestResponsesTool_MarshalUnmarshal_CustomTool(t *testing.T) {
 	jsonData := `{"type":"custom","name":"custom_tool","description":"A custom tool"}`
 
