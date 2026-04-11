@@ -80,7 +80,7 @@ export default function LoginView() {
 	};
 
 	// Use light logo for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";
+	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
 
 	// Show loading state while checking auth
 	if (isCheckingAuth || isLoadingIsAuthEnabled) {

@@ -18,7 +18,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ChevronDown, ChevronUp, MoreVertical, Trash2 } from "lucide-react";
-import moment from "moment";
+import { addMilliseconds, format, isValid } from "date-fns";
 import { useState, type ReactNode } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
@@ -138,14 +138,12 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNav
 							<LogEntryDetailsView
 								className="w-full"
 								label="Start Timestamp"
-								value={moment(log.timestamp).format("YYYY-MM-DD HH:mm:ss A")}
+								value={isValid(new Date(log.timestamp)) ? format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa") : "Invalid date"}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
 								label="End Timestamp"
-								value={moment(log.timestamp)
-									.add(log.latency || 0, "ms")
-									.format("YYYY-MM-DD HH:mm:ss A")}
+								value={isValid(new Date(log.timestamp)) ? format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa") : "Invalid date"}
 							/>
 							<LogEntryDetailsView className="w-full" label="Latency" value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"} />
 						</div>

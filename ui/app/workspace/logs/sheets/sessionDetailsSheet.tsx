@@ -13,7 +13,7 @@ import { useGetLogSessionSummaryByIdQuery, useLazyGetLogSessionByIdQuery } from 
 import { LogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import moment from "moment";
+import { format } from "date-fns";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { LogMessageCell } from "../views/columns";
@@ -98,12 +98,12 @@ export function SessionDetailsSheet({
 			},
 			{
 				label: "Started",
-				value: sessionSummary?.started_at ? moment(sessionSummary.started_at).format("MMM D, YYYY hh:mm:ss A") : "N/A",
+				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
 				size: "sm",
 			},
 			{
 				label: "Latest Update",
-				value: sessionSummary?.latest_at ? moment(sessionSummary.latest_at).format("MMM D, YYYY hh:mm:ss A") : "N/A",
+				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
 				size: "sm",
 			},
 			{
@@ -311,7 +311,7 @@ export function SessionDetailsSheet({
 													Current
 												</div>
 											) : null}
-											{moment(log.timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}
+											{format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa (XXX)")}
 										</TableCell>
 										<TableCell>
 											<Badge variant="outline" className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors]} text-xs`}>

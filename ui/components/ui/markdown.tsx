@@ -1,7 +1,11 @@
 import * as React from "react";
-import { Streamdown, type StreamdownProps } from "streamdown";
-import { code } from "@streamdown/code";
+import { Streamdown, type StreamdownProps, type CodeHighlighterPlugin } from "streamdown";
+import { code as bifrostCode } from "@/lib/markdown/codePlugin";
 import "streamdown/styles.css";
+
+// Our custom plugin only declares the languages we ship; cast widens the
+// signature to match streamdown's BundledLanguage-typed interface.
+const code = bifrostCode as unknown as CodeHighlighterPlugin;
 
 import { cn } from "@/components/ui/utils";
 

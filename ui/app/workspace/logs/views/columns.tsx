@@ -6,7 +6,7 @@ import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/li
 import { cn } from "@/lib/utils";
 import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown, Trash2 } from "lucide-react";
-import moment from "moment";
+import { format } from "date-fns";
 
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
@@ -164,7 +164,9 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 			),
 			cell: ({ row }) => {
 				const timestamp = row.original.timestamp;
-				return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+				const date = timestamp ? new Date(timestamp) : null;
+				const isValid = date && date.toString() !== "Invalid Date";
+				return <div className="text-xs">{isValid ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "N/A"}</div>;
 			},
 		},
 		{
