@@ -131,7 +131,7 @@ type RoutingTarget struct {
 	Provider *string `json:"provider,omitempty"` // nil = use incoming provider
 	Model    *string `json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
-	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+	Weight   float64 `json:"weight"`             // must be >= 0; all weights must sum to 1
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
@@ -3314,7 +3314,7 @@ func validateRoutingScope(scope string) error {
 	return nil
 }
 
-// validateRoutingTargets checks that all weights are positive, that no two
+// validateRoutingTargets checks that all weights are non-negative, that no two
 // targets share the same (provider, model, key_id) identity, and that all
 // weights sum to 1.
 func validateRoutingTargets(targets []RoutingTarget) error {
@@ -3322,7 +3322,7 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	total := 0.0
 	for _, t := range targets {
 		if t.Weight < 0 {
-			return fmt.Errorf("each target weight must be positive")
+			return fmt.Errorf("each target weight must be non-negative")
 		}
 		if t.KeyID != nil && *t.KeyID != "" && (t.Provider == nil || *t.Provider == "") {
 			return fmt.Errorf("key_id requires provider to be set")

@@ -200,8 +200,8 @@ export function RoutingRuleSheet({
 			return;
 		}
 		for (const t of targets) {
-			if (t.weight <= 0) {
-				toast.error("Each target weight must be greater than 0");
+			if (t.weight < 0) {
+				toast.error("Each target weight must be at least 0");
 				return;
 			}
 		}
@@ -644,7 +644,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 						<Input
 							id={`routing-target-${index}-weight-input`}
 							type="number"
-							min={0.001}
+							min={0}
 							max={1}
 							step={0.001}
 							value={target.weight}
