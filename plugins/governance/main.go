@@ -33,8 +33,40 @@ const (
 	governanceIsCacheReadContextKey schemas.BifrostContextKey = "bf-governance-is-cache-read"
 	governanceIsBatchContextKey     schemas.BifrostContextKey = "bf-governance-is-batch"
 
-	VirtualKeyPrefix = "sk-bf-"
+	// DefaultVirtualKeyPrefix is the historical hardcoded prefix that all
+	// virtual keys had to start with. It is preserved as the default value
+	// of VirtualKeyPrefix to keep existing deployments unchanged.
+	DefaultVirtualKeyPrefix = "sk-bf-"
 )
+
+// VirtualKeyPrefix is the prefix that virtual key values must begin with in
+// order to be recognized by the governance plugin's request parsers.
+//
+// It defaults to DefaultVirtualKeyPrefix ("sk-bf-") for backward compatibility.
+// Operators can override it via GovernanceConfig.VirtualKeyPrefix in their
+// bifrost config file (top-level "governance" section). This makes Bifrost a
+// true drop-in replacement for upstream gateways whose pre-existing master
+// keys do not match Bifrost's default scheme — renaming them in a brownfield
+// deployment would otherwise require touching every downstream consumer.
+//
+// Set via SetVirtualKeyPrefix() during config load, before any inference
+// requests are processed. After startup it is treated as immutable.
+var VirtualKeyPrefix = DefaultVirtualKeyPrefix
+
+// SetVirtualKeyPrefix overrides the package-level virtual key prefix.
+//
+// It MUST be called at most once, during config load, before any HTTP
+// transport handlers begin processing requests. Calling it after startup is
+// undefined behavior — the parser code paths read the value without
+// synchronization, on the assumption that it is fixed at boot.
+//
+// An empty string is a valid value and disables prefix enforcement entirely:
+// any non-empty header value will be treated as a candidate virtual key and
+// looked up in the store. This is the recommended setting for brownfield
+// migrations where existing API keys do not match Bifrost's default scheme.
+func SetVirtualKeyPrefix(prefix string) {
+	VirtualKeyPrefix = prefix
+}
 
 // Config is the configuration for the governance plugin
 type Config struct {

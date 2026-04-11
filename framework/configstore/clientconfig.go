@@ -1141,4 +1141,12 @@ type GovernanceConfig struct {
 	Providers    []tables.TableProvider    `json:"providers"`
 	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
 	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
+	// VirtualKeyPrefix overrides the global virtual key prefix used by the
+	// governance plugin. If nil, the built-in default ("sk-bf-") is used.
+	// Set to an empty string to disable prefix enforcement entirely (any
+	// non-empty value sent in x-bf-vk / Authorization Bearer / x-api-key /
+	// x-goog-api-key headers will be looked up as a virtual key).
+	// This setting is read once at config load time. Changes require a
+	// restart of the bifrost process to take effect.
+	VirtualKeyPrefix *string `json:"virtual_key_prefix,omitempty"`
 }

@@ -9,6 +9,7 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
@@ -503,11 +504,11 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.virtualKey)
 	}
 
-	// Handle Bearer token with sk-bf- prefix (virtual key via Authorization header)
+	// Handle Bearer token with the configured virtual key prefix (virtual key via Authorization header)
 	if auth.authorization != "" {
 		if strings.HasPrefix(auth.authorization, "Bearer ") {
 			token := strings.TrimPrefix(auth.authorization, "Bearer ")
-			if strings.HasPrefix(token, "sk-bf-") {
+			if strings.HasPrefix(token, governance.VirtualKeyPrefix) {
 				ctx.SetValue(schemas.BifrostContextKeyVirtualKey, token)
 			} else if h.handlerStore.ShouldAllowDirectKeys() {
 				key := schemas.Key{
@@ -521,8 +522,8 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 		}
 	}
 	if auth.apiKey != "" {
-		if strings.HasPrefix(auth.apiKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, "sk-bf-"))
+		if strings.HasPrefix(auth.apiKey, governance.VirtualKeyPrefix) {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.apiKey, governance.VirtualKeyPrefix))
 		} else if h.handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",
@@ -534,8 +535,8 @@ func (h *WSResponsesHandler) createBifrostContext(auth *authHeaders) (*schemas.B
 		}
 	}
 	if auth.googAPIKey != "" {
-		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
-			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, "sk-bf-"))
+		if strings.HasPrefix(auth.googAPIKey, governance.VirtualKeyPrefix) {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, strings.TrimPrefix(auth.googAPIKey, governance.VirtualKeyPrefix))
 		} else if h.handlerStore.ShouldAllowDirectKeys() {
 			key := schemas.Key{
 				ID:     "header-provided",

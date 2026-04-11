@@ -264,6 +264,10 @@
       "type": "object",
       "description": "Governance configuration for budgets, rate limits, customers, teams, virtual keys, and routing rules",
       "properties": {
+        "virtual_key_prefix": {
+          "type": "string",
+          "description": "Override the prefix that virtual key values must begin with. Defaults to 'sk-bf-' when omitted. Set to an empty string ('') to disable prefix enforcement entirely, which lets you reuse pre-existing master keys (e.g. those inherited from a previous LLM gateway) verbatim during a brownfield migration. Read once at startup; changes require a process restart."
+        },
         "budgets": {
           "type": "array",
           "description": "Budget configurations",

@@ -1099,6 +1099,13 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 // mergeGovernanceConfig merges governance config from file with store
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
+	// Apply VirtualKeyPrefix override BEFORE the virtual-key seed loop runs,
+	// so that the prefix validation/generation paths below honor the operator's
+	// custom prefix instead of silently rewriting their seed values.
+	if configData.Governance.VirtualKeyPrefix != nil {
+		governance.SetVirtualKeyPrefix(*configData.Governance.VirtualKeyPrefix)
+		logger.Info("virtual key prefix overridden to %q", governance.VirtualKeyPrefix)
+	}
 	// Merge Budgets by ID with hash comparison
 	budgetsToAdd := make([]configstoreTables.TableBudget, 0)
 	budgetsToUpdate := make([]configstoreTables.TableBudget, 0)
