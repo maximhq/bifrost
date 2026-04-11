@@ -395,6 +395,7 @@ bifrost:
         # TLS configuration
         tls_ca_cert: ""               # Path to TLS CA certificate file
         insecure: false               # Skip TLS verification (ignored if tls_ca_cert is set)
+        forward_raw_request_response: false  # Forward raw request/response payloads to OTEL span attributes
 
     datadog:
       enabled: false

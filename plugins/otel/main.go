@@ -52,6 +52,9 @@ type Config struct {
 	TLSCACert    string            `json:"tls_ca_cert"`
 	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set
 
+	// Forward raw request/response payloads to OTEL span attributes (default: false)
+	ForwardRawRequestResponse *bool `json:"forward_raw_request_response"`
+
 	// Metrics push configuration
 	MetricsEnabled      bool   `json:"metrics_enabled"`
 	MetricsEndpoint     string `json:"metrics_endpoint"`
@@ -78,6 +81,9 @@ type OtelPlugin struct {
 	client OtelClient
 
 	pricingManager *modelcatalog.ModelCatalog
+
+	// Forward raw request/response to OTEL spans
+	forwardRawRequestResponse bool
 
 	// Metrics push support
 	metricsExporter *MetricsExporter
@@ -119,6 +125,12 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 		}
 	}
+	// Resolve forward_raw_request_response (default false)
+	forwardRaw := false
+	if config.ForwardRawRequestResponse != nil {
+		forwardRaw = *config.ForwardRawRequestResponse
+	}
+
 	// Preparing the plugin
 	p := &OtelPlugin{
 		serviceName:               config.ServiceName,
@@ -129,6 +141,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
+		forwardRawRequestResponse: forwardRaw,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {

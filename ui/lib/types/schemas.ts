@@ -698,6 +698,8 @@ export const otelConfigSchema = z
 		// TLS configuration
 		tls_ca_cert: z.string().optional(),
 		insecure: z.boolean().default(true),
+		// Raw request/response forwarding
+		forward_raw_request_response: z.boolean().default(false),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: z.string().optional(),

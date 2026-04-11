@@ -89,6 +89,20 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
 func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
+	attrs := convertAttributesToKeyValues(span.Attributes)
+
+	// Strip raw request/response attributes when forwarding is disabled
+	if !p.forwardRawRequestResponse {
+		filtered := attrs[:0]
+		for _, kv := range attrs {
+			if kv.Key == schemas.AttrRawRequest || kv.Key == schemas.AttrRawResponse {
+				continue
+			}
+			filtered = append(filtered, kv)
+		}
+		attrs = filtered
+	}
+
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -96,7 +110,7 @@ func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *
 		Kind:              convertSpanKind(span.Kind),
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
-		Attributes:        convertAttributesToKeyValues(span.Attributes),
+		Attributes:        attrs,
 		Status:            convertSpanStatus(span.Status, span.StatusMsg),
 		Events:            convertSpanEvents(span.Events),
 	}
