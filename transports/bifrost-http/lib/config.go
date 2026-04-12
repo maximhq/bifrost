@@ -127,9 +127,9 @@ type ConfigData struct {
 	// from config.json. Omitting this field or setting it to 2 uses v1.5.0+ semantics:
 	// empty = deny all, ["*"] = allow all. Setting it to 1 restores v1.4.x semantics:
 	// empty = allow all (equivalent to ["*"]).
-	Version           int                                   `json:"version,omitempty"`
-	Client            *configstore.ClientConfig             `json:"client"`
-	EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
+	Version       int                       `json:"version,omitempty"`
+	Client        *configstore.ClientConfig `json:"client"`
+	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -2159,9 +2159,9 @@ func ResolveFrameworkPricingConfig(
 			case val <= 0:
 				// Zero or negative values are meaningless for a sync eligibility threshold.
 				logger.Warn("pricing_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
-			case val < modelcatalog.MinimumPricingSyncIntervalSec:
+			case val < modelcatalog.MinimumSyncIntervalSec:
 				// Accept but clamp to the schema-declared minimum of 3600 s (1 hour).
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
+				clamped := modelcatalog.MinimumSyncIntervalSec
 				logger.Warn("pricing_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
 				fileSyncSeconds = &clamped
 			default:
@@ -2213,11 +2213,11 @@ func ResolveFrameworkPricingConfig(
 				// Ignore and backfill the DB with the correctly resolved value.
 				logger.Warn("pricing_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedSyncSeconds)
 				needsDBUpdate = true
-			} else if val < modelcatalog.MinimumPricingSyncIntervalSec {
+			} else if val < modelcatalog.MinimumSyncIntervalSec {
 				// DB has a positive value below the minimum — clamp and backfill,
 				// consistent with the file-path validation in Phase 1.
-				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumPricingSyncIntervalSec)
-				clamped := modelcatalog.MinimumPricingSyncIntervalSec
+				logger.Warn("pricing_sync_interval in DB is below minimum (%d seconds), clamping to %d seconds — backfilling", val, modelcatalog.MinimumSyncIntervalSec)
+				clamped := modelcatalog.MinimumSyncIntervalSec
 				resolvedSyncSeconds = &clamped
 				intervalSource = "db"
 				needsDBUpdate = true

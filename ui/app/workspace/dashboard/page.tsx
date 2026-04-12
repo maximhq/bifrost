@@ -288,13 +288,7 @@ export default function DashboardPage() {
 
 		const fetchFilters = { filters };
 
-		const [
-			histogramResult,
-			tokenResult,
-			costResult,
-			modelResult,
-			latencyResult,
-		] = await Promise.all([
+		const [histogramResult, tokenResult, costResult, modelResult, latencyResult] = await Promise.all([
 			triggerHistogram(fetchFilters, false),
 			triggerTokens(fetchFilters, false),
 			triggerCost(fetchFilters, false),
@@ -312,14 +306,7 @@ export default function DashboardPage() {
 		setLoadingModels(false);
 		setLatencyData(latencyResult.data ?? null);
 		setLoadingLatency(false);
-	}, [
-		filters,
-		triggerHistogram,
-		triggerTokens,
-		triggerCost,
-		triggerModels,
-		triggerLatency,
-	]);
+	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency]);
 
 	// Fetch Provider Usage tab data (3 calls)
 	const fetchProviderData = useCallback(async () => {
@@ -329,11 +316,7 @@ export default function DashboardPage() {
 
 		const fetchFilters = { filters };
 
-		const [
-			providerCostResult,
-			providerTokenResult,
-			providerLatencyResult,
-		] = await Promise.all([
+		const [providerCostResult, providerTokenResult, providerLatencyResult] = await Promise.all([
 			triggerProviderCost(fetchFilters, false),
 			triggerProviderTokens(fetchFilters, false),
 			triggerProviderLatency(fetchFilters, false),
@@ -345,12 +328,7 @@ export default function DashboardPage() {
 		setLoadingProviderTokens(false);
 		setProviderLatencyData(providerLatencyResult.data ?? null);
 		setLoadingProviderLatency(false);
-	}, [
-		filters,
-		triggerProviderCost,
-		triggerProviderTokens,
-		triggerProviderLatency,
-	]);
+	}, [filters, triggerProviderCost, triggerProviderTokens, triggerProviderLatency]);
 
 	// Fetch MCP data
 	const fetchMcpData = useCallback(async () => {
@@ -382,7 +360,6 @@ export default function DashboardPage() {
 		setLoadingRankings(false);
 	}, [filters, triggerRankings]);
 
-	// --- Lazy-load refs: each tab fetches only once per filter change ---
 	const overviewFetchedRef = useRef(false);
 	const overviewLoadingRef = useRef(false);
 	const overviewGenRef = useRef(0);
@@ -408,14 +385,16 @@ export default function DashboardPage() {
 		if (overviewLoadingRef.current) return overviewPromiseRef.current ?? undefined;
 		const gen = overviewGenRef.current;
 		overviewLoadingRef.current = true;
-		const promise = fetchOverviewData().then(
-			() => { if (gen === overviewGenRef.current) overviewFetchedRef.current = true; },
-		).finally(() => {
-			if (gen === overviewGenRef.current) {
-				overviewLoadingRef.current = false;
-				overviewPromiseRef.current = null;
-			}
-		});
+		const promise = fetchOverviewData()
+			.then(() => {
+				if (gen === overviewGenRef.current) overviewFetchedRef.current = true;
+			})
+			.finally(() => {
+				if (gen === overviewGenRef.current) {
+					overviewLoadingRef.current = false;
+					overviewPromiseRef.current = null;
+				}
+			});
 		overviewPromiseRef.current = promise;
 		return promise;
 	}, [fetchOverviewData]);
@@ -425,14 +404,16 @@ export default function DashboardPage() {
 		if (providerLoadingRef.current) return providerPromiseRef.current ?? undefined;
 		const gen = providerGenRef.current;
 		providerLoadingRef.current = true;
-		const promise = fetchProviderData().then(
-			() => { if (gen === providerGenRef.current) providerFetchedRef.current = true; },
-		).finally(() => {
-			if (gen === providerGenRef.current) {
-				providerLoadingRef.current = false;
-				providerPromiseRef.current = null;
-			}
-		});
+		const promise = fetchProviderData()
+			.then(() => {
+				if (gen === providerGenRef.current) providerFetchedRef.current = true;
+			})
+			.finally(() => {
+				if (gen === providerGenRef.current) {
+					providerLoadingRef.current = false;
+					providerPromiseRef.current = null;
+				}
+			});
 		providerPromiseRef.current = promise;
 		return promise;
 	}, [fetchProviderData]);
@@ -442,14 +423,16 @@ export default function DashboardPage() {
 		if (mcpLoadingRef.current) return mcpPromiseRef.current ?? undefined;
 		const gen = mcpGenRef.current;
 		mcpLoadingRef.current = true;
-		const promise = fetchMcpData().then(
-			() => { if (gen === mcpGenRef.current) mcpFetchedRef.current = true; },
-		).finally(() => {
-			if (gen === mcpGenRef.current) {
-				mcpLoadingRef.current = false;
-				mcpPromiseRef.current = null;
-			}
-		});
+		const promise = fetchMcpData()
+			.then(() => {
+				if (gen === mcpGenRef.current) mcpFetchedRef.current = true;
+			})
+			.finally(() => {
+				if (gen === mcpGenRef.current) {
+					mcpLoadingRef.current = false;
+					mcpPromiseRef.current = null;
+				}
+			});
 		mcpPromiseRef.current = promise;
 		return promise;
 	}, [fetchMcpData]);
@@ -459,14 +442,16 @@ export default function DashboardPage() {
 		if (rankingsLoadingRef.current) return rankingsPromiseRef.current ?? undefined;
 		const gen = rankingsGenRef.current;
 		rankingsLoadingRef.current = true;
-		const promise = fetchRankingsData().then(
-			() => { if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true; },
-		).finally(() => {
-			if (gen === rankingsGenRef.current) {
-				rankingsLoadingRef.current = false;
-				rankingsPromiseRef.current = null;
-			}
-		});
+		const promise = fetchRankingsData()
+			.then(() => {
+				if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true;
+			})
+			.finally(() => {
+				if (gen === rankingsGenRef.current) {
+					rankingsLoadingRef.current = false;
+					rankingsPromiseRef.current = null;
+				}
+			});
 		rankingsPromiseRef.current = promise;
 		return promise;
 	}, [fetchRankingsData]);
@@ -646,12 +631,7 @@ export default function DashboardPage() {
 
 	// Preload all tab data (used by CSV and PDF export)
 	const handlePreloadData = useCallback(async () => {
-		await Promise.all([
-			ensureOverviewDataLoaded(),
-			ensureProviderDataLoaded(),
-			ensureRankingsDataLoaded(),
-			ensureMcpDataLoaded(),
-		]);
+		await Promise.all([ensureOverviewDataLoaded(), ensureProviderDataLoaded(), ensureRankingsDataLoaded(), ensureMcpDataLoaded()]);
 	}, [ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
 
 	// PDF export mode — when true, all TabsContent are force-mounted so
@@ -679,9 +659,7 @@ export default function DashboardPage() {
 
 		// Radix sets `hidden` on inactive force-mounted TabsContent.
 		// Temporarily remove it so html2canvas can capture them.
-		const hiddenTabs = document.querySelectorAll<HTMLElement>(
-			'[data-slot="tabs-content"][hidden]',
-		);
+		const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
 		hiddenTabsRef.current = Array.from(hiddenTabs);
 		for (const tab of hiddenTabs) {
 			tab.removeAttribute("hidden");
@@ -704,12 +682,7 @@ export default function DashboardPage() {
 			});
 		});
 
-		const ids = [
-			"dashboard-section-overview",
-			"dashboard-section-provider-usage",
-			"dashboard-section-rankings",
-			"dashboard-section-mcp",
-		];
+		const ids = ["dashboard-section-overview", "dashboard-section-provider-usage", "dashboard-section-rankings", "dashboard-section-mcp"];
 		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
 	}, [handlePreloadData]);
 
@@ -758,7 +731,12 @@ export default function DashboardPage() {
 					<h1 className="text-lg font-semibold">Dashboard</h1>
 				</div>
 				<div className="flex items-center gap-2">
-					<ExportPopover getData={getDashboardData} onPreloadData={handlePreloadData} onPdfExport={handlePdfExport} onPdfExportDone={handlePdfExportDone} />
+					<ExportPopover
+						getData={getDashboardData}
+						onPreloadData={handlePreloadData}
+						onPdfExport={handlePdfExport}
+						onPdfExportDone={handlePdfExportDone}
+					/>
 					{(urlState.tab === "overview" || urlState.tab === "provider-usage" || urlState.tab === "rankings") && (
 						<FilterPopover filters={filters} onFilterChange={handleFilterChange} showParentRequestIdFilter={false} />
 					)}
@@ -831,103 +809,103 @@ export default function DashboardPage() {
 				{/* Overview Tab */}
 				<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
 					<div id="dashboard-section-overview">
-					<OverviewTab
-						histogramData={histogramData}
-						tokenData={tokenData}
-						costData={costData}
-						modelData={modelData}
-						latencyData={latencyData}
-						loadingHistogram={loadingHistogram}
-						loadingTokens={loadingTokens}
-						loadingCost={loadingCost}
-						loadingModels={loadingModels}
-						loadingLatency={loadingLatency}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						volumeChartType={toChartType(urlState.volume_chart)}
-						tokenChartType={toChartType(urlState.token_chart)}
-						costChartType={toChartType(urlState.cost_chart)}
-						modelChartType={toChartType(urlState.model_chart)}
-						latencyChartType={toChartType(urlState.latency_chart)}
-						costModel={urlState.cost_model}
-						usageModel={urlState.usage_model}
-						costModels={costModels}
-						usageModels={usageModels}
-						availableModels={availableModels}
-						onVolumeChartToggle={handleVolumeChartToggle}
-						onTokenChartToggle={handleTokenChartToggle}
-						onCostChartToggle={handleCostChartToggle}
-						onModelChartToggle={handleModelChartToggle}
-						onLatencyChartToggle={handleLatencyChartToggle}
-						onCostModelChange={handleCostModelChange}
-						onUsageModelChange={handleUsageModelChange}
-					/>
+						<OverviewTab
+							histogramData={histogramData}
+							tokenData={tokenData}
+							costData={costData}
+							modelData={modelData}
+							latencyData={latencyData}
+							loadingHistogram={loadingHistogram}
+							loadingTokens={loadingTokens}
+							loadingCost={loadingCost}
+							loadingModels={loadingModels}
+							loadingLatency={loadingLatency}
+							startTime={urlState.start_time}
+							endTime={urlState.end_time}
+							volumeChartType={toChartType(urlState.volume_chart)}
+							tokenChartType={toChartType(urlState.token_chart)}
+							costChartType={toChartType(urlState.cost_chart)}
+							modelChartType={toChartType(urlState.model_chart)}
+							latencyChartType={toChartType(urlState.latency_chart)}
+							costModel={urlState.cost_model}
+							usageModel={urlState.usage_model}
+							costModels={costModels}
+							usageModels={usageModels}
+							availableModels={availableModels}
+							onVolumeChartToggle={handleVolumeChartToggle}
+							onTokenChartToggle={handleTokenChartToggle}
+							onCostChartToggle={handleCostChartToggle}
+							onModelChartToggle={handleModelChartToggle}
+							onLatencyChartToggle={handleLatencyChartToggle}
+							onCostModelChange={handleCostModelChange}
+							onUsageModelChange={handleUsageModelChange}
+						/>
 					</div>
 				</TabsContent>
 
 				{/* Provider Usage Tab */}
 				<TabsContent value="provider-usage" {...(pdfMode && { forceMount: true })}>
 					<div id="dashboard-section-provider-usage">
-					<ProviderUsageTab
-						providerCostData={providerCostData}
-						providerTokenData={providerTokenData}
-						providerLatencyData={providerLatencyData}
-						loadingProviderCost={loadingProviderCost}
-						loadingProviderTokens={loadingProviderTokens}
-						loadingProviderLatency={loadingProviderLatency}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						providerCostChartType={toChartType(urlState.provider_cost_chart)}
-						providerTokenChartType={toChartType(urlState.provider_token_chart)}
-						providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
-						providerCostProvider={urlState.provider_cost_provider}
-						providerTokenProvider={urlState.provider_token_provider}
-						providerLatencyProvider={urlState.provider_latency_provider}
-						availableProviders={availableProviders}
-						providerCostProviders={providerCostProviders}
-						providerTokenProviders={providerTokenProviders}
-						providerLatencyProviders={providerLatencyProviders}
-						onProviderCostChartToggle={handleProviderCostChartToggle}
-						onProviderTokenChartToggle={handleProviderTokenChartToggle}
-						onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
-						onProviderCostProviderChange={handleProviderCostProviderChange}
-						onProviderTokenProviderChange={handleProviderTokenProviderChange}
-						onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
-					/>
+						<ProviderUsageTab
+							providerCostData={providerCostData}
+							providerTokenData={providerTokenData}
+							providerLatencyData={providerLatencyData}
+							loadingProviderCost={loadingProviderCost}
+							loadingProviderTokens={loadingProviderTokens}
+							loadingProviderLatency={loadingProviderLatency}
+							startTime={urlState.start_time}
+							endTime={urlState.end_time}
+							providerCostChartType={toChartType(urlState.provider_cost_chart)}
+							providerTokenChartType={toChartType(urlState.provider_token_chart)}
+							providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
+							providerCostProvider={urlState.provider_cost_provider}
+							providerTokenProvider={urlState.provider_token_provider}
+							providerLatencyProvider={urlState.provider_latency_provider}
+							availableProviders={availableProviders}
+							providerCostProviders={providerCostProviders}
+							providerTokenProviders={providerTokenProviders}
+							providerLatencyProviders={providerLatencyProviders}
+							onProviderCostChartToggle={handleProviderCostChartToggle}
+							onProviderTokenChartToggle={handleProviderTokenChartToggle}
+							onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
+							onProviderCostProviderChange={handleProviderCostProviderChange}
+							onProviderTokenProviderChange={handleProviderTokenProviderChange}
+							onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
+						/>
 					</div>
 				</TabsContent>
 
 				{/* Model Rankings Tab */}
 				<TabsContent value="rankings" {...(pdfMode && { forceMount: true })}>
 					<div id="dashboard-section-rankings">
-					<ModelRankingsTab
-						rankingsData={rankingsData}
-						loading={loadingRankings}
-						modelData={modelData}
-						loadingModels={loadingModels}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-					/>
+						<ModelRankingsTab
+							rankingsData={rankingsData}
+							loading={loadingRankings}
+							modelData={modelData}
+							loadingModels={loadingModels}
+							startTime={urlState.start_time}
+							endTime={urlState.end_time}
+						/>
 					</div>
 				</TabsContent>
 
 				{/* MCP Tab */}
 				<TabsContent value="mcp" {...(pdfMode && { forceMount: true })}>
 					<div id="dashboard-section-mcp">
-					<MCPTab
-						mcpHistogramData={mcpHistogramData}
-						mcpCostData={mcpCostData}
-						mcpTopToolsData={mcpTopToolsData}
-						loadingMcpHistogram={loadingMcpHistogram}
-						loadingMcpCost={loadingMcpCost}
-						loadingMcpTopTools={loadingMcpTopTools}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
-						mcpCostChartType={toChartType(urlState.mcp_cost_chart)}
-						onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
-						onMcpCostChartToggle={handleMcpCostChartToggle}
-					/>
+						<MCPTab
+							mcpHistogramData={mcpHistogramData}
+							mcpCostData={mcpCostData}
+							mcpTopToolsData={mcpTopToolsData}
+							loadingMcpHistogram={loadingMcpHistogram}
+							loadingMcpCost={loadingMcpCost}
+							loadingMcpTopTools={loadingMcpTopTools}
+							startTime={urlState.start_time}
+							endTime={urlState.end_time}
+							mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
+							mcpCostChartType={toChartType(urlState.mcp_cost_chart)}
+							onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
+							onMcpCostChartToggle={handleMcpCostChartToggle}
+						/>
 					</div>
 				</TabsContent>
 

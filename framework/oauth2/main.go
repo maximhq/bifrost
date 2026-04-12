@@ -905,6 +905,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		redirectURI = templateConfig.RedirectURI
 	}
 	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
+		ctx,
 		templateConfig.TokenURL,
 		code,
 		templateConfig.ClientID,
@@ -1055,6 +1056,7 @@ func (p *OAuth2Provider) RefreshUserAccessToken(ctx context.Context, sessionToke
 
 	// Exchange refresh token
 	newTokenResponse, err := p.exchangeRefreshToken(
+		ctx,
 		templateConfig.TokenURL,
 		templateConfig.ClientID,
 		templateConfig.ClientSecret,

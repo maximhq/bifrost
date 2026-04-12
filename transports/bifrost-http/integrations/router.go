@@ -2314,8 +2314,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	// Capture trace completer BEFORE goroutine — ctx may be recycled inside goroutine.
+	// Signature: func(transportLogs []schemas.PluginLogEntry)
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -2336,9 +2337,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		defer schemas.ReleaseHTTPRequest(httpReq)
 		defer func() {
 			// Complete the trace after streaming finishes
-			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
+			// Router path has no transport post-hooks, so pass nil for transport logs.
 			if traceCompleter != nil {
-				traceCompleter()
+				traceCompleter(nil)
 			}
 		}()
 

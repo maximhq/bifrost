@@ -2699,12 +2699,8 @@ func (provider *AzureProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	if key.AzureKeyConfig == nil {
-		return nil, providerUtils.NewConfigurationError("azure key config not set", provider.GetProviderKey())
-	}
-
 	if key.AzureKeyConfig.Endpoint.GetValue() == "" {
-		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
 	url := provider.buildPassthroughURL(key, req.Path, req.RawQuery)
@@ -2743,7 +2739,7 @@ func (provider *AzureProvider) Passthrough(
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err, provider.GetProviderKey())
+		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
 	// Remove wire-level encoding headers after decoding; downstream should recalculate them for the buffered body.
@@ -2759,9 +2755,6 @@ func (provider *AzureProvider) Passthrough(
 		Body:       body,
 	}
 
-	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
-	bifrostResponse.ExtraFields.ModelRequested = req.Model
-	bifrostResponse.ExtraFields.RequestType = schemas.PassthroughRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -2779,12 +2772,8 @@ func (provider *AzureProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if key.AzureKeyConfig == nil {
-		return nil, providerUtils.NewConfigurationError("azure key config not set", provider.GetProviderKey())
-	}
-
 	if key.AzureKeyConfig.Endpoint.GetValue() == "" {
-		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
 	url := provider.buildPassthroughURL(key, req.Path, req.RawQuery)
@@ -2833,9 +2822,9 @@ func (provider *AzureProvider) PassthroughStream(
 			}
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 	}
 
 	headers := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -2846,18 +2835,13 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError(
 			"provider returned an empty stream body",
 			fmt.Errorf("provider returned an empty stream body"),
-			provider.GetProviderKey(),
 		)
 	}
 
 	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(rawBodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
 	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
 
-	extraFields := schemas.BifrostResponseExtraFields{
-		Provider:       provider.GetProviderKey(),
-		ModelRequested: req.Model,
-		RequestType:    schemas.PassthroughStreamRequest,
-	}
+	extraFields := schemas.BifrostResponseExtraFields{}
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
 	}
@@ -2867,9 +2851,9 @@ func (provider *AzureProvider) PassthroughStream(
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.GetProviderKey(), req.Model, schemas.PassthroughStreamRequest, provider.logger)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.logger)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.GetProviderKey(), req.Model, schemas.PassthroughStreamRequest, provider.logger)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.logger)
 			}
 			close(ch)
 		}()
@@ -2918,7 +2902,7 @@ func (provider *AzureProvider) PassthroughStream(
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				extraFields.Latency = time.Since(startTime).Milliseconds()
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, schemas.PassthroughStreamRequest, provider.GetProviderKey(), req.Model, provider.logger)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, provider.logger)
 				return
 			}
 		}

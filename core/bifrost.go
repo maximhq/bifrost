@@ -1026,9 +1026,10 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 				Message: "document type not provided for ocr request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.OCRRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.OCRRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1039,9 +1040,10 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 				Message: "document_url not provided for document_url type ocr request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.OCRRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.OCRRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}
@@ -1052,9 +1054,10 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 				Message: "image_url not provided for image_url type ocr request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.OCRRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
+				RequestType:            schemas.OCRRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
 			},
 		}
 	}

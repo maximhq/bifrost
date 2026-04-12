@@ -15884,8 +15884,8 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 
 		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
 		require.False(t, needsDBUpdate)
-		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedTable.PricingSyncInterval)
-		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.PricingSyncInterval)
+		require.Equal(t, modelcatalog.MinimumSyncIntervalSec, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, modelcatalog.MinimumSyncIntervalSec, *normalizedModelCatalog.PricingSyncInterval)
 	})
 
 	t.Run("file interval of zero is ignored and defaults apply", func(t *testing.T) {

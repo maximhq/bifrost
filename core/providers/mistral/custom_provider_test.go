@@ -25,7 +25,7 @@ func TestParseMistralError_UsesExportedConverterMetadata(t *testing.T) {
 	resp.SetStatusCode(http.StatusBadRequest)
 	resp.SetBodyString(`{"message":"invalid request","type":"invalid_request_error","code":"bad_request"}`)
 
-	bifrostErr := ParseMistralError(resp, schemas.OCRRequest, customMistralProviderName, "mistral-ocr-latest")
+	bifrostErr := ParseMistralError(resp)
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 
@@ -34,7 +34,7 @@ func TestParseMistralError_UsesExportedConverterMetadata(t *testing.T) {
 	assert.Equal(t, schemas.Ptr("bad_request"), bifrostErr.Error.Code)
 	assert.Equal(t, customMistralProviderName, bifrostErr.ExtraFields.Provider)
 	assert.Equal(t, schemas.OCRRequest, bifrostErr.ExtraFields.RequestType)
-	assert.Equal(t, "mistral-ocr-latest", bifrostErr.ExtraFields.ModelRequested)
+	assert.Equal(t, "mistral-ocr-latest", bifrostErr.ExtraFields.OriginalModelRequested)
 }
 
 func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetadata(t *testing.T) {
@@ -156,5 +156,5 @@ func TestMistralProvider_CustomAliasEmbeddingReportsAliasMetadata(t *testing.T) 
 	require.NotNil(t, response)
 
 	assert.Equal(t, customMistralProviderName, response.ExtraFields.Provider)
-	assert.Equal(t, "codestral-embed", response.ExtraFields.ModelRequested)
+	assert.Equal(t, "codestral-embed", response.ExtraFields.OriginalModelRequested)
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -156,20 +157,20 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var ocrParamsKnownFields = map[string]bool{
-	"model":                        true,
-	"id":                           true,
-	"document":                     true,
-	"fallbacks":                    true,
-	"include_image_base64":         true,
-	"pages":                        true,
-	"image_limit":                  true,
-	"image_min_size":               true,
-	"table_format":                 true,
-	"extract_header":               true,
-	"extract_footer":               true,
-	"bbox_annotation_format":       true,
-	"document_annotation_format":   true,
-	"document_annotation_prompt":   true,
+	"model":                      true,
+	"id":                         true,
+	"document":                   true,
+	"fallbacks":                  true,
+	"include_image_base64":       true,
+	"pages":                      true,
+	"image_limit":                true,
+	"image_min_size":             true,
+	"table_format":               true,
+	"extract_header":             true,
+	"extract_footer":             true,
+	"bbox_annotation_format":     true,
+	"document_annotation_format": true,
+	"document_annotation_prompt": true,
 }
 
 var speechParamsKnownFields = map[string]bool{
@@ -459,7 +460,7 @@ type RerankRequest struct {
 
 // OCRHandlerRequest is a bifrost OCR request
 type OCRHandlerRequest struct {
-	ID       *string            `json:"id,omitempty"`
+	ID       *string             `json:"id,omitempty"`
 	Document schemas.OCRDocument `json:"document"`
 	BifrostParams
 	*schemas.OCRParameters
@@ -1317,7 +1318,7 @@ func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
@@ -1667,8 +1668,16 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	// Capture trace completer BEFORE goroutine — ctx may be recycled inside goroutine.
+	// Signature: func(transportLogs []schemas.PluginLogEntry)
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
+	// Create atomic slot for the transport post-hook completer.
+	// TransportInterceptorMiddleware will populate this after next(ctx) returns
+	// with a closure that uses pre-captured data (no ctx access).
+	// The goroutine reads from its closure-captured copy of the slot.
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := h.config.GetStreamChunkInterceptor()
@@ -1686,12 +1695,15 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	go func() {
 		defer func() {
 			schemas.ReleaseHTTPRequest(httpReq)
-			// Retrieve and run transport post-hook completer before closing the stream
-			// so errors can still be communicated to the client as SSE events.
-			// Must retrieve here (not before goroutine) because TransportInterceptorMiddleware
-			// sets BifrostContextKeyTransportPostHookCompleter after next(ctx) returns.
-			if postHookCompleter, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(func() error); ok && postHookCompleter != nil {
-				if err := postHookCompleter(); err != nil {
+			// Run transport post-hooks using the pre-captured completer.
+			// The completerSlot was populated by TransportInterceptorMiddleware
+			// (which runs after handleStreamingResponse returns from next(ctx)).
+			// The closure does NOT access ctx — it uses pre-captured request/response data.
+			var transportLogs []schemas.PluginLogEntry
+			if fn, ok := completerSlot.Load().(func() ([]schemas.PluginLogEntry, error)); ok && fn != nil {
+				logs, err := fn()
+				transportLogs = logs
+				if err != nil {
 					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 					if marshalErr == nil {
 						reader.SendError(errorJSON)
@@ -1699,10 +1711,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 			reader.Done()
-			// Complete the trace after streaming finishes
-			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			// Complete the trace after streaming finishes, passing transport logs directly.
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
+			// Safe to call after reader.Done() because traceCompleter no longer accesses ctx.
 			if traceCompleter != nil {
-				traceCompleter()
+				traceCompleter(transportLogs)
 			}
 		}()
 

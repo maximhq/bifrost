@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	DefaultPricingSyncInterval    = 24 * time.Hour
-	MinimumPricingSyncIntervalSec = int64(3600)
+	DefaultSyncInterval    = 24 * time.Hour
+	MinimumSyncIntervalSec = int64(3600)
 
 	// syncWorkerTickerPeriod is the fixed interval at which the background sync worker
 	// wakes up to check whether a sync is due. This is independent of pricingSyncInterval —

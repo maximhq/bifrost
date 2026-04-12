@@ -438,7 +438,7 @@ func TestOCRWithMockServer(t *testing.T) {
 				assert.Equal(t, 2, resp.UsageInfo.PagesProcessed)
 				assert.Equal(t, schemas.OCRRequest, resp.ExtraFields.RequestType)
 				assert.Equal(t, schemas.Mistral, resp.ExtraFields.Provider)
-				assert.Equal(t, "mistral-ocr-latest", resp.ExtraFields.ModelRequested)
+				assert.Equal(t, "mistral-ocr-latest", resp.ExtraFields.OriginalModelRequested)
 			},
 		},
 		{
@@ -505,7 +505,7 @@ func TestOCRWithMockServer(t *testing.T) {
 				assert.Equal(t, "internal_error", *err.Error.Code)
 				assert.Equal(t, schemas.Mistral, err.ExtraFields.Provider)
 				assert.Equal(t, schemas.OCRRequest, err.ExtraFields.RequestType)
-				assert.Equal(t, "mistral-ocr-latest", err.ExtraFields.ModelRequested)
+				assert.Equal(t, "mistral-ocr-latest", err.ExtraFields.OriginalModelRequested)
 			},
 		},
 		{
