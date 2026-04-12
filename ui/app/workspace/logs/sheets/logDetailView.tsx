@@ -622,6 +622,39 @@ export function LogDetailView({
 					</>
 				)}
 			</div>
+			{log.attempt_trail && log.attempt_trail.length > 1 && (
+				<CollapsibleBox
+					title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
+					onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
+				>
+					<div className="overflow-x-auto px-6 py-3">
+						<table className="w-full text-xs border-collapse">
+							<thead>
+								<tr className="border-b border-border text-muted-foreground">
+									<th className="text-left py-1 pr-6 font-medium">#</th>
+									<th className="text-left py-1 pr-6 font-medium">Key</th>
+									<th className="text-left py-1 font-medium">Result</th>
+								</tr>
+							</thead>
+							<tbody>
+								{log.attempt_trail.map((record) => (
+									<tr key={record.attempt} className="border-b border-border/50 last:border-0">
+										<td className="py-1.5 pr-6 tabular-nums text-muted-foreground">{record.attempt + 1}</td>
+										<td className="py-1.5 pr-6 font-mono">{record.key_name || record.key_id}</td>
+										<td className="py-1.5">
+											{record.fail_reason ? (
+												<span className="text-destructive">{record.fail_reason}</span>
+											) : (
+												<span className="text-green-600 dark:text-green-400">success</span>
+											)}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
+				</CollapsibleBox>
+			)}
 			{log.routing_engine_logs && (
 				<CollapsibleBox title="Routing Decision Logs" onCopy={() => log.routing_engine_logs || ""}>
 					<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">

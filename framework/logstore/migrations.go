@@ -230,6 +230,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAttemptTrailColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2459,3 +2462,40 @@ func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB) error {
 	}
 	return nil
 }
+
+// migrationAddAttemptTrailColumn adds the attempt_trail column to the Log table.
+// This column stores a JSON-serialized []schemas.KeyAttemptRecord capturing the per-attempt
+// key selection history for requests that use key-based providers.
+func migrationAddAttemptTrailColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_attempt_trail_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "attempt_trail") {
+				if err := migrator.AddColumn(&Log{}, "attempt_trail"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "attempt_trail") {
+				if err := migrator.DropColumn(&Log{}, "attempt_trail"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding attempt trail column: %s", err.Error())
+	}
+	return nil
+}
+

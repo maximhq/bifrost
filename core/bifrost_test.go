@@ -57,7 +57,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test immediate success
 	t.Run("ImmediateSuccess", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			return "success", nil
 		}
@@ -66,6 +66,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -87,7 +88,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test success after retries
 	t.Run("SuccessAfterRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			if callCount <= 2 {
 				// First two calls fail with retryable error
@@ -101,6 +102,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -128,7 +130,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	logger := NewDefaultLogger(schemas.LogLevelError)
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 			callCount++
 			// Always fail with retryable error
 			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
@@ -138,6 +140,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 			ctx,
 			config,
 			handler,
+			nil,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
@@ -194,7 +197,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -203,6 +206,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 				ctx,
 				config,
 				handler,
+				nil,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
@@ -270,7 +274,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -279,6 +283,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 				ctx,
 				config,
 				handler,
+				nil,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
@@ -509,7 +514,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	var attemptCounts []int
 	callCount := 0
 
-	handler := func() (string, *schemas.BifrostError) {
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
 		callCount++
 		attemptCounts = append(attemptCounts, callCount)
 
@@ -526,6 +531,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 		ctx,
 		config,
 		handler,
+		nil,
 		schemas.ChatCompletionRequest,
 		schemas.OpenAI,
 		"gpt-4",
@@ -811,7 +817,7 @@ func (m *mockKVStore) Delete(key string) (bool, error) {
 	return false, nil
 }
 
-// Test selectKeyFromProviderForModel with session stickiness
+// Test selectKeyFromProviderForModelWithPool with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -842,13 +848,16 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-123")
 
-	// First call: cache miss, keySelector runs, key stored
-	key1, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	// First call: cache miss, keySelector runs, key stored; returns single-element pool (canRotate=false)
+	keys1, canRotate1, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
-		t.Fatalf("first selectKeyFromProviderForModel: %v", err)
+		t.Fatalf("first selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if key1.ID != "key-a" {
-		t.Errorf("first call: expected key-a, got %s", key1.ID)
+	if canRotate1 {
+		t.Error("first call: canRotate should be false for session-sticky request")
+	}
+	if len(keys1) != 1 || keys1[0].ID != "key-a" {
+		t.Errorf("first call: expected [key-a], got %v", keys1)
 	}
 	if keySelectorCalls != 1 {
 		t.Errorf("first call: expected 1 keySelector call, got %d", keySelectorCalls)
@@ -861,19 +870,22 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	}
 
 	// Second call: cache hit, same key returned, keySelector NOT called
-	key2, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
-		t.Fatalf("second selectKeyFromProviderForModel: %v", err)
+		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
 	}
-	if key2.ID != "key-a" {
-		t.Errorf("second call: expected key-a (sticky), got %s", key2.ID)
+	if canRotate2 {
+		t.Error("second call: canRotate should be false for session-sticky request")
+	}
+	if len(keys2) != 1 || keys2[0].ID != "key-a" {
+		t.Errorf("second call: expected [key-a] (sticky), got %v", keys2)
 	}
 	if keySelectorCalls != 1 {
 		t.Errorf("second call: keySelector should not run (cache hit), got %d calls", keySelectorCalls)
 	}
 }
 
-// Test selectKeyFromProviderForModel - no stickiness when session ID absent
+// Test selectKeyFromProviderForModelWithPool - no stickiness when session ID absent
 func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T) {
 	kvStore := newMockKVStore()
 	account := NewMockAccount()
@@ -901,23 +913,102 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	}
 
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	// No session ID set
+	// No session ID set — pool is returned with canRotate=true; keySelector is called each time.
 
 	for i := 0; i < 2; i++ {
-		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
-			t.Fatalf("selectKeyFromProviderForModel call %d: %v", i+1, err)
+			t.Fatalf("selectKeyFromProviderForModelWithPool call %d: %v", i+1, err)
 		}
-		if key.ID != "key-a" {
-			t.Fatalf("call %d: expected key-a, got %s", i+1, key.ID)
+		if !canRotate {
+			t.Fatalf("call %d: canRotate should be true without a session id", i+1)
+		}
+		if len(pool) == 0 {
+			t.Fatalf("call %d: expected non-empty pool", i+1)
 		}
 	}
-	if keySelectorCalls != 2 {
-		t.Errorf("expected 2 keySelector calls without a session id, got %d", keySelectorCalls)
+	if keySelectorCalls != 0 {
+		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
 	// KVStore should not have a sticky entry for an empty session id
 	if _, err := kvStore.Get(buildSessionKey(schemas.OpenAI, "", "gpt-4")); err == nil {
 		t.Error("kvstore should not have a sticky entry for an empty session id")
+	}
+}
+
+// TestSelectKeyFromProviderForModel_SessionStickinessNoRotation verifies that when a session ID
+// is present, rate-limit retries reuse the sticky key rather than rotating to another key.
+func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T) {
+	kvStore := newMockKVStore()
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewEnvVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewEnvVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+
+	deterministicSelector := func(ctx *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
+		return keys[0], nil // always picks key-a when pool includes it
+	}
+
+	ctx := context.Background()
+	bifrost, err := Init(ctx, schemas.BifrostConfig{
+		Account:     account,
+		Logger:      NewDefaultLogger(schemas.LogLevelError),
+		KVStore:     kvStore,
+		KeySelector: deterministicSelector,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeySessionID, "sess-sticky")
+	bfCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	config := createTestConfig(3, 0, 0)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	// Build keyProvider the same way requestWorker does.
+	pool, canRotate, poolErr := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if poolErr != nil {
+		t.Fatalf("pool build failed: %v", poolErr)
+	}
+	if canRotate {
+		t.Fatal("expected canRotate=false for session-sticky request")
+	}
+	if len(pool) != 1 || pool[0].ID != "key-a" {
+		t.Fatalf("expected sticky pool=[key-a], got %v", pool)
+	}
+
+	fixedKey := pool[0]
+	keyProvider := func(_ map[string]bool) (schemas.Key, error) { return fixedKey, nil }
+
+	// Simulate 3 rate-limit failures then success; all attempts must use key-a.
+	var usedKeyIDs []string
+	callCount := 0
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		usedKeyIDs = append(usedKeyIDs, k.ID)
+		callCount++
+		if callCount <= 3 {
+			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+		}
+		return "ok", nil
+	}
+
+	result, retryErr := executeRequestWithRetries(bfCtx, config, handler, keyProvider,
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+	if retryErr != nil {
+		t.Fatalf("expected success, got error: %v", retryErr)
+	}
+	if result != "ok" {
+		t.Errorf("expected 'ok', got %s", result)
+	}
+	for i, id := range usedKeyIDs {
+		if id != "key-a" {
+			t.Errorf("attempt %d: expected sticky key-a, got %s (full sequence: %v)", i, id, usedKeyIDs)
+		}
 	}
 }
 
@@ -939,7 +1030,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 		})
-		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
 			t.Fatal("expected error when model is only blacklisted")
 		}
@@ -956,7 +1047,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 				BlacklistedModels: []string{"gpt-4"},
 			},
 		})
-		_, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
 			t.Fatal("expected error when model is both allowed and blacklisted")
 		}
@@ -967,12 +1058,198 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 			{ID: "k1", Name: "K1", Value: *schemas.NewEnvVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
 			{ID: "k2", Name: "K2", Value: *schemas.NewEnvVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
-		key, err := bifrost.selectKeyFromProviderForModel(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if key.ID != "k2" {
-			t.Fatalf("expected k2, got %s", key.ID)
+		// After filtering, only k2 remains — single key returns canRotate=false.
+		if canRotate {
+			t.Fatal("expected canRotate=false for single-key pool after filtering")
+		}
+		if len(pool) != 1 || pool[0].ID != "k2" {
+			t.Fatalf("expected pool=[k2], got %v", pool)
+		}
+	})
+}
+
+// Test key rotation in executeRequestWithRetries on rate-limit errors
+func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
+	config := createTestConfig(3, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	keys := []schemas.Key{
+		{ID: "k1", Name: "K1"},
+		{ID: "k2", Name: "K2"},
+		{ID: "k3", Name: "K3"},
+	}
+
+	t.Run("RotatesKeyOnRateLimitRetry", func(t *testing.T) {
+		var selectedKeyIDs []string
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					return k, nil
+				}
+			}
+			// Fresh round
+			for id := range usedKeyIDs {
+				delete(usedKeyIDs, id)
+			}
+			return keys[0], nil
+		}
+
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			// First two calls rate-limit, third succeeds
+			if len(selectedKeyIDs) <= 2 {
+				return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+			}
+			return "success", nil
+		}
+
+		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("expected success, got error: %v", err)
+		}
+		if result != "success" {
+			t.Errorf("expected 'success', got %s", result)
+		}
+		if len(selectedKeyIDs) != 3 {
+			t.Fatalf("expected 3 attempts, got %d", len(selectedKeyIDs))
+		}
+		// Each attempt should use a different key
+		seen := map[string]struct{}{}
+		for _, id := range selectedKeyIDs {
+			seen[id] = struct{}{}
+		}
+		if len(seen) != len(selectedKeyIDs) {
+			t.Errorf("expected distinct keys per rate-limit retry, got %v", selectedKeyIDs)
+		}
+	})
+
+	t.Run("SameKeyOnNetworkError", func(t *testing.T) {
+		var selectedKeyIDs []string
+		keyProviderCalls := 0
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			keyProviderCalls++
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					return k, nil
+				}
+			}
+			for id := range usedKeyIDs {
+				delete(usedKeyIDs, id)
+			}
+			return keys[0], nil
+		}
+
+		callCount := 0
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			callCount++
+			if callCount <= 2 {
+				return "", createBifrostError(schemas.ErrProviderDoRequest, nil, nil, false)
+			}
+			return "success", nil
+		}
+
+		result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("expected success, got error: %v", err)
+		}
+		if result != "success" {
+			t.Errorf("expected 'success', got %s", result)
+		}
+		if len(selectedKeyIDs) != 3 {
+			t.Fatalf("expected 3 attempts, got %d", len(selectedKeyIDs))
+		}
+		if keyProviderCalls != 1 {
+			t.Fatalf("expected keyProvider to be called once for network retries, got %d", keyProviderCalls)
+		}
+		// All attempts should use the same key (network error = same key)
+		for i := 1; i < len(selectedKeyIDs); i++ {
+			if selectedKeyIDs[i] != selectedKeyIDs[0] {
+				t.Errorf("expected same key for all network-error retries, got %v", selectedKeyIDs)
+			}
+		}
+	})
+
+	t.Run("CyclesFreshRoundWhenPoolExhausted", func(t *testing.T) {
+		var selectedKeyIDs []string
+		// 3 keys, 6 retries — should cycle through all 3 keys twice
+		config6 := createTestConfig(5, 0, 0) // 5 retries = 6 total attempts
+		keyProvider := func(usedKeyIDs map[string]bool) (schemas.Key, error) {
+			available := make([]schemas.Key, 0)
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] {
+					available = append(available, k)
+				}
+			}
+			if len(available) == 0 {
+				for id := range usedKeyIDs {
+					delete(usedKeyIDs, id)
+				}
+				available = keys
+			}
+			return available[0], nil
+		}
+
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			selectedKeyIDs = append(selectedKeyIDs, k.ID)
+			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+		}
+
+		executeRequestWithRetries(ctx, config6, handler, keyProvider,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if len(selectedKeyIDs) != 6 {
+			t.Fatalf("expected 6 attempts (1 initial + 5 retries), got %d", len(selectedKeyIDs))
+		}
+		// First cycle: k1, k2, k3; second cycle: k1, k2, k3
+		expected := []string{"k1", "k2", "k3", "k1", "k2", "k3"}
+		for i, id := range selectedKeyIDs {
+			if id != expected[i] {
+				t.Errorf("attempt %d: expected key %s, got %s (full sequence: %v)", i, expected[i], id, selectedKeyIDs)
+			}
+		}
+	})
+
+	t.Run("NilKeyProviderUsesZeroKey", func(t *testing.T) {
+		cleanCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		cleanCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+		var receivedKey schemas.Key
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			receivedKey = k
+			return "ok", nil
+		}
+
+		result, err := executeRequestWithRetries(cleanCtx, config, handler, nil,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "ok" {
+			t.Errorf("expected 'ok', got %s", result)
+		}
+		if receivedKey.ID != "" {
+			t.Errorf("expected zero Key when keyProvider is nil, got ID=%s", receivedKey.ID)
+		}
+		if trail, ok := cleanCtx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
+			t.Fatalf("expected no attempt trail for nil keyProvider, got %v", trail)
+		}
+		if selectedID, _ := cleanCtx.Value(schemas.BifrostContextKeySelectedKeyID).(string); selectedID != "" {
+			t.Fatalf("expected empty selected key id, got %q", selectedID)
+		}
+		if selectedName, _ := cleanCtx.Value(schemas.BifrostContextKeySelectedKeyName).(string); selectedName != "" {
+			t.Fatalf("expected empty selected key name, got %q", selectedName)
 		}
 	})
 }

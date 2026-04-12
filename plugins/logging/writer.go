@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
@@ -358,6 +359,7 @@ func applyOutputFieldsToEntry(
 	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
+	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
 	entry.SelectedKeyName = selectedKeyName
@@ -400,5 +402,8 @@ func applyOutputFieldsToEntry(
 	if latency != 0 {
 		latF := float64(latency)
 		entry.Latency = &latF
+	}
+	if len(attemptTrail) > 0 {
+		entry.AttemptTrailParsed = attemptTrail
 	}
 }

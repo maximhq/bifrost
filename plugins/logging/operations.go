@@ -148,8 +148,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	data *UpdateLogData,
 ) error {
 	updates := make(map[string]interface{})
-	updates["selected_key_id"] = selectedKeyID
-	updates["selected_key_name"] = selectedKeyName
+	if selectedKeyID != "" {
+		updates["selected_key_id"] = selectedKeyID
+	}
+	if selectedKeyName != "" {
+		updates["selected_key_name"] = selectedKeyName
+	}
 	if latency != 0 {
 		updates["latency"] = float64(latency)
 	}

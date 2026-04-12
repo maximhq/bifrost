@@ -282,6 +282,7 @@ const (
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 )
 
 const (
@@ -296,6 +297,18 @@ const (
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
 )
+
+// KeyAttemptRecord captures the outcome of a single request attempt within executeRequestWithRetries.
+// One record is appended per attempt regardless of whether the key changed between attempts.
+// FailReason is supplementary retry metadata: it is populated only when another retry will be
+// attempted (i.e. a non-terminal attempt), and is nil on any terminal attempt — including success,
+// non-retryable failure, or a retryable error when no retries remain.
+type KeyAttemptRecord struct {
+	Attempt    int     `json:"attempt"`
+	KeyID      string  `json:"key_id"`
+	KeyName    string  `json:"key_name"`
+	FailReason *string `json:"fail_reason,omitempty"`
+}
 
 // RoutingEngineLogEntry represents a log entry from a routing engine
 // format: [timestamp] [engine] - message
