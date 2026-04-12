@@ -203,6 +203,22 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		logEntry.ListModelsOutputParsed = nil
 		logEntry.CacheDebugParsed = nil
 	}
+	if len(logEntry.ResponsesInputHistoryParsed) > 1 {
+		logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
+	}
+	logEntry.OutputMessageParsed = nil
+	logEntry.ResponsesOutputParsed = nil
+	logEntry.EmbeddingOutputParsed = nil
+	logEntry.RerankOutputParsed = nil
+	logEntry.OCROutputParsed = nil
+	logEntry.ParamsParsed = nil
+	logEntry.ToolsParsed = nil
+	logEntry.ToolCallsParsed = nil
+	logEntry.SpeechOutputParsed = nil
+	logEntry.TranscriptionOutputParsed = nil
+	logEntry.ImageGenerationOutputParsed = nil
+	logEntry.ListModelsOutputParsed = nil
+	logEntry.CacheDebugParsed = nil
 
 	message := struct {
 		Type      string        `json:"type"`

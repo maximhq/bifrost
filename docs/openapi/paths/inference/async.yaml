@@ -11,9 +11,9 @@ async-chat-completions:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -32,6 +32,11 @@ async-chat-completions:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-text-completions:
   post:
     operationId: createAsyncTextCompletion
@@ -41,9 +46,9 @@ async-text-completions:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -62,6 +67,11 @@ async-text-completions:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-responses:
   post:
     operationId: createAsyncResponse
@@ -71,9 +81,9 @@ async-responses:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -92,6 +102,11 @@ async-responses:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-embeddings:
   post:
     operationId: createAsyncEmbedding
@@ -100,9 +115,9 @@ async-embeddings:
       Submits an embedding request for asynchronous execution. Returns a job ID immediately
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -121,6 +136,11 @@ async-embeddings:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-speech:
   post:
     operationId: createAsyncSpeech
@@ -130,9 +150,9 @@ async-speech:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       SSE streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -151,6 +171,11 @@ async-speech:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-transcriptions:
   post:
     operationId: createAsyncTranscription
@@ -160,9 +185,9 @@ async-transcriptions:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -181,6 +206,11 @@ async-transcriptions:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-generation:
   post:
     operationId: createAsyncImageGeneration
@@ -190,9 +220,9 @@ async-image-generation:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -211,6 +241,11 @@ async-image-generation:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-edit:
   post:
     operationId: createAsyncImageEdit
@@ -220,9 +255,9 @@ async-image-edit:
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
       Streaming is not supported for async requests.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -241,6 +276,11 @@ async-image-edit:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-variation:
   post:
     operationId: createAsyncImageVariation
@@ -249,9 +289,9 @@ async-image-variation:
       Submits an image variation request for asynchronous execution. Returns a job ID immediately
       with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncResultTTL'
+    - $ref: '#/components/parameters/AsyncResultTTL'
     requestBody:
       required: true
       content:
@@ -272,6 +312,11 @@ async-image-variation:
 
 # --- Retrieval endpoints ---
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-chat-completions-job:
   get:
     operationId: getAsyncChatCompletionJob
@@ -280,9 +325,9 @@ async-chat-completions-job:
       Retrieves the status and result of an async chat completion job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -303,6 +348,11 @@ async-chat-completions-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-text-completions-job:
   get:
     operationId: getAsyncTextCompletionJob
@@ -311,9 +361,9 @@ async-text-completions-job:
       Retrieves the status and result of an async text completion job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -334,6 +384,11 @@ async-text-completions-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-responses-job:
   get:
     operationId: getAsyncResponseJob
@@ -342,9 +397,9 @@ async-responses-job:
       Retrieves the status and result of an async response job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -365,6 +420,11 @@ async-responses-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-embeddings-job:
   get:
     operationId: getAsyncEmbeddingJob
@@ -373,9 +433,9 @@ async-embeddings-job:
       Retrieves the status and result of an async embedding job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -396,6 +456,11 @@ async-embeddings-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-speech-job:
   get:
     operationId: getAsyncSpeechJob
@@ -404,9 +469,9 @@ async-speech-job:
       Retrieves the status and result of an async speech job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -427,6 +492,11 @@ async-speech-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-transcriptions-job:
   get:
     operationId: getAsyncTranscriptionJob
@@ -435,9 +505,9 @@ async-transcriptions-job:
       Retrieves the status and result of an async transcription job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -458,6 +528,11 @@ async-transcriptions-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-generation-job:
   get:
     operationId: getAsyncImageGenerationJob
@@ -466,9 +541,9 @@ async-image-generation-job:
       Retrieves the status and result of an async image generation job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -489,6 +564,11 @@ async-image-generation-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-edit-job:
   get:
     operationId: getAsyncImageEditJob
@@ -497,9 +577,9 @@ async-image-edit-job:
       Retrieves the status and result of an async image edit job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -520,6 +600,11 @@ async-image-edit-job:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 async-image-variation-job:
   get:
     operationId: getAsyncImageVariationJob
@@ -528,9 +613,9 @@ async-image-variation-job:
       Retrieves the status and result of an async image variation job.
       Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
     tags:
-      - Async Jobs
+    - Async Jobs
     parameters:
-      - $ref: '#/components/parameters/AsyncJobId'
+    - $ref: '#/components/parameters/AsyncJobId'
     responses:
       '200':
         description: Job completed (successfully or with failure)
@@ -553,6 +638,11 @@ async-image-variation-job:
 
 # --- Shared parameters ---
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 components:
   parameters:
     AsyncJobId:

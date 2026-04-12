@@ -383,9 +383,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddModelPricingUniqueIndex(ctx, db); err != nil {
 		return err
 	}
-  if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db); err != nil {
-    return err 
-  }
+	if err := migrationDefaultCompatShouldConvertParamsFalse(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPriorityTierPricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5867,7 +5873,6 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-
 			// Add calendar_aligned to governance_virtual_keys (VK-level setting)
 			if !mg.HasColumn(&tables.TableVirtualKey{}, "calendar_aligned") {
 				if err := mg.AddColumn(&tables.TableVirtualKey{}, "CalendarAligned"); err != nil {
@@ -5960,6 +5965,7 @@ func migrationAddMultiBudgetTables(ctx context.Context, db *gorm.DB) error {
 			// Drop legacy budget_id columns from VK and ProviderConfig (raw SQL to avoid GORM FK lookup issues)
 			_ = tx.Exec("ALTER TABLE governance_virtual_keys DROP COLUMN IF EXISTS budget_id")
 			_ = tx.Exec("ALTER TABLE governance_virtual_key_provider_configs DROP COLUMN IF EXISTS budget_id")
+
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -6074,6 +6080,68 @@ func migrationAddPerUserOAuthTables(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddPriorityTierPricingColumns adds pricing columns for the 272k token tier
+// and the 200k priority variants.
+func migrationAddPriorityTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_priority_tier_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"input_cost_per_token_above_272k_tokens",
+				"input_cost_per_token_above_272k_tokens_priority",
+				"output_cost_per_token_above_272k_tokens",
+				"output_cost_per_token_above_272k_tokens_priority",
+				"cache_read_input_token_cost_above_272k_tokens",
+				"cache_read_input_token_cost_above_272k_tokens_priority",
+				"input_cost_per_token_above_200k_tokens_priority",
+				"output_cost_per_token_above_200k_tokens_priority",
+				"cache_read_input_token_cost_above_200k_tokens_priority",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_above_272k_tokens",
+				"input_cost_per_token_above_272k_tokens_priority",
+				"output_cost_per_token_above_272k_tokens",
+				"output_cost_per_token_above_272k_tokens_priority",
+				"cache_read_input_token_cost_above_272k_tokens",
+				"cache_read_input_token_cost_above_272k_tokens_priority",
+				"input_cost_per_token_above_200k_tokens_priority",
+				"output_cost_per_token_above_200k_tokens_priority",
+				"cache_read_input_token_cost_above_200k_tokens_priority",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running priority tier pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPClientDiscoveredToolsColumns adds discovered_tools_json and tool_name_mapping_json columns to the mcp_client table
 func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -6111,6 +6179,55 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddFlexTierPricingColumns adds pricing columns for the flex service tier
+func migrationAddFlexTierPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_flex_tier_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_flex",
+				"output_cost_per_token_flex",
+				"cache_read_input_token_cost_flex",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_flex",
+				"output_cost_per_token_flex",
+				"cache_read_input_token_cost_flex",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running flex tier pricing columns migration: %s", err.Error())
 	}
 	return nil
 }

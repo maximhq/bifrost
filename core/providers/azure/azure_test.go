@@ -41,6 +41,7 @@ func TestAzure(t *testing.T) {
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
 		VideoGenerationModel: "sora-2",
+		PassthroughModel:     "gpt-4o",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             false, // Not supported
 			SimpleChat:                 true,
@@ -59,7 +60,7 @@ func TestAzure(t *testing.T) {
 			Embedding:                  true,
 			ListModels:                 true,
 			Reasoning:                  true,
-			ChatAudio:                  false,
+			ChatAudio:                  true,
 			Transcription:              false, // Disabled for azure because of 3 calls/minute quota
 			TranscriptionStream:        false, // Not properly supported yet by Azure
 			SpeechSynthesis:            false, // Disabled for azure because of 3 calls/minute quota
@@ -78,6 +79,7 @@ func TestAzure(t *testing.T) {
 			VideoList:                  false,
 			VideoDelete:                false,
 			InterleavedThinking:        true,
+			PassthroughAPI:             true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

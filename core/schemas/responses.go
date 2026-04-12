@@ -92,6 +92,22 @@ type BifrostResponsesResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+// BackfillParams populates response fields from the request that are needed
+func (resp *BifrostResponsesResponse) BackfillParams(request *BifrostResponsesRequest) {
+	if resp == nil || request == nil {
+		return
+	}
+	if resp.Model == "" {
+		resp.Model = request.Model
+	}
+	if resp.Object == "" {
+		resp.Object = "response"
+	}
+	if resp.CreatedAt == 0 {
+		resp.CreatedAt = int(time.Now().Unix())
+	}
+}
+
 func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	if resp == nil {
 		return nil
@@ -2080,9 +2096,9 @@ const (
 	ResponsesStreamResponseTypeWebSearchCallResultsAdded      ResponsesStreamResponseType = "response.web_search_call.results.added"
 	ResponsesStreamResponseTypeWebSearchCallResultsCompleted  ResponsesStreamResponseType = "response.web_search_call.results.completed"
 
-	ResponsesStreamResponseTypeWebFetchCallInProgress  ResponsesStreamResponseType = "response.web_fetch_call.in_progress"
-	ResponsesStreamResponseTypeWebFetchCallFetching    ResponsesStreamResponseType = "response.web_fetch_call.fetching"
-	ResponsesStreamResponseTypeWebFetchCallCompleted   ResponsesStreamResponseType = "response.web_fetch_call.completed"
+	ResponsesStreamResponseTypeWebFetchCallInProgress ResponsesStreamResponseType = "response.web_fetch_call.in_progress"
+	ResponsesStreamResponseTypeWebFetchCallFetching   ResponsesStreamResponseType = "response.web_fetch_call.fetching"
+	ResponsesStreamResponseTypeWebFetchCallCompleted  ResponsesStreamResponseType = "response.web_fetch_call.completed"
 
 	ResponsesStreamResponseTypeReasoningSummaryPartAdded ResponsesStreamResponseType = "response.reasoning_summary_part.added"
 	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"

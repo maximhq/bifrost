@@ -1,0 +1,86 @@
+---
+title: "v1.4.21"
+description: "v1.4.21 changelog - 2026-04-10"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.21
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.21
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.21
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.21">
+## ✨ Features
+
+- **OCR Endpoint** — Add end-to-end support for /v1/ocr endpoint with Mistral OCR (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- **Azure Passthrough** — Add Azure passthrough support for native Azure API calls
+- **OpenRouter Embeddings** — Add embeddings support for OpenRouter provider (thanks [@dennypradipta](https://github.com/dennypradipta)!)
+- **Redis TLS & Cluster** — Add TLS and cluster mode support for Redis connections and fix valkey-search query syntax
+- **272k Token Pricing** — Add 272k token tier and priority tier support in pricing
+- **OAuth MCP Hints** — Add next-step hints to OAuth MCP client creation response
+
+## 🐞 Fixed
+
+- **Pricing Sync Interval** — Correctly apply pricing_sync_interval and support env variables in pricing_url (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- **OAuth Transient Failures** — Don't mark OAuth config expired on transient network failures
+
+</Update>
+<Update label="Core" description="1.4.18">
+- feat: add end-to-end support for /v1/ocr endpoint with Mistral OCR (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: add Azure passthrough support
+- feat: add embeddings support for OpenRouter provider (thanks [@dennypradipta](https://github.com/dennypradipta)!)
+
+</Update>
+<Update label="Framework" description="1.2.37">
+- feat: add end-to-end support for /v1/ocr endpoint with Mistral OCR (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: add 272k token tier and priority tier support in pricing
+- feat: add TLS and cluster mode support for Redis connections
+- fix: correctly apply pricing_sync_interval and support env variables in pricing_url (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- fix: don't mark OAuth config expired on transient network failures
+- fix: valkey-search query syntax handling
+
+</Update>
+<Update label="governance" description="1.4.37">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="jsonparser" description="1.4.36">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="litellmcompat" description="0.0.26">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="logging" description="1.4.37">
+- feat: add OCR endpoint logging support
+
+</Update>
+<Update label="maxim" description="1.5.37">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="mocker" description="1.4.36">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="otel" description="1.1.36">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>
+<Update label="semanticcache" description="1.4.35">
+- feat: add TLS and cluster mode support for Redis connections
+- fix: valkey-search query syntax handling
+
+</Update>
+<Update label="telemetry" description="1.4.37">
+- chore: upgraded core to v1.4.18 and framework to v1.2.37
+
+</Update>

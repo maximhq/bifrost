@@ -136,3 +136,71 @@ type MistralTranscriptionUsage struct {
 	TotalTokens        int `json:"total_tokens,omitempty"`
 	CompletionTokens   int `json:"completion_tokens,omitempty"`
 }
+
+// ============================================================================
+// OCR Types
+// ============================================================================
+
+// MistralOCRDocument represents the document input for a Mistral OCR request.
+type MistralOCRDocument struct {
+	Type        string `json:"type"`
+	DocumentURL string `json:"document_url,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+}
+
+// MistralOCRRequest represents a Mistral OCR API request.
+type MistralOCRRequest struct {
+	Model                    string                 `json:"model"`
+	ID                       string                 `json:"id,omitempty"`
+	Document                 MistralOCRDocument     `json:"document"`
+	IncludeImageBase64       *bool                  `json:"include_image_base64,omitempty"`
+	Pages                    []int                  `json:"pages,omitempty"`
+	ImageLimit               *int                   `json:"image_limit,omitempty"`
+	ImageMinSize             *int                   `json:"image_min_size,omitempty"`
+	TableFormat              *string                `json:"table_format,omitempty"`
+	ExtractHeader            *bool                  `json:"extract_header,omitempty"`
+	ExtractFooter            *bool                  `json:"extract_footer,omitempty"`
+	BBoxAnnotationFormat     *string                `json:"bbox_annotation_format,omitempty"`
+	DocumentAnnotationFormat *string                `json:"document_annotation_format,omitempty"`
+	DocumentAnnotationPrompt *string                `json:"document_annotation_prompt,omitempty"`
+	ExtraParams              map[string]interface{} `json:"-"`
+}
+
+// MistralOCRPageImage represents an extracted image in Mistral's OCR response.
+type MistralOCRPageImage struct {
+	ID           string  `json:"id"`
+	TopLeftX     float64 `json:"top_left_x"`
+	TopLeftY     float64 `json:"top_left_y"`
+	BottomRightX float64 `json:"bottom_right_x"`
+	BottomRightY float64 `json:"bottom_right_y"`
+	ImageBase64  *string `json:"image_base64,omitempty"`
+}
+
+// MistralOCRPageDimensions represents page dimensions in Mistral's OCR response.
+type MistralOCRPageDimensions struct {
+	DPI    int `json:"dpi"`
+	Height int `json:"height"`
+	Width  int `json:"width"`
+}
+
+// MistralOCRPage represents a single page in Mistral's OCR response.
+type MistralOCRPage struct {
+	Index      int                       `json:"index"`
+	Markdown   string                    `json:"markdown"`
+	Images     []MistralOCRPageImage     `json:"images,omitempty"`
+	Dimensions *MistralOCRPageDimensions `json:"dimensions,omitempty"`
+}
+
+// MistralOCRUsageInfo represents usage information in Mistral's OCR response.
+type MistralOCRUsageInfo struct {
+	PagesProcessed int `json:"pages_processed"`
+	DocSizeBytes   int `json:"doc_size_bytes"`
+}
+
+// MistralOCRResponse represents Mistral's OCR API response.
+type MistralOCRResponse struct {
+	Model              string              `json:"model"`
+	Pages              []MistralOCRPage    `json:"pages"`
+	UsageInfo          *MistralOCRUsageInfo `json:"usage_info,omitempty"`
+	DocumentAnnotation *string             `json:"document_annotation,omitempty"`
+}

@@ -41,7 +41,7 @@ func basePassthroughChatRequest(model string) *schemas.BifrostChatRequest {
 //
 // Streaming is requested when stream is true.
 // Returns (req, true) for supported providers, (zero, false) to signal skip.
-func buildPassthroughChatReq(provider schemas.ModelProvider, model string, stream bool) (passthroughChatReq, bool) {
+func buildPassthroughChatReq(t *testing.T, provider schemas.ModelProvider, model string, stream bool) (passthroughChatReq, bool) {
 	bfReq := basePassthroughChatRequest(model)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -53,9 +53,22 @@ func buildPassthroughChatReq(provider schemas.ModelProvider, model string, strea
 		}
 		body, err := sonic.Marshal(nativeReq)
 		if err != nil {
-			return passthroughChatReq{}, false
+			t.Fatalf("openai: failed to marshal passthrough chat request: %v", err)
 		}
 		return passthroughChatReq{path: "/v1/chat/completions", body: body}, true
+
+	case schemas.Azure:
+		nativeReq := openai.ToOpenAIChatRequest(ctx, bfReq)
+		if stream {
+			nativeReq.Stream = bifrost.Ptr(true)
+		}
+		body, err := sonic.Marshal(nativeReq)
+		if err != nil {
+			t.Fatalf("azure: failed to marshal passthrough chat request: %v", err)
+		}
+		// Azure passthrough expects the deployment-based path; api-version is
+		// injected automatically by buildPassthroughURL from the key config.
+		return passthroughChatReq{path: fmt.Sprintf("/openai/deployments/%s/chat/completions", model), body: body}, true
 
 	case schemas.Anthropic:
 		nativeReq, err := anthropic.ToAnthropicChatRequest(ctx, bfReq)
@@ -67,7 +80,7 @@ func buildPassthroughChatReq(provider schemas.ModelProvider, model string, strea
 		}
 		body, err := sonic.Marshal(nativeReq)
 		if err != nil {
-			return passthroughChatReq{}, false
+			t.Fatalf("anthropic: failed to marshal passthrough chat request: %v", err)
 		}
 		return passthroughChatReq{path: "/v1/messages", body: body}, true
 
@@ -78,7 +91,7 @@ func buildPassthroughChatReq(provider schemas.ModelProvider, model string, strea
 		}
 		body, err := sonic.Marshal(nativeReq)
 		if err != nil {
-			return passthroughChatReq{}, false
+			t.Fatalf("gemini: failed to marshal passthrough chat request: %v", err)
 		}
 		endpoint := ":generateContent"
 		query := ""
@@ -137,7 +150,7 @@ func RunPassthroughAPITest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 				t.Parallel()
 			}
 
-			req, ok := buildPassthroughChatReq(testConfig.Provider, model, false)
+			req, ok := buildPassthroughChatReq(t, testConfig.Provider, model, false)
 			if !ok {
 				t.Skipf("PassthroughAPI/NonStream: no native request format defined for provider %s", testConfig.Provider)
 			}
@@ -186,7 +199,7 @@ func RunPassthroughAPITest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 				t.Parallel()
 			}
 
-			req, ok := buildPassthroughChatReq(testConfig.Provider, model, true)
+			req, ok := buildPassthroughChatReq(t, testConfig.Provider, model, true)
 			if !ok {
 				t.Skipf("PassthroughAPI/Stream: no native request format defined for provider %s", testConfig.Provider)
 			}

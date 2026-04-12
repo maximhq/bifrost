@@ -1,0 +1,199 @@
+---
+title: "Claude Desktop"
+description: "Route Claude Desktop App traffic through Bifrost for multi-provider routing, virtual keys, and observability."
+icon: "desktop"
+---
+
+The [Claude Desktop App](https://claude.ai/download) brings Claude to your desktop with a chat interface and a built-in Code tab powered by [Claude Code](https://claude.com/product/claude-code). By routing the Code tab through Bifrost, you get multi-provider routing, virtual keys, budget controls, and full observability.
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Claude Desktop, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
+## How It Works
+
+The Claude Desktop App has two tabs with different routing behavior:
+
+| Tab | Traffic | Bifrost Integration |
+|-----|---------|-------------------|
+| **Code tab** | Uses the Anthropic Messages API (Claude Code under the hood) | Route inference through Bifrost's `/anthropic` endpoint |
+| **Chat tab** | Connects directly to claude.ai | Connect to Bifrost's `/mcp` endpoint for MCP tools |
+
+This guide covers configuring the **Code tab** for inference routing and the **Chat tab** for MCP tool access.
+
+## Setup
+
+### 1. Configure settings.json
+
+Open `~/.claude/settings.json` and add the Bifrost endpoint and API key under the `env` key:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "your-bifrost-virtual-key",
+    "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic"
+  }
+}
+```
+
+For production deployments:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "your-bifrost-virtual-key",
+    "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic"
+  }
+}
+```
+
+<Tip>
+You can open this file by running `/config` inside Claude Code, or by editing `~/.claude/settings.json` directly. These settings are shared between the Desktop app and the CLI.
+</Tip>
+
+### 2. Start a New Session
+
+Close any active session in the Code tab and start a new one for the settings to take effect.
+
+## Amazon Bedrock via Bifrost
+
+### Setup
+
+Add the Bifrost endpoint and pin model versions in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "bifrost-virtual-key",
+    "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "bedrock/global.anthropic.claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
+  }
+}
+```
+
+If you don't pin using settings.json - you can pin these in UI. Go to Dashboard > Models > Model Providers > AWS Bedrock > Key. And add deployments.
+
+<Frame>
+   <img src="/media/cli/claude-bedrock-pinning.png" alt="Claude bedrock pinning" />
+</Frame>
+
+<Warning>
+Always pin model versions when using Bedrock. Without pinning, Claude Code aliases resolve to the latest version, which may not be enabled in your Bedrock account.
+</Warning>
+
+## Google Vertex AI via Bifrost
+
+### Setup
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "bifrost-virtual-key",
+    "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "vertex/claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "vertex/claude-haiku-4-5"
+  }
+}
+```
+
+## Azure via Bifrost
+
+### Setup
+
+```json
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "bifrost-virtual-key",
+    "ANTHROPIC_BASE_URL": "http://localhost:8080/anthropic",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "azure/claude-sonnet-4-6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-5"
+  }
+}
+```
+
+You will also have to map these model names to actual deployment names on Bifrost dashboard.
+
+<Frame>
+   <img src="/media/cli/claude-azure-pinning.png" alt="Claude Azure pinning" />
+</Frame>
+
+<Warning>
+Azure-hosted models must support **tool use capabilities** for Claude Code to function properly. Verify tool calling support before configuring Azure models.
+</Warning>
+
+## Model Configuration
+
+The Code tab uses three model tiers: **Sonnet** (default), **Opus** (complex tasks), and **Haiku** (fast, lightweight). With Bifrost, you can override these defaults to use any model from any provider.
+
+**Override Default Models:**
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "openai/gpt-5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "anthropic/claude-opus-4-5-20251101",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "azure/claude-haiku-4-5"
+  }
+}
+```
+
+<Warning>
+Alternative models must support **tool use capabilities** for file operations, terminal commands, and code editing to work properly with Claude Code.
+</Warning>
+
+## MCP Integration (Chat Tab)
+
+The Chat tab supports MCP servers configured in `claude_desktop_config.json`. Connect to Bifrost's MCP endpoint to give the Chat tab access to all your aggregated MCP tools:
+
+**Config file locations:**
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer your-bifrost-virtual-key"
+      }
+    }
+  }
+}
+```
+
+<Note>
+MCP servers in `claude_desktop_config.json` are for the **Chat tab only**. For MCP in the Code tab, configure servers in `~/.claude.json` or your project's `.mcp.json` file. See [MCP Gateway URL](/mcp/gateway-url) for full setup details.
+</Note>
+
+## Enterprise Deployment
+
+For organization-wide Bifrost routing, deploy a `managed-settings.json` file via MDM (Jamf, Kandji, Intune):
+
+- **macOS**: `/Library/Application Support/ClaudeCode/managed-settings.json`
+- **Windows**: `C:\Program Files\ClaudeCode\managed-settings.json`
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
+    "ANTHROPIC_API_KEY": "org-bifrost-virtual-key"
+  }
+}
+```
+
+Managed settings cannot be overridden by individual users, ensuring all Code tab traffic routes through Bifrost.
+
+## Observability
+
+All Claude Desktop Code tab requests through Bifrost are logged. Monitor them at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage patterns across your organization.
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
+- [Built-in Observability](/features/observability/default) — Monitor all AI traffic
+- [MCP Gateway URL](/mcp/gateway-url) — Full MCP server setup and tool filtering

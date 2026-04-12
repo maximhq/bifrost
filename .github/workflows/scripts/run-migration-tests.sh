@@ -1328,6 +1328,78 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
   fi
+
+  # governance_model_pricing.base_model (added in v1.4.20)
+  if column_exists_postgres "governance_model_pricing" "base_model"; then
+    echo "UPDATE governance_model_pricing SET base_model = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET base_model = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # config_client.whitelisted_routes_json (added in v1.4.20 - JSON serialized []string)
+  if column_exists_postgres "config_client" "whitelisted_routes_json"; then
+    echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.21 columns - governance_model_pricing 272k tier and priority tier pricing
+  # -------------------------------------------------------------------------
+
+  # 200k priority tier columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_above_200k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_above_200k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_read_input_token_cost_above_200k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # 272k tier columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_above_272k_tokens"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_above_272k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_above_272k_tokens"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_above_272k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_read_input_token_cost_above_272k_tokens"; then
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_read_input_token_cost_above_272k_tokens_priority"; then
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.21 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs.ocr_output (added in v1.4.21 - OCR endpoint logging)
+  if column_exists_postgres "logs" "ocr_output"; then
+    echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # mcp_tool_logs.request_id (added in v1.4.21)
+  if column_exists_postgres "mcp_tool_logs" "request_id"; then
+    echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+    echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1895,7 +1967,69 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\"],\"output_modalities\":[\"text\"]}' WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET architecture = '{\"modality\":\"text\",\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]}' WHERE id = 2;" >> "$output_file"
     fi
+
+    # config_client.whitelisted_routes_json (added in v1.4.20 - JSON serialized []string)
+    if column_exists_sqlite "$config_db" "config_client" "whitelisted_routes_json"; then
+      echo "UPDATE config_client SET whitelisted_routes_json = '[]' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # -------------------------------------------------------------------------
+    # v1.4.21 columns - governance_model_pricing 272k tier and priority tier pricing
+    # -------------------------------------------------------------------------
+
+    # 200k priority tier columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_above_200k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_above_200k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_above_200k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_200k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_200k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # 272k tier columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_above_272k_tokens"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_above_272k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_above_272k_tokens"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_above_272k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_above_272k_tokens"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_above_272k_tokens_priority"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_above_272k_tokens_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.21 columns - log store tables (emitted unconditionally; fail silently on config_db)
+  # -------------------------------------------------------------------------
+
+  # logs.ocr_output (added in v1.4.21 - OCR endpoint logging)
+  echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET ocr_output = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # mcp_tool_logs.request_id (added in v1.4.21)
+  echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
+  echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
 }
 
 # ============================================================================

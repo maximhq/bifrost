@@ -85,6 +85,10 @@ func applySerializedLogUpdates(
 			updates["rerank_output"] = entry.RerankOutput
 			updates["content_summary"] = entry.ContentSummary
 		}
+		if data.OCROutput != nil {
+			updates["ocr_output"] = entry.OCROutput
+			updates["content_summary"] = entry.ContentSummary
+		}
 		if data.SpeechOutput != nil {
 			updates["speech_output"] = entry.SpeechOutput
 		}
@@ -234,6 +238,10 @@ func (p *LoggerPlugin) updateLogEntry(
 		}
 		if data.RerankOutput != nil {
 			tempEntry.RerankOutputParsed = data.RerankOutput
+			needsSerialization = true
+		}
+		if data.OCROutput != nil {
+			tempEntry.OCROutputParsed = data.OCROutput
 			needsSerialization = true
 		}
 		if data.SpeechOutput != nil {
@@ -703,6 +711,12 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		}
 		if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
 			entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data
+		}
+		if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
+			entry.RerankOutputParsed = result.RerankResponse.Results
+		}
+		if result.OCRResponse != nil {
+			entry.OCROutputParsed = result.OCRResponse
 		}
 		if result.SpeechResponse != nil {
 			entry.SpeechOutputParsed = result.SpeechResponse
@@ -1499,6 +1513,12 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 		return &schemas.BifrostResponse{
 			RerankResponse: &schemas.BifrostRerankResponse{
 				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.OCRRequest:
+		return &schemas.BifrostResponse{
+			OCRResponse: &schemas.BifrostOCRResponse{
 				ExtraFields: extra,
 			},
 		}
