@@ -319,6 +319,15 @@ The database migration runs automatically on startup, migrating existing deploym
           "gpt-4o-mini": "my-mini-deployment"
         }
       }]
+    "ollama": {
+      "keys": [
+        {
+          "id": "ollama-local",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": { "url": "http://localhost:11434" }
+        }
+      }]
     }
   }
 }

@@ -104,3 +104,666 @@ oauth-config-status:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── Per-User OAuth 2.1 Authorization Server ───────────────────────────────
+# These endpoints implement RFC 7591 (dynamic registration), RFC 7636 (PKCE),
+# and the OAuth 2.1 authorization code flow. MCP clients use them automatically
+# when connecting to Bifrost's /mcp endpoint. Only active when at least one MCP
+# client is configured with auth_type: per_user_oauth.
+
+per-user-oauth-register:
+  post:
+    operationId: registerPerUserOAuthClient
+    summary: Register OAuth client (RFC 7591)
+    description: |
+      Dynamic Client Registration per RFC 7591. MCP clients (Claude Code, Cursor, etc.)
+      call this endpoint to obtain a `client_id` before initiating the authorization flow.
+
+      This endpoint is only available when at least one MCP client is configured with
+      `auth_type: per_user_oauth`. Returns `404` otherwise.
+
+      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/oauth.yaml#/PerUserOAuthClientRegistrationRequest'
+          example:
+            client_name: "Claude Code"
+            redirect_uris: ["http://localhost:54321/callback"]
+            grant_types: ["authorization_code"]
+            response_types: ["code"]
+            token_endpoint_auth_method: "none"
+    responses:
+      '201':
+        description: Client registered successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/PerUserOAuthClientRegistrationResponse'
+            example:
+              client_id: "550e8400-e29b-41d4-a716-446655440000"
+              client_name: "Claude Code"
+              redirect_uris: ["http://localhost:54321/callback"]
+              grant_types: ["authorization_code"]
+              token_endpoint_auth_method: "none"
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: No per-user OAuth MCP clients configured
+        content:
+          text/plain:
+            schema:
+              type: string
+      '503':
+        description: Config store is disabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+per-user-oauth-authorize:
+  get:
+    operationId: authorizePerUserOAuth
+    summary: Authorization endpoint (OAuth 2.1)
+    description: |
+      OAuth 2.1 authorization endpoint. Validates the request parameters, creates a
+      browser-bound `PendingFlow` record (15-minute TTL), and redirects the user to
+      the Bifrost consent screen at `/oauth/consent?flow_id=xxx`.
+
+      **PKCE is required** — `code_challenge` and `code_challenge_method=S256` must
+      be provided. Plain code challenges are not supported.
+
+      A `__bifrost_flow_secret` HttpOnly SameSite=Lax cookie is set on redirect to
+      bind the consent flow to the initiating browser session (CSRF protection).
+
+      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    parameters:
+      - name: response_type
+        in: query
+        required: true
+        description: Must be `code`
+        schema:
+          type: string
+          enum: [code]
+      - name: client_id
+        in: query
+        required: true
+        description: Client ID obtained from the registration endpoint
+        schema:
+          type: string
+      - name: redirect_uri
+        in: query
+        required: true
+        description: Must match a URI registered for this client
+        schema:
+          type: string
+      - name: code_challenge
+        in: query
+        required: true
+        description: PKCE code challenge (Base64URL-encoded SHA-256 of the code verifier)
+        schema:
+          type: string
+      - name: code_challenge_method
+        in: query
+        required: true
+        description: Must be `S256`
+        schema:
+          type: string
+          enum: [S256]
+      - name: state
+        in: query
+        required: false
+        description: Opaque value to maintain state between request and callback (CSRF protection)
+        schema:
+          type: string
+    responses:
+      '302':
+        description: Redirect to consent screen at `/oauth/consent?flow_id=xxx`
+        headers:
+          Location:
+            schema:
+              type: string
+            description: URL of the consent screen
+          Set-Cookie:
+            schema:
+              type: string
+            description: "`__bifrost_flow_secret` HttpOnly SameSite=Lax cookie for browser binding"
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: No per-user OAuth MCP clients configured, or unknown client_id
+        content:
+          text/plain:
+            schema:
+              type: string
+      '503':
+        description: Config store is disabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+per-user-oauth-token:
+  post:
+    operationId: exchangePerUserOAuthToken
+    summary: Token endpoint (OAuth 2.1)
+    description: |
+      OAuth 2.1 token endpoint. Exchanges a single-use authorization code (5-minute TTL)
+      for a Bifrost-issued access token (24-hour TTL) using PKCE verification.
+
+      The request body must be `application/x-www-form-urlencoded`.
+
+      The returned `access_token` is the Bearer token to use on subsequent `/mcp` requests.
+      It carries the user's upstream service tokens (Notion, GitHub, etc.) linked to their
+      identity (Virtual Key or User ID) from the consent flow.
+
+      Authentication is not required — this is part of the unauthenticated OAuth bootstrap flow.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    requestBody:
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required:
+              - grant_type
+              - code
+              - code_verifier
+            properties:
+              grant_type:
+                type: string
+                description: Must be `authorization_code`
+                enum: [authorization_code]
+              code:
+                type: string
+                description: Authorization code received in the redirect callback
+              redirect_uri:
+                type: string
+                description: Must match the redirect_uri used in the authorize request (if provided)
+              client_id:
+                type: string
+                description: Client ID (optional — code is already bound to the client)
+              code_verifier:
+                type: string
+                description: PKCE code verifier — the raw secret whose SHA-256 matches the code_challenge
+    responses:
+      '200':
+        description: Token issued successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/PerUserOAuthTokenResponse'
+            example:
+              access_token: "abc123xyz..."
+              token_type: "Bearer"
+              expires_in: 86400
+              scope: "mcp:read mcp:write"
+      '400':
+        description: Invalid grant, expired code, PKCE failure, or unsupported grant type
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+                  enum: [invalid_grant, invalid_request, unsupported_grant_type]
+                error_description:
+                  type: string
+      '404':
+        description: No per-user OAuth MCP clients configured
+        content:
+          text/plain:
+            schema:
+              type: string
+      '500':
+        description: Server error or session creation failed
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+                  enum: [server_error]
+                error_description:
+                  type: string
+
+per-user-oauth-upstream-authorize:
+  get:
+    operationId: authorizeUpstreamPerUserOAuth
+    summary: Upstream OAuth proxy — authorize with upstream service
+    description: |
+      Initiates an OAuth flow with an upstream MCP service (Notion, GitHub, etc.)
+      on behalf of the current user. Used during the consent flow (via "Connect" buttons
+      on the MCPs page) and at runtime when a tool call is made to an unauthenticated service.
+
+      **Consent flow** — provide `flow_id` (from the pending consent flow). The browser-binding
+      cookie (`__bifrost_flow_secret`) is validated.
+
+      **Runtime flow** — provide `session` (the Bifrost session ID from the token endpoint).
+      Used when a service was skipped during consent and needs to be connected later.
+
+      On success, redirects the user to the upstream provider's authorize URL. After the user
+      grants access, the upstream callback lands at `/api/oauth/callback`, stores the upstream
+      token against the user's identity, and redirects back to the consent screen (consent flow)
+      or returns an authorization success page (runtime flow).
+
+      Authentication is not required — cookie/session validation is performed instead.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    parameters:
+      - name: mcp_client_id
+        in: query
+        required: true
+        description: ID of the per-user OAuth MCP client to authenticate with
+        schema:
+          type: string
+      - name: flow_id
+        in: query
+        required: false
+        description: |
+          Pending consent flow ID. Required if `session` is not provided.
+          The `__bifrost_flow_secret` cookie must be present and match the flow.
+        schema:
+          type: string
+      - name: session
+        in: query
+        required: false
+        description: |
+          Bifrost session ID (from the token endpoint). Required if `flow_id` is not provided.
+          Used for runtime (post-consent) upstream authorization.
+        schema:
+          type: string
+    responses:
+      '302':
+        description: Redirect to upstream OAuth provider's authorize URL
+        headers:
+          Location:
+            schema:
+              type: string
+            description: Upstream provider authorization URL with PKCE parameters
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Invalid or expired flow/session
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '403':
+        description: Browser-binding cookie mismatch (CSRF protection)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '404':
+        description: MCP client not found or not configured for per-user OAuth
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Config store is disabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+# ─── Per-User OAuth Consent Flow (browser UI) ──────────────────────────────
+# These endpoints serve HTML pages and handle form submissions for the
+# multi-step consent flow. They are browser-facing, not JSON API endpoints.
+# All endpoints validate the __bifrost_flow_secret browser-binding cookie.
+
+consent-identity-page:
+  get:
+    operationId: getConsentIdentityPage
+    summary: Consent identity selection page
+    description: |
+      Renders the identity selection screen where the user chooses how to identify
+      themselves for the session: Virtual Key, User ID, or Skip (session-only auth).
+
+      The `__bifrost_flow_secret` HttpOnly cookie set during `/api/oauth/per-user/authorize`
+      must be present — it binds the consent flow to the initiating browser.
+
+      The Skip option is only shown when `enforce_auth_on_inference` is `false` in config.
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    parameters:
+      - name: flow_id
+        in: query
+        required: true
+        description: Pending flow ID from the authorize redirect
+        schema:
+          type: string
+      - name: error
+        in: query
+        required: false
+        description: Error message to display (used on redirect-back from failed form submissions)
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Identity selection HTML page
+        content:
+          text/html:
+            schema:
+              type: string
+      '400':
+        description: Missing or expired flow_id
+        content:
+          text/plain:
+            schema:
+              type: string
+      '403':
+        description: Browser-binding cookie mismatch
+        content:
+          text/plain:
+            schema:
+              type: string
+
+consent-mcps-page:
+  get:
+    operationId: getConsentMCPsPage
+    summary: Consent MCP services page
+    description: |
+      Renders the MCP services connection screen. Shows all per-user OAuth MCP servers
+      available on the user's Virtual Key (or all servers if no VK was selected).
+      Each service shows a "Connect" link or a "Connected ✓" badge.
+
+      Requires the `__bifrost_flow_secret` browser-binding cookie.
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    parameters:
+      - name: flow_id
+        in: query
+        required: true
+        description: Pending flow ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP services connection HTML page
+        content:
+          text/html:
+            schema:
+              type: string
+      '400':
+        description: Missing or expired flow_id
+        content:
+          text/plain:
+            schema:
+              type: string
+      '403':
+        description: Browser-binding cookie mismatch
+        content:
+          text/plain:
+            schema:
+              type: string
+
+consent-submit-vk:
+  post:
+    operationId: submitConsentVirtualKey
+    summary: Submit Virtual Key identity
+    description: |
+      Validates the submitted Virtual Key and links it to the pending flow as the user's
+      identity. On success, redirects to the MCPs page. On failure, redirects back to the
+      identity page with an error message.
+
+      Request body is `application/x-www-form-urlencoded` (browser form submission).
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    requestBody:
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required: [flow_id, vk]
+            properties:
+              flow_id:
+                type: string
+                description: Pending flow ID
+              vk:
+                type: string
+                description: Virtual Key value (validated against the database)
+    responses:
+      '302':
+        description: |
+          Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to
+          `/oauth/consent?flow_id=xxx&error=...` on failure.
+        headers:
+          Location:
+            schema:
+              type: string
+
+consent-submit-user-id:
+  post:
+    operationId: submitConsentUserID
+    summary: Submit User ID identity
+    description: |
+      Links a self-declared User ID to the pending flow as the user's identity.
+      On success, redirects to the MCPs page.
+
+      The User ID is self-declared with no server-side verification — it matches
+      the trust model of the `X-Bf-User-Id` header in the LLM Gateway path.
+
+      Request body is `application/x-www-form-urlencoded` (browser form submission).
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    requestBody:
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required: [flow_id, user_id]
+            properties:
+              flow_id:
+                type: string
+                description: Pending flow ID
+              user_id:
+                type: string
+                description: Self-declared user identifier (max 255 characters)
+    responses:
+      '302':
+        description: |
+          Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to
+          `/oauth/consent?flow_id=xxx&error=...` on failure.
+        headers:
+          Location:
+            schema:
+              type: string
+
+consent-skip:
+  post:
+    operationId: skipConsentIdentity
+    summary: Skip identity selection
+    description: |
+      Skips identity selection and proceeds directly to the MCPs page. Upstream service
+      tokens will be stored against the session token only (not a persistent identity),
+      so they will not carry over to other sessions or the LLM Gateway.
+
+      Only available when `enforce_auth_on_inference` is `false` in config. Returns a
+      redirect back to the identity page with an error if auth enforcement is enabled.
+
+      Request body is `application/x-www-form-urlencoded` (browser form submission).
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    requestBody:
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required: [flow_id]
+            properties:
+              flow_id:
+                type: string
+                description: Pending flow ID
+    responses:
+      '302':
+        description: |
+          Redirect to `/oauth/consent/mcps?flow_id=xxx` on success, or back to
+          `/oauth/consent?flow_id=xxx&error=...` if identity enforcement is required.
+        headers:
+          Location:
+            schema:
+              type: string
+
+consent-submit:
+  post:
+    operationId: submitConsent
+    summary: Finalize consent flow
+    description: |
+      Finalizes the consent flow atomically:
+      1. Creates a `TablePerUserOAuthSession` (24h Bifrost session token)
+      2. Transfers upstream tokens from the flow proxy to the session
+      3. Issues a single-use `TablePerUserOAuthCode` (5-minute TTL, PKCE-bound)
+      4. Deletes the `PendingFlow`
+      5. Redirects to the MCP client's `redirect_uri` with `code` and `state`
+
+      The MCP client then exchanges the code at `/api/oauth/per-user/token`.
+
+      Request body is `application/x-www-form-urlencoded` (browser form submission).
+    tags:
+      - Per-User OAuth
+      - Consent Flow
+    requestBody:
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required: [flow_id]
+            properties:
+              flow_id:
+                type: string
+                description: Pending flow ID
+    responses:
+      '302':
+        description: |
+          Redirect to the MCP client's registered `redirect_uri` with
+          `?code=xxx&state=yyy` query parameters.
+        headers:
+          Location:
+            schema:
+              type: string
+            description: MCP client callback URL with code and state
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Browser-binding cookie mismatch
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '409':
+        description: Consent flow already submitted (duplicate submission prevention)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '410':
+        description: Consent flow expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ─── OAuth Discovery (RFC 9728 + RFC 8414) ─────────────────────────────────
+# These well-known endpoints enable MCP clients to auto-discover Bifrost's
+# OAuth configuration. Only active when at least one MCP client is configured
+# with auth_type: per_user_oauth.
+
+oauth-protected-resource-metadata:
+  get:
+    operationId: getOAuthProtectedResourceMetadata
+    summary: Protected Resource Metadata (RFC 9728)
+    description: |
+      Returns the OAuth 2.0 Protected Resource Metadata document per RFC 9728.
+
+      MCP clients fetch this after receiving a `401` response from `/mcp` (with a
+      `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource"`
+      header). The response tells the client which authorization server(s) protect the
+      `/mcp` resource so it can proceed with discovery.
+
+      Returns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    responses:
+      '200':
+        description: Protected resource metadata
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/ProtectedResourceMetadata'
+            example:
+              resource: "https://your-bifrost-domain.com/mcp"
+              authorization_servers: ["https://your-bifrost-domain.com"]
+              scopes_supported: ["mcp:read", "mcp:write"]
+              bearer_methods_supported: ["header"]
+      '404':
+        description: No per-user OAuth MCP clients configured
+        content:
+          text/plain:
+            schema:
+              type: string
+
+oauth-authorization-server-metadata:
+  get:
+    operationId: getOAuthAuthorizationServerMetadata
+    summary: Authorization Server Metadata (RFC 8414)
+    description: |
+      Returns the OAuth 2.0 Authorization Server Metadata document per RFC 8414.
+
+      After fetching the Protected Resource Metadata, MCP clients fetch this endpoint
+      to discover Bifrost's OAuth endpoints (register, authorize, token) and capabilities
+      (PKCE methods, grant types, etc.).
+
+      Returns `404` when no MCP clients are configured with `auth_type: per_user_oauth`.
+    tags:
+      - OAuth
+      - Per-User OAuth
+    responses:
+      '200':
+        description: Authorization server metadata
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/AuthorizationServerMetadata'
+            example:
+              issuer: "https://your-bifrost-domain.com"
+              authorization_endpoint: "https://your-bifrost-domain.com/api/oauth/per-user/authorize"
+              token_endpoint: "https://your-bifrost-domain.com/api/oauth/per-user/token"
+              registration_endpoint: "https://your-bifrost-domain.com/api/oauth/per-user/register"
+              response_types_supported: ["code"]
+              grant_types_supported: ["authorization_code"]
+              code_challenge_methods_supported: ["S256"]
+              token_endpoint_auth_methods_supported: ["none"]
+              scopes_supported: ["mcp:read", "mcp:write"]
+      '404':
+        description: No per-user OAuth MCP clients configured
+        content:
+          text/plain:
+            schema:
+              type: string

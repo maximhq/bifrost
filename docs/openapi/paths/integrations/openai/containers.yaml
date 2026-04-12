@@ -9,7 +9,7 @@ containers:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -27,6 +27,11 @@ containers:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: openaiListContainers
     summary: List containers (OpenAI format)
@@ -35,29 +40,29 @@ containers:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider to list containers for (defaults to openai)
-      - name: limit
-        in: query
-        schema:
-          type: integer
-        description: Maximum containers to return
-      - name: after
-        in: query
-        schema:
-          type: string
-        description: Cursor for pagination
-      - name: order
-        in: query
-        schema:
-          type: string
-          enum: [asc, desc]
-        description: Sort order
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider to list containers for (defaults to openai)
+    - name: limit
+      in: query
+      schema:
+        type: integer
+      description: Maximum containers to return
+    - name: after
+      in: query
+      schema:
+        type: string
+      description: Cursor for pagination
+    - name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+      description: Sort order
     responses:
       '200':
         description: Successful response
@@ -70,6 +75,11 @@ containers:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 containers-by-id:
   get:
     operationId: openaiRetrieveContainer
@@ -79,19 +89,19 @@ containers-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     responses:
       '200':
         description: Successful response
@@ -103,6 +113,11 @@ containers-by-id:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: openaiDeleteContainer
     summary: Delete container (OpenAI format)
@@ -111,19 +126,19 @@ containers-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID to delete
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID to delete
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     responses:
       '200':
         description: Successful response
@@ -140,6 +155,11 @@ containers-by-id:
 # CONTAINER FILES ENDPOINTS
 # =============================================================================
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files:
   post:
     operationId: openaiCreateContainerFile
@@ -150,19 +170,19 @@ container-files:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}/files`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     requestBody:
       required: true
       content:
@@ -183,6 +203,11 @@ container-files:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: openaiListContainerFiles
     summary: List files in container (OpenAI format)
@@ -191,35 +216,35 @@ container-files:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}/files`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
-      - name: limit
-        in: query
-        schema:
-          type: integer
-        description: Maximum files to return
-      - name: after
-        in: query
-        schema:
-          type: string
-        description: Cursor for pagination
-      - name: order
-        in: query
-        schema:
-          type: string
-          enum: [asc, desc]
-        description: Sort order
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
+    - name: limit
+      in: query
+      schema:
+        type: integer
+      description: Maximum files to return
+    - name: after
+      in: query
+      schema:
+        type: string
+      description: Cursor for pagination
+    - name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+      description: Sort order
     responses:
       '200':
         description: Successful response
@@ -232,6 +257,11 @@ container-files:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files-by-id:
   get:
     operationId: openaiRetrieveContainerFile
@@ -241,25 +271,25 @@ container-files-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}/files/{file_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     responses:
       '200':
         description: Successful response
@@ -271,6 +301,11 @@ container-files-by-id:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: openaiDeleteContainerFile
     summary: Delete file from container (OpenAI format)
@@ -279,25 +314,25 @@ container-files-by-id:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}/files/{file_id}`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID to delete
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID to delete
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     responses:
       '200':
         description: Successful response
@@ -310,6 +345,11 @@ container-files-by-id:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files-content:
   get:
     operationId: openaiGetContainerFileContent
@@ -319,25 +359,25 @@ container-files-content:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/containers/{container_id}/files/{file_id}/content`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Container ID
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
-      - name: provider
-        in: query
-        schema:
-          type: string
-        description: Provider for the container (defaults to openai)
+    - name: container_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Container ID
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
+    - name: provider
+      in: query
+      schema:
+        type: string
+      description: Provider for the container (defaults to openai)
     responses:
       '200':
         description: Successful response
@@ -350,3 +390,8 @@ container-files-content:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

@@ -46,6 +46,7 @@ type UpdateLogData struct {
 	ResponsesOutput        []schemas.ResponsesMessage
 	EmbeddingOutput        []schemas.EmbeddingData
 	RerankOutput           []schemas.RerankResult
+	OCROutput              *schemas.BifrostOCRResponse // For OCR responses
 	ErrorDetails           *schemas.BifrostError
 	SpeechOutput           *schemas.BifrostSpeechResponse          // For non-streaming speech responses
 	TranscriptionOutput    *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
@@ -480,6 +481,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Params = req.EmbeddingRequest.Params
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
+		case schemas.OCRRequest:
+			initialData.Params = req.OCRRequest.Params
 		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 			initialData.Params = req.SpeechRequest.Params
 			initialData.SpeechInput = req.SpeechRequest.Input

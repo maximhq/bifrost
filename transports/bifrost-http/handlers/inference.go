@@ -155,6 +155,23 @@ var rerankParamsKnownFields = map[string]bool{
 	"return_documents":   true,
 }
 
+var ocrParamsKnownFields = map[string]bool{
+	"model":                        true,
+	"id":                           true,
+	"document":                     true,
+	"fallbacks":                    true,
+	"include_image_base64":         true,
+	"pages":                        true,
+	"image_limit":                  true,
+	"image_min_size":               true,
+	"table_format":                 true,
+	"extract_header":               true,
+	"extract_footer":               true,
+	"bbox_annotation_format":       true,
+	"document_annotation_format":   true,
+	"document_annotation_prompt":   true,
+}
+
 var speechParamsKnownFields = map[string]bool{
 	"model":           true,
 	"input":           true,
@@ -440,6 +457,14 @@ type RerankRequest struct {
 	*schemas.RerankParameters
 }
 
+// OCRHandlerRequest is a bifrost OCR request
+type OCRHandlerRequest struct {
+	ID       *string            `json:"id,omitempty"`
+	Document schemas.OCRDocument `json:"document"`
+	BifrostParams
+	*schemas.OCRParameters
+}
+
 type SpeechRequest struct {
 	*schemas.SpeechInput
 	BifrostParams
@@ -573,6 +598,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses":              schemas.ResponsesRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
 	"/v1/images/generations":     schemas.ImageGenerationRequest,
@@ -617,6 +643,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
@@ -1208,6 +1235,96 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.RerankRequest(bifrostCtx, bifrostRerankReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil && resp.ExtraFields.ProviderResponseHeaders != nil {
+		forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	// Send successful response
+	SendJSON(ctx, resp)
+}
+
+// prepareOCRRequest prepares a BifrostOCRRequest from the HTTP request body
+func prepareOCRRequest(ctx *fasthttp.RequestCtx) (*OCRHandlerRequest, *schemas.BifrostOCRRequest, error) {
+	var req OCRHandlerRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
+	}
+
+	// Parse model
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
+	}
+
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse fallbacks: %v", err)
+	}
+
+	if req.Document.Type == "" {
+		return nil, nil, fmt.Errorf("document type is required for ocr")
+	}
+
+	if req.Document.Type == schemas.OCRDocumentTypeDocumentURL && (req.Document.DocumentURL == nil || *req.Document.DocumentURL == "") {
+		return nil, nil, fmt.Errorf("document_url is required when document type is document_url")
+	}
+
+	if req.Document.Type == schemas.OCRDocumentTypeImageURL && (req.Document.ImageURL == nil || *req.Document.ImageURL == "") {
+		return nil, nil, fmt.Errorf("image_url is required when document type is image_url")
+	}
+
+	// Extract extra params
+	if req.OCRParameters == nil {
+		req.OCRParameters = &schemas.OCRParameters{}
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), ocrParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.OCRParameters.ExtraParams = extraParams
+	}
+
+	// Create BifrostOCRRequest
+	bifrostOCRReq := &schemas.BifrostOCRRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		ID:        req.ID,
+		Document:  req.Document,
+		Params:    req.OCRParameters,
+		Fallbacks: fallbacks,
+	}
+
+	return &req, bifrostOCRReq, nil
+}
+
+// ocr handles POST /v1/ocr - Process OCR requests
+func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
+	_, bifrostOCRReq, err := prepareOCRRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.OCRRequest(bifrostCtx, bifrostOCRReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)

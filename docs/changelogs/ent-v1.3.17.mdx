@@ -1,0 +1,88 @@
+---
+title: "v1.3.17"
+description: "Enterprise v1.3.17 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.17">
+
+## Changelog
+
+This release introduces model blacklisting in load balancing, Fireworks AI provider support, cluster stability improvements with unique node IDs and leader visibility, and numerous OSS fixes including Bedrock streaming retries and Gemini thinking budget validation.
+
+## ✨ Features
+
+- **Model Blacklisting for Load Balancer** — Added ability to exclude specific models from provider selection in the load balancing plugin, with support for per-key blacklists, block-all (`["*"]`) wildcards, and provider-level intersection logic
+- **Fireworks AI Provider** — Added Fireworks AI as a first-class provider in the OSS transport layer
+- **Unified Models API** — Unified /api/models and /api/models/details listing behavior
+- **Unique Cluster Node IDs** — Auto-generate a unique UUID for each node's NodeID on config load, ensuring distinct cluster node identifiers
+- **Leader Badge in Cluster View** — Display a "Leader" badge with crown icon in the cluster node table, with sorting by node name
+- **Server Bootstrap Timer** — Added server bootstrap timer for performance monitoring
+- **Security Path Whitelisting** — Allow path whitelisting from security config
+- **Large Payload Optimizations** — Updated config schema for large payload optimizations
+- **Virtual Keys Table** — Added sorting and CSV export to virtual keys table
+
+## 🐞 Fixed
+
+- **Leader Election Interval** — Increased leader election check interval to 10 seconds for improved cluster stability
+- **Node ID Consistency** — Minor fixes for node ID consistency across cluster operations
+- **ECR Cross-Account Access** — Fixed IAM role ARN format for ECR pull principals and cleaned up unused AWS provider config
+- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors
+- **Gemini Thinking Budget** — Fixed thinking budget validation for Gemini models
+- **Integration Data Race** — Fixed race condition in data reading from fasthttp request for integrations
+- **Beta Headers** — Fixed case-insensitive lookup in merge beta headers
+- **Deprecated Config Field** — Replaced enforce_governance_header with enforce_auth_on_inference
+- **Bedrock Config Schema** — Fixed config schema for Bedrock key config
+- **OpenAI Codex** — Fixed store flag for OpenAI Codex
+
+## 📀 Base OSS version
+
+`transports/v1.4.20`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.1
+
+require (
+	cloud.google.com/go/bigquery v1.73.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.4.17
+	github.com/maximhq/bifrost/framework v1.2.36
+	github.com/maximhq/bifrost/plugins/governance v1.4.36
+	github.com/maximhq/bifrost/plugins/logging v1.4.36
+	github.com/maximhq/bifrost/transports v1.4.20
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.35.0
+	google.golang.org/api v0.265.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+</Update>

@@ -8,7 +8,7 @@ chat:
     description: |
       Sends a chat request using Cohere-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -38,6 +38,11 @@ chat:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 embed:
   post:
     operationId: litellmCohereEmbed
@@ -45,7 +50,7 @@ embed:
     description: |
       Creates embeddings using Cohere-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -72,6 +77,11 @@ embed:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 tokenize:
   post:
     operationId: litellmCohereTokenize
@@ -79,7 +89,7 @@ tokenize:
     description: |
       Tokenizes text using Cohere-compatible format via LiteLLM.
     tags:
-      - LiteLLM Integration
+    - LiteLLM Integration
     requestBody:
       required: true
       content:
@@ -105,3 +115,8 @@ tokenize:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

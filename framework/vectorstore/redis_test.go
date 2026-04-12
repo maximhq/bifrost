@@ -3,8 +3,15 @@ package vectorstore
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -46,6 +53,9 @@ func NewRedisTestSetup(t *testing.T) *RedisTestSetup {
 	username := schemas.NewEnvVar(os.Getenv("REDIS_USERNAME"))
 	password := schemas.NewEnvVar(os.Getenv("REDIS_PASSWORD"))
 	db := schemas.NewEnvVar(getEnvWithDefault("REDIS_DB", "0"))
+	useTLS := schemas.NewEnvVar(os.Getenv("REDIS_USE_TLS"))
+	insecureSkipVerify := schemas.NewEnvVar(os.Getenv("REDIS_INSECURE_SKIP_VERIFY"))
+	clusterMode := schemas.NewEnvVar(os.Getenv("REDIS_CLUSTER_MODE"))
 
 	timeoutStr := getEnvWithDefault("REDIS_TIMEOUT", "10s")
 	timeout, err := time.ParseDuration(timeoutStr)
@@ -54,11 +64,14 @@ func NewRedisTestSetup(t *testing.T) *RedisTestSetup {
 	}
 
 	config := RedisConfig{
-		Addr:           addr,
-		Username:       username,
-		Password:       password,
-		DB:             db,
-		ContextTimeout: timeout,
+		Addr:               addr,
+		Username:           username,
+		Password:           password,
+		DB:                 db,
+		UseTLS:             useTLS,
+		InsecureSkipVerify: insecureSkipVerify,
+		ClusterMode:        clusterMode,
+		ContextTimeout:     timeout,
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
@@ -217,6 +230,32 @@ func TestRedisConfig_Validation(t *testing.T) {
 			},
 			expectError: false,
 		},
+		{
+			name: "cluster mode with db 0",
+			config: RedisConfig{
+				Addr:        schemas.NewEnvVar("localhost:6379"),
+				ClusterMode: schemas.NewEnvVar("true"),
+			},
+			expectError: false,
+		},
+		{
+			name: "cluster mode rejects non-zero db",
+			config: RedisConfig{
+				Addr:        schemas.NewEnvVar("localhost:6379"),
+				DB:          schemas.NewEnvVar("1"),
+				ClusterMode: schemas.NewEnvVar("true"),
+			},
+			expectError: true,
+			errorMsg:    "redis cluster mode does not support database selection",
+		},
+		{
+			name: "tls enabled",
+			config: RedisConfig{
+				Addr:   schemas.NewEnvVar("localhost:6380"),
+				UseTLS: schemas.NewEnvVar("true"),
+			},
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -237,6 +276,113 @@ func TestRedisConfig_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func validTestCertPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+}
+
+func TestNewRedisStore_ConfiguresStandaloneTLSClient(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	store, err := newRedisStore(context.Background(), RedisConfig{
+		Addr:               schemas.NewEnvVar("localhost:6379"),
+		DB:                 schemas.NewEnvVar("2"),
+		UseTLS:             schemas.NewEnvVar("true"),
+		InsecureSkipVerify: schemas.NewEnvVar("true"),
+	}, logger)
+	require.NoError(t, err)
+
+	client, ok := store.client.(*redis.Client)
+	require.True(t, ok, "expected standalone redis client")
+	require.Equal(t, 2, client.Options().DB)
+	require.NotNil(t, client.Options().TLSConfig)
+	assert.True(t, client.Options().TLSConfig.InsecureSkipVerify)
+}
+
+func TestNewRedisStore_ConfiguresStandaloneTLSClientWithCACert(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	store, err := newRedisStore(context.Background(), RedisConfig{
+		Addr:      schemas.NewEnvVar("localhost:6379"),
+		DB:        schemas.NewEnvVar("2"),
+		UseTLS:    schemas.NewEnvVar("true"),
+		CACertPEM: schemas.NewEnvVar(validTestCertPEM(t)),
+	}, logger)
+	require.NoError(t, err)
+
+	client, ok := store.client.(*redis.Client)
+	require.True(t, ok, "expected standalone redis client")
+	require.NotNil(t, client.Options().TLSConfig)
+	require.NotNil(t, client.Options().TLSConfig.RootCAs)
+	assert.False(t, client.Options().TLSConfig.InsecureSkipVerify)
+}
+
+func TestNewRedisStore_ConfiguresClusterTLSClient(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	store, err := newRedisStore(context.Background(), RedisConfig{
+		Addr:               schemas.NewEnvVar("localhost:6379"),
+		UseTLS:             schemas.NewEnvVar("true"),
+		InsecureSkipVerify: schemas.NewEnvVar("true"),
+		ClusterMode:        schemas.NewEnvVar("true"),
+	}, logger)
+	require.NoError(t, err)
+
+	client, ok := store.client.(*redis.ClusterClient)
+	require.True(t, ok, "expected redis cluster client")
+	require.Equal(t, []string{"localhost:6379"}, client.Options().Addrs)
+	require.NotNil(t, client.Options().TLSConfig)
+	assert.True(t, client.Options().TLSConfig.InsecureSkipVerify)
+}
+
+func TestNewRedisStore_ConfiguresClusterTLSClientWithCACert(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	store, err := newRedisStore(context.Background(), RedisConfig{
+		Addr:        schemas.NewEnvVar("localhost:6379"),
+		UseTLS:      schemas.NewEnvVar("true"),
+		CACertPEM:   schemas.NewEnvVar(validTestCertPEM(t)),
+		ClusterMode: schemas.NewEnvVar("true"),
+	}, logger)
+	require.NoError(t, err)
+
+	client, ok := store.client.(*redis.ClusterClient)
+	require.True(t, ok, "expected redis cluster client")
+	require.NotNil(t, client.Options().TLSConfig)
+	require.NotNil(t, client.Options().TLSConfig.RootCAs)
+	assert.False(t, client.Options().TLSConfig.InsecureSkipVerify)
+}
+
+func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	store, err := newRedisStore(context.Background(), RedisConfig{
+		Addr:      schemas.NewEnvVar("localhost:6379"),
+		UseTLS:    schemas.NewEnvVar("true"),
+		CACertPEM: schemas.NewEnvVar("not-valid-pem"),
+	}, logger)
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "failed to configure Redis TLS CA certificate")
 }
 
 type fakeRedisSearchServer struct {
@@ -422,7 +568,7 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 
 	_, err := store.executeSearch(WithDisableScanFallback(ctx), TestNamespace, "*", nil, nil, 0, 1)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to search without scan fallback")
+	assert.ErrorIs(t, err, ErrQuerySyntax)
 
 	ftSearchCalls, sawScan := server.stats()
 	assert.Equal(t, 2, ftSearchCalls)

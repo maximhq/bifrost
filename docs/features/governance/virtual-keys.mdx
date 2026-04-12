@@ -162,7 +162,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
       {
         "id": "vk-001",
         "name": "Engineering Team API",
-        "value": "vk-engineering-main",
+        "value": "sk-bf-*",
         "description": "Main API key for engineering team",
         "is_active": true,
         "provider_configs": [
@@ -495,7 +495,7 @@ All governance-enabled requests must include the virtual key header:
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "x-bf-vk: vk-engineering-main" \
+  -H "x-bf-vk: sk-bf-*" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]

@@ -5,7 +5,7 @@ responses:
     description: |
       Creates a response using the OpenAI Responses API format. Supports streaming via SSE.
     tags:
-      - Responses
+    - Responses
     requestBody:
       required: true
       content:
@@ -26,3 +26,8 @@ responses:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
