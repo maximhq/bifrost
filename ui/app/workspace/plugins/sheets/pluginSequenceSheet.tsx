@@ -40,7 +40,7 @@ function buildSequenceItems(plugins: Plugin[]): SequenceItem[] {
 
 function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
 	const isBuiltin = item.type === "builtin";
-	const { ref, isDragging, handleRef, sourceRef, targetRef } = useSortable({
+	const { ref, isDragging, handleRef, targetRef } = useSortable({
 		id: item.id,
 		index,
 	});

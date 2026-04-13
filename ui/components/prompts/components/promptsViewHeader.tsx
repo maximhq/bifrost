@@ -1,20 +1,20 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { SplitButton } from "@/components/ui/splitButton";
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
+import { SplitButton } from "@/components/ui/splitButton";
+import { Message, MessageRole } from "@/lib/message";
+import { getErrorMessage } from "@/lib/store";
+import { useCreateSessionMutation, useGetSessionsQuery, useGetVersionsQuery, useRenameSessionMutation } from "@/lib/store/apis/promptsApi";
+import { ModelParams, PromptSession } from "@/lib/types/prompts";
+import { cn } from "@/lib/utils";
 import { Check, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
+import { parseAsInteger, useQueryStates } from "nuqs";
 import { useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { parseAsInteger, useQueryStates } from "nuqs";
-import { useCreateSessionMutation, useGetSessionsQuery, useGetVersionsQuery, useRenameSessionMutation } from "@/lib/store/apis/promptsApi";
-import { Message, MessageRole } from "@/lib/message";
 import { toast } from "sonner";
-import { getErrorMessage } from "@/lib/store";
 import { usePromptContext } from "../context";
-import { ModelParams, PromptSession } from "@/lib/types/prompts";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 
 export default function PromptsViewHeader() {
 	const {

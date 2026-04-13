@@ -216,7 +216,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		}
 		setInputValue(newValue);
 		inputValueRef.current = newValue;
-	}, []);
+	}, [isSingleSelect]);
 
 	// Convert API data to options for default display
 	const defaultOptions: ModelOption[] = useMemo(() => {

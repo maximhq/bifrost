@@ -9,7 +9,7 @@ export const getTokenExpiry = (): number | null => null
 
 export const isTokenExpired = (): boolean => false
 
-export const setOAuthTokens = async (accessToken: string, expiresIn?: number | null) => {
+export const setOAuthTokens = async (_accessToken: string, _expiresIn?: number | null) => {
   // No-op in non-enterprise builds
 }
 
@@ -22,7 +22,7 @@ export const getRefreshState = () => ({
   refreshPromise: null
 })
 
-export const setRefreshState = (refreshing: boolean, promise: Promise<any> | null = null) => {
+export const setRefreshState = (_refreshing: boolean, _promise: Promise<any> | null = null) => {
   // No-op in non-enterprise builds
 }
 
@@ -42,7 +42,7 @@ export interface UserInfo {
 export const getUserInfo = (): UserInfo | null => null
 
 // Fallback setUserInfo - no-op
-export const setUserInfo = (userInfo: UserInfo) => {
+export const setUserInfo = (_userInfo: UserInfo) => {
   // No-op in non-enterprise builds
 }
 

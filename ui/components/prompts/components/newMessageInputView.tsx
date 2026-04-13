@@ -1,13 +1,13 @@
+import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Message, type MessageContent } from "@/lib/message";
 import { Loader2, Paperclip, Play, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { usePromptContext } from "../context";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import MessageRoleSwitcher from "./messagesView/messageRoleSwitcher";
 import { fileToAttachment } from "../utils/attachment";
 import { AttachmentBadge } from "./messagesView/attachmentViews";
+import MessageRoleSwitcher from "./messagesView/messageRoleSwitcher";
 
 export function NewMessageInputView() {
 	const { messages, setMessages: onUpdateMessages, handleSendMessage: onSendMessage, isStreaming, supportsVision, provider, model } = usePromptContext();

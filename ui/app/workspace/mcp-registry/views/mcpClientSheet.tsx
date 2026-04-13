@@ -1,7 +1,8 @@
-import { Fragment } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Fragment } from "react";
 
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
+import { useDebouncedValue } from "@/hooks/useDebounce";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
@@ -20,10 +22,8 @@ import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/s
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
-import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -555,7 +555,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										wrap={true}
 										code={JSON.stringify(
 											(() => {
-												const { client_id, name, tools_to_execute, headers, ...rest } = mcpClient.config;
+												const { client_id:_client_id, name:_name, tools_to_execute:_tools_to_execute, headers:_headers, ...rest } = mcpClient.config;
 												return rest;
 											})(),
 											null,
@@ -582,7 +582,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<FormField
 												control={form.control}
 												name="tools_to_execute"
-												render={({ field }) => {
+												render={() => {
 													const currentTools = form.watch("tools_to_execute") || [];
 													const allToolNames = mcpClient.tools?.map((tool) => tool.name) || [];
 													const isAllEnabled = currentTools.includes("*");
@@ -621,7 +621,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<FormField
 												control={form.control}
 												name="tools_to_auto_execute"
-												render={({ field }) => {
+												render={() => {
 													const currentTools = form.watch("tools_to_execute") || [];
 													const currentAutoExecute = form.watch("tools_to_auto_execute") || [];
 													const allToolNames = mcpClient.tools?.map((tool) => tool.name) || [];

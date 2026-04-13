@@ -44,8 +44,8 @@ import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useNavigate } from "@tanstack/react-router";
 import { Building, Info, RotateCcw, Trash2, Users, X } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -150,7 +150,7 @@ type VirtualKeyType = {
 
 export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
-	const router = useRouter();
+	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
@@ -165,11 +165,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	};
 
 	// RTK Query hooks
-	const { data: providersData, error: providersError, isLoading: providersLoading } = useGetProvidersQuery();
-	const { data: keysData, error: keysError, isLoading: keysLoading } = useGetAllKeysQuery();
+	const { data: providersData, error: providersError } = useGetProvidersQuery();
+	const { data: keysData, error: keysError } = useGetAllKeysQuery();
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
-	const { data: mcpClientsResponse, error: mcpClientsError, isLoading: mcpClientsLoading } = useGetMCPClientsQuery();
+	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
 	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating;
 
@@ -576,7 +576,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										value={selectedProvider}
 										onValueChange={(provider) => {
 											if (provider === "__manage_providers__") {
-												router.push("/workspace/providers");
+												navigate({ to: "/workspace/providers" });
 												setSelectedProvider("");
 												return;
 											}

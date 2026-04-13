@@ -81,7 +81,7 @@ export interface CustomLanguage {
 }
 
 export function CodeEditor(props: CodeEditorProps) {
-	const { className, lang, code, onChange, height, minHeight } = props;
+	const { className, lang, code, onChange } = props;
 	const editorContainer = useRef<HTMLDivElement>(null);
 	const [isClient, setIsClient] = useState(false);
 	const [editorHeight, setEditorHeight] = useState<number | string>(props.height || props.minHeight || 200);
@@ -101,7 +101,7 @@ export function CodeEditor(props: CodeEditorProps) {
 	};
 
 	// Handle editor mount
-	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor, monaco: any) => {
+	const handleEditorDidMount = (editor: editor.IStandaloneCodeEditor) => {
 		if (props.autoFocus) {
 			editor.focus();
 		}

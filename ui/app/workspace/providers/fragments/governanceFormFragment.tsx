@@ -49,7 +49,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
-	const { data: providerGovernanceData, isLoading: isLoadingGovernance } = useGetProviderGovernanceQuery(undefined, {
+	const { data: providerGovernanceData } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess,
 		pollingInterval: 5000,
 	});

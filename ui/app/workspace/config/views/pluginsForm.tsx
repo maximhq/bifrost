@@ -10,7 +10,6 @@ import { getErrorMessage, useCreatePluginMutation, useGetPluginsQuery, useGetPro
 import { CacheConfig, EditorCacheConfig, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cacheConfigSchema } from "@/lib/types/schemas";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -74,7 +73,6 @@ interface PluginsFormProps {
 }
 
 export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) {
-	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [cacheConfig, setCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);
 	const [originalCacheEnabled, setOriginalCacheEnabled] = useState<boolean>(false);
 	const [serverCacheConfig, setServerCacheConfig] = useState<EditorCacheConfig>(defaultCacheConfig);

@@ -3,19 +3,19 @@
  * Smart input component that adapts based on operator and field type
  */
 
+import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Input } from "@/components/ui/input";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { Option } from "@/components/ui/multiselectUtils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { getProviderLabel } from "@/lib/constants/logs";
+import { validateRegexPattern } from "@/lib/utils/celConverterRouting";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
-import { validateRegexPattern } from "@/lib/utils/celConverterRouting";
-import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
-import { Option } from "@/components/ui/multiselectUtils";
-import { RenderProviderIcon, ProviderIconType } from "@/lib/constants/icons";
-import { getProviderLabel } from "@/lib/constants/logs";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 
-export function ValueEditor({ value, handleOnChange, operator, fieldData, type, context }: ValueEditorProps) {
+export function ValueEditor({ value, handleOnChange, operator, fieldData, type, }: ValueEditorProps) {
 	// Compute all conditions upfront before any early returns
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";

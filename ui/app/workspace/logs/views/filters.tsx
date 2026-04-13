@@ -1,7 +1,7 @@
+import { FilterPopover } from "@/components/filters/filterPopover";
 import { Button } from "@/components/ui/button";
 import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
-import { FilterPopover } from "@/components/filters/filterPopover";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
@@ -60,7 +60,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
-	const [recalculateCosts, { isLoading: recalculating }] = useRecalculateLogCostsMutation();
+	const [recalculateCosts] = useRecalculateLogCostsMutation();
 
 	// Keep filtersRef in sync so debounced search always merges with latest filters (search within filtered results)
 	useEffect(() => {

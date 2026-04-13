@@ -3,11 +3,6 @@
  * Displays all routing rules with CRUD actions
  */
 
-import { RoutingRule } from "@/lib/types/routingRules";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -18,15 +13,19 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
-import { truncateCELExpression, getScopeLabel, getPriorityBadgeClass } from "@/lib/utils/routingRules";
-import { useState } from "react";
-import { useDeleteRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
-import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import { RoutingTarget } from "@/lib/types/routingRules";
+import { useDeleteRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
+import { RoutingRule, RoutingTarget } from "@/lib/types/routingRules";
+import { getPriorityBadgeClass, getScopeLabel, truncateCELExpression } from "@/lib/utils/routingRules";
+import { ChevronLeft, ChevronRight, Edit, Search, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 
 interface RoutingRulesTableProps {
 	rules: RoutingRule[] | undefined;
@@ -160,7 +159,7 @@ export function RoutingRulesTable({
 										<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
 									</TableCell>
 									<TableCell className="text-right">
-										<div className={`inline-block rounded px-2.5 py-1 text-xs font-medium ${getPriorityBadgeClass(rule.priority)}`}>
+										<div className={`inline-block rounded px-2.5 py-1 text-xs font-medium ${getPriorityBadgeClass()}`}>
 											{rule.priority}
 										</div>
 									</TableCell>

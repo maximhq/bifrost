@@ -11,7 +11,7 @@ interface MaximViewProps {
 
 export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-	const [updatePlugin, { isLoading: isUpdatingPlugin }] = useUpdatePluginMutation();
+	const [updatePlugin] = useUpdatePluginMutation();
 	const currentConfig = useMemo(
 		() => ({ ...((selectedPlugin?.config as MaximConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
 		[selectedPlugin],

@@ -1,6 +1,6 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
-import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
+import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { useQueryState } from "nuqs";
@@ -75,8 +75,6 @@ export default function ObservabilityView() {
 	const dispatch = useAppDispatch();
 	const { data: plugins, isLoading } = useGetPluginsQuery();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
-	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-
 	const { resolvedTheme } = useTheme();
 
 	const supportedPlatforms = useMemo(() => supportedPlatformsList(resolvedTheme || "light"), [resolvedTheme]);

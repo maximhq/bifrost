@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { BifrostTranscribe, TranscriptionInput } from "@/lib/types/logs";
 import { Clock, FileAudio, Mic } from "lucide-react";
 import AudioPlayer from "./audioPlayer";
-import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface TranscriptionViewProps {
 	transcriptionInput?: TranscriptionInput;
@@ -104,7 +104,7 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 									<div>
 										<div className="text-muted-foreground mb-2 text-xs font-medium">SEGMENTS</div>
 										<div className="max-h-60 space-y-2 overflow-y-auto">
-											{transcriptionOutput.segments.map((segment, index) => (
+											{transcriptionOutput.segments.map((segment) => (
 												<div key={segment.id} className="rounded border p-3">
 													<div className="mb-2 flex items-center justify-between">
 														<Badge variant="outline" className="text-xs">

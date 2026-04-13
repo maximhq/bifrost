@@ -33,6 +33,7 @@ import type {
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
+import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTab";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
@@ -42,7 +43,6 @@ import { MCPTab } from "./components/mcpTab";
 import { ModelRankingsTab } from "./components/modelRankingsTab";
 import { OverviewTab } from "./components/overviewTab";
 import { ProviderUsageTab } from "./components/providerUsageTab";
-import UserRankingsTab from "@enterprise/components/user-rankings/userRankingsTab";
 
 // Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
@@ -728,25 +728,6 @@ export default function DashboardPage() {
 
 		setPdfMode(false);
 	}, []);
-
-	// MCP filter change handlers
-	const handleMcpToolNameChange = useCallback(
-		(toolName: string) => {
-			const current = parseCsvParam(urlState.mcp_tool_names);
-			const updated = current.includes(toolName) ? current.filter((t) => t !== toolName) : [...current, toolName];
-			setUrlState({ mcp_tool_names: updated.join(",") });
-		},
-		[urlState.mcp_tool_names, setUrlState],
-	);
-
-	const handleMcpServerLabelChange = useCallback(
-		(label: string) => {
-			const current = parseCsvParam(urlState.mcp_server_labels);
-			const updated = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
-			setUrlState({ mcp_server_labels: updated.join(",") });
-		},
-		[urlState.mcp_server_labels, setUrlState],
-	);
 
 	return (
 		<div id="dashboard-root" className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">

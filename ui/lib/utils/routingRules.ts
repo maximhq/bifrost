@@ -24,8 +24,8 @@ export function isValidCELExpression(expression: string): boolean {
 	}
 
 	// Check for matching brackets/parentheses
-	const openBrackets = (trimmed.match(/[\[\{]/g) || []).length
-	const closeBrackets = (trimmed.match(/[\]\}]/g) || []).length
+	const openBrackets = (trimmed.match(/[[{]/g) || []).length
+	const closeBrackets = (trimmed.match(/[\]}]/g) || []).length
 	const openParens = (trimmed.match(/\(/g) || []).length
 	const closeParens = (trimmed.match(/\)/g) || []).length
 
@@ -115,7 +115,7 @@ export function truncateCELExpression(expression: string, maxLength: number = 60
  * @param model - The model name (optional)
  * @returns Error message if invalid, empty string if valid
  */
-export function validateProviderModel(provider: string, model?: string): string {
+export function validateProviderModel(provider: string, _model?: string): string {
 	if (!provider || provider.trim().length === 0) {
 		return "Provider is required"
 	}
@@ -124,10 +124,9 @@ export function validateProviderModel(provider: string, model?: string): string 
 
 /**
  * Generates a CSS class for priority badge color
- * @param priority - The priority value
  * @returns CSS class name for styling
  */
-export function getPriorityBadgeClass(priority: number): string {
+export function getPriorityBadgeClass(): string {
 	return "bg-primary text-primary-foreground"
 }
 
