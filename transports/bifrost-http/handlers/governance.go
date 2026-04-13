@@ -321,6 +321,10 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
 	r.PUT("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.updatePricingOverride, middlewares...))
 	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
+
+	// Self-service endpoint — no admin auth, VK in header is the credential.
+	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
+	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
 }
 
 // Virtual Key CRUD Operations
@@ -3742,4 +3746,38 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 		return fmt.Errorf("target weights must sum to 1, got %.4f", total)
 	}
 	return nil
+}
+
+// getVirtualKeyQuota handles GET /api/governance/virtual-keys/quota
+// This is a self-service endpoint — no admin auth required. The VK value in the header is the credential.
+func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
+	// Extract virtual key using the same logic as the inference path (lib/ctx.go):
+	// x-bf-vk accepts any value; other headers require the sk-bf- prefix.
+	var vkValue string
+	if v := string(ctx.Request.Header.Peek("x-bf-vk")); v != "" {
+		vkValue = v
+	} else if v := governance.ParseVirtualKeyFromFastHTTPRequest(ctx); v != nil {
+		vkValue = *v
+	}
+	if vkValue == "" {
+		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, or x-goog-api-key header.")
+		return
+	}
+
+	vk, err := h.configStore.GetVirtualKeyQuotaByValue(ctx, vkValue)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 401, "Virtual key not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"virtual_key_name": vk.Name,
+		"is_active":        vk.IsActive,
+		"budgets":          vk.Budgets,
+		"rate_limit":       vk.RateLimit,
+	})
 }

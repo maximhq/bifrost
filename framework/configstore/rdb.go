@@ -2030,6 +2030,28 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 	return &virtualKey, nil
 }
 
+// GetVirtualKeyQuotaByValue retrieves only the budget and rate limit data for a virtual key.
+// This is a lean query that avoids loading Team, Customer, ProviderConfigs, MCPConfigs, and Keys.
+func (s *RDBConfigStore) GetVirtualKeyQuotaByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	valueHash := encrypt.HashSHA256(value)
+	var virtualKey tables.TableVirtualKey
+	baseQuery := s.db.WithContext(ctx).Preload("Budgets").Preload("RateLimit")
+	if err := baseQuery.Session(&gorm.Session{}).Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Fallback: try plaintext lookup for rows not yet migrated
+			if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, ErrNotFound
+				}
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	return &virtualKey, nil
+}
+
 // CreateVirtualKey creates a new virtual key in the database.
 func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
