@@ -280,8 +280,10 @@ func (h *ConsentHandler) handleMCPsPage(ctx *fasthttp.RequestCtx) {
   .mcp-name{font-size:0.9rem;font-weight:500;color:oklch(0.141 0.005 285.823)}
   .badge{font-size:0.8rem;font-weight:500;padding:4px 12px;border-radius:20px;text-decoration:none;display:inline-block}
   .badge.connected{background:oklch(0.95 0.05 160);color:oklch(0.35 0.08 160)}
-  .badge.connect{background:oklch(0.96 0.03 165.61);color:oklch(0.4 0.1 165.61);cursor:pointer}
-  .badge.connect:hover{background:oklch(0.92 0.05 165.61)}
+  .badge.connect{background:oklch(0.5081 0.1049 165.61);color:oklch(0.985 0 0);cursor:pointer;
+        padding:8px 18px;border-radius:0.5rem;font-weight:500;
+        transition:background .15s}
+  .badge.connect:hover{background:oklch(0.43 0.1049 165.61)}
   .mcp-list{margin-bottom:4px}
 </style>
 </head>

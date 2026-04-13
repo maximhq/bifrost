@@ -504,11 +504,12 @@ func TestPricingE2E_Step7_RuntimeInterval_StoredCorrectly(t *testing.T) {
 	SetLogger(clg)
 	defer SetLogger(prevLogger)
 
-	// Scenario A: interval=3600 s stored in modelcatalog
-	// noSyncFunc prevents real HTTP requests to pricing URL during this unit test.
+	// Scenario A: interval=3600 s stored in modelcatalog.
+	// PricingURL is intentionally left nil so Init falls back to DefaultPricingURL.
+	// The gate is installed post-Init and only blocks the background ticker, not
+	// the cold-start sync inside Init — a fake URL here would 404 and fail Init.
 	syncSeconds := int64(3600)
 	cfg := &modelcatalog.Config{
-		PricingURL:          ptStr("https://example.com/pricing.json"),
 		PricingSyncInterval: &syncSeconds,
 	}
 	mc, err := modelcatalog.Init(ctx, cfg, store, clg)
