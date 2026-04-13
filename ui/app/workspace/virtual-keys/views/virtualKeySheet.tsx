@@ -28,7 +28,6 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
-import Link from "next/link";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/components/ui/utils";
 import { ModelPlaceholders } from "@/lib/constants/config";
@@ -48,6 +47,7 @@ import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, Virtu
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Building, Info, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -152,6 +152,7 @@ type VirtualKeyType = {
 
 export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
+	const router = useRouter();
 	const isEditing = !!virtualKey;
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
@@ -576,6 +577,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									<Select
 										value={selectedProvider}
 										onValueChange={(provider) => {
+											if (provider === "__manage_providers__") {
+												router.push("/workspace/providers");
+												setSelectedProvider("");
+												return;
+											}
 											handleAddProvider(provider);
 											setSelectedProvider(""); // Reset to placeholder state
 										}}
@@ -592,17 +598,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 												if (unconfiguredProviders.length === 0) {
 													return (
-														<Link
-															href="/workspace/providers"
-															className="text-muted-foreground hover:text-foreground block px-2 py-1.5 text-sm transition-colors"
-															aria-label="Open provider configuration"
+														<SelectItem
+															value="__manage_providers__"
+															className="text-muted-foreground hover:text-foreground"
 															data-testid="vk-provider-config-link"
 														>
 															<span>
 																No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
 															</span>
-														</Link>
-														);
+														</SelectItem>
+													);
 												}
 
 												// Separate base providers and custom providers
