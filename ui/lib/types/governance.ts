@@ -396,6 +396,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
+	input_cost_per_token_flex?: number;
+	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
 	// 128k tier
 	input_cost_per_token_above_128k_tokens?: number;
@@ -405,17 +407,28 @@ export interface PricingOverridePatch {
 	input_cost_per_audio_per_second_above_128k_tokens?: number;
 	// 200k tier
 	input_cost_per_token_above_200k_tokens?: number;
+	input_cost_per_token_above_200k_tokens_priority?: number;
 	output_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens_priority?: number;
+	// 272k tier
+	input_cost_per_token_above_272k_tokens?: number;
+	input_cost_per_token_above_272k_tokens_priority?: number;
+	output_cost_per_token_above_272k_tokens?: number;
+	output_cost_per_token_above_272k_tokens_priority?: number;
 	// Cache
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
 	cache_creation_input_token_cost_above_200k_tokens?: number;
 	cache_read_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens_priority?: number;
 	cache_creation_input_token_cost_above_1hr?: number;
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost_flex?: number;
 	cache_read_input_image_token_cost?: number;
+	cache_read_input_token_cost_above_272k_tokens?: number;
+	cache_read_input_token_cost_above_272k_tokens_priority?: number;
 	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
