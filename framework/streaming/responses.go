@@ -908,7 +908,8 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		// Force a unique trailing index so both prior chunks and terminal error are retained.
 		accumulator := a.getOrCreateStreamAccumulator(requestID)
 		accumulator.mu.Lock()
-		chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex + 1
+		accumulator.MaxResponsesChunkIndex++
+		chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex
 		accumulator.mu.Unlock()
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
