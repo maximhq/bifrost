@@ -28,6 +28,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
+import Link from "next/link";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/components/ui/utils";
 import { ModelPlaceholders } from "@/lib/constants/config";
@@ -590,7 +591,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												);
 
 												if (unconfiguredProviders.length === 0) {
-													return <div className="text-muted-foreground px-2 py-1.5 text-sm">No providers left to configure</div>;
+													return (
+														<Link
+															href="/workspace/providers"
+															className="text-muted-foreground hover:text-foreground block px-2 py-1.5 text-sm transition-colors"
+															aria-label="Open provider configuration"
+															data-testid="vk-provider-config-link"
+														>
+															<span>
+																No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
+															</span>
+														</Link>
+														);
 												}
 
 												// Separate base providers and custom providers
