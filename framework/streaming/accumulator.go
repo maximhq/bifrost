@@ -378,16 +378,21 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
 	}
 }
 
-
 // ProcessStreamingResponse processes a streaming response
 // It handles chat, audio, and responses streaming responses
 func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
-	// Check if this is a streaming response
-	if result == nil {
-		return nil, fmt.Errorf("result is nil")
+	// Check if at least one of result or error is provided
+	if result == nil && bifrostErr == nil {
+		return nil, fmt.Errorf("result and error are nil")
 	}
-	extraFields := result.GetExtraFields()
-	requestType := extraFields.RequestType
+
+	var requestType schemas.RequestType
+	if result != nil {
+		requestType = result.GetExtraFields().RequestType
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.RequestType
+	}
+
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest

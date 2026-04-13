@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -898,6 +899,16 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil && len(rawBytes) > 0 {
+			chunk.RawResponse = bifrost.Ptr(string(rawBytes))
+		}
+		// Error chunks may arrive without a stream chunk index (result is nil), which can
+		// collide with index 0 (e.g., response.created) and get deduplicated away.
+		// Force a unique trailing index so both prior chunks and terminal error are retained.
+		accumulator := a.getOrCreateStreamAccumulator(requestID)
+		accumulator.mu.Lock()
+		chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex + 1
+		accumulator.mu.Unlock()
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ResponsesStreamResponse.ExtraFields.RawResponse))
