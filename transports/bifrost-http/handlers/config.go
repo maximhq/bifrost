@@ -238,7 +238,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Get current config with proper locking
-	currentConfig := h.store.ClientConfig
+	h.store.Mu.Lock()
+	defer h.store.Mu.Unlock()
+	currentConfig := *h.store.ClientConfig
 	updatedConfig := currentConfig
 
 	var restartReasons []string
@@ -406,9 +408,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.LogRetentionDays = payload.ClientConfig.LogRetentionDays
 
 	// Update the store with the new config
-	h.store.ClientConfig = updatedConfig
+	h.store.ClientConfig = &updatedConfig
 
-	if err := h.store.ConfigStore.UpdateClientConfig(ctx, updatedConfig); err != nil {
+	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
 		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
