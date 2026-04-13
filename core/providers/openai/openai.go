@@ -1812,7 +1812,7 @@ func HandleOpenAIResponsesStreaming(
 						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
 							bifrostErr.Error.Message = response.Response.Error.Message
 						}
-						if response.Response.Error.Code != "" && bifrostErr.Error.Code == nil {
+						if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
 							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
 						}
 					}
