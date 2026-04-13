@@ -1936,6 +1936,70 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "ResponsesAPI_FunctionCallOutput_ContentBlocks",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("List browser tabs"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_tabs"),
+							Name:      schemas.Ptr("browser_tabs"),
+							Arguments: schemas.Ptr(`{"action":"list"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_tabs"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								// Output as content blocks (Anthropic Responses API format)
+								ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+									{
+										Type: schemas.ResponsesInputMessageContentBlockTypeText,
+										Text: schemas.Ptr("### Open tabs\n- 0: (current) [Google] (https://google.com)\n- 1: [GitHub] (https://github.com)\n"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				// Find the Content with function response
+				var toolResponseContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
+						toolResponseContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, toolResponseContent, "Should have a content with functionResponse")
+				require.Len(t, toolResponseContent.Parts, 1)
+
+				part := toolResponseContent.Parts[0]
+				require.NotNil(t, part.FunctionResponse, "Part must have functionResponse")
+				assert.Equal(t, "call_tabs", part.FunctionResponse.ID)
+				assert.Equal(t, "browser_tabs", part.FunctionResponse.Name)
+
+				// Verify the response data contains the tool output (not empty)
+				require.NotNil(t, part.FunctionResponse.Response, "FunctionResponse.Response must not be nil")
+				responseStr := string(part.FunctionResponse.Response)
+				assert.Contains(t, responseStr, "Open tabs", "Response should contain the tool output text")
+				assert.Contains(t, responseStr, "Google", "Response should contain tab content")
+			},
+		},
 	}
 
 	for _, tt := range tests {

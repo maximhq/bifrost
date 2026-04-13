@@ -3016,6 +3016,30 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						} else {
 							responseMap["output"] = output
 						}
+					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+						// Handle structured output blocks (e.g. from Anthropic Responses API format
+						// where output is an array of content blocks like [{"type":"input_text","text":"..."}])
+						var textParts []string
+						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+							if block.Text != nil && *block.Text != "" {
+								textParts = append(textParts, *block.Text)
+							}
+						}
+						if len(textParts) > 0 {
+							combined := strings.Join(textParts, "\n")
+							if json.Valid([]byte(combined)) {
+								responseMap["output"] = json.RawMessage(combined)
+							} else {
+								responseMap["output"] = combined
+							}
+						} else {
+							// Fallback for non-text blocks (e.g. images, files): marshal the raw blocks
+							// so responseMap["output"] is never left empty when blocks are present
+							rawBlocks, err := providerUtils.MarshalSorted(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+							if err == nil && len(rawBlocks) > 0 {
+								responseMap["output"] = json.RawMessage(rawBlocks)
+							}
+						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
 						output := *msg.Content.ContentStr
