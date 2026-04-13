@@ -26,7 +26,7 @@ type AccumulatedData struct {
 	Status                string
 	Stream                bool
 	Latency               int64 // in milliseconds
-	TimeToFirstToken      int64 // Time to first token in milliseconds (streaming only)
+	TimeToFirstToken      *int64 // Time to first token in milliseconds (streaming only, nil when unavailable)
 	StartTimestamp        time.Time
 	EndTimestamp          time.Time
 	OutputMessage         *schemas.ChatMessage

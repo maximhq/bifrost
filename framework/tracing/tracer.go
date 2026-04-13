@@ -314,7 +314,9 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	if processedResp.Data != nil {
 		accResult.Status = processedResp.Data.Status
 		accResult.Latency = processedResp.Data.Latency
-		accResult.TimeToFirstToken = processedResp.Data.TimeToFirstToken
+		if processedResp.Data.TimeToFirstToken != nil {
+			accResult.TimeToFirstToken = *processedResp.Data.TimeToFirstToken
+		}
 		accResult.OutputMessage = processedResp.Data.OutputMessage
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage

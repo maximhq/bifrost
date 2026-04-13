@@ -794,9 +794,10 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	// This is called from completeDeferredSpan after streaming ends
 
 	// Calculate Time to First Token (TTFT) in milliseconds
-	var ttft int64
+	var ttft *int64
 	if !accumulator.StartTimestamp.IsZero() && !accumulator.FirstChunkTimestamp.IsZero() {
-		ttft = accumulator.FirstChunkTimestamp.Sub(accumulator.StartTimestamp).Nanoseconds() / 1e6
+		value := accumulator.FirstChunkTimestamp.Sub(accumulator.StartTimestamp).Nanoseconds() / 1e6
+		ttft = &value
 	}
 
 	// Initialize accumulated data
