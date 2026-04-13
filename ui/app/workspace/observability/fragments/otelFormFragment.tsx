@@ -26,6 +26,8 @@ interface OtelFormFragmentProps {
 		// TLS configuration
 		tls_ca_cert?: string;
 		insecure?: boolean;
+		// Raw request/response forwarding
+		forward_raw_request_response?: boolean;
 		// Metrics push configuration
 		metrics_enabled?: boolean;
 		metrics_endpoint?: string;
@@ -54,6 +56,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				protocol: initialConfig?.protocol ?? "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
+				forward_raw_request_response: initialConfig?.forward_raw_request_response ?? false,
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
 				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
@@ -98,6 +101,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				protocol: initialConfig?.protocol || "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
+				forward_raw_request_response: initialConfig?.forward_raw_request_response ?? false,
 				metrics_enabled: initialConfig?.metrics_enabled ?? false,
 				metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 				metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,
@@ -283,6 +287,34 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 					</div>
 				</div>
 
+				{/* Raw Request/Response Forwarding */}
+				<div className="space-y-4 border-t pt-4">
+					<FormField
+						control={form.control}
+						name="otel_config.forward_raw_request_response"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center gap-2">
+								<div className="flex w-full flex-row items-center gap-2">
+									<div className="flex flex-col gap-1">
+										<h3 className="text-sm font-medium">Forward Raw Request/Response</h3>
+										<p className="text-muted-foreground text-xs">
+											Include raw provider request/response payloads in OTEL span attributes. Requires provider-level raw capture to be enabled.
+										</p>
+									</div>
+									<div className="ml-auto">
+										<Switch
+											data-testid="otel-forward-raw-toggle"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasOtelAccess}
+										/>
+									</div>
+								</div>
+							</FormItem>
+						)}
+					/>
+				</div>
+
 				{/* Metrics Push Configuration */}
 				<div className="space-y-4 border-t pt-4">
 					<FormField
@@ -410,6 +442,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 										protocol: initialConfig?.protocol ?? "http",
 										tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 										insecure: initialConfig?.insecure ?? true,
+										forward_raw_request_response: initialConfig?.forward_raw_request_response ?? false,
 										metrics_enabled: initialConfig?.metrics_enabled ?? false,
 										metrics_endpoint: initialConfig?.metrics_endpoint ?? "",
 										metrics_push_interval: initialConfig?.metrics_push_interval ?? 15,

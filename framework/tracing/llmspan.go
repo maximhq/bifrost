@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -99,6 +100,22 @@ func PopulateResponseAttributes(resp *schemas.BifrostResponse) map[string]any {
 		PopulateFileDeleteResponseAttributes(resp.FileDeleteResponse, attrs)
 	case resp.FileContentResponse != nil:
 		PopulateFileContentResponseAttributes(resp.FileContentResponse, attrs)
+	}
+
+	// Propagate raw request/response to span attributes when present.
+	// These fields are populated when send_back_raw_request or send_back_raw_response
+	// is enabled on the provider. Marshal errors are intentionally suppressed:
+	// a serialisation failure must not degrade the span.
+	extraFields := resp.GetExtraFields()
+	if extraFields.RawRequest != nil {
+		if rawBytes, err := sonic.Marshal(extraFields.RawRequest); err == nil {
+			attrs[schemas.AttrRawRequest] = string(rawBytes)
+		}
+	}
+	if extraFields.RawResponse != nil {
+		if rawBytes, err := sonic.Marshal(extraFields.RawResponse); err == nil {
+			attrs[schemas.AttrRawResponse] = string(rawBytes)
+		}
 	}
 
 	return attrs

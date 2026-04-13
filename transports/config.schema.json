@@ -1368,6 +1368,11 @@
                     "insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
+                    },
+                    "forward_raw_request_response": {
+                      "type": "boolean",
+                      "description": "Forward raw request/response payloads to OTEL span attributes (gen_ai.raw_request, gen_ai.raw_response). Requires provider-level raw capture to be enabled.",
+                      "default": false
                     }
                   },
                   "required": [

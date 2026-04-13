@@ -203,6 +203,10 @@ const (
 	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token"
 	AttrTotalChunks      = "gen_ai.response.total_chunks"
 
+	// Raw Payload Attributes
+	AttrRawRequest  = "gen_ai.raw_request"
+	AttrRawResponse = "gen_ai.raw_response"
+
 	// Plugin Attributes (for aggregated streaming post-hook spans)
 	AttrPluginInvocations     = "plugin.invocation_count"
 	AttrPluginAvgDurationMs   = "plugin.avg_duration_ms"
