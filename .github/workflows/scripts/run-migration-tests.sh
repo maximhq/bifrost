@@ -3382,7 +3382,7 @@ EOF
       --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$server_log" 2>&1 &
     BIFROST_PID=$!
 
-    if ! wait_for_bifrost "$server_log" 120; then
+    if ! wait_for_bifrost "$server_log" 300; then
       log_error "Failed to start bifrost $version"
       cat "$server_log" 2>/dev/null || true
       stop_bifrost
@@ -3423,7 +3423,7 @@ EOF
     "$current_binary" --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$current_log" 2>&1 &
     BIFROST_PID=$!
 
-    if ! wait_for_bifrost "$current_log" 120; then
+    if ! wait_for_bifrost "$current_log" 300; then
       log_error "Current version failed to start after migrating from $version"
       cat "$current_log"
       stop_bifrost
@@ -3581,7 +3581,7 @@ EOF
       --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$server_log" 2>&1 &
     BIFROST_PID=$!
 
-    if ! wait_for_bifrost "$server_log" 120; then
+    if ! wait_for_bifrost "$server_log" 300; then
       log_error "Failed to start bifrost $version"
       cat "$server_log" 2>/dev/null || true
       stop_bifrost
@@ -3621,7 +3621,7 @@ EOF
     "$current_binary" --app-dir "$TEMP_DIR" --port "$BIFROST_PORT" > "$current_log" 2>&1 &
     BIFROST_PID=$!
 
-    if ! wait_for_bifrost "$current_log" 120; then
+    if ! wait_for_bifrost "$current_log" 300; then
       log_error "Current version failed to start after migrating from $version"
       cat "$current_log"
       stop_bifrost

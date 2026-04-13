@@ -15480,6 +15480,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 		"keys":    true, // Complex nested type, validated separately
 		"key_ids": true, // Config-file format; handled via custom UnmarshalJSON into allow_all_keys/keys
 	},
+	"governance.virtual_keys.mcp_configs": {
+		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
 	"mcp.client_configs": {
 		"websocket_config": true, // Schema documents all connection types
 		"http_config":      true, // Schema documents all connection types
