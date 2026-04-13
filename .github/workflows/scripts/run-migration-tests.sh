@@ -1400,6 +1400,29 @@ append_dynamic_columns_postgres() {
     echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
     echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.22 columns - flex tier pricing and litellm fallbacks toggle
+  # -------------------------------------------------------------------------
+
+  # config_client.enable_litellm_fallbacks (added in v1.4.22)
+  if column_exists_postgres "config_client" "enable_litellm_fallbacks"; then
+    echo "UPDATE config_client SET enable_litellm_fallbacks = false WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_model_pricing flex tier columns (added in v1.4.22)
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_flex"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_flex"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_read_input_token_cost_flex"; then
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 2;" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -2030,6 +2053,31 @@ append_dynamic_columns_sqlite() {
   # mcp_tool_logs.request_id (added in v1.4.21)
   echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
   echo "UPDATE mcp_tool_logs SET request_id = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.4.22 columns - flex tier pricing and litellm fallbacks toggle
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_client.enable_litellm_fallbacks (added in v1.4.22)
+    if column_exists_sqlite "$config_db" "config_client" "enable_litellm_fallbacks"; then
+      echo "UPDATE config_client SET enable_litellm_fallbacks = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # governance_model_pricing flex tier columns (added in v1.4.22)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_flex"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_flex"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_flex = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_flex"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_flex = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  fi
 }
 
 # ============================================================================
@@ -2932,6 +2980,10 @@ compare_postgres_snapshots() {
     # calendar_aligned (dropped from governance_budgets in add_multi_budget_tables - moved to governance_virtual_keys.calendar_aligned)
     if [ "$table" = "governance_budgets" ]; then
       dropped_columns="$dropped_columns calendar_aligned"
+    fi
+    # enable_litellm_fallbacks (dropped from config_client in latest cut - behavior moved elsewhere)
+    if [ "$table" = "config_client" ]; then
+      dropped_columns="$dropped_columns enable_litellm_fallbacks"
     fi
 
     local before_col_array

@@ -122,3 +122,6 @@ bifrost-benchmarking
 
 # Tests
 :memory:
+
+# Generated test TLS certs (created by tests/docker-compose.yml redis-certs-init)
+tests/redis-certs/

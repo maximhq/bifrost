@@ -357,10 +357,43 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// The streaming handler calls this BEFORE reader.Done() so that errors can
 			// still be sent as SSE events. applyResponse=false because the response is
 			// already on the wire and mutating ctx.Response would corrupt the chunked stream.
+			//
+			// IMPORTANT: The callback must NOT access ctx — fasthttp recycles RequestCtx
+			// after the response body stream completes. All needed data is eagerly captured
+			// here (while ctx is still valid) and passed through the closure.
 			if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
-				ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, func() error {
-					return runTransportPostHooks(ctx, plugins, bifrostCtx, false)
-				})
+				// Verify the completer slot exists before allocating pooled snapshots.
+				// The streaming handler pre-allocates this *atomic.Value; if absent,
+				// skip work to avoid leaking pooled HTTPRequest/HTTPResponse objects.
+				slot, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(*atomic.Value)
+				if !ok {
+					return
+				}
+
+				// Eagerly snapshot request/response from ctx before it can be recycled.
+				capturedReq := lib.BuildHTTPRequestFromFastHTTP(ctx)
+				capturedResp := lib.BuildHTTPResponseFromFastHTTP(ctx)
+				// Snapshot pre-hook transport plugin logs already accumulated on ctx.
+				var preHookLogs []schemas.PluginLogEntry
+				if logs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
+					preHookLogs = logs
+				}
+
+				completer := func() ([]schemas.PluginLogEntry, error) {
+					defer schemas.ReleaseHTTPRequest(capturedReq)
+					defer schemas.ReleaseHTTPResponse(capturedResp)
+					postHookLogs, err := runTransportPostHooksCaptured(capturedReq, capturedResp, plugins, bifrostCtx)
+					allLogs := preHookLogs
+					if len(postHookLogs) > 0 {
+						allLogs = append(allLogs, postHookLogs...)
+					}
+					return allLogs, err
+				}
+
+				// Store the completer in the atomic.Value slot that the streaming handler
+				// placed on ctx. The goroutine reads from its closure-captured copy of
+				// the slot, avoiding any ctx access after the handler returns.
+				slot.Store(completer)
 				return
 			}
 
@@ -410,7 +443,7 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 			if shouldApplyShortCircuit {
 				applyHTTPResponseToCtx(ctx, httpResp)
 			}
-			return fmt.Errorf("HTTPTransportPostHook plugin %s: %w", pluginName, err)
+			return fmt.Errorf("transport post-hook plugin %s: %w", pluginName, err)
 		}
 	}
 	// Drain post-hook plugin logs and merge with pre-hook logs
@@ -425,6 +458,58 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 		applyHTTPResponseToCtx(ctx, httpResp)
 	}
 	return nil
+}
+
+// runTransportPostHooksCaptured is the goroutine-safe variant of runTransportPostHooks.
+// It uses pre-captured HTTPRequest and HTTPResponse snapshots instead of reading from
+// a fasthttp RequestCtx, which may have been recycled by the time this runs in a
+// streaming goroutine. Returns accumulated plugin logs (instead of writing them to
+// ctx.UserValue) so the caller can forward them to the trace completer.
+func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedResp *schemas.HTTPResponse, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext) ([]schemas.PluginLogEntry, error) {
+	// Clone into fresh pooled objects so plugins can mutate without affecting the snapshots.
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = capturedReq.Method
+	req.Path = capturedReq.Path
+	for k, v := range capturedReq.Headers {
+		req.Headers[k] = v
+	}
+	for k, v := range capturedReq.Query {
+		req.Query[k] = v
+	}
+	for k, v := range capturedReq.PathParams {
+		req.PathParams[k] = v
+	}
+
+	httpResp := schemas.AcquireHTTPResponse()
+	defer schemas.ReleaseHTTPResponse(httpResp)
+	httpResp.StatusCode = capturedResp.StatusCode
+	for k, v := range capturedResp.Headers {
+		httpResp.Headers[k] = v
+	}
+
+	var allLogs []schemas.PluginLogEntry
+
+	// Run http post-hooks in reverse order
+	for i := len(plugins) - 1; i >= 0; i-- {
+		plugin := plugins[i]
+		pluginName := plugin.GetName()
+		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		pluginCtx.ReleasePluginScope()
+		if err != nil {
+			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
+			if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
+				allLogs = append(allLogs, postHookLogs...)
+			}
+			return allLogs, fmt.Errorf("transport post-hook plugin %s: %w", pluginName, err)
+		}
+	}
+	// Drain post-hook plugin logs
+	if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
+		allLogs = append(allLogs, postHookLogs...)
+	}
+	return allLogs, nil
 }
 
 // getBifrostContextFromFastHTTP gets or creates a BifrostContext from fasthttp context.
@@ -936,10 +1021,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
 			}
 
-			// Store a trace completion callback for streaming handlers to use
-			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func() {
-				// Attach transport plugin logs before completing the trace (streaming path)
-				if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+			// Store a trace completion callback for streaming handlers to use.
+			// Accepts transport plugin logs as a parameter so it never reads from
+			// ctx.UserValue — ctx may be recycled by the time this runs in a goroutine.
+			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func(transportLogs []schemas.PluginLogEntry) {
+				if len(transportLogs) > 0 {
 					tracer.AttachPluginLogs(traceID, transportLogs)
 				}
 				tracer.CompleteAndFlushTrace(traceID)

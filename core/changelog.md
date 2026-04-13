@@ -1,0 +1,4 @@
+- refactor: split ModelRequested into OriginalModelRequested and ResolvedModelUsed for model alias tracking
+- refactor: simplify Azure passthrough by removing redundant config nil checks
+- refactor: simplify Mistral error parsing signature
+- fix: carry ProviderResponseHeaders through text completion response conversion

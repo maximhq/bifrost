@@ -611,3 +611,16 @@ func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest
 	// Note: Body not copied - for streaming, body was already consumed
 	return req
 }
+
+// BuildHTTPResponseFromFastHTTP creates an HTTPResponse snapshot from fasthttp context.
+// Only captures status code and headers — body is skipped because for streaming
+// responses it is an active io.Reader that cannot be materialized.
+// The returned response should be released with schemas.ReleaseHTTPResponse when done.
+func BuildHTTPResponseFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPResponse {
+	resp := schemas.AcquireHTTPResponse()
+	resp.StatusCode = ctx.Response.StatusCode()
+	for key, value := range ctx.Response.Header.All() {
+		resp.Headers[string(key)] = string(value)
+	}
+	return resp
+}

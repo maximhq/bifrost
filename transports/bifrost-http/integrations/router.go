@@ -1504,7 +1504,7 @@ func (g *GenericRouter) handleAsyncCreate(
 		}
 	}
 
-	job, err := executor.SubmitJob(vkValue, resultTTL, operation, operationType)
+	job, err := executor.SubmitJob(vkValue, resultTTL, operation, operationType, bifrostCtx.GetUserValues())
 	if err != nil {
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
 			newBifrostError(err, "failed to create async job"))
@@ -2314,8 +2314,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	// Get the trace completer function for use in the streaming callback.
+	// Signature is func([]schemas.PluginLogEntry) so the callback never reads from
+	// ctx.UserValue (ctx may be recycled by fasthttp by the time this fires).
+	// Router path has no transport post-hook phase, so we always pass nil.
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -2338,7 +2341,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
-				traceCompleter()
+				traceCompleter(nil)
 			}
 		}()
 

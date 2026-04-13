@@ -1,2 +1,1 @@
-- feat: Adds option for converting chat completions to responses for models that support it
-- feat: Adds option for dropping unsupported model parameters
+- chore: upgraded core to v1.5.2 and framework to v1.3.2

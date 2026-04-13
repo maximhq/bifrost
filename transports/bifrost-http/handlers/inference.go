@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -1667,8 +1669,17 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
 
-	// Get the trace completer function for use in the streaming callback
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+	// Pre-allocate atomic.Value slot for the transport post-hook completer.
+	// TransportInterceptorMiddleware stores the completer into this slot after next(ctx)
+	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
+	// access after the handler returns (fasthttp recycles RequestCtx).
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+
+	// Get the trace completer function for use in the streaming callback.
+	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
+	// never needs to read from ctx.UserValue (ctx may be recycled).
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := h.config.GetStreamChunkInterceptor()
@@ -1684,25 +1695,64 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Producer goroutine: processes the stream channel, formats SSE events, sends to reader
 	go func() {
-		defer func() {
-			schemas.ReleaseHTTPRequest(httpReq)
-			// Retrieve and run transport post-hook completer before closing the stream
-			// so errors can still be communicated to the client as SSE events.
-			// Must retrieve here (not before goroutine) because TransportInterceptorMiddleware
-			// sets BifrostContextKeyTransportPostHookCompleter after next(ctx) returns.
-			if postHookCompleter, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPostHookCompleter).(func() error); ok && postHookCompleter != nil {
-				if err := postHookCompleter(); err != nil {
+		var transportLogs []schemas.PluginLogEntry
+		completerRan := false
+		// runCompleter invokes the transport post-hook completer at most once.
+		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
+		// client sees them (happy path, before [DONE]); =false logs server-side only
+		// (early-return / defer fallback, after stream termination).
+		runCompleter := func(sendSSEOnError bool) {
+			if completerRan {
+				return
+			}
+			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
+			// It calls slot.Store after next(ctx) returns, which races with this goroutine
+			// on fast/empty streams. 100ms is ample — the store runs a few instructions
+			// after the handler returns.
+			var loaded any
+			deadline := time.Now().Add(100 * time.Millisecond)
+			for {
+				if loaded = completerSlot.Load(); loaded != nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if loaded == nil {
+				return
+			}
+			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+			if !ok {
+				return
+			}
+			completerRan = true
+			logs, err := postHookCompleter()
+			if err != nil {
+				if sendSSEOnError {
 					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 					if marshalErr == nil {
 						reader.SendError(errorJSON)
 					}
+				} else {
+					logger.Warn("transport post-hook failed after stream terminated: %v", err)
 				}
 			}
+			transportLogs = logs
+		}
+
+		defer func() {
+			schemas.ReleaseHTTPRequest(httpReq)
+			// Fallback: on early-return paths (client disconnect, interceptor error)
+			// we never reached the pre-[DONE] invocation, so run it now. Any error is
+			// logged server-side only — the stream is already closing.
+			runCompleter(false)
 			reader.Done()
-			// Complete the trace after streaming finishes
-			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			// Complete the trace after streaming finishes, passing transport plugin logs.
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
 			if traceCompleter != nil {
-				traceCompleter()
+				traceCompleter(transportLogs)
 			}
 		}()
 
@@ -1777,6 +1827,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				return
 			}
 		}
+
+		// Run the transport post-hook completer BEFORE the terminal [DONE] marker so
+		// that any plugin error can still be delivered to the client as an SSE event.
+		// Post-hooks emitted after [DONE] reach the wire but most clients stop reading
+		// once they see [DONE], so they'd be silently dropped.
+		runCompleter(true)
 
 		if !includeEventType && !skipDoneMarker {
 			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)

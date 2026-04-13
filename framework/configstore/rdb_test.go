@@ -42,6 +42,10 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptVersionMessage{},
 		&tables.TablePromptSession{},
 		&tables.TablePromptSessionMessage{},
+		&tables.TablePerUserOAuthPendingFlow{},
+		&tables.TablePerUserOAuthSession{},
+		&tables.TableOauthUserSession{},
+		&tables.TableOauthUserToken{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
