@@ -416,7 +416,7 @@ func TestGovernanceStore_MultiBudget_ResolverBlocksOnBudgetExceeded(t *testing.T
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -443,7 +443,7 @@ func TestGovernanceStore_MultiBudget_ResolverAllowsUnderLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
 	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
@@ -471,7 +471,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 
 	// Request 1: $0.80 — both budgets fine
 	vk, _ = store.GetVirtualKey("sk-bf-test")
