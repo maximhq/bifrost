@@ -1,8 +1,8 @@
-import { Parameter } from "./types";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
-import { CodeEditor } from "@/components/ui/codeEditor";
 import FieldLabel from "./fieldLabel";
+import { Parameter } from "./types";
 
 interface Props {
 	field: Parameter;
@@ -39,12 +39,12 @@ export default function JSONFieldView(props: Props) {
 					setCurrentValue(v);
 					try {
 						props.onChange(JSON.parse(v));
-					} catch (error) {}
+					} catch {}
 				}}
 				onBlur={() => {
 					try {
 						setCurrentValue(JSON.stringify(JSON.parse(currentValue), null, 2));
-					} catch (ignored) {}
+					} catch {}
 				}}
 				lang="json"
 				wrap={true}

@@ -1,9 +1,9 @@
-import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
-import { Loader2 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface OAuth2AuthorizerProps {
 	open: boolean
@@ -23,7 +23,6 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	onError,
 	authorizeUrl,
 	oauthConfigId,
-	mcpClientId,
 	isPerUserOauth,
 }) => {
 	const [status, setStatus] = useState<"confirm" | "pending" | "polling" | "success" | "failed">(isPerUserOauth ? "confirm" : "pending")

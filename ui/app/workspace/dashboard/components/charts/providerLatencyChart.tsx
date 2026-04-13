@@ -41,7 +41,7 @@ function AllProvidersTooltip({ active, payload, providers }: any) {
 	);
 }
 
-function SingleProviderTooltip({ active, payload, provider }: any) {
+function SingleProviderTooltip({ active, payload }: any) {
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;

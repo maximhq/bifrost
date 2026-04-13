@@ -77,12 +77,6 @@ export function HeadersTable<T extends HeaderValue>({
 	// Refs for each table row to enable scrolling
 	const rowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
 
-	const scrollToAndHighlightRow = (rowIndex: number) => {
-		rowRefs.current[rowIndex]?.scrollIntoView({ behavior: "smooth", block: "center" });
-		setHighlightedRow(rowIndex);
-		setTimeout(() => setHighlightedRow(null), 2000);
-	};
-
 	// Get the empty value based on mode
 	const getEmptyValue = (): T => {
 		if (isEnvVarMode) {

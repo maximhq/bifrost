@@ -1,15 +1,15 @@
+import { CodeEditor } from "@/components/ui/codeEditor"
 import { ChatMessage, ContentBlock } from "@/lib/types/logs"
 import { cleanJson, isJson } from "@/lib/utils/validation"
 import AudioPlayer from "./audioPlayer"
 import CollapsibleBox from "./collapsibleBox"
-import { CodeEditor } from "@/components/ui/codeEditor"
 
 interface LogChatMessageViewProps {
 	message: ChatMessage
 	audioFormat?: string // Optional audio format from request params
 }
 
-function ContentBlockView({ block, index }: { block: ContentBlock; index: number }) {
+function ContentBlockView({ block }: { block: ContentBlock; index: number }) {
 	const blockType = block.type.replaceAll("_", " ")
 
 	// Handle text content

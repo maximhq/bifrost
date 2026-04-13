@@ -93,7 +93,7 @@ export default function PluginsView(props: Props) {
 			if (values.hasConfig && values.config) {
 				try {
 					config = JSON.parse(values.config);
-				} catch (e) {
+				} catch {
 					toast.error("Invalid JSON in configuration");
 					return;
 				}
@@ -109,12 +109,12 @@ export default function PluginsView(props: Props) {
 			}).unwrap();
 			toast.success("Plugin updated successfully");
 			form.reset(values);
-		} catch (error) {
+		} catch {
 			toast.error("Failed to update plugin");
 		}
 	};
 
-	const onError = (errors: any) => {
+	const onError = () => {
 		toast.error("Please fix the form errors before submitting");
 	};
 
@@ -139,18 +139,6 @@ export default function PluginsView(props: Props) {
 			</div>
 		);
 	}
-
-	const getStatusVariant = (status?: string) => {
-		switch (status?.toLowerCase()) {
-			case "active":
-				return "success";
-			case "error":
-			case "failed":
-				return "destructive";
-			default:
-				return "secondary";
-		}
-	};
 
 	const isErrorLog = (log: string) => {
 		const errorKeywords = ["error", "failed", "exception", "panic", "fatal", "ERR"];

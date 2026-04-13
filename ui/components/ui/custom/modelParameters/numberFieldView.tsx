@@ -20,7 +20,7 @@ interface Props {
 export default function NumberFieldView(props: Props) {
 	const { field, config } = props;
 
-	const invalid = field.range ? isInvalid(config[field.id] as number, field.range, field.id) : false;
+	const invalid = field.range ? isInvalid(config[field.id] as number, field.range) : false;
 
 	useEffect(() => {
 		if (!props.onInvalid) return;
@@ -76,7 +76,7 @@ export default function NumberFieldView(props: Props) {
 	);
 }
 
-const isInvalid = (value: number, range: { min: number; max: number }, f: string): boolean => {
+const isInvalid = (value: number, range: { min: number; max: number }): boolean => {
 	if (value === undefined || value === null || range?.min === undefined) return false;
 	return isNaN(value) || value < range.min || value > range.max;
 };

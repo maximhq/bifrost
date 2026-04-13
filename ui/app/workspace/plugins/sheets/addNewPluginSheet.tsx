@@ -104,7 +104,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 			if (data.hasConfig && data.config) {
 				try {
 					parsedConfig = JSON.parse(data.config);
-				} catch (error) {
+				} catch {
 					toast.error("Invalid JSON configuration");
 					return;
 				}

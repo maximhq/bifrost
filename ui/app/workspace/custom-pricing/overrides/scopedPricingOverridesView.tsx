@@ -48,7 +48,7 @@ function parseScopeKind(value: string | null): ScopeFilter {
 }
 
 // Returns the top-level scope label: "Global" or the virtual key name.
-function scopeLabel(override: PricingOverride, virtualKeyMap: Map<string, string>): string {
+function scopeLabel(override: PricingOverride, _virtualKeyMap: Map<string, string>): string {
 	const scopeKind = resolveScopeKind(override);
 	if (override.virtual_key_id && scopeKind.startsWith("virtual_key")) {
 		return "Virtual Key";
@@ -148,7 +148,7 @@ export default function ScopedPricingOverridesView() {
 	// Snap offset back when total shrinks past current page
 	const totalCount = data?.total_count ?? 0;
 	useEffect(() => {
-		if (!data || offset < totalCount) return;
+		if (offset < totalCount) return;
 		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [totalCount, offset]);
 	const { data: providersData } = useGetProvidersQuery();

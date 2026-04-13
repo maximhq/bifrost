@@ -1,23 +1,21 @@
+import { extractVariablesFromMessages, mergeVariables, Message, MessageRole, MessageType, type VariableMap } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import {
-	useCreateSessionMutation,
 	useDeleteFolderMutation,
 	useDeletePromptMutation,
 	useGetFoldersQuery,
 	useGetPromptsQuery,
 	useGetPromptVersionQuery,
 	useGetSessionsQuery,
-	useGetVersionsQuery,
-	useUpdatePromptMutation,
+	useUpdatePromptMutation
 } from "@/lib/store/apis/promptsApi";
 import { useGetModelParametersQuery } from "@/lib/store/apis/providersApi";
-import { Message, MessageRole, MessageType, extractVariablesFromMessages, mergeVariables, type VariableMap } from "@/lib/message";
 import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib/types/prompts";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { executePrompt } from "./utils/executor";
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 interface PromptContextValue {
 	// Data
@@ -122,7 +120,6 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [deleteFolder, { isLoading: isDeletingFolder }] = useDeleteFolderMutation();
 	const [deletePrompt, { isLoading: isDeletingPrompt }] = useDeletePromptMutation();
 	const [updatePrompt] = useUpdatePromptMutation();
-	const [createSession] = useCreateSessionMutation();
 
 	// UI state — persisted in URL query params
 	const [{ promptId: selectedPromptId, sessionId: selectedSessionId, versionId: selectedVersionId }, setUrlState] = useQueryStates(
@@ -169,7 +166,6 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const selectedPrompt = useMemo(() => prompts.find((p) => p.id === selectedPromptId), [prompts, selectedPromptId]);
 
 	// Fetch versions and sessions for selected prompt
-	const { data: versionsData } = useGetVersionsQuery(selectedPromptId ?? "", { skip: !selectedPromptId });
 	const { data: sessionsData, isLoading: isSessionsLoading } = useGetSessionsQuery(selectedPromptId ?? "", { skip: !selectedPromptId });
 
 	// Filter sessions to current prompt — RTK Query may briefly return stale cached data from the previous prompt

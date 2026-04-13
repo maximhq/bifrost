@@ -1,13 +1,13 @@
-import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs"
-import { isJson, cleanJson } from "@/lib/utils/validation"
-import CollapsibleBox from "./collapsibleBox"
 import { CodeEditor } from "@/components/ui/codeEditor";
+import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { cleanJson, isJson } from "@/lib/utils/validation";
+import CollapsibleBox from "./collapsibleBox";
 
 interface LogResponsesMessageViewProps {
 	messages: ResponsesMessage[]
 }
 
-function ContentBlockView({ block, index }: { block: ResponsesMessageContentBlock; index: number }) {
+function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; index: number }) {
 	const getBlockTitle = (type: string) => {
 		switch (type) {
 			case "input_text":

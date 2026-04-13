@@ -166,7 +166,7 @@ function ConditionGroup({ group, depth = 0 }: { group: RuleGroupType; depth?: nu
 
 // ─── target card ─────────────────────────────────────────────────────────────
 
-function TargetCard({ target, index, total }: { target: RoutingRule["targets"][0]; index: number; total: number }) {
+function TargetCard({ target, total }: { target: RoutingRule["targets"][0]; index: number; total: number }) {
 	const providerLabel = target.provider ? getProviderLabel(target.provider) : "Incoming provider";
 	const weightPercent = total > 0 ? Math.round(target.weight * 100) : 0;
 

@@ -1,5 +1,5 @@
 import { PROVIDER_SUPPORTED_REQUESTS } from "../constants/config";
-import { BaseProvider, KnownProvider } from "../types/config";
+import { BaseProvider } from "../types/config";
 
 export interface ValidationRule {
 	isValid: boolean;
