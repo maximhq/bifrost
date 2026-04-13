@@ -898,9 +898,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 	chunk.ErrorDetails = bifrostErr
 
 	if bifrostErr != nil {
-		chunk.FinishReason = bifrost.Ptr("error")
-		if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil && len(rawBytes) > 0 {
-			chunk.RawResponse = bifrost.Ptr(string(rawBytes))
+		if bifrostErr.ExtraFields.RawResponse != nil {
+			if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil {
+				chunk.RawResponse = bifrost.Ptr(string(rawBytes))
+			}
 		}
 		// Error chunks may arrive without a stream chunk index (result is nil), which can
 		// collide with index 0 (e.g., response.created) and get deduplicated away.
