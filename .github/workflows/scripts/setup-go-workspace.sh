@@ -20,6 +20,7 @@ fi
 go work init
 go work use ./core
 go work use ./framework
+go work use ./plugins/compat
 go work use ./plugins/governance
 go work use ./plugins/jsonparser
 go work use ./plugins/litellmcompat

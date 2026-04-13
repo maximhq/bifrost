@@ -939,11 +939,6 @@
                   "last_reset": {
                     "type": "string",
                     "format": "date-time"
-                  },
-                  "calendar_aligned": {
-                    "type": "boolean",
-                    "description": "Snap resets to calendar boundaries (day/week/month/year start)",
-                    "default": false
                   }
                 },
                 "required": [
@@ -1092,11 +1087,11 @@
                   "customer_id": {
                     "type": "string"
                   },
-                  "budget_id": {
-                    "type": "string"
-                  },
                   "rate_limit_id": {
                     "type": "string"
+                  },
+                  "calendar_aligned": {
+                    "type": "boolean"
                   },
                   "provider_configs": {
                     "type": "array",
@@ -1112,16 +1107,16 @@
                         "mcp_client_id": {
                           "type": "integer"
                         },
+                        "mcp_client_name": {
+                          "type": "string"
+                        },
                         "tools_to_execute": {
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         }
-                      },
-                      "required": [
-                        "mcp_client_id"
-                      ]
+                      }
                     }
                   }
                 },
