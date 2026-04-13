@@ -321,7 +321,7 @@ You can reload the pricing configuration at runtime if you need to change the pr
 newConfig := &modelcatalog.Config{
     PricingSyncInterval: 12 * time.Hour,
 }
-err := modelCatalog.ReloadPricing(ctx, newConfig)
+err := modelCatalog.UpdateSyncConfig(ctx, newConfig)
 ```
 
 ## Error Handling and Fallbacks
