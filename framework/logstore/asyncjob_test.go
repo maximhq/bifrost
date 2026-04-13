@@ -65,20 +65,21 @@ func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 	t.Fatal("timed out waiting for async job execution")
 }
 
-// waitForJobStatus polls FindAsyncJobByID until the job reaches a non-pending
-// status (or times out). This avoids a fragile time.Sleep between the operation
-// callback completing and the DB update finishing.
+// waitForJobStatus polls FindAsyncJobByID until the job reaches a terminal
+// status (completed or failed), or times out. This avoids a fragile time.Sleep
+// between the operation callback completing and the DB update finishing.
+// Processing is intermediate and must not be treated as terminal.
 func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		job, err := store.FindAsyncJobByID(context.Background(), jobID)
-		if err == nil && job.Status != schemas.AsyncJobStatusPending {
+		if err == nil && (job.Status == schemas.AsyncJobStatusCompleted || job.Status == schemas.AsyncJobStatusFailed) {
 			return job
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for async job status update")
+	t.Fatal("timed out waiting for async job to reach terminal status")
 	return nil
 }
 
