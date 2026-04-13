@@ -62,17 +62,19 @@ type UsageInfo struct {
 
 // BudgetResolver provides decision logic for the new hierarchical governance system
 type BudgetResolver struct {
-	store        GovernanceStore
-	logger       schemas.Logger
-	modelCatalog *modelcatalog.ModelCatalog
+	store                   GovernanceStore
+	logger                  schemas.Logger
+	modelCatalog            *modelcatalog.ModelCatalog
+	governanceInMemoryStore InMemoryStore
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
-func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger) *BudgetResolver {
+func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger, governanceInMemoryStore InMemoryStore) *BudgetResolver {
 	return &BudgetResolver{
-		store:        store,
-		logger:       logger,
-		modelCatalog: modelCatalog,
+		store:                   store,
+		logger:                  logger,
+		modelCatalog:            modelCatalog,
+		governanceInMemoryStore: governanceInMemoryStore,
 	}
 }
 
@@ -334,8 +336,9 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 			// Delegate model allowance check to model catalog
 			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 			// and provider-prefixed allowed_models entries
-			if r.modelCatalog != nil {
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, pc.AllowedModels)
+			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
+				providerConfig := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
+				return r.modelCatalog.IsModelAllowedForProvider(provider, model, &providerConfig, pc.AllowedModels)
 			}
 			// Fallback when model catalog is not available: simple string matching
 			if len(pc.AllowedModels) == 0 {

@@ -670,10 +670,23 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	// Explicit allowedModels without prefix
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels []string) bool {
-	// Case 1: Empty allowedModels = use catalog to determine support
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels []string) bool {
+	isCustomProvider := false
+	hasListModelsEndpointDisabled := false
+	if providerConfig != nil {
+		isCustomProvider = providerConfig.CustomProviderConfig != nil
+		hasListModelsEndpointDisabled = !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
+	}
+
+	// Case 1: Unrestricted allowedModels (empty or ["*"]) = use catalog to determine support
 	// This leverages GetProvidersForModel which already handles all cross-provider logic
-	if len(allowedModels) == 0 {
+	isUnrestricted := len(allowedModels) == 0 || (len(allowedModels) == 1 && allowedModels[0] == "*")
+	if isUnrestricted {
+		// Custom providers without a list-models endpoint can't be in the catalog,
+		// so allow any model through rather than blocking on missing catalog data
+		if isCustomProvider && hasListModelsEndpointDisabled {
+			return true
+		}
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
 	}
