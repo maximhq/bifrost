@@ -4761,9 +4761,9 @@ func executeRequestWithRetries[T any](
 			logger.Debug("sleeping for %s before retry", backoff)
 
 			timer := time.NewTimer(backoff)
+			defer timer.Stop()
 			select {
 			case <-ctx.Done():
-				timer.Stop()
 				var result T
 				return result, newBifrostCtxDoneError(ctx, providerKey, model, requestType, "during retry backoff")
 			case <-timer.C:
