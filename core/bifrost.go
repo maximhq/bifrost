@@ -4756,11 +4756,18 @@ func executeRequestWithRetries[T any](
 			}
 			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
 
-			// Calculate and apply backoff
+			// Calculate and apply backoff, respecting context cancellation
 			backoff := calculateBackoff(attempts-1, config)
 			logger.Debug("sleeping for %s before retry", backoff)
 
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				var result T
+				return result, newBifrostCtxDoneError(ctx, providerKey, model, requestType, "during retry backoff")
+			case <-timer.C:
+			}
 		}
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
