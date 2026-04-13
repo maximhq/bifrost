@@ -191,8 +191,34 @@
           "description": "Policy for evicting unhealthy pods (Kubernetes 1.27+)"
         }
       },
-      "not": {
-        "required": ["minAvailable", "maxUnavailable"]
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "required": ["minAvailable"],
+            "not": { "required": ["maxUnavailable"] }
+          },
+          {
+            "required": ["maxUnavailable"],
+            "not": { "required": ["minAvailable"] }
+          },
+          {
+            "not": {
+              "anyOf": [
+                { "required": ["minAvailable"] },
+                { "required": ["maxUnavailable"] }
+              ]
+            }
+          }
+        ]
+      },
+      "else": {
+        "not": {
+          "required": ["minAvailable", "maxUnavailable"]
+        }
       }
     },
     "autoscaling": {
