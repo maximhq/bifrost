@@ -17,6 +17,7 @@ import yaml
 INTEGRATION_TO_PROVIDER_MAP = {
     "openai": "openai",
     "anthropic": "anthropic",
+    "cohere": "cohere",
     "google": "gemini",  # Google integration uses Gemini provider
     "litellm": "openai",  # LiteLLM defaults to OpenAI
     "langchain": "openai",  # LangChain defaults to OpenAI

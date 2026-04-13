@@ -132,6 +132,20 @@ func TestVertexRankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, "doc-0", response.Results[0].Document.Text)
 }
 
+func TestVertexRankResponseToBifrostRerankResponseReturnDocumentsDisabled(t *testing.T) {
+	t.Parallel()
+
+	response, err := (&VertexRankResponse{
+		Records: []VertexRankedRecord{
+			{ID: "idx:0", Score: 0.91, Content: schemas.Ptr("provider-doc-0")},
+		},
+	}).ToBifrostRerankResponse([]schemas.RerankDocument{{Text: "request-doc-0"}}, false)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	assert.Nil(t, response.Results[0].Document)
+}
+
 func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
 	t.Parallel()
 
@@ -194,6 +208,27 @@ func TestVertexRankRequestToBifrostRerankRequestNil(t *testing.T) {
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
+func TestVertexRankRequestToBifrostRerankRequestIgnoreDetailsFalse(t *testing.T) {
+	t.Parallel()
+
+	ignoreDetails := false
+	req := &VertexRankRequest{
+		Query:                         "capital of france",
+		Records:                       []VertexRankRecord{{ID: "rec-1", Content: schemas.Ptr("Paris is the capital of France.")}},
+		IgnoreRecordDetailsInResponse: &ignoreDetails,
+	}
+
+	result := req.ToBifrostRerankRequest(nil)
+
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	// When ignoreRecordDetailsInResponse=false, ReturnDocuments must be true
+	// so document content flows back through the bifrost response round-trip.
+	require.NotNil(t, result.Params.ReturnDocuments)
+	assert.True(t, *result.Params.ReturnDocuments)
+	assert.Equal(t, false, result.Params.ExtraParams["ignore_record_details_in_response"])
+}
+
 func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	t.Parallel()
 
@@ -204,4 +239,81 @@ func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	}).ToBifrostRerankResponse([]schemas.RerankDocument{{Text: "doc"}}, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid record id")
+}
+
+func TestToVertexRankResponse(t *testing.T) {
+	t.Parallel()
+
+	response, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          2,
+				RelevanceScore: 0.87,
+				Document: &schemas.RerankDocument{
+					Text: "doc-2",
+					Meta: map[string]interface{}{"title": "Doc 2"},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Records, 1)
+	assert.Equal(t, "idx:2", response.Records[0].ID)
+	assert.Equal(t, 0.87, response.Records[0].Score)
+	require.NotNil(t, response.Records[0].Content)
+	assert.Equal(t, "doc-2", *response.Records[0].Content)
+	require.NotNil(t, response.Records[0].Title)
+	assert.Equal(t, "Doc 2", *response.Records[0].Title)
+}
+
+func TestToVertexRankResponseWithoutDocument(t *testing.T) {
+	t.Parallel()
+
+	response, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{Index: 1, RelevanceScore: 0.73},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Records, 1)
+	assert.Equal(t, "idx:1", response.Records[0].ID)
+	assert.Nil(t, response.Records[0].Content)
+	assert.Nil(t, response.Records[0].Title)
+}
+
+func TestToVertexRankResponseWithoutTitleMetadata(t *testing.T) {
+	t.Parallel()
+
+	response, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          3,
+				RelevanceScore: 0.64,
+				Document: &schemas.RerankDocument{
+					Text: "doc-3",
+				},
+			},
+			{
+				Index:          4,
+				RelevanceScore: 0.32,
+				Document: &schemas.RerankDocument{
+					Text: "doc-4",
+					Meta: map[string]interface{}{
+						"title": 99,
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Records, 2)
+	require.NotNil(t, response.Records[0].Content)
+	assert.Equal(t, "doc-3", *response.Records[0].Content)
+	assert.Nil(t, response.Records[0].Title)
+	require.NotNil(t, response.Records[1].Content)
+	assert.Equal(t, "doc-4", *response.Records[1].Content)
+	assert.Nil(t, response.Records[1].Title)
 }

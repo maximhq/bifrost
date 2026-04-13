@@ -45,6 +45,8 @@ Count Tokens Tests:
 26. Count tokens with tool definitions - Cross-provider
 27. Count tokens from long text - Cross-provider
 28. Count tokens from multi-turn conversation - Cross-provider
+29. Rerank - Cross-provider
+30. Rerank top_n limiting - Cross-provider
 """
 
 import base64
@@ -55,6 +57,7 @@ from typing import Any, Dict, List
 
 import boto3
 import pytest
+import requests
 
 from .utils.common import (
     BASE64_IMAGE,
@@ -64,10 +67,12 @@ from .utils.common import (
     MULTIPLE_TOOL_CALL_MESSAGES,
     PROMPT_CACHING_LARGE_CONTEXT,
     PROMPT_CACHING_TOOLS,
+    RERANK_DOCUMENTS,
+    RERANK_EXPECTED_TOP_INDEX,
+    RERANK_QUERY,
     SIMPLE_CHAT_MESSAGES,
     WEATHER_KEYWORDS,
     WEATHER_TOOL,
-    Config,
     assert_has_tool_calls,
     assert_valid_chat_response,
     extract_tool_calls,
@@ -128,7 +133,7 @@ def get_provider_bedrock_batch_client(provider: str) -> boto3.client:
     return client
 
 
-def create_bedrock_batch_jsonl(model_id: str, num_requests: int = 2) -> str:
+def create_bedrock_batch_jsonl(num_requests: int = 2) -> str:
     """Create JSONL content for Bedrock batch processing"""
     lines = []
     for i in range(num_requests):
@@ -150,7 +155,7 @@ def create_bedrock_batch_jsonl(model_id: str, num_requests: int = 2) -> str:
     return "\n".join(lines)
 
 
-def create_gemini_batch_jsonl(model_id: str, num_requests: int = 2) -> str:
+def create_gemini_batch_jsonl(num_requests: int = 2) -> str:
     """Create JSONL content for Gemini batch processing
 
     Gemini batch format:
@@ -176,12 +181,12 @@ def create_gemini_batch_jsonl(model_id: str, num_requests: int = 2) -> str:
     return "\n".join(lines)
 
 
-def create_batch_jsonl_for_provider(provider: str, model_id: str, num_requests: int = 2) -> str:
+def create_batch_jsonl_for_provider(provider: str, num_requests: int = 2) -> str:
     """Create provider-specific JSONL content for batch processing"""
     if provider == "gemini":
-        return create_gemini_batch_jsonl(model_id, num_requests)
+        return create_gemini_batch_jsonl(num_requests)
     else:
-        return create_bedrock_batch_jsonl(model_id, num_requests)
+        return create_bedrock_batch_jsonl(num_requests)
 
 
 @pytest.fixture
@@ -245,12 +250,6 @@ def s3_client():
     client.meta.events.register("before-send", add_provider_header)
 
     return client
-
-
-@pytest.fixture
-def test_config():
-    """Test configuration"""
-    return Config()
 
 
 def convert_to_bedrock_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -336,7 +335,7 @@ class TestBedrockIntegration:
     """Test suite for Bedrock integration covering core scenarios"""
 
     @skip_if_no_api_key("bedrock")
-    def test_01_text_completion_invoke(self, bedrock_client, test_config):
+    def test_01_text_completion_invoke(self, bedrock_client):
         pytest.skip("Skipping text completion invoke test")
         model_id = get_model("bedrock", "text_completion")
 
@@ -372,7 +371,7 @@ class TestBedrockIntegration:
         assert text is not None and len(text) > 0, "Response should contain text"
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
-    def test_02_converse_with_tool_calling(self, bedrock_client, test_config, provider, model):
+    def test_02_converse_with_tool_calling(self, bedrock_client, provider, model):
         """Test Case 2: Chat with tool calling and tool result using converse API - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -457,7 +456,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("image_base64")
     )
-    def test_03_image_analysis(self, bedrock_client, test_config, provider, model):
+    def test_03_image_analysis(self, bedrock_client, provider, model):
         """Test Case 3: Image analysis using converse API - runs across all available providers with base64 image support"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -534,7 +533,7 @@ class TestBedrockIntegration:
         )
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("streaming"))
-    def test_04_converse_streaming(self, bedrock_client, test_config, provider, model):
+    def test_04_converse_streaming(self, bedrock_client, provider, model):
         """Test Case 4: Streaming chat completion using converse-stream API with boto3 - runs across all available providers
 
         Follows boto3 Bedrock Runtime converse_stream API:
@@ -631,7 +630,7 @@ class TestBedrockIntegration:
         ), f"Streaming response should not be empty. Combined text: {repr(combined_text[:100])}"
 
     @skip_if_no_api_key("bedrock")
-    def test_05_invoke_streaming(self, bedrock_client, test_config):
+    def test_05_invoke_streaming(self, bedrock_client):
         """Test Case 5: Streaming text completion using invoke-with-response-stream API
 
         Follows boto3 Bedrock Runtime invoke_model_with_response_stream API.
@@ -733,7 +732,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("simple_chat")
     )
-    def test_06_simple_chat(self, bedrock_client, test_config, provider, model):
+    def test_06_simple_chat(self, bedrock_client, provider, model):
         """Test Case 6: Simple chat interaction using converse API without tools - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -770,7 +769,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation")
     )
-    def test_07_multi_turn_conversation(self, bedrock_client, test_config, provider, model):
+    def test_07_multi_turn_conversation(self, bedrock_client, provider, model):
         """Test Case 7: Multi-turn conversation using converse API - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -807,7 +806,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls")
     )
-    def test_08_multiple_tool_calls(self, bedrock_client, test_config, provider, model):
+    def test_08_multiple_tool_calls(self, bedrock_client, provider, model):
         """Test Case 8: Multiple tool calls in one response using converse API - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -840,7 +839,7 @@ class TestBedrockIntegration:
         assert made_relevant_calls, f"Expected tool calls from {expected_tools}, got {tool_names}"
 
     @skip_if_no_api_key("bedrock")
-    def test_09_system_message(self, bedrock_client, test_config):
+    def test_09_system_message(self, bedrock_client):
         """Test Case 9: System message handling using converse API"""
         system_content = "You are a helpful assistant that always responds in exactly 5 words."
         user_content = "Hello, how are you?"
@@ -882,7 +881,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling")
     )
-    def test_10_end2end_tool_calling(self, bedrock_client, test_config, provider, model):
+    def test_10_end2end_tool_calling(self, bedrock_client, provider, model):
         """Test Case 10: Complete end-to-end tool calling flow - runs across all available providers
 
         This test covers the full cycle:
@@ -984,7 +983,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
     )
-    def test_11_file_upload(self, test_config, provider, model):
+    def test_11_file_upload(self, provider, model):
         """Test Case 11: Upload a file to S3 for batch processing
 
         Multi-provider test using boto3 S3 client with x-model-provider header.
@@ -1006,7 +1005,7 @@ class TestBedrockIntegration:
         s3_client: boto3.client = get_provider_s3_client(provider)
 
         # Create JSONL content for batch
-        jsonl_content = create_bedrock_batch_jsonl(model, num_requests=2)
+        jsonl_content = create_bedrock_batch_jsonl(num_requests=2)
 
         # Upload to S3
         s3_key = f"bifrost-test-files/batch_input_{int(time.time())}.jsonl"
@@ -1030,7 +1029,7 @@ class TestBedrockIntegration:
             print(f"Warning: Failed to clean up file: {e}")
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
-    def test_12_file_list(self, test_config, provider, model):
+    def test_12_file_list(self, provider, model):
         """Test Case 12: List files in S3 bucket
 
         Multi-provider test using boto3 S3 client with x-model-provider header.
@@ -1049,7 +1048,7 @@ class TestBedrockIntegration:
         s3_client = get_provider_s3_client(provider)
 
         # First upload a file to ensure we have at least one
-        jsonl_content = create_bedrock_batch_jsonl(model, num_requests=1)
+        jsonl_content = create_bedrock_batch_jsonl(num_requests=1)
 
         s3_key = f"bifrost-test-files/test_list_{int(time.time())}.jsonl"
 
@@ -1081,7 +1080,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("file_retrieve")
     )
-    def test_13_file_retrieve(self, test_config, provider, model):
+    def test_13_file_retrieve(self, provider, model):
         """Test Case 13: Retrieve S3 object metadata
 
         Multi-provider test using boto3 S3 client with x-model-provider header.
@@ -1100,7 +1099,7 @@ class TestBedrockIntegration:
         s3_client = get_provider_s3_client(provider)
 
         # Upload a file first
-        jsonl_content = create_bedrock_batch_jsonl(model, num_requests=1)
+        jsonl_content = create_bedrock_batch_jsonl(num_requests=1)
 
         s3_key = f"bifrost-test-files/test_retrieve_{int(time.time())}.jsonl"
 
@@ -1138,7 +1137,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("file_delete")
     )
-    def test_14_file_delete(self, test_config, provider, model):
+    def test_14_file_delete(self, provider, model):
         """Test Case 14: Delete S3 object
 
         Multi-provider test using boto3 S3 client with x-model-provider header.
@@ -1157,7 +1156,7 @@ class TestBedrockIntegration:
         s3_client = get_provider_s3_client(provider)
 
         # Upload a file first
-        jsonl_content = create_bedrock_batch_jsonl(model, num_requests=1)
+        jsonl_content = create_bedrock_batch_jsonl(num_requests=1)
 
         s3_key = f"bifrost-test-files/test_delete_{int(time.time())}.jsonl"
 
@@ -1183,7 +1182,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("file_content")
     )
-    def test_15_file_content(self, test_config, provider, model):
+    def test_15_file_content(self, provider, model):
         """Test Case 15: Download S3 object content
 
         Multi-provider test using boto3 S3 client with x-model-provider header.
@@ -1205,7 +1204,7 @@ class TestBedrockIntegration:
         s3_client = get_provider_s3_client(provider)
 
         # Upload a file with known content
-        jsonl_content = create_bedrock_batch_jsonl(model, num_requests=2)
+        jsonl_content = create_bedrock_batch_jsonl(num_requests=2)
 
         s3_key = f"bifrost-test-files/test_content_{int(time.time())}.jsonl"
 
@@ -1248,7 +1247,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
     )
-    def test_16_batch_create(self, test_config, provider, model):
+    def test_16_batch_create(self, provider, model):
         """Test Case 16: Create a batch inference job with S3 input
 
         Multi-provider test using boto3 Bedrock client with x-model-provider header.
@@ -1264,7 +1263,7 @@ class TestBedrockIntegration:
         bedrock_client = get_provider_bedrock_batch_client(provider)
 
         # Upload input file in provider-specific format
-        jsonl_content = create_batch_jsonl_for_provider(provider, model, num_requests=2)
+        jsonl_content = create_batch_jsonl_for_provider(provider, num_requests=2)
         s3_bucket = "bifrost-batch-api-file-upload-testing"
         s3_key = f"bifrost-batch-input/batch_input_{int(time.time())}.jsonl"
         upload_response = s3_client.put_object(
@@ -1306,7 +1305,7 @@ class TestBedrockIntegration:
             raise
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
-    def test_17_batch_list(self, test_config, provider, model):
+    def test_17_batch_list(self, provider, model):
         """Test Case 17: List batch inference jobs
 
         Multi-provider test using boto3 Bedrock client with x-model-provider header.
@@ -1355,7 +1354,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("batch_retrieve")
     )
-    def test_18_batch_retrieve(self, test_config, provider, model):
+    def test_18_batch_retrieve(self, provider, model):
         """Test Case 18: Retrieve batch job status
 
         Multi-provider test using boto3 Bedrock client with x-model-provider header.
@@ -1429,7 +1428,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("batch_cancel")
     )
-    def test_19_batch_cancel(self, test_config, provider, model):
+    def test_19_batch_cancel(self, provider, model):
         """Test Case 19: Cancel/stop a batch job
 
         Multi-provider test using boto3 Bedrock client with x-model-provider header.
@@ -1453,7 +1452,7 @@ class TestBedrockIntegration:
         bedrock_client = get_provider_bedrock_batch_client(provider)
 
         # Upload a test file to S3 (use provider-specific format)
-        jsonl_content = create_batch_jsonl_for_provider(provider, model, num_requests=5)
+        jsonl_content = create_batch_jsonl_for_provider(provider, num_requests=5)
 
         s3_key = f"bifrost-batch-cancel/batch_cancel_{int(time.time())}.jsonl"
         upload_response = s3_client.put_object(
@@ -1534,7 +1533,7 @@ class TestBedrockIntegration:
     @pytest.mark.parametrize(
         "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
     )
-    def test_20_batch_e2e(self, test_config, provider, model):
+    def test_20_batch_e2e(self, provider, model):
         """Test Case 20: End-to-end batch workflow
 
         Multi-provider test using boto3 with x-model-provider header.
@@ -1562,7 +1561,7 @@ class TestBedrockIntegration:
         bedrock_client = get_provider_bedrock_batch_client(provider)
 
         # Step 1: Upload input file to S3
-        jsonl_content = create_batch_jsonl_for_provider(provider, model, num_requests=2)
+        jsonl_content = create_batch_jsonl_for_provider(provider, num_requests=2)
 
         s3_key = f"bifrost-batch-e2e/batch_e2e_{int(time.time())}.jsonl"
         upload_response = s3_client.put_object(
@@ -2038,3 +2037,106 @@ class TestBedrockCountTokens:
         ), f"Multi-turn conversation should have >15 tokens, got {response['inputTokens']}"
 
         print(f"✓ Multi-turn conversation token count: {response['inputTokens']} tokens")
+
+
+class TestBedrockRerank:
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("rerank"))
+    def test_29_rerank_basic(self, provider, model):
+        """Test Case 29: Basic rerank via Bedrock Agent Runtime route."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for rerank scenario")
+
+        response = requests.post(
+            f"{get_integration_url('bedrock')}/rerank",
+            headers={
+                "Content-Type": "application/json",
+                "x-model-provider": provider,
+            },
+            json={
+                "queries": [
+                    {
+                        "type": "TEXT",
+                        "textQuery": {"text": RERANK_QUERY},
+                    }
+                ],
+                "rerankingConfiguration": {
+                    "type": "BEDROCK_RERANKING_MODEL",
+                    "bedrockRerankingConfiguration": {
+                        "modelConfiguration": {
+                            "modelArn": format_provider_model(provider, model),
+                        },
+                        "numberOfResults": 2,
+                    },
+                },
+                "sources": [
+                    {
+                        "type": "INLINE",
+                        "inlineDocumentSource": {
+                            "type": "TEXT",
+                            "textDocument": {"text": document},
+                        },
+                    }
+                    for document in RERANK_DOCUMENTS
+                ],
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        rerank_response = response.json()
+        results = rerank_response.get("results")
+        assert isinstance(results, list), "Bedrock rerank response should include results"
+        assert len(results) == 2
+        assert results[0]["index"] == RERANK_EXPECTED_TOP_INDEX
+        assert "relevanceScore" in results[0]
+        assert results[0]["relevanceScore"] >= results[1]["relevanceScore"]
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("rerank"))
+    def test_30_rerank_top_n_limit(self, provider, model):
+        """Test Case 30: Bedrock rerank respects top_n/numberOfResults."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for rerank scenario")
+
+        response = requests.post(
+            f"{get_integration_url('bedrock')}/rerank",
+            headers={
+                "Content-Type": "application/json",
+                "x-model-provider": provider,
+            },
+            json={
+                "queries": [
+                    {
+                        "type": "TEXT",
+                        "textQuery": {"text": RERANK_QUERY},
+                    }
+                ],
+                "rerankingConfiguration": {
+                    "type": "BEDROCK_RERANKING_MODEL",
+                    "bedrockRerankingConfiguration": {
+                        "modelConfiguration": {
+                            "modelArn": format_provider_model(provider, model),
+                        },
+                        "numberOfResults": 1,
+                    },
+                },
+                "sources": [
+                    {
+                        "type": "INLINE",
+                        "inlineDocumentSource": {
+                            "type": "TEXT",
+                            "textDocument": {"text": document},
+                        },
+                    }
+                    for document in RERANK_DOCUMENTS
+                ],
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+
+        rerank_response = response.json()
+        results = rerank_response.get("results")
+        assert isinstance(results, list), "Bedrock rerank response should include results"
+        assert len(results) == 1
+        assert results[0]["index"] == RERANK_EXPECTED_TOP_INDEX
+        assert "relevanceScore" in results[0]

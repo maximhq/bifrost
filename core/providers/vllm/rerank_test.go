@@ -147,8 +147,42 @@ func TestRerankToBifrostRerankResponseZeroRelevanceScoreDoesNotFallback(t *testi
 	assert.Equal(t, 0.0, response.Results[0].RelevanceScore)
 }
 
-func TestRerankParseVLLMUsageZeroUsage(t *testing.T) {
-	usage, ok := parseVLLMUsage(map[string]interface{}{})
+func TestRerankToBifrostRerankResponseMissingScore(t *testing.T) {
+	_, err := ToBifrostRerankResponse(map[string]interface{}{
+		"results": []interface{}{
+			map[string]interface{}{"index": 0},
+		},
+	}, []schemas.RerankDocument{{Text: "doc-0"}}, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "relevance_score/score is required")
+}
+
+func TestRerankParseTypedVLLMUsageZeroUsage(t *testing.T) {
+	usage, ok := parseTypedVLLMUsage(&VLLMRerankUsage{})
 	assert.False(t, ok)
 	assert.Nil(t, usage)
+}
+
+func TestRerankParseTypedVLLMUsageTotalOnly(t *testing.T) {
+	total := 7
+	usage, ok := parseTypedVLLMUsage(&VLLMRerankUsage{TotalTokens: &total})
+	require.True(t, ok)
+	require.NotNil(t, usage)
+	assert.Equal(t, 0, usage.PromptTokens)
+	assert.Equal(t, 0, usage.CompletionTokens)
+	assert.Equal(t, 7, usage.TotalTokens)
+}
+
+func TestRerankToBifrostRerankResponseNullRelevanceScoreFallsBackToScore(t *testing.T) {
+	response, err := ToBifrostRerankResponse(map[string]interface{}{
+		"results": []interface{}{
+			map[string]interface{}{"index": 0, "relevance_score": nil, "score": 0.25},
+		},
+	}, []schemas.RerankDocument{{Text: "doc-0"}}, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	assert.Equal(t, 0.25, response.Results[0].RelevanceScore)
 }

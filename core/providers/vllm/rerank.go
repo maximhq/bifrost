@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -34,46 +35,28 @@ func ToVLLMRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *vLLMRerankRe
 }
 
 // ToBifrostRerankResponse converts a vLLM rerank response payload to Bifrost format.
-func ToBifrostRerankResponse(payload map[string]interface{}, documents []schemas.RerankDocument, returnDocuments bool) (*schemas.BifrostRerankResponse, error) {
-	if payload == nil {
+func ToBifrostRerankResponse(payload interface{}, documents []schemas.RerankDocument, returnDocuments bool) (*schemas.BifrostRerankResponse, error) {
+	vllmResp, err := decodeVLLMRerankResponse(payload)
+	if err != nil {
+		return nil, err
+	}
+	if vllmResp == nil {
 		return nil, fmt.Errorf("vllm rerank response is nil")
 	}
 
-	response := &schemas.BifrostRerankResponse{}
-
-	if id, ok := schemas.SafeExtractString(payload["id"]); ok {
-		response.ID = id
+	response := &schemas.BifrostRerankResponse{
+		ID:    vllmResp.ID,
+		Model: vllmResp.Model,
 	}
-	if model, ok := schemas.SafeExtractString(payload["model"]); ok {
-		response.Model = model
-	}
-	if usage, ok := parseVLLMUsage(payload["usage"]); ok {
+	if usage, ok := parseTypedVLLMUsage(vllmResp.Usage); ok {
 		response.Usage = usage
 	}
 
-	resultsRaw := payload["results"]
-	if resultsRaw == nil {
-		return nil, fmt.Errorf("invalid vllm rerank response: missing results")
-	}
+	seenIndices := make(map[int]struct{}, len(vllmResp.Results))
+	response.Results = make([]schemas.RerankResult, 0, len(vllmResp.Results))
 
-	resultItems, ok := resultsRaw.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid vllm rerank response: results must be an array")
-	}
-
-	seenIndices := make(map[int]struct{}, len(resultItems))
-	response.Results = make([]schemas.RerankResult, 0, len(resultItems))
-
-	for _, item := range resultItems {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("invalid vllm rerank response: result item must be an object")
-		}
-
-		index, ok := schemas.SafeExtractInt(itemMap["index"])
-		if !ok {
-			return nil, fmt.Errorf("invalid vllm rerank response: result index is required")
-		}
+	for _, item := range vllmResp.Results {
+		index := item.Index
 		if index < 0 || index >= len(documents) {
 			return nil, fmt.Errorf("invalid vllm rerank response: result index %d out of range", index)
 		}
@@ -82,10 +65,7 @@ func ToBifrostRerankResponse(payload map[string]interface{}, documents []schemas
 		}
 		seenIndices[index] = struct{}{}
 
-		relevanceScore, ok := schemas.SafeExtractFloat64(itemMap["relevance_score"])
-		if !ok {
-			relevanceScore, ok = schemas.SafeExtractFloat64(itemMap["score"])
-		}
+		relevanceScore, ok := resolveVLLMRelevanceScore(item)
 		if !ok {
 			return nil, fmt.Errorf("invalid vllm rerank response: relevance_score/score is required")
 		}
@@ -113,29 +93,56 @@ func ToBifrostRerankResponse(payload map[string]interface{}, documents []schemas
 	return response, nil
 }
 
-func parseVLLMUsage(rawUsage interface{}) (*schemas.BifrostLLMUsage, bool) {
-	usageMap, ok := rawUsage.(map[string]interface{})
-	if !ok {
+func decodeVLLMRerankResponse(payload interface{}) (*VLLMRerankResponse, error) {
+	if payload == nil {
+		return nil, nil
+	}
+
+	switch value := payload.(type) {
+	case *VLLMRerankResponse:
+		return value, nil
+	case VLLMRerankResponse:
+		resp := value
+		return &resp, nil
+	}
+
+	body, err := sonic.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vllm rerank response: %w", err)
+	}
+
+	var response VLLMRerankResponse
+	if err := sonic.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("invalid vllm rerank response: %w", err)
+	}
+	if response.Results == nil {
+		return nil, fmt.Errorf("invalid vllm rerank response: missing results")
+	}
+	return &response, nil
+}
+
+func parseTypedVLLMUsage(usage *VLLMRerankUsage) (*schemas.BifrostLLMUsage, bool) {
+	if usage == nil {
 		return nil, false
 	}
 
 	promptTokens := 0
-	if _, hasPromptTokens := usageMap["prompt_tokens"]; hasPromptTokens {
-		promptTokens, _ = schemas.SafeExtractInt(usageMap["prompt_tokens"])
-	} else {
-		promptTokens, _ = schemas.SafeExtractInt(usageMap["input_tokens"])
+	if usage.PromptTokens != nil {
+		promptTokens = *usage.PromptTokens
+	} else if usage.InputTokens != nil {
+		promptTokens = *usage.InputTokens
 	}
 
 	completionTokens := 0
-	if _, hasCompletionTokens := usageMap["completion_tokens"]; hasCompletionTokens {
-		completionTokens, _ = schemas.SafeExtractInt(usageMap["completion_tokens"])
-	} else {
-		completionTokens, _ = schemas.SafeExtractInt(usageMap["output_tokens"])
+	if usage.CompletionTokens != nil {
+		completionTokens = *usage.CompletionTokens
+	} else if usage.OutputTokens != nil {
+		completionTokens = *usage.OutputTokens
 	}
 
-	totalTokens, ok := schemas.SafeExtractInt(usageMap["total_tokens"])
-	if !ok {
-		totalTokens = promptTokens + completionTokens
+	totalTokens := promptTokens + completionTokens
+	if usage.TotalTokens != nil {
+		totalTokens = *usage.TotalTokens
 	}
 	if promptTokens == 0 && completionTokens == 0 && totalTokens == 0 {
 		return nil, false
@@ -146,4 +153,14 @@ func parseVLLMUsage(rawUsage interface{}) (*schemas.BifrostLLMUsage, bool) {
 		CompletionTokens: completionTokens,
 		TotalTokens:      totalTokens,
 	}, true
+}
+
+func resolveVLLMRelevanceScore(result VLLMRerankResult) (float64, bool) {
+	if result.RelevanceScore != nil {
+		return *result.RelevanceScore, true
+	}
+	if result.Score != nil {
+		return *result.Score, true
+	}
+	return 0, false
 }

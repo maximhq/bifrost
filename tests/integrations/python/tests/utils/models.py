@@ -29,11 +29,12 @@ def get_integration_models() -> Dict[str, IntegrationModels]:
 
     for integration in config.list_integrations():
         models_config = config.list_models(integration)
+        integration_config = models_config[integration]
         integration_models[integration] = IntegrationModels(
-            chat=models_config["chat"],
-            vision=models_config["vision"],
-            tools=models_config["tools"],
-            alternatives=models_config["alternatives"],
+            chat=integration_config.get("chat", ""),
+            vision=integration_config.get("vision", ""),
+            tools=integration_config.get("tools", ""),
+            alternatives=integration_config.get("alternatives", []),
         )
 
     return integration_models

@@ -21,24 +21,28 @@ const (
 
 // CohereChatRequest represents a Cohere  chat completion request
 type CohereChatRequest struct {
-	Model            string                  `json:"model"`                        // Required: Model to use for chat completion
-	Messages         []CohereMessage         `json:"messages"`                     // Required: Array of message objects
-	Tools            []CohereChatRequestTool `json:"tools,omitempty"`              // Optional: Tools available for the model
-	ToolChoice       *CohereToolChoice       `json:"tool_choice,omitempty"`        // Optional: Tool choice configuration
-	Temperature      *float64                `json:"temperature,omitempty"`        // Optional: Sampling temperature
-	P                *float64                `json:"p,omitempty"`                  // Optional: Top-p sampling
-	K                *int                    `json:"k,omitempty"`                  // Optional: Top-k sampling
-	MaxTokens        *int                    `json:"max_tokens,omitempty"`         // Optional: Maximum tokens to generate
-	StopSequences    []string                `json:"stop_sequences,omitempty"`     // Optional: Stop sequences
-	FrequencyPenalty *float64                `json:"frequency_penalty,omitempty"`  // Optional: Frequency penalty
-	PresencePenalty  *float64                `json:"presence_penalty,omitempty"`   // Optional: Presence penalty
-	Stream           *bool                   `json:"stream,omitempty"`             // Optional: Enable streaming
-	SafetyMode       *string                 `json:"safety_mode,omitempty"`        // Optional: Safety mode
-	LogProbs         *bool                   `json:"log_probs,omitempty"`          // Optional: Log probabilities
-	StrictToolChoice *bool                   `json:"strict_tool_choice,omitempty"` // Optional: Strict tool choice
-	Thinking         *CohereThinking         `json:"thinking,omitempty"`           // Optional: Reasoning configuration
-	ResponseFormat   *CohereResponseFormat   `json:"response_format,omitempty"`    // Optional: Format for the response
-	ExtraParams      map[string]interface{}  `json:"-"`                            // Optional: Extra parameters
+	Model            string                  `json:"model"`                       // Required: Model to use for chat completion
+	Messages         []CohereMessage         `json:"messages"`                    // Required: Array of message objects
+	Tools            []CohereChatRequestTool `json:"tools,omitempty"`             // Optional: Tools available for the model
+	ToolChoice       *CohereToolChoice       `json:"tool_choice,omitempty"`       // Optional: Tool choice configuration
+	Documents        []CohereChatDocument    `json:"documents,omitempty"`         // Optional: Documents the model can cite
+	CitationOptions  *CohereCitationOptions  `json:"citation_options,omitempty"`  // Optional: Citation generation configuration
+	Temperature      *float64                `json:"temperature,omitempty"`       // Optional: Sampling temperature
+	P                *float64                `json:"p,omitempty"`                 // Optional: Top-p sampling
+	K                *int                    `json:"k,omitempty"`                 // Optional: Top-k sampling
+	MaxTokens        *int                    `json:"max_tokens,omitempty"`        // Optional: Maximum tokens to generate
+	StopSequences    []string                `json:"stop_sequences,omitempty"`    // Optional: Stop sequences
+	Seed             *int                    `json:"seed,omitempty"`              // Optional: Deterministic sampling seed
+	Priority         *int                    `json:"priority,omitempty"`          // Optional: Request priority
+	FrequencyPenalty *float64                `json:"frequency_penalty,omitempty"` // Optional: Frequency penalty
+	PresencePenalty  *float64                `json:"presence_penalty,omitempty"`  // Optional: Presence penalty
+	Stream           *bool                   `json:"stream,omitempty"`            // Optional: Enable streaming
+	SafetyMode       *string                 `json:"safety_mode,omitempty"`       // Optional: Safety mode
+	LogProbs         *bool                   `json:"logprobs,omitempty"`          // Optional: Log probabilities
+	StrictTools      *bool                   `json:"strict_tools,omitempty"`      // Optional: Strict tool adherence
+	Thinking         *CohereThinking         `json:"thinking,omitempty"`          // Optional: Reasoning configuration
+	ResponseFormat   *CohereResponseFormat   `json:"response_format,omitempty"`   // Optional: Format for the response
+	ExtraParams      map[string]interface{}  `json:"-"`                           // Optional: Extra parameters
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -172,13 +176,53 @@ type CohereContentBlock struct {
 
 // CohereImageURL represents an image URL content block
 type CohereImageURL struct {
-	URL string `json:"url"` // Required: Image URL
+	URL    string  `json:"url"`              // Required: Image URL
+	Detail *string `json:"detail,omitempty"` // Optional: Image detail level
 }
 
 // CohereDocument represents a document content block
 type CohereDocument struct {
 	Data schemas.OrderedMap `json:"data"`         // Required: Document data as key-value pairs
 	ID   *string            `json:"id,omitempty"` // Optional: Document ID for citations
+}
+
+// CohereChatDocument represents a native Cohere v2 document, which may be a
+// plain string or a structured document object.
+type CohereChatDocument struct {
+	StringDocument *string         `json:"-"`
+	ObjectDocument *CohereDocument `json:"-"`
+}
+
+func (d CohereChatDocument) MarshalJSON() ([]byte, error) {
+	if d.StringDocument != nil {
+		return providerUtils.MarshalSorted(*d.StringDocument)
+	}
+	if d.ObjectDocument != nil {
+		return providerUtils.MarshalSorted(d.ObjectDocument)
+	}
+	return []byte("null"), nil
+}
+
+func (d *CohereChatDocument) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := sonic.Unmarshal(data, &str); err == nil {
+		d.StringDocument = &str
+		d.ObjectDocument = nil
+		return nil
+	}
+
+	var doc CohereDocument
+	if err := sonic.Unmarshal(data, &doc); err == nil {
+		d.StringDocument = nil
+		d.ObjectDocument = &doc
+		return nil
+	}
+
+	return fmt.Errorf("document must be either a string or an object")
+}
+
+type CohereCitationOptions struct {
+	Mode *string `json:"mode,omitempty"`
 }
 
 // CohereThinking represents reasoning configuration
@@ -215,7 +259,6 @@ type CohereToolChoice string
 const (
 	ToolChoiceRequired CohereToolChoice = "REQUIRED"
 	ToolChoiceNone     CohereToolChoice = "NONE"
-	ToolChoiceAuto     CohereToolChoice = "AUTO"
 )
 
 // CohereToolCall represents a tool call in Cohere  format

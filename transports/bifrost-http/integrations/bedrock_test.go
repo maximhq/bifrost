@@ -238,6 +238,59 @@ func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
 	assert.Equal(t, raw, converted)
 }
 
+func Test_createBedrockRerankResponseConverterBuildsNativeShapeWithoutRawResponse(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+	require.NotNil(t, route.RerankResponseConverter)
+
+	converted, err := route.RerankResponseConverter(nil, &schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          1,
+				RelevanceScore: 0.7,
+				Document:       &schemas.RerankDocument{Text: "doc-1"},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Cohere,
+		},
+	})
+	require.NoError(t, err)
+
+	bedrockResp, ok := converted.(*bedrock.BedrockRerankResponse)
+	require.True(t, ok)
+	require.Len(t, bedrockResp.Results, 1)
+	assert.Equal(t, 1, bedrockResp.Results[0].Index)
+	require.NotNil(t, bedrockResp.Results[0].Document)
+	require.NotNil(t, bedrockResp.Results[0].Document.TextDocument)
+	assert.Equal(t, "doc-1", bedrockResp.Results[0].Document.TextDocument.Text)
+}
+
+func Test_createBedrockRerankResponseConverterBuildsNativeShapeWithoutRawEvenForBedrockProvider(t *testing.T) {
+	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+	require.NotNil(t, route.RerankResponseConverter)
+
+	converted, err := route.RerankResponseConverter(nil, &schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          0,
+				RelevanceScore: 0.9,
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Bedrock,
+		},
+	})
+	require.NoError(t, err)
+
+	bedrockResp, ok := converted.(*bedrock.BedrockRerankResponse)
+	require.True(t, ok)
+	require.Len(t, bedrockResp.Results, 1)
+	assert.Equal(t, 0, bedrockResp.Results[0].Index)
+	assert.Nil(t, bedrockResp.Results[0].Document)
+}
+
 func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
@@ -256,7 +309,7 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 				Type: "INLINE",
 				InlineDocumentSource: bedrock.BedrockRerankInlineSource{
 					Type:         "TEXT",
-					TextDocument: bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
+					TextDocument: &bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
 				},
 			},
 		},

@@ -42,15 +42,19 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 	}
 
 	for i, doc := range bifrostReq.Documents {
-		bedrockReq.Sources[i] = BedrockRerankSource{
-			Type: bedrockRerankSourceTypeInline,
-			InlineDocumentSource: BedrockRerankInlineSource{
-				Type: bedrockRerankInlineDocumentTypeText,
-				TextDocument: BedrockRerankTextValue{
-					Text: doc.Text,
-				},
-			},
+		source := BedrockRerankSource{Type: bedrockRerankSourceTypeInline}
+		if len(doc.JSONContent) > 0 {
+			source.InlineDocumentSource = BedrockRerankInlineSource{
+				Type:         bedrockRerankInlineDocumentTypeJSON,
+				JSONDocument: doc.JSONContent,
+			}
+		} else {
+			source.InlineDocumentSource = BedrockRerankInlineSource{
+				Type:         bedrockRerankInlineDocumentTypeText,
+				TextDocument: &BedrockRerankTextValue{Text: doc.Text},
+			}
 		}
+		bedrockReq.Sources[i] = source
 	}
 
 	if bifrostReq.Params == nil {
@@ -85,6 +89,53 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 	return bedrockReq, nil
 }
 
+// ToBifrostRerankRequest converts a Bedrock Agent Runtime rerank request to Bifrost format.
+func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext) *schemas.BifrostRerankRequest {
+	if req == nil {
+		return nil
+	}
+
+	modelARN := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN
+	provider, model := schemas.ParseModelString(modelARN, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+
+	bifrostReq := &schemas.BifrostRerankRequest{
+		Provider: provider,
+		Model:    model,
+		Params:   &schemas.RerankParameters{},
+	}
+
+	// Extract query from the first query entry
+	if len(req.Queries) > 0 {
+		bifrostReq.Query = req.Queries[0].TextQuery.Text
+	}
+
+	// Convert sources to documents
+	for _, source := range req.Sources {
+		doc := schemas.RerankDocument{}
+		switch source.InlineDocumentSource.Type {
+		case bedrockRerankInlineDocumentTypeJSON:
+			doc.JSONContent = source.InlineDocumentSource.JSONDocument
+		default:
+			if source.InlineDocumentSource.TextDocument != nil {
+				doc.Text = source.InlineDocumentSource.TextDocument.Text
+			}
+		}
+		bifrostReq.Documents = append(bifrostReq.Documents, doc)
+	}
+
+	// Extract TopN from NumberOfResults
+	if req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults != nil {
+		bifrostReq.Params.TopN = req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults
+	}
+
+	// Pass AdditionalModelRequestFields as ExtraParams
+	if fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields; len(fields) > 0 {
+		bifrostReq.Params.ExtraParams = fields
+	}
+
+	return bifrostReq
+}
+
 // ToBifrostRerankResponse converts a Bedrock rerank response into Bifrost format.
 func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
 	if response == nil {
@@ -100,10 +151,19 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 			Index:          result.Index,
 			RelevanceScore: result.RelevanceScore,
 		}
-		if result.Document != nil && result.Document.TextDocument != nil {
-			rerankResult.Document = &schemas.RerankDocument{
-				Text: result.Document.TextDocument.Text,
+		if result.Document != nil {
+			doc := &schemas.RerankDocument{}
+			switch result.Document.Type {
+			case bedrockRerankInlineDocumentTypeJSON:
+				if len(result.Document.JSONDocument) > 0 {
+					doc.JSONContent = result.Document.JSONDocument
+				}
+			default:
+				if result.Document.TextDocument != nil {
+					doc.Text = result.Document.TextDocument.Text
+				}
 			}
+			rerankResult.Document = doc
 		}
 		bifrostResponse.Results = append(bifrostResponse.Results, rerankResult)
 	}
@@ -127,42 +187,37 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 	return bifrostResponse
 }
 
-// ToBifrostRerankRequest converts a Bedrock Agent Runtime rerank request to Bifrost format.
-func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext) *schemas.BifrostRerankRequest {
-	if req == nil {
-		return nil
+// ToBedrockRerankResponse converts a Bifrost rerank response back into Bedrock format.
+func ToBedrockRerankResponse(bifrostResp *schemas.BifrostRerankResponse) (*BedrockRerankResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
 	}
 
-	modelARN := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN
-	provider, model := schemas.ParseModelString(modelARN, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
-
-	bifrostReq := &schemas.BifrostRerankRequest{
-		Provider: provider,
-		Model:    model,
-		Params:   &schemas.RerankParameters{},
+	// Bedrock's native rerank response has no usage section, so usage is intentionally dropped here.
+	bedrockResp := &BedrockRerankResponse{
+		Results: make([]BedrockRerankResult, 0, len(bifrostResp.Results)),
 	}
 
-	// Extract query from the first query entry
-	if len(req.Queries) > 0 {
-		bifrostReq.Query = req.Queries[0].TextQuery.Text
+	for _, result := range bifrostResp.Results {
+		bedrockResult := BedrockRerankResult{
+			Index:          result.Index,
+			RelevanceScore: result.RelevanceScore,
+		}
+		if result.Document != nil {
+			if len(result.Document.JSONContent) > 0 {
+				bedrockResult.Document = &BedrockRerankResponseDocument{
+					Type:         bedrockRerankInlineDocumentTypeJSON,
+					JSONDocument: result.Document.JSONContent,
+				}
+			} else {
+				bedrockResult.Document = &BedrockRerankResponseDocument{
+					Type:         bedrockRerankInlineDocumentTypeText,
+					TextDocument: &BedrockRerankTextValue{Text: result.Document.Text},
+				}
+			}
+		}
+		bedrockResp.Results = append(bedrockResp.Results, bedrockResult)
 	}
 
-	// Convert sources to documents
-	for _, source := range req.Sources {
-		bifrostReq.Documents = append(bifrostReq.Documents, schemas.RerankDocument{
-			Text: source.InlineDocumentSource.TextDocument.Text,
-		})
-	}
-
-	// Extract TopN from NumberOfResults
-	if req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults != nil {
-		bifrostReq.Params.TopN = req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults
-	}
-
-	// Pass AdditionalModelRequestFields as ExtraParams
-	if fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields; len(fields) > 0 {
-		bifrostReq.Params.ExtraParams = fields
-	}
-
-	return bifrostReq
+	return bedrockResp, nil
 }

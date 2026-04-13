@@ -117,7 +117,14 @@ func TestGenAIRerankResponseConverterFallsBackWhenNotVertex(t *testing.T) {
 
 	resp := &schemas.BifrostRerankResponse{
 		Results: []schemas.RerankResult{
-			{Index: 0, RelevanceScore: 0.9},
+			{
+				Index:          0,
+				RelevanceScore: 0.9,
+				Document: &schemas.RerankDocument{
+					Text: "doc-0",
+					Meta: map[string]interface{}{"title": "Doc 0"},
+				},
+			},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.Cohere,
@@ -125,7 +132,43 @@ func TestGenAIRerankResponseConverterFallsBackWhenNotVertex(t *testing.T) {
 	}
 	converted, err := route.RerankResponseConverter(nil, resp)
 	require.NoError(t, err)
-	assert.Equal(t, resp, converted)
+	vertexResp, ok := converted.(*vertex.VertexRankResponse)
+	require.True(t, ok)
+	require.Len(t, vertexResp.Records, 1)
+	assert.Equal(t, "idx:0", vertexResp.Records[0].ID)
+	require.NotNil(t, vertexResp.Records[0].Content)
+	assert.Equal(t, "doc-0", *vertexResp.Records[0].Content)
+	require.NotNil(t, vertexResp.Records[0].Title)
+	assert.Equal(t, "Doc 0", *vertexResp.Records[0].Title)
+}
+
+func TestGenAIRerankResponseConverterBuildsNativeShapeWithoutRawForVertexProvider(t *testing.T) {
+	route := createGenAIRerankRouteConfig("/genai")
+	require.NotNil(t, route.RerankResponseConverter)
+
+	resp := &schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          1,
+				RelevanceScore: 0.5,
+				Document: &schemas.RerankDocument{
+					Text: "doc-1",
+				},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Vertex,
+		},
+	}
+	converted, err := route.RerankResponseConverter(nil, resp)
+	require.NoError(t, err)
+	vertexResp, ok := converted.(*vertex.VertexRankResponse)
+	require.True(t, ok)
+	require.Len(t, vertexResp.Records, 1)
+	assert.Equal(t, "idx:1", vertexResp.Records[0].ID)
+	require.NotNil(t, vertexResp.Records[0].Content)
+	assert.Equal(t, "doc-1", *vertexResp.Records[0].Content)
+	assert.Nil(t, vertexResp.Records[0].Title)
 }
 
 func TestCreateGenAIRouteConfigsIncludesModelMetadataRoute(t *testing.T) {

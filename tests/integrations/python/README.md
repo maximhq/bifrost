@@ -19,7 +19,7 @@ export ANTHROPIC_API_KEY="your-key"
 
 # 4. Run tests
 uv run pytest                          # All tests
-uv run pytest tests/integrations/test_openai.py -v  # Specific integration
+uv run pytest tests/test_openai.py -v  # Specific integration
 uv run pytest -k "tool_call" -v       # By pattern
 uv run pytest -n auto                  # Parallel execution
 ```
@@ -119,11 +119,12 @@ integrations/
 │   │   ├── common.py           # Shared test utilities and fixtures
 │   │   ├── config_loader.py    # Configuration system
 │   │   └── models.py           # Model configurations (compatibility layer)
-│   └── integrations/
-│       ├── test_openai.py      # OpenAI integration tests
-│       ├── test_anthropic.py   # Anthropic integration tests
-│       ├── test_google.py      # Google AI integration tests
-│       └── test_litellm.py     # LiteLLM integration tests
+│   ├── test_openai.py          # OpenAI integration tests
+│   ├── test_anthropic.py       # Anthropic integration tests
+│   ├── test_google.py          # Google AI integration tests
+│   ├── test_bedrock.py         # Bedrock integration tests
+│   ├── test_cohere.py          # Cohere integration tests
+│   └── test_litellm.py         # LiteLLM integration tests
 ```
 
 ## ⚡ Quick Start

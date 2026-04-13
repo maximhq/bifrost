@@ -248,7 +248,7 @@ func createBedrockRerankRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return bedrock.ToBedrockRerankResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)

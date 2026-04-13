@@ -99,7 +99,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
@@ -111,7 +111,8 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 						return "", resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return "", resp, nil
+				event, err := cohere.ToCohereStreamEvent(resp)
+				return "", event, err
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -145,7 +146,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereEmbeddingResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
@@ -178,7 +179,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereRerankResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
@@ -211,7 +212,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return cohere.ToCohereCountTokensResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err

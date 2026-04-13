@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -146,14 +147,14 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Paris is the capital of France."},
+					TextDocument: &BedrockRerankTextValue{Text: "Paris is the capital of France."},
 				},
 			},
 			{
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
+					TextDocument: &BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
 				},
 			},
 		},
@@ -188,9 +189,111 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 	assert.Equal(t, "END", result.Params.ExtraParams["truncate"])
 }
 
+func TestBedrockRerankRequestToBifrostRerankRequestWithJSONDocument(t *testing.T) {
+	jsonContent := json.RawMessage(`{"title":"Paris","body":"Paris is the capital of France."}`)
+	bedrockReq := &BedrockRerankRequest{
+		Queries: []BedrockRerankQuery{
+			{
+				Type:      bedrockRerankQueryTypeText,
+				TextQuery: BedrockRerankTextRef{Text: "capital of france"},
+			},
+		},
+		Sources: []BedrockRerankSource{
+			{
+				Type: bedrockRerankSourceTypeInline,
+				InlineDocumentSource: BedrockRerankInlineSource{
+					Type:         bedrockRerankInlineDocumentTypeJSON,
+					JSONDocument: jsonContent,
+				},
+			},
+			{
+				Type: bedrockRerankSourceTypeInline,
+				InlineDocumentSource: BedrockRerankInlineSource{
+					Type:         bedrockRerankInlineDocumentTypeText,
+					TextDocument: &BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
+				},
+			},
+		},
+		RerankingConfiguration: BedrockRerankingConfiguration{
+			Type: bedrockRerankConfigurationTypeBedrock,
+			BedrockRerankingConfiguration: BedrockRerankingModelConfiguration{
+				ModelConfiguration: BedrockRerankModelConfiguration{
+					ModelARN: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+				},
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := bedrockReq.ToBifrostRerankRequest(bifrostCtx)
+
+	require.NotNil(t, result)
+	require.Len(t, result.Documents, 2)
+
+	// First document: JSON type
+	assert.JSONEq(t, string(jsonContent), string(result.Documents[0].JSONContent))
+	assert.Empty(t, result.Documents[0].Text)
+
+	// Second document: TEXT type
+	assert.Equal(t, "Berlin is the capital of Germany.", result.Documents[1].Text)
+	assert.Nil(t, result.Documents[1].JSONContent)
+}
+
 func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
 	var req *BedrockRerankRequest
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
+}
+
+func TestToBedrockRerankResponse(t *testing.T) {
+	response, err := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          1,
+				RelevanceScore: 0.83,
+				Document:       &schemas.RerankDocument{Text: "doc-1"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	assert.Equal(t, 1, response.Results[0].Index)
+	assert.Equal(t, 0.83, response.Results[0].RelevanceScore)
+	require.NotNil(t, response.Results[0].Document)
+	assert.Equal(t, bedrockRerankInlineDocumentTypeText, response.Results[0].Document.Type)
+	require.NotNil(t, response.Results[0].Document.TextDocument)
+	assert.Equal(t, "doc-1", response.Results[0].Document.TextDocument.Text)
+}
+
+func TestToBedrockRerankResponsePreservesResultOrderAndNilDocuments(t *testing.T) {
+	response, err := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          2,
+				RelevanceScore: 0.95,
+			},
+			{
+				Index:          0,
+				RelevanceScore: 0.12,
+				Document:       &schemas.RerankDocument{Text: "doc-0"},
+			},
+		},
+		Usage: &schemas.BifrostLLMUsage{
+			PromptTokens:     9,
+			CompletionTokens: 0,
+			TotalTokens:      9,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 2)
+	assert.Equal(t, 2, response.Results[0].Index)
+	assert.Nil(t, response.Results[0].Document)
+	assert.Equal(t, 0, response.Results[1].Index)
+	require.NotNil(t, response.Results[1].Document)
+	require.NotNil(t, response.Results[1].Document.TextDocument)
+	assert.Equal(t, "doc-0", response.Results[1].Document.TextDocument.Text)
+	assert.Nil(t, response.NextToken)
 }
 
 func TestResolveBedrockDeployment(t *testing.T) {
@@ -231,4 +334,84 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "requires an ARN")
+}
+
+func TestToBedrockRerankRequestWithJSONDocument(t *testing.T) {
+	jsonContent := json.RawMessage(`{"title":"Paris","body":"Paris is the capital of France."}`)
+	req, err := ToBedrockRerankRequest(&schemas.BifrostRerankRequest{
+		Model: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+		Query: "capital of france",
+		Documents: []schemas.RerankDocument{
+			{JSONContent: jsonContent},
+			{Text: "Berlin is the capital of Germany."},
+		},
+	}, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0")
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Len(t, req.Sources, 2)
+
+	// First document: JSON type
+	assert.Equal(t, bedrockRerankInlineDocumentTypeJSON, req.Sources[0].InlineDocumentSource.Type)
+	assert.JSONEq(t, string(jsonContent), string(req.Sources[0].InlineDocumentSource.JSONDocument))
+	assert.Nil(t, req.Sources[0].InlineDocumentSource.TextDocument)
+
+	// Second document: TEXT type (fallback)
+	assert.Equal(t, bedrockRerankInlineDocumentTypeText, req.Sources[1].InlineDocumentSource.Type)
+	require.NotNil(t, req.Sources[1].InlineDocumentSource.TextDocument)
+	assert.Equal(t, "Berlin is the capital of Germany.", req.Sources[1].InlineDocumentSource.TextDocument.Text)
+	assert.Nil(t, req.Sources[1].InlineDocumentSource.JSONDocument)
+}
+
+func TestBedrockRerankResponseToBifrostWithJSONDocument(t *testing.T) {
+	jsonContent := json.RawMessage(`{"title":"Paris","body":"Paris is the capital of France."}`)
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{
+				Index:          0,
+				RelevanceScore: 0.91,
+				Document: &BedrockRerankResponseDocument{
+					Type:         bedrockRerankInlineDocumentTypeJSON,
+					JSONDocument: jsonContent,
+				},
+			},
+		},
+	}).ToBifrostRerankResponse(nil, false)
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	require.NotNil(t, response.Results[0].Document)
+	assert.JSONEq(t, string(jsonContent), string(response.Results[0].Document.JSONContent))
+	assert.Empty(t, response.Results[0].Document.Text)
+}
+
+func TestToBedrockRerankResponseWithJSONDocument(t *testing.T) {
+	jsonContent := json.RawMessage(`{"title":"Paris","body":"Paris is the capital of France."}`)
+	response, err := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{
+				Index:          0,
+				RelevanceScore: 0.91,
+				Document:       &schemas.RerankDocument{JSONContent: jsonContent},
+			},
+			{
+				Index:          1,
+				RelevanceScore: 0.45,
+				Document:       &schemas.RerankDocument{Text: "Berlin is the capital of Germany."},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 2)
+
+	// JSON document preserved
+	assert.Equal(t, bedrockRerankInlineDocumentTypeJSON, response.Results[0].Document.Type)
+	assert.JSONEq(t, string(jsonContent), string(response.Results[0].Document.JSONDocument))
+	assert.Nil(t, response.Results[0].Document.TextDocument)
+
+	// Text document unchanged
+	assert.Equal(t, bedrockRerankInlineDocumentTypeText, response.Results[1].Document.Type)
+	require.NotNil(t, response.Results[1].Document.TextDocument)
+	assert.Equal(t, "Berlin is the capital of Germany.", response.Results[1].Document.TextDocument.Text)
+	assert.Nil(t, response.Results[1].Document.JSONDocument)
 }

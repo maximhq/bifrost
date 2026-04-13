@@ -35,22 +35,27 @@ class BifrostTestRunner:
         self.test_dir = Path(__file__).parent
         self.integrations = {
             "openai": {
-                "file": "tests/integrations/test_openai.py",
+                "file": "tests/test_openai.py",
                 "description": "OpenAI Python SDK integration tests",
                 "env_vars": ["OPENAI_API_KEY"],
             },
             "anthropic": {
-                "file": "tests/integrations/test_anthropic.py",
+                "file": "tests/test_anthropic.py",
                 "description": "Anthropic Python SDK integration tests",
                 "env_vars": ["ANTHROPIC_API_KEY"],
             },
+            "cohere": {
+                "file": "tests/test_cohere.py",
+                "description": "Cohere integration tests",
+                "env_vars": ["COHERE_API_KEY"],
+            },
             "litellm": {
-                "file": "tests/integrations/test_litellm.py",
+                "file": "tests/test_litellm.py",
                 "description": "LiteLLM integration tests",
                 "env_vars": ["OPENAI_API_KEY"],  # LiteLLM can use OpenAI key
             },
             "langchain": {
-                "file": "tests/integrations/test_langchain.py",
+                "file": "tests/test_langchain.py",
                 "description": "LangChain integration tests",
                 "env_vars": [
                     "OPENAI_API_KEY",
@@ -58,12 +63,12 @@ class BifrostTestRunner:
                 ],  # LangChain uses multiple providers
             },
             "google": {
-                "file": "tests/integrations/test_google.py",
+                "file": "tests/test_google.py",
                 "description": "Google GenAI integration tests",
                 "env_vars": ["GOOGLE_API_KEY"],
             },
             "bedrock": {
-                "file": "tests/integrations/test_bedrock.py",
+                "file": "tests/test_bedrock.py",
                 "description": "Bedrock integration tests",
                 "env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
             },

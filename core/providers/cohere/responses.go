@@ -992,7 +992,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 
 // ConvertResponsesTextFormatToCohere converts Bifrost Responses Text.Format to Cohere's typed format
 // Responses format: Text.Format with type "json_schema", "json_object", or "text"
-// Cohere format: { type: "json_object", json_schema: {...} }
+// Cohere format: { type: "json_object", schema: {...} }
 func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigFormat) *CohereResponseFormat {
 	if textFormat == nil {
 		return nil
@@ -1380,9 +1380,10 @@ func convertBifrostToolChoiceToCohereToolChoice(toolChoice schemas.ResponsesTool
 		case "required", "function":
 			choice := ToolChoiceRequired
 			return &choice
-		case "auto":
-			choice := ToolChoiceAuto
-			return &choice
+		case "auto", "any":
+			// Cohere treats omitted tool_choice as "model may decide", so don't
+			// send an explicit value for Bifrost's free-choice modes.
+			return nil
 		default:
 			choice := ToolChoiceRequired
 			return &choice

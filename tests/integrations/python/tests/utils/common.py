@@ -628,6 +628,20 @@ WEATHER_KEYWORDS = [
 
 LOCATION_KEYWORDS = ["boston", "san francisco", "new york", "city", "location", "place"]
 
+# Rerank Test Data
+# Shared rerank fixtures used across provider-native compatibility tests.
+# Most providers accept a plain list of document strings, while Vertex/GenAI
+# uses a structured records[{id,title,content}] request shape.
+RERANK_QUERY = "Which document is about Paris being the capital of France?"
+# Plain-text corpus for providers that accept raw document lists.
+RERANK_DOCUMENTS = [
+    "Paris is the capital of France and a major European city.",
+    "The Pacific Ocean is the largest ocean on Earth.",
+    "Berlin is the capital of Germany.",
+]
+# All shared rerank assertions expect the Paris record/document at source index 0.
+RERANK_EXPECTED_TOP_INDEX = 0
+
 # Error test data for invalid role testing
 INVALID_ROLE_MESSAGES = [
     {"role": "tester", "content": "Hello! This should fail due to invalid role."}
@@ -884,6 +898,43 @@ def assert_has_tool_calls(response: Any, expected_count: Optional[int] = None):
         assert "id" in tool_call, "Tool call should have an ID"
         assert "name" in tool_call, "Tool call should have a name"
         assert "arguments" in tool_call, "Tool call should have arguments"
+
+
+def assert_valid_rerank_response(
+    response: Dict[str, Any],
+    integration: str,
+    expected_top_index: int = RERANK_EXPECTED_TOP_INDEX,
+    expected_count: int = 2,
+):
+    """Assert that a rerank response uses the expected provider-native wire shape."""
+    assert response is not None, "Rerank response should not be None"
+
+    if integration == "cohere":
+        # Cohere returns results[] with snake_case relevance_score fields.
+        response_id = response.get("id")
+        assert isinstance(response_id, str) and response_id, "Cohere rerank response should include a non-empty id"
+        results = response.get("results")
+        assert isinstance(results, list), "Cohere rerank response should include results"
+        assert len(results) == expected_count, f"Expected {expected_count} results, got {len(results)}"
+        assert "records" not in response, "Cohere rerank response should not leak Vertex shape"
+        assert "extra_fields" not in response, "Cohere rerank response should not leak Bifrost shape"
+        assert results[0]["index"] == expected_top_index
+        assert "relevance_score" in results[0]
+        assert results[0]["relevance_score"] >= results[-1]["relevance_score"]
+        return
+
+    if integration == "bedrock":
+        # Bedrock returns results[] with camelCase relevanceScore fields.
+        results = response.get("results")
+        assert isinstance(results, list), "Bedrock rerank response should include results"
+        assert len(results) == expected_count, f"Expected {expected_count} results, got {len(results)}"
+        assert "records" not in response, "Bedrock rerank response should not leak Vertex shape"
+        assert "extra_fields" not in response, "Bedrock rerank response should not leak Bifrost shape"
+        assert results[0]["index"] == expected_top_index
+        assert "relevanceScore" in results[0]
+        return
+
+    raise ValueError(f"Unsupported rerank integration: {integration}")
 
 
 def assert_valid_image_response(response: Any):

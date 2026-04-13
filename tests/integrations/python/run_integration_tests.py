@@ -19,6 +19,7 @@ def check_api_keys():
     keys = {
         "openai": os.getenv("OPENAI_API_KEY"),
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+        "cohere": os.getenv("COHERE_API_KEY"),
         "google": os.getenv("GOOGLE_API_KEY"),
         "litellm": os.getenv("LITELLM_API_KEY"),
         "bedrock": os.getenv("AWS_ACCESS_KEY_ID"),
@@ -44,7 +45,7 @@ def run_integration_tests(
 
         # Build pytest command with absolute path relative to script location
         script_dir = Path(__file__).parent
-        test_file = script_dir / "tests" / "integrations" / f"test_{integration}.py"
+        test_file = script_dir / "tests" / f"test_{integration}.py"
 
         # Check if test file exists
         if not test_file.exists():
@@ -162,7 +163,7 @@ def main():
     parser.add_argument(
         "--integrations",
         nargs="+",
-        choices=["openai", "anthropic", "google", "litellm", "all"],
+        choices=["openai", "anthropic", "cohere", "google", "litellm", "bedrock", "all"],
         default=["all"],
         help="Integrations to test (default: all available)",
     )
@@ -224,6 +225,8 @@ def main():
             "anthropic",
             "google",
             "litellm",
+            "cohere",
+            "bedrock",
         ]  # all possible integrations
     else:
         integrations_to_test = [

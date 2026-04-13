@@ -42,7 +42,8 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 					contentBlocks = append(contentBlocks, CohereContentBlock{
 						Type: CohereContentBlockTypeImage,
 						ImageURL: &CohereImageURL{
-							URL: block.ImageURLStruct.URL,
+							URL:    block.ImageURLStruct.URL,
+							Detail: block.ImageURLStruct.Detail,
 						},
 					})
 				}
@@ -103,6 +104,8 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		cohereReq.MaxTokens = bifrostReq.Params.MaxCompletionTokens
 		cohereReq.Temperature = bifrostReq.Params.Temperature
 		cohereReq.P = bifrostReq.Params.TopP
+		cohereReq.Seed = bifrostReq.Params.Seed
+		cohereReq.LogProbs = bifrostReq.Params.LogProbs
 		cohereReq.StopSequences = bifrostReq.Params.Stop
 		cohereReq.FrequencyPenalty = bifrostReq.Params.FrequencyPenalty
 		cohereReq.PresencePenalty = bifrostReq.Params.PresencePenalty
@@ -150,21 +153,24 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 
 		// Convert extra params
 		if bifrostReq.Params.ExtraParams != nil {
+			// Work on a shallow copy so request conversion stays side-effect free.
+			cohereReq.ExtraParams = cloneExtraParams(bifrostReq.Params.ExtraParams)
+
 			// Handle thinking parameter
-			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
-			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
+			if thinkingParam, ok := schemas.SafeExtractFromMap(cohereReq.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
 					thinking := &CohereThinking{}
-					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
-						delete(thinkingMap, "type")
+					remainingThinking := cloneExtraParams(thinkingMap)
+					if typeStr, ok := schemas.SafeExtractString(remainingThinking["type"]); ok {
+						delete(remainingThinking, "type")
 						thinking.Type = CohereThinkingType(typeStr)
 					}
-					if tokenBudget, ok := schemas.SafeExtractIntPointer(thinkingMap["token_budget"]); ok {
-						delete(thinkingMap, "token_budget")
+					if tokenBudget, ok := schemas.SafeExtractIntPointer(remainingThinking["token_budget"]); ok {
+						delete(remainingThinking, "token_budget")
 						thinking.TokenBudget = tokenBudget
 					}
 					cohereReq.Thinking = thinking
-					cohereReq.ExtraParams["thinking"] = thinkingMap
+					cohereReq.ExtraParams["thinking"] = remainingThinking
 				}
 			}
 
@@ -174,14 +180,48 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				cohereReq.SafetyMode = safetyMode
 			}
 
-			if logProbs, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["log_probs"]); ok {
-				delete(cohereReq.ExtraParams, "log_probs")
-				cohereReq.LogProbs = logProbs
+			if cohereReq.LogProbs == nil {
+				if logProbs, ok := schemas.SafeExtractBoolPointer(cohereReq.ExtraParams["logprobs"]); ok {
+					delete(cohereReq.ExtraParams, "logprobs")
+					cohereReq.LogProbs = logProbs
+				} else if logProbs, ok := schemas.SafeExtractBoolPointer(cohereReq.ExtraParams["log_probs"]); ok {
+					delete(cohereReq.ExtraParams, "log_probs")
+					cohereReq.LogProbs = logProbs
+				}
 			}
 
-			if strictToolChoice, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["strict_tool_choice"]); ok {
+			if strictTools, ok := schemas.SafeExtractBoolPointer(cohereReq.ExtraParams["strict_tools"]); ok {
+				delete(cohereReq.ExtraParams, "strict_tools")
+				cohereReq.StrictTools = strictTools
+			} else if strictTools, ok := schemas.SafeExtractBoolPointer(cohereReq.ExtraParams["strict_tool_choice"]); ok {
 				delete(cohereReq.ExtraParams, "strict_tool_choice")
-				cohereReq.StrictToolChoice = strictToolChoice
+				cohereReq.StrictTools = strictTools
+			}
+
+			if documents, ok := extractCohereChatDocuments(cohereReq.ExtraParams["documents"]); ok {
+				delete(cohereReq.ExtraParams, "documents")
+				cohereReq.Documents = documents
+			}
+
+			if citationOptions, ok := extractCohereCitationOptions(cohereReq.ExtraParams["citation_options"]); ok {
+				delete(cohereReq.ExtraParams, "citation_options")
+				cohereReq.CitationOptions = citationOptions
+			}
+
+			if priority, ok := schemas.SafeExtractIntPointer(cohereReq.ExtraParams["priority"]); ok {
+				delete(cohereReq.ExtraParams, "priority")
+				cohereReq.Priority = priority
+			}
+
+			if cohereReq.Seed == nil {
+				if seed, ok := schemas.SafeExtractIntPointer(cohereReq.ExtraParams["seed"]); ok {
+					delete(cohereReq.ExtraParams, "seed")
+					cohereReq.Seed = seed
+				}
+			}
+
+			if len(cohereReq.ExtraParams) == 0 {
+				cohereReq.ExtraParams = nil
 			}
 		}
 
@@ -213,7 +253,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				case schemas.ChatToolChoiceTypeNone:
 					toolChoice := ToolChoiceNone
 					cohereReq.ToolChoice = &toolChoice
-				default:
+				case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeFunction:
 					toolChoice := ToolChoiceRequired
 					cohereReq.ToolChoice = &toolChoice
 				}
@@ -221,9 +261,6 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				switch toolChoice.ChatToolChoiceStruct.Type {
 				case schemas.ChatToolChoiceTypeFunction:
 					toolChoice := ToolChoiceRequired
-					cohereReq.ToolChoice = &toolChoice
-				default:
-					toolChoice := ToolChoiceAuto
 					cohereReq.ToolChoice = &toolChoice
 				}
 			}
@@ -258,6 +295,9 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	if req.MaxTokens != nil {
 		bifrostReq.Params.MaxCompletionTokens = req.MaxTokens
 	}
+	if req.Seed != nil {
+		bifrostReq.Params.Seed = req.Seed
+	}
 	if req.Temperature != nil {
 		bifrostReq.Params.Temperature = req.Temperature
 	}
@@ -272,6 +312,9 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	}
 	if req.PresencePenalty != nil {
 		bifrostReq.Params.PresencePenalty = req.PresencePenalty
+	}
+	if req.LogProbs != nil {
+		bifrostReq.Params.LogProbs = req.LogProbs
 	}
 
 	// Convert reasoning
@@ -320,10 +363,6 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 			bifrostReq.Params.ToolChoice = &schemas.ChatToolChoice{
 				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
 			}
-		case ToolChoiceAuto:
-			bifrostReq.Params.ToolChoice = &schemas.ChatToolChoice{
-				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeAny)),
-			}
 		}
 	}
 
@@ -332,11 +371,8 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	if req.SafetyMode != nil {
 		extraParams["safety_mode"] = *req.SafetyMode
 	}
-	if req.LogProbs != nil {
-		extraParams["log_probs"] = *req.LogProbs
-	}
-	if req.StrictToolChoice != nil {
-		extraParams["strict_tool_choice"] = *req.StrictToolChoice
+	if req.StrictTools != nil {
+		extraParams["strict_tools"] = *req.StrictTools
 	}
 	if req.Thinking != nil {
 		thinkingMap := map[string]interface{}{
@@ -346,6 +382,15 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 			thinkingMap["token_budget"] = *req.Thinking.TokenBudget
 		}
 		extraParams["thinking"] = thinkingMap
+	}
+	if req.Priority != nil {
+		extraParams["priority"] = *req.Priority
+	}
+	if req.CitationOptions != nil {
+		extraParams["citation_options"] = req.CitationOptions
+	}
+	if req.Documents != nil {
+		extraParams["documents"] = req.Documents
 	}
 	if len(extraParams) > 0 {
 		bifrostReq.Params.ExtraParams = extraParams
@@ -629,7 +674,8 @@ func (cm *CohereMessage) ToBifrostChatMessage() *schemas.ChatMessage {
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 						Type: schemas.ChatContentBlockTypeImage,
 						ImageURLStruct: &schemas.ChatInputImage{
-							URL: block.ImageURL.URL,
+							URL:    block.ImageURL.URL,
+							Detail: block.ImageURL.Detail,
 						},
 					})
 				} else if block.Type == CohereContentBlockTypeThinking && block.Thinking != nil {
@@ -721,4 +767,346 @@ func (cm *CohereMessage) ToBifrostChatMessage() *schemas.ChatMessage {
 		}
 	}
 	return bifrostMessage
+}
+
+// ToCohereStreamEvent converts a BifrostChatResponse streaming chunk to a Cohere SSE event.
+// Returns nil when the chunk carries no content that maps to a Cohere event (e.g. empty deltas).
+func ToCohereStreamEvent(resp *schemas.BifrostChatResponse) (*CohereStreamEvent, error) {
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, nil
+	}
+
+	choice := resp.Choices[0]
+
+	// Non-streaming (finish) chunk: message-end with finish reason and usage
+	if choice.ChatNonStreamResponseChoice != nil || choice.FinishReason != nil {
+		fr := convertBifrostFinishReasonToCohere(func() string {
+			if choice.FinishReason != nil {
+				return *choice.FinishReason
+			}
+			return ""
+		}())
+		event := &CohereStreamEvent{
+			Type: StreamEventMessageEnd,
+			Delta: &CohereStreamDelta{
+				FinishReason: &fr,
+			},
+		}
+		if resp.Usage != nil {
+			inputTokens := resp.Usage.PromptTokens
+			outputTokens := resp.Usage.CompletionTokens
+			event.Delta.Usage = &CohereUsage{
+				BilledUnits: &CohereBilledUnits{
+					InputTokens:  &inputTokens,
+					OutputTokens: &outputTokens,
+				},
+				Tokens: &CohereTokenUsage{
+					InputTokens:  &inputTokens,
+					OutputTokens: &outputTokens,
+				},
+			}
+		}
+		return event, nil
+	}
+
+	streamChoice := choice.ChatStreamResponseChoice
+	if streamChoice == nil || streamChoice.Delta == nil {
+		return nil, nil
+	}
+
+	delta := streamChoice.Delta
+
+	// Role delta → message-start
+	if delta.Role != nil {
+		role := string(*delta.Role)
+		return &CohereStreamEvent{
+			Type: StreamEventMessageStart,
+			Delta: &CohereStreamDelta{
+				Message: &CohereStreamMessage{
+					Role: &role,
+				},
+			},
+		}, nil
+	}
+
+	// Text content delta → content-delta
+	if delta.Content != nil {
+		idx := 0
+		return &CohereStreamEvent{
+			Type:  StreamEventContentDelta,
+			Index: &idx,
+			Delta: &CohereStreamDelta{
+				Message: &CohereStreamMessage{
+					Content: &CohereStreamContentStruct{
+						CohereStreamContentObject: &CohereStreamContent{
+							Type: CohereContentBlockTypeText,
+							Text: delta.Content,
+						},
+					},
+				},
+			},
+		}, nil
+	}
+
+	// Tool call delta → tool-call-delta
+	if len(delta.ToolCalls) > 0 {
+		tc := delta.ToolCalls[0]
+		idx := int(tc.Index)
+		arguments := tc.Function.Arguments
+		cohereEvent := &CohereStreamEvent{
+			Type:  StreamEventToolCallDelta,
+			Index: &idx,
+			Delta: &CohereStreamDelta{
+				Message: &CohereStreamMessage{
+					ToolCalls: &CohereStreamToolCallStruct{
+						CohereToolCallObject: &CohereToolCall{
+							ID:   tc.ID,
+							Type: "function",
+							Function: &CohereFunction{
+								Name:      tc.Function.Name,
+								Arguments: arguments,
+							},
+						},
+					},
+				},
+			},
+		}
+		return cohereEvent, nil
+	}
+
+	return nil, nil
+}
+
+// convertBifrostFinishReasonToCohere maps Bifrost finish reason strings to Cohere's format.
+func convertBifrostFinishReasonToCohere(reason string) CohereFinishReason {
+	switch reason {
+	case "stop":
+		return FinishReasonComplete
+	case "length":
+		return FinishReasonMaxTokens
+	case "tool_calls":
+		return FinishReasonToolCall
+	default:
+		return FinishReasonComplete
+	}
+}
+
+// convertBifrostMessageToCohere converts a Bifrost ChatMessage to a Cohere CohereMessage.
+func convertBifrostMessageToCohere(msg *schemas.ChatMessage) *CohereMessage {
+	if msg == nil {
+		return nil
+	}
+
+	cohereMsg := &CohereMessage{
+		Role: string(msg.Role),
+	}
+
+	// Convert content
+	if msg.Content != nil {
+		if msg.Content.ContentStr != nil {
+			cohereMsg.Content = NewStringContent(*msg.Content.ContentStr)
+		} else if msg.Content.ContentBlocks != nil {
+			var blocks []CohereContentBlock
+			for _, block := range msg.Content.ContentBlocks {
+				if block.Text != nil {
+					blocks = append(blocks, CohereContentBlock{
+						Type: CohereContentBlockTypeText,
+						Text: block.Text,
+					})
+				} else if block.ImageURLStruct != nil {
+					blocks = append(blocks, CohereContentBlock{
+						Type: CohereContentBlockTypeImage,
+						ImageURL: &CohereImageURL{
+							URL:    block.ImageURLStruct.URL,
+							Detail: block.ImageURLStruct.Detail,
+						},
+					})
+				}
+			}
+			if len(blocks) > 0 {
+				cohereMsg.Content = NewBlocksContent(blocks)
+			}
+		}
+	}
+
+	// Convert tool calls
+	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
+		var toolCalls []CohereToolCall
+		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
+			functionName := toolCall.Function.Name
+			if functionName == nil {
+				functionName = schemas.Ptr("")
+			}
+			arguments := toolCall.Function.Arguments
+			if arguments == "" {
+				arguments = "{}"
+			}
+			toolCalls = append(toolCalls, CohereToolCall{
+				ID:   toolCall.ID,
+				Type: "function",
+				Function: &CohereFunction{
+					Name:      functionName,
+					Arguments: arguments,
+				},
+			})
+		}
+		cohereMsg.ToolCalls = toolCalls
+	}
+
+	// Convert tool message ID
+	if msg.ChatToolMessage != nil {
+		cohereMsg.ToolCallID = msg.ChatToolMessage.ToolCallID
+	}
+
+	return cohereMsg
+}
+
+func cloneExtraParams(params map[string]interface{}) map[string]interface{} {
+	if len(params) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		// Deep-copy nested maps so mutations to the clone never affect the original.
+		if nested, ok := value.(map[string]interface{}); ok {
+			cloned[key] = cloneExtraParams(nested)
+		} else {
+			cloned[key] = value
+		}
+	}
+	return cloned
+}
+
+func extractCohereCitationOptions(value interface{}) (*CohereCitationOptions, bool) {
+	switch options := value.(type) {
+	case CohereCitationOptions:
+		return &options, true
+	case *CohereCitationOptions:
+		if options != nil {
+			return options, true
+		}
+	case map[string]interface{}:
+		result := &CohereCitationOptions{}
+		if mode, ok := schemas.SafeExtractStringPointer(options["mode"]); ok {
+			result.Mode = mode
+		}
+		return result, true
+	}
+
+	return nil, false
+}
+
+func extractCohereChatDocuments(value interface{}) ([]CohereChatDocument, bool) {
+	switch docs := value.(type) {
+	case []CohereChatDocument:
+		return docs, true
+	case []*CohereChatDocument:
+		result := make([]CohereChatDocument, 0, len(docs))
+		for _, doc := range docs {
+			if doc != nil {
+				result = append(result, *doc)
+			}
+		}
+		return result, true
+	case []interface{}:
+		result := make([]CohereChatDocument, 0, len(docs))
+		for _, rawDoc := range docs {
+			doc, ok := extractCohereChatDocument(rawDoc)
+			if !ok {
+				return nil, false
+			}
+			result = append(result, doc)
+		}
+		return result, true
+	}
+
+	return nil, false
+}
+
+func extractCohereChatDocument(value interface{}) (CohereChatDocument, bool) {
+	switch doc := value.(type) {
+	case CohereChatDocument:
+		return doc, true
+	case *CohereChatDocument:
+		if doc != nil {
+			return *doc, true
+		}
+	case string:
+		return CohereChatDocument{StringDocument: &doc}, true
+	case *string:
+		if doc != nil {
+			return CohereChatDocument{StringDocument: doc}, true
+		}
+	case map[string]interface{}:
+		// Be tolerant and accept both the spec-compliant {data, id} shape and a
+		// raw metadata map.
+		dataValue, ok := doc["data"]
+		if !ok {
+			dataValue = doc
+		}
+
+		data, ok := schemas.SafeExtractOrderedMap(dataValue)
+		if !ok {
+			return CohereChatDocument{}, false
+		}
+
+		result := CohereChatDocument{
+			ObjectDocument: &CohereDocument{Data: *data},
+		}
+		if id, ok := schemas.SafeExtractStringPointer(doc["id"]); ok {
+			result.ObjectDocument.ID = id
+		}
+		return result, true
+	}
+
+	return CohereChatDocument{}, false
+}
+
+// ToCohereResponse converts a BifrostChatResponse back into Cohere v2 native format.
+func ToCohereResponse(bifrostResp *schemas.BifrostChatResponse) (*CohereChatResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+
+	cohereResp := &CohereChatResponse{
+		ID: bifrostResp.ID,
+	}
+
+	if len(bifrostResp.Choices) > 0 {
+		choice := bifrostResp.Choices[0]
+
+		// Convert finish reason
+		if choice.FinishReason != nil {
+			fr := convertBifrostFinishReasonToCohere(*choice.FinishReason)
+			cohereResp.FinishReason = &fr
+		}
+
+		// Convert message
+		if choice.ChatNonStreamResponseChoice != nil {
+			cohereResp.Message = convertBifrostMessageToCohere(choice.ChatNonStreamResponseChoice.Message)
+		}
+	}
+
+	// Convert usage
+	if bifrostResp.Usage != nil {
+		inputTokens := bifrostResp.Usage.PromptTokens
+		outputTokens := bifrostResp.Usage.CompletionTokens
+		cohereResp.Usage = &CohereUsage{
+			BilledUnits: &CohereBilledUnits{
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
+			},
+			Tokens: &CohereTokenUsage{
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
+			},
+		}
+		if bifrostResp.Usage.PromptTokensDetails != nil {
+			cachedTokens := bifrostResp.Usage.PromptTokensDetails.CachedReadTokens
+			cohereResp.Usage.CachedTokens = &cachedTokens
+		}
+	}
+
+	return cohereResp, nil
 }

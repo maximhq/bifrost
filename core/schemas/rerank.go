@@ -1,10 +1,13 @@
 package schemas
 
+import "encoding/json"
+
 // RerankDocument represents a document to be reranked.
 type RerankDocument struct {
-	Text string                 `json:"text"`
-	ID   *string                `json:"id,omitempty"`
-	Meta map[string]interface{} `json:"meta,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	JSONContent json.RawMessage `json:"json_content,omitempty"`
+	ID          *string         `json:"id,omitempty"`
+	Meta        map[string]interface{} `json:"meta,omitempty"`
 }
 
 // RerankParameters contains optional parameters for a rerank request.

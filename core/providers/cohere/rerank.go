@@ -98,9 +98,11 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 			if err := sonic.Unmarshal(result.Document, &docMap); err == nil {
 				doc := &schemas.RerankDocument{}
 				populated := false
-				if text, ok := docMap["text"].(string); ok {
-					doc.Text = text
-					populated = true
+				if rawText, exists := docMap["text"]; exists {
+					if text, ok := rawText.(string); ok {
+						doc.Text = text
+						populated = true
+					}
 				}
 				if id, ok := docMap["id"].(string); ok {
 					doc.ID = &id
@@ -183,6 +185,62 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 	}
 
 	return bifrostResponse
+}
+
+// ToCohereRerankResponse converts a Bifrost rerank response back into Cohere format.
+func ToCohereRerankResponse(bifrostResp *schemas.BifrostRerankResponse) (*CohereRerankResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+
+	cohereResp := &CohereRerankResponse{
+		ID:      bifrostResp.ID,
+		Results: make([]CohereRerankResult, 0, len(bifrostResp.Results)),
+	}
+
+	for _, result := range bifrostResp.Results {
+		cohereResult := CohereRerankResult{
+			Index:          result.Index,
+			RelevanceScore: result.RelevanceScore,
+		}
+
+		if result.Document != nil {
+			documentPayload := map[string]interface{}{
+				"text": result.Document.Text,
+			}
+			if result.Document.ID != nil {
+				documentPayload["id"] = *result.Document.ID
+			}
+			if len(result.Document.Meta) > 0 {
+				documentPayload["metadata"] = result.Document.Meta
+			}
+
+			documentBytes, err := sonic.Marshal(documentPayload)
+			if err != nil {
+				return nil, err
+			}
+			cohereResult.Document = documentBytes
+		}
+
+		cohereResp.Results = append(cohereResp.Results, cohereResult)
+	}
+
+	if bifrostResp.Usage != nil {
+		inputTokens := bifrostResp.Usage.PromptTokens
+		outputTokens := bifrostResp.Usage.CompletionTokens
+		cohereResp.Meta = &CohereRerankMeta{
+			BilledUnits: &CohereBilledUnits{
+				InputTokens:  schemas.Ptr(inputTokens),
+				OutputTokens: schemas.Ptr(outputTokens),
+			},
+			Tokens: &CohereTokenUsage{
+				InputTokens:  schemas.Ptr(inputTokens),
+				OutputTokens: schemas.Ptr(outputTokens),
+			},
+		}
+	}
+
+	return cohereResp, nil
 }
 
 func formatCohereRerankDocument(doc schemas.RerankDocument) string {

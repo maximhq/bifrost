@@ -257,10 +257,14 @@ func convertResponseFormatToCohere(responseFormat *interface{}) *CohereResponseF
 	case "json_object", "json_schema":
 		cohereFormat.Type = ResponseFormatTypeJSONObject
 
-		// Extract the nested schema
-		// OpenAI format: { type: "json_schema", json_schema: { name: "X", strict: true, schema: {...} } }
+		// Cohere native shape is response_format: {type: "json_object", schema: {...}}.
+		if schema, ok := formatMap["schema"]; ok {
+			cohereFormat.JSONSchema = &schema
+			break
+		}
+
 		if jsonSchemaWrapper, ok := formatMap["json_schema"].(map[string]interface{}); ok {
-			if schema, ok := jsonSchemaWrapper["schema"].(map[string]interface{}); ok {
+			if schema, ok := jsonSchemaWrapper["schema"]; ok {
 				var schemaInterface interface{} = schema
 				cohereFormat.JSONSchema = &schemaInterface
 			}

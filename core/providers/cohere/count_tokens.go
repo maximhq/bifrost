@@ -85,6 +85,17 @@ func (resp *CohereCountTokensResponse) ToBifrostCountTokensResponse(model string
 	}
 }
 
+// ToCohereCountTokensResponse converts a BifrostCountTokensResponse back into Cohere tokenize native format.
+func ToCohereCountTokensResponse(bifrostResp *schemas.BifrostCountTokensResponse) (*CohereCountTokensResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+	return &CohereCountTokensResponse{
+		Tokens:       bifrostResp.Tokens,
+		TokenStrings: bifrostResp.TokenStrings,
+	}, nil
+}
+
 // buildCohereCountTokensText flattens Responses messages into a plain text payload for tokenization.
 func buildCohereCountTokensText(messages []schemas.ResponsesMessage) string {
 	var parts []string

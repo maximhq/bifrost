@@ -192,6 +192,11 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 	extraParams := make(map[string]interface{})
 	if req.IgnoreRecordDetailsInResponse != nil {
 		extraParams["ignore_record_details_in_response"] = *req.IgnoreRecordDetailsInResponse
+		// When the caller explicitly requests record details (ignoreRecordDetailsInResponse=false),
+		// set ReturnDocuments so the bifrost response layer echoes the document content back.
+		if !*req.IgnoreRecordDetailsInResponse {
+			bifrostReq.Params.ReturnDocuments = schemas.Ptr(true)
+		}
 	}
 	if len(req.UserLabels) > 0 {
 		extraParams["user_labels"] = req.UserLabels
@@ -285,4 +290,36 @@ func parseDiscoveryEngineErrorMessage(responseBody []byte) string {
 	}
 
 	return rawString
+}
+
+// ToVertexRankResponse converts a Bifrost rerank response back into Vertex rank response format.
+func ToVertexRankResponse(bifrostResp *schemas.BifrostRerankResponse) (*VertexRankResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+
+	vertexResp := &VertexRankResponse{
+		Records: make([]VertexRankedRecord, 0, len(bifrostResp.Results)),
+	}
+
+	for _, result := range bifrostResp.Results {
+		record := VertexRankedRecord{
+			ID:    fmt.Sprintf("%s%d", vertexSyntheticRecordPrefix, result.Index),
+			Score: result.RelevanceScore,
+		}
+
+		if result.Document != nil {
+			if result.Document.Text != "" {
+				content := result.Document.Text
+				record.Content = &content
+			}
+			if title, ok := result.Document.Meta["title"].(string); ok && strings.TrimSpace(title) != "" {
+				record.Title = &title
+			}
+		}
+
+		vertexResp.Records = append(vertexResp.Records, record)
+	}
+
+	return vertexResp, nil
 }

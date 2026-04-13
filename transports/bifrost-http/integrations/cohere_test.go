@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/cohere"
@@ -99,4 +100,74 @@ func TestCohereRerankResponseConverterUsesRawResponse(t *testing.T) {
 	converted, err := rerankRoute.RerankResponseConverter(nil, resp)
 	require.NoError(t, err)
 	assert.Equal(t, raw, converted)
+}
+
+func TestCohereRerankResponseConverterBuildsNativeShapeWithoutRawResponse(t *testing.T) {
+	routes := CreateCohereRouteConfigs("/cohere")
+
+	var rerankRoute *RouteConfig
+	for i := range routes {
+		if routes[i].Path == "/cohere/v2/rerank" {
+			rerankRoute = &routes[i]
+			break
+		}
+	}
+	require.NotNil(t, rerankRoute)
+
+	converted, err := rerankRoute.RerankResponseConverter(nil, &schemas.BifrostRerankResponse{
+		ID: "r-123",
+		Results: []schemas.RerankResult{
+			{
+				Index:          0,
+				RelevanceScore: 0.9,
+				Document:       &schemas.RerankDocument{Text: "doc-0"},
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Bedrock,
+		},
+	})
+	require.NoError(t, err)
+
+	cohereResp, ok := converted.(*cohere.CohereRerankResponse)
+	require.True(t, ok)
+	assert.Equal(t, "r-123", cohereResp.ID)
+	require.Len(t, cohereResp.Results, 1)
+	var document map[string]interface{}
+	require.NoError(t, json.Unmarshal(cohereResp.Results[0].Document, &document))
+	assert.Equal(t, "doc-0", document["text"])
+}
+
+func TestCohereRerankResponseConverterBuildsNativeShapeWithoutRawEvenForCohereProvider(t *testing.T) {
+	routes := CreateCohereRouteConfigs("/cohere")
+
+	var rerankRoute *RouteConfig
+	for i := range routes {
+		if routes[i].Path == "/cohere/v2/rerank" {
+			rerankRoute = &routes[i]
+			break
+		}
+	}
+	require.NotNil(t, rerankRoute)
+
+	converted, err := rerankRoute.RerankResponseConverter(nil, &schemas.BifrostRerankResponse{
+		ID: "r-456",
+		Results: []schemas.RerankResult{
+			{
+				Index:          1,
+				RelevanceScore: 0.7,
+			},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Cohere,
+		},
+	})
+	require.NoError(t, err)
+
+	cohereResp, ok := converted.(*cohere.CohereRerankResponse)
+	require.True(t, ok)
+	assert.Equal(t, "r-456", cohereResp.ID)
+	require.Len(t, cohereResp.Results, 1)
+	assert.Equal(t, 1, cohereResp.Results[0].Index)
+	assert.Nil(t, cohereResp.Results[0].Document)
 }

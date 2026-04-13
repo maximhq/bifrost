@@ -804,7 +804,7 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return vertex.ToVertexRankResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)

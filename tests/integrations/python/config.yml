@@ -186,6 +186,7 @@ providers:
     file_delete: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     file_content: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     count_tokens: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+    rerank: "${AWS_BEDROCK_RERANK_MODEL_ARN:-arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0}"
     alternatives:
       - "anthropic.claude-3-opus-20240229-v1:0"
     
@@ -196,6 +197,7 @@ providers:
     embeddings: "embed-v4.0"
     streaming: "command-a-03-2025"
     count_tokens: "command-a-03-2025"
+    rerank: "${COHERE_RERANK_MODEL:-rerank-v3.5}"
     alternatives:
       - "command-r-plus"
   
@@ -519,6 +521,7 @@ provider_scenarios:
     file_content: true  # Bedrock downloads S3 object content
     image_edit: true  # Bedrock supports image editing via Nova Canvas
     count_tokens: true  # Bedrock supports token counting via CountTokens API
+    rerank: true
     
   cohere:
     simple_chat: true
@@ -559,6 +562,7 @@ provider_scenarios:
     file_delete: false
     file_content: false
     count_tokens: true
+    rerank: true
   
   huggingface:
     image_generation: true
@@ -605,6 +609,7 @@ scenario_capabilities:
   prompt_caching: "chat"
   citations: "chat"
   list_models: "chat"
+  rerank: "rerank"
   langchain_structured_output: "chat"  # LangChain structured output uses chat capability
   count_tokens: "count_tokens"  # Token counting capability
   pydantic_structured_output: "chat"  # Structured output uses chat capability
@@ -621,7 +626,6 @@ scenario_capabilities:
   file_retrieve: "file_retrieve"  # Uses file_retrieve model directly
   file_delete: "file_delete"  # Uses file_delete model directly
   file_content: "file_content"  # Uses file_content model directly
-  count_tokens: "chat"
   video_generation: "video"
   context_caching: "chat"  # Gemini Caches API (passthrough)
 

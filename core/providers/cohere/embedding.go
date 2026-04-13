@@ -1,6 +1,7 @@
 package cohere
 
 import (
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -187,4 +188,31 @@ func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 	}
 
 	return bifrostResponse
+}
+
+// ToCohereEmbeddingResponse converts a BifrostEmbeddingResponse back into Cohere v2 native format.
+func ToCohereEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) (*CohereEmbeddingResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+
+	cohereResp := &CohereEmbeddingResponse{
+		ID: uuid.New().String(),
+	}
+
+	if len(bifrostResp.Data) > 0 {
+		var floatEmbeddings [][]float64
+		for _, emb := range bifrostResp.Data {
+			if emb.Embedding.EmbeddingArray != nil {
+				floatEmbeddings = append(floatEmbeddings, emb.Embedding.EmbeddingArray)
+			}
+		}
+		if len(floatEmbeddings) > 0 {
+			cohereResp.Embeddings = &CohereEmbeddingData{
+				Float: floatEmbeddings,
+			}
+		}
+	}
+
+	return cohereResp, nil
 }

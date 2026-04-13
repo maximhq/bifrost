@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -24,6 +25,7 @@ const (
 	bedrockRerankQueryTypeText            = "TEXT"
 	bedrockRerankSourceTypeInline         = "INLINE"
 	bedrockRerankInlineDocumentTypeText   = "TEXT"
+	bedrockRerankInlineDocumentTypeJSON   = "JSON"
 	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
 )
 
@@ -37,9 +39,14 @@ type BedrockRerankSource struct {
 	InlineDocumentSource BedrockRerankInlineSource `json:"inlineDocumentSource"`
 }
 
+// BedrockRerankInlineSource represents an inline document for reranking.
+// Type determines which payload field is valid:
+// when Type is "TEXT", TextDocument is populated and JSONDocument is empty;
+// when Type is "JSON", JSONDocument is populated and TextDocument is nil.
 type BedrockRerankInlineSource struct {
-	Type         string                 `json:"type"`
-	TextDocument BedrockRerankTextValue `json:"textDocument"`
+	Type         string                  `json:"type"`
+	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
+	JSONDocument json.RawMessage         `json:"jsonDocument,omitempty"`
 }
 
 type BedrockRerankTextRef struct {
@@ -77,9 +84,14 @@ type BedrockRerankResult struct {
 	Document       *BedrockRerankResponseDocument `json:"document,omitempty"`
 }
 
+// BedrockRerankResponseDocument represents a document in a rerank response.
+// Type determines which payload field is valid:
+// when Type is "TEXT", TextDocument is populated and JSONDocument is empty;
+// when Type is "JSON", JSONDocument is populated and TextDocument is nil.
 type BedrockRerankResponseDocument struct {
 	Type         string                  `json:"type,omitempty"`
 	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
+	JSONDocument json.RawMessage         `json:"jsonDocument,omitempty"`
 }
 
 // regionPrefixes is a list of region prefixes used in Bedrock deployments
