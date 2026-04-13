@@ -71,18 +71,39 @@ clients:
   get:
     operationId: getMCPClients
     summary: List MCP clients
-    description: Returns a list of all configured MCP clients with their tools and connection state.
+    description: |
+      Returns MCP clients in a wrapped list response with their tools and connection state.
+
+      Supports server-side search and pagination via `search`, `limit`, and `offset`.
     tags:
       - MCP
+    parameters:
+      - name: search
+        in: query
+        description: Case-insensitive name search for MCP clients
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of MCP clients to return. Defaults to 25 and is capped at 100.
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of MCP clients to skip before returning results
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: Successful response
         content:
           application/json:
             schema:
-              type: array
-              items:
-                $ref: '../../schemas/management/mcp.yaml#/MCPClient'
+              $ref: '../../schemas/management/mcp.yaml#/ListMCPClientsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

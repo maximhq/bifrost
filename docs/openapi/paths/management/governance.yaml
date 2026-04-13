@@ -159,7 +159,12 @@ teams:
   get:
     operationId: listTeams
     summary: List teams
-    description: Returns a list of all teams.
+    description: |
+      Returns teams in a wrapped list response.
+
+      Supports server-side search and pagination on the default database-backed path via
+      `search`, `limit`, and `offset`. When `from_memory=true`, Bifrost returns the
+      in-memory config snapshot instead. The existing `customer_id` filter is preserved.
     tags:
       - Governance
     parameters:
@@ -168,6 +173,25 @@ teams:
         description: Filter teams by customer ID
         schema:
           type: string
+      - name: search
+        in: query
+        description: Case-insensitive name search on the database-backed list path
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of teams to return. Defaults to 25 and is capped at 100.
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of teams to skip before returning results
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       - name: from_memory
         in: query
         description: If true, returns teams from in-memory cache instead of database
@@ -319,10 +343,34 @@ customers:
   get:
     operationId: listCustomers
     summary: List customers
-    description: Returns a list of all customers.
+    description: |
+      Returns customers in a wrapped list response.
+
+      Supports server-side search and pagination on the default database-backed path via
+      `search`, `limit`, and `offset`. When `from_memory=true`, Bifrost returns the
+      in-memory config snapshot instead.
     tags:
       - Governance
     parameters:
+      - name: search
+        in: query
+        description: Case-insensitive name search on the database-backed list path
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of customers to return. Defaults to 25 and is capped at 100.
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of customers to skip before returning results
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       - name: from_memory
         in: query
         description: If true, returns customers from in-memory cache instead of database
@@ -524,7 +572,12 @@ routing-rules:
   get:
     operationId: listRoutingRules
     summary: List routing rules
-    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    description: |
+      Returns routing rules in a wrapped list response.
+
+      Supports server-side search and pagination on the default database-backed list path via
+      `search`, `limit`, and `offset`. `scope` and `scope_id` continue to filter rules by scope,
+      and `from_memory=true` returns the in-memory rule set.
     tags:
       - Governance
     parameters:
@@ -538,6 +591,31 @@ routing-rules:
         description: Filter routing rules by scope ID
         schema:
           type: string
+      - name: search
+        in: query
+        description: Case-insensitive name search on the database-backed list path
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of routing rules to return. Defaults to 25 and is capped at 100.
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of routing rules to skip before returning results
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: from_memory
+        in: query
+        description: If true, returns routing rules from in-memory cache instead of database
+        schema:
+          type: boolean
+          default: false
     responses:
       '200':
         description: Successful response
@@ -677,9 +755,40 @@ model-configs:
   get:
     operationId: listModelConfigs
     summary: List model configs
-    description: Returns a list of all model configurations with their budget and rate limit settings.
+    description: |
+      Returns model configs in a wrapped list response.
+
+      Supports server-side search and pagination on the default database-backed path via
+      `search`, `limit`, and `offset`. When `from_memory=true`, Bifrost returns the
+      in-memory config snapshot instead.
     tags:
       - Governance
+    parameters:
+      - name: search
+        in: query
+        description: Case-insensitive search on `model_name` for the database-backed list path
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of model configs to return. Defaults to 25 and is capped at 100.
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of model configs to skip before returning results
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: from_memory
+        in: query
+        description: If true, returns model configs from in-memory cache instead of database
+        schema:
+          type: boolean
+          default: false
     responses:
       '200':
         description: Successful response

@@ -264,6 +264,8 @@ Teams provide organizational grouping for virtual keys with department-level bud
 
 1. Go to **Users & Groups** → **Teams**
 
+The Teams table supports server-side search by team name and paginated browsing in the OSS dashboard.
+
 2. Click on **Add Team** button
 
 ![Team Creation](../../media/ui-create-teams.png)
@@ -310,8 +312,30 @@ curl -X PUT http://localhost:8080/api/governance/teams/{team_id} \
 # List all teams
 curl http://localhost:8080/api/governance/teams
 
+# Search teams by name with pagination
+curl "http://localhost:8080/api/governance/teams?search=engineering&limit=25&offset=0"
+
+# Filter teams by customer and search within that customer
+curl "http://localhost:8080/api/governance/teams?customer_id=customer-acme-corp&search=platform&limit=25&offset=0"
+
 # Get specific team
 curl http://localhost:8080/api/governance/teams/{team_id}
+```
+
+**List Response:**
+```json
+{
+  "teams": [
+    {
+      "id": "team-eng-001",
+      "name": "Engineering Team"
+    }
+  ],
+  "count": 1,
+  "total_count": 4,
+  "limit": 25,
+  "offset": 0
+}
 ```
 
 **Delete Team:**
@@ -379,6 +403,8 @@ Customers represent the highest level in the governance hierarchy, typically cor
 
 1. Go to **Users & Groups** → **Customers**
 
+The Customers table supports server-side search by customer name and paginated browsing in the OSS dashboard.
+
 2. Click on **Add Customer** button
 
 ![Customer Creation](../../media/ui-create-customer.png)
@@ -429,8 +455,27 @@ curl -X PUT http://localhost:8080/api/governance/customers/{customer_id} \
 # List all customers
 curl http://localhost:8080/api/governance/customers
 
+# Search customers by name with pagination
+curl "http://localhost:8080/api/governance/customers?search=acme&limit=25&offset=0"
+
 # Get specific customer
 curl http://localhost:8080/api/governance/customers/{customer_id}
+```
+
+**List Response:**
+```json
+{
+  "customers": [
+    {
+      "id": "customer-acme-corp",
+      "name": "Acme Corporation"
+    }
+  ],
+  "count": 1,
+  "total_count": 8,
+  "limit": 25,
+  "offset": 0
+}
 ```
 
 **Delete Customer:**
