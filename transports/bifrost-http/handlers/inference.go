@@ -156,20 +156,20 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var ocrParamsKnownFields = map[string]bool{
-	"model":                        true,
-	"id":                           true,
-	"document":                     true,
-	"fallbacks":                    true,
-	"include_image_base64":         true,
-	"pages":                        true,
-	"image_limit":                  true,
-	"image_min_size":               true,
-	"table_format":                 true,
-	"extract_header":               true,
-	"extract_footer":               true,
-	"bbox_annotation_format":       true,
-	"document_annotation_format":   true,
-	"document_annotation_prompt":   true,
+	"model":                      true,
+	"id":                         true,
+	"document":                   true,
+	"fallbacks":                  true,
+	"include_image_base64":       true,
+	"pages":                      true,
+	"image_limit":                true,
+	"image_min_size":             true,
+	"table_format":               true,
+	"extract_header":             true,
+	"extract_footer":             true,
+	"bbox_annotation_format":     true,
+	"document_annotation_format": true,
+	"document_annotation_prompt": true,
 }
 
 var speechParamsKnownFields = map[string]bool{
@@ -459,7 +459,7 @@ type RerankRequest struct {
 
 // OCRHandlerRequest is a bifrost OCR request
 type OCRHandlerRequest struct {
-	ID       *string            `json:"id,omitempty"`
+	ID       *string             `json:"id,omitempty"`
 	Document schemas.OCRDocument `json:"document"`
 	BifrostParams
 	*schemas.OCRParameters
@@ -1317,7 +1317,7 @@ func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher())
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderMatcher(), h.config.GetMCPHeaderCombinedAllowlist())
 	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")

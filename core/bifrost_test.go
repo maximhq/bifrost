@@ -605,8 +605,8 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	if err.ExtraFields.RequestType != schemas.OCRRequest {
 		t.Fatalf("expected OCR request type, got %q", err.ExtraFields.RequestType)
 	}
-	if err.ExtraFields.ModelRequested != "custom-mistral/mistral-ocr-latest" {
-		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.ModelRequested)
+	if err.ExtraFields.OriginalModelRequested != "custom-mistral/mistral-ocr-latest" {
+		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.OriginalModelRequested)
 	}
 }
 

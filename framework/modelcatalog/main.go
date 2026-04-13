@@ -77,7 +77,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// Log the active interval and the scheduler's actual check frequency so operators
 	// are not surprised that setting interval=1h does not mean checks happen every second.
 	// Actual syncs occur when: (1) the 1-hour ticker fires AND (2) time.Since(lastSync) >= pricingSyncInterval.
-	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", pricingSyncInterval, syncWorkerTickerPeriod)
+	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", syncInterval, syncWorkerTickerPeriod)
 
 	mc := &ModelCatalog{
 		pricingURL:             pricingURL,

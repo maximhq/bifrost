@@ -295,8 +295,6 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scope
 
 	// Route to the appropriate compute function
 	switch requestType {
-	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest:
-		return computeTextCost(pricing, input.usage)
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
 		return computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:

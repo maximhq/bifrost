@@ -190,10 +190,10 @@ func TestComputeTextCost_Below200kUsesBaseRate(t *testing.T) {
 
 func TestComputeTextCost_Tiered272k(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove200kTokens = new(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -210,10 +210,10 @@ func TestComputeTextCost_Tiered272k(t *testing.T) {
 
 func TestComputeTextCost_Between200kAnd272kUses200kRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove200kTokens = ptr(0.000006)
-	p.OutputCostPerTokenAbove200kTokens = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove200kTokens = new(0.000006)
+	p.OutputCostPerTokenAbove200kTokens = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     200000,
@@ -230,10 +230,10 @@ func TestComputeTextCost_Between200kAnd272kUses200kRate(t *testing.T) {
 
 func TestComputeTextCost_272kTierWithCacheRead(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1429,15 +1429,15 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
 			Mode:                                   "chat",
-			InputCostPerToken:                      0.000003,
-			OutputCostPerToken:                     0.000015,
-			InputCostPerTokenAbove200kTokens:       ptr(0.000006),
-			OutputCostPerTokenAbove200kTokens:      ptr(0.00003),
-			InputCostPerTokenAbove272kTokens:       ptr(0.000009),
-			OutputCostPerTokenAbove272kTokens:      ptr(0.000045),
-			CacheReadInputTokenCost:                ptr(0.0000003),
-			CacheReadInputTokenCostAbove200kTokens: ptr(0.0000006),
-			CacheReadInputTokenCostAbove272kTokens: ptr(0.0000009),
+			InputCostPerToken:                      new(0.000003),
+			OutputCostPerToken:                     new(0.000015),
+			InputCostPerTokenAbove200kTokens:       new(0.000006),
+			OutputCostPerTokenAbove200kTokens:      new(0.00003),
+			InputCostPerTokenAbove272kTokens:       new(0.000009),
+			OutputCostPerTokenAbove272kTokens:      new(0.000045),
+			CacheReadInputTokenCost:                new(0.0000003),
+			CacheReadInputTokenCostAbove200kTokens: new(0.0000006),
+			CacheReadInputTokenCostAbove272kTokens: new(0.0000009),
 		},
 	})
 
@@ -1447,7 +1447,7 @@ func TestCalculateCost_272kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      280000, // Above 272k
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000009, output=0.000045
 	// 250000*0.000009 + 30000*0.000045 = 2.25 + 1.35 = 3.60
 	assert.InDelta(t, 3.60, cost, 1e-9)
@@ -1460,13 +1460,13 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 			Model:                                  "claude-3-7-sonnet",
 			Provider:                               "anthropic",
 			Mode:                                   "chat",
-			InputCostPerToken:                      0.000003,
-			OutputCostPerToken:                     0.000015,
-			InputCostPerTokenAbove272kTokens:       ptr(0.000009),
-			OutputCostPerTokenAbove272kTokens:      ptr(0.000045),
-			CacheReadInputTokenCost:                ptr(0.0000003),
-			CacheReadInputTokenCostAbove200kTokens: ptr(0.0000006),
-			CacheReadInputTokenCostAbove272kTokens: ptr(0.0000009),
+			InputCostPerToken:                      new(0.000003),
+			OutputCostPerToken:                     new(0.000015),
+			InputCostPerTokenAbove272kTokens:       new(0.000009),
+			OutputCostPerTokenAbove272kTokens:      new(0.000045),
+			CacheReadInputTokenCost:                new(0.0000003),
+			CacheReadInputTokenCostAbove200kTokens: new(0.0000006),
+			CacheReadInputTokenCostAbove272kTokens: new(0.0000009),
 		},
 	})
 
@@ -1479,7 +1479,7 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Non-cached input: (250000-50000) * 0.000009 = 200000 * 0.000009 = 1.80
 	// Cached read (272k rate): 50000 * 0.0000009 = 0.045
 	// Output: 30000 * 0.000045 = 1.35
@@ -1493,8 +1493,8 @@ func TestCalculateCost_272kTier_CacheReadFallbackChain(t *testing.T) {
 
 func TestComputeTextCost_PriorityUsesInputOutputPriorityRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1510,8 +1510,8 @@ func TestComputeTextCost_PriorityUsesInputOutputPriorityRate(t *testing.T) {
 
 func TestComputeTextCost_NonPriorityIgnoresPriorityRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1527,12 +1527,12 @@ func TestComputeTextCost_NonPriorityIgnoresPriorityRate(t *testing.T) {
 
 func TestComputeTextCost_Priority272kTier(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.InputCostPerTokenAbove272kTokensPriority = ptr(0.000012)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
-	p.OutputCostPerTokenAbove272kTokensPriority = ptr(0.00006)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.InputCostPerTokenAbove272kTokensPriority = new(0.000012)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
+	p.OutputCostPerTokenAbove272kTokensPriority = new(0.00006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1549,8 +1549,8 @@ func TestComputeTextCost_Priority272kTier(t *testing.T) {
 func TestComputeTextCost_Priority272kTierFallsBackToNonPriority272k(t *testing.T) {
 	// Priority flag set but no priority-specific 272k rate — fall back to non-priority 272k
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1566,10 +1566,10 @@ func TestComputeTextCost_Priority272kTierFallsBackToNonPriority272k(t *testing.T
 
 func TestComputeTextCost_PriorityCacheReadRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenPriority = ptr(0.000006)
-	p.OutputCostPerTokenPriority = ptr(0.00003)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostPriority = ptr(0.0000006)
+	p.InputCostPerTokenPriority = new(0.000006)
+	p.OutputCostPerTokenPriority = new(0.00003)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostPriority = new(0.0000006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1596,10 +1596,10 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
 			Mode:                       "chat",
-			InputCostPerToken:          0.000005,
-			OutputCostPerToken:         0.000015,
-			InputCostPerTokenPriority:  ptr(0.000010),
-			OutputCostPerTokenPriority: ptr(0.000030),
+			InputCostPerToken:          new(0.000005),
+			OutputCostPerToken:         new(0.000015),
+			InputCostPerTokenPriority:  new(0.000010),
+			OutputCostPerTokenPriority: new(0.000030),
 		},
 	})
 
@@ -1612,14 +1612,15 @@ func TestCalculateCost_PriorityTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Priority rates: 1000*0.000010 + 500*0.000030 = 0.010 + 0.015 = 0.025
 	assert.InDelta(t, 0.025, cost, 1e-12)
 }
@@ -1631,10 +1632,10 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 			Model:                      "gpt-4o",
 			Provider:                   "openai",
 			Mode:                       "chat",
-			InputCostPerToken:          0.000005,
-			OutputCostPerToken:         0.000015,
-			InputCostPerTokenPriority:  ptr(0.000010),
-			OutputCostPerTokenPriority: ptr(0.000030),
+			InputCostPerToken:          new(0.000005),
+			OutputCostPerToken:         new(0.000015),
+			InputCostPerTokenPriority:  new(0.000010),
+			OutputCostPerTokenPriority: new(0.000030),
 		},
 	})
 
@@ -1647,14 +1648,15 @@ func TestCalculateCost_NonPriorityServiceTier_UsesBaseRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Base rates (not priority): 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -1663,23 +1665,23 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 	// 272k rate takes precedence over 200k, 200k over base, base over input rate
 	t.Run("uses_272k_when_above_272k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000009, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{}))
 	})
 	t.Run("uses_200k_when_between_200k_and_272k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000006, tieredCacheReadInputTokenRate(&p, 230000, serviceTier{}))
 	})
 	t.Run("uses_base_cache_rate_when_below_200k", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostAbove200kTokens = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostAbove200kTokens = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000003, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{}))
 	})
 	t.Run("falls_back_to_input_rate_when_no_cache_rate_set", func(t *testing.T) {
@@ -1689,49 +1691,49 @@ func TestTieredCacheReadRate_FallbackOrder(t *testing.T) {
 	})
 	t.Run("priority_uses_272k_priority_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostPriority = ptr(0.0000006)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
-		p.CacheReadInputTokenCostAbove272kTokensPriority = ptr(0.0000012)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostPriority = new(0.0000006)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
+		p.CacheReadInputTokenCostAbove272kTokensPriority = new(0.0000012)
 		assert.Equal(t, 0.0000012, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isPriority: true}))
 	})
 	t.Run("priority_falls_back_to_272k_non_priority_when_priority_rate_missing", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		assert.Equal(t, 0.0000009, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isPriority: true}))
 	})
 	t.Run("priority_uses_priority_base_cache_rate_below_tiers", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostPriority = ptr(0.0000006)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostPriority = new(0.0000006)
 		assert.Equal(t, 0.0000006, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isPriority: true}))
 	})
 	t.Run("flex_uses_flex_cache_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostFlex = ptr(0.0000005)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostFlex = new(0.0000005)
 		assert.Equal(t, 0.0000005, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_uses_flex_cache_rate_regardless_of_token_count", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
-		p.CacheReadInputTokenCostFlex = ptr(0.0000005)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(0.0000009)
+		p.CacheReadInputTokenCost = new(0.0000003)
+		p.CacheReadInputTokenCostFlex = new(0.0000005)
+		p.CacheReadInputTokenCostAbove272kTokens = new(0.0000009)
 		// Even above 272k, flex flat rate takes precedence
 		assert.Equal(t, 0.0000005, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_falls_back_to_base_cache_rate_when_no_flex_cache_rate", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCost = ptr(0.0000003)
+		p.CacheReadInputTokenCost = new(0.0000003)
 		// No flex cache rate — falls back to base cache rate
 		assert.Equal(t, 0.0000003, tieredCacheReadInputTokenRate(&p, 1500, serviceTier{isFlex: true}))
 	})
 	t.Run("flex_wins_over_272k_priority_and_priority_base_when_all_present", func(t *testing.T) {
 		p := chatPricing(0.000003, 0.000015)
-		p.CacheReadInputTokenCostAbove272kTokens = ptr(5e-7)
-		p.CacheReadInputTokenCostFlex = ptr(1.3e-7)
-		p.CacheReadInputTokenCostPriority = ptr(5e-7)
-		p.CacheReadInputTokenCostAbove272kTokensPriority = ptr(0.000001)
+		p.CacheReadInputTokenCostAbove272kTokens = new(5e-7)
+		p.CacheReadInputTokenCostFlex = new(1.3e-7)
+		p.CacheReadInputTokenCostPriority = new(5e-7)
+		p.CacheReadInputTokenCostAbove272kTokensPriority = new(0.000001)
 		// token count exceeds 272k — but flex flat rate should still win
 		assert.Equal(t, 1.3e-7, tieredCacheReadInputTokenRate(&p, 280000, serviceTier{isFlex: true}))
 	})
@@ -1775,8 +1777,8 @@ func TestTierFromString_Nil(t *testing.T) {
 
 func TestComputeTextCost_FlexUsesFlexRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1792,8 +1794,8 @@ func TestComputeTextCost_FlexUsesFlexRate(t *testing.T) {
 
 func TestComputeTextCost_NonFlexIgnoresFlexRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1810,10 +1812,10 @@ func TestComputeTextCost_NonFlexIgnoresFlexRate(t *testing.T) {
 func TestComputeTextCost_FlexIgnoresTokenTiers(t *testing.T) {
 	// Flex is a flat rate — token-count tiers (272k, 200k, 128k) do not apply.
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
-	p.InputCostPerTokenAbove272kTokens = ptr(0.000009)
-	p.OutputCostPerTokenAbove272kTokens = ptr(0.000045)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
+	p.InputCostPerTokenAbove272kTokens = new(0.000009)
+	p.OutputCostPerTokenAbove272kTokens = new(0.000045)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     250000,
@@ -1829,10 +1831,10 @@ func TestComputeTextCost_FlexIgnoresTokenTiers(t *testing.T) {
 
 func TestComputeTextCost_FlexCacheReadRate(t *testing.T) {
 	p := chatPricing(0.000003, 0.000015)
-	p.InputCostPerTokenFlex = ptr(0.0000015)
-	p.OutputCostPerTokenFlex = ptr(0.0000075)
-	p.CacheReadInputTokenCost = ptr(0.0000003)
-	p.CacheReadInputTokenCostFlex = ptr(0.0000006)
+	p.InputCostPerTokenFlex = new(0.0000015)
+	p.OutputCostPerTokenFlex = new(0.0000075)
+	p.CacheReadInputTokenCost = new(0.0000003)
+	p.CacheReadInputTokenCostFlex = new(0.0000006)
 
 	usage := &schemas.BifrostLLMUsage{
 		PromptTokens:     1000,
@@ -1875,10 +1877,10 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 			Model:                  "gpt-4o",
 			Provider:               "openai",
 			Mode:                   "chat",
-			InputCostPerToken:      0.000005,
-			OutputCostPerToken:     0.000015,
-			InputCostPerTokenFlex:  ptr(0.0000025),
-			OutputCostPerTokenFlex: ptr(0.0000075),
+			InputCostPerToken:      new(0.000005),
+			OutputCostPerToken:     new(0.000015),
+			InputCostPerTokenFlex:  new(0.0000025),
+			OutputCostPerTokenFlex: new(0.0000075),
 		},
 	})
 
@@ -1891,14 +1893,15 @@ func TestCalculateCost_FlexTier_EndToEnd(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Flex rates: 1000*0.0000025 + 500*0.0000075 = 0.0025 + 0.00375 = 0.00625
 	assert.InDelta(t, 0.00625, cost, 1e-12)
 }
@@ -1918,14 +1921,15 @@ func TestCalculateCost_FlexTier_FallsBackToBaseWhenNoFlexRate(t *testing.T) {
 				TotalTokens:      1500,
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o",
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
 			},
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// No flex rates configured — falls back to base: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }

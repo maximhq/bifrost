@@ -494,7 +494,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if frameworkConfig.PricingSyncInterval != nil {
 			syncSeconds = *frameworkConfig.PricingSyncInterval
 		} else {
-			syncSeconds = int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+			syncSeconds = int64(modelcatalog.DefaultSyncInterval.Seconds())
 		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{

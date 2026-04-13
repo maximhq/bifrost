@@ -101,7 +101,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := ParseMistralError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := ParseMistralError(resp)
 		return nil, bifrostErr
 	}
 
@@ -259,25 +259,23 @@ func (provider *MistralProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 // OCR performs an OCR request to the Mistral API.
 // It sends a JSON request to Mistral's OCR endpoint and returns the extracted content.
 func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	// Convert Bifrost request to Mistral format
 	mistralReq := ToMistralOCRRequest(request)
 	if mistralReq == nil {
-		return nil, providerUtils.NewBifrostOperationError("ocr request input is not provided", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("ocr request input is not provided", nil)
 	}
 
 	// Marshal request body
 	requestBody, err := sonic.Marshal(mistralReq)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 
 	// Merge extra params into JSON payload
 	if len(mistralReq.ExtraParams) > 0 {
 		requestBody, err = providerUtils.MergeExtraParamsIntoJSON(requestBody, mistralReq.ExtraParams)
 		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 	}
 
@@ -313,13 +311,12 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, ParseMistralError(resp, schemas.OCRRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
 	// Check for empty response
@@ -347,20 +344,17 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 				},
 			}
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 	}
 
 	// Convert to Bifrost format
 	response := mistralResponse.ToBifrostOCRResponse()
 	if response == nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to convert ocr response", nil, providerName)
+		return nil, providerUtils.NewBifrostOperationError("failed to convert ocr response", nil)
 	}
 
 	// Set extra fields
 	response.ExtraFields.Latency = latency.Milliseconds()
-	response.ExtraFields.RequestType = schemas.OCRRequest
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -382,8 +376,6 @@ func (provider *MistralProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 // It creates a multipart form with the audio file and sends it to Mistral's transcription endpoint.
 // Returns the transcribed text and metadata, or an error if the request fails.
 func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	// Convert Bifrost request to Mistral format
 	mistralReq := ToMistralTranscriptionRequest(request)
 	if mistralReq == nil {
@@ -391,7 +383,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	}
 
 	// Create multipart form body
-	body, contentType, bifrostErr := createMistralTranscriptionMultipartBody(mistralReq, providerName)
+	body, contentType, bifrostErr := createMistralTranscriptionMultipartBody(mistralReq, provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -423,8 +415,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, ParseMistralError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -555,8 +546,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, ParseMistralError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+		return nil, ParseMistralError(resp)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
