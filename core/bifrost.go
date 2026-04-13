@@ -4616,6 +4616,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return newBifrostMessageChan(resp), nil
 		}
 		bifrost.releasePluginPipeline(pipeline)
+		return nil, nil
 	}
 	if preReq == nil {
 		bifrost.releasePluginPipeline(pipeline)
