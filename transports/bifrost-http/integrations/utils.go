@@ -368,7 +368,7 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	}
 
 	// Look for the "fallbacks" field
-	fallbacksField := reqValue.FieldByName("fallbacks")
+	fallbacksField := reqValue.FieldByName("Fallbacks")
 	if !fallbacksField.IsValid() {
 		return nil, nil // No fallbacks field found
 	}
