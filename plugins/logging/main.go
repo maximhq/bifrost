@@ -681,8 +681,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 		}
 
-		// For streaming errors, finalize and read accumulated chunks so logs retain
-		// pre-error stream metadata (e.g., response.created/response.in_progress raw events).
+		// For streaming errors, finalize and read accumulated chunks so logs retain pre-error stream metadata
 		if bifrost.IsStreamRequestType(requestType) &&
 			requestType != schemas.PassthroughStreamRequest &&
 			requestType != schemas.RealtimeRequest &&
