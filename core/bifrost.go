@@ -4615,8 +4615,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			}
 			return newBifrostMessageChan(resp), nil
 		}
-		bifrost.releasePluginPipeline(pipeline)
-		return nil, nil
+		// Empty short-circuit (all payload fields nil) is treated as no short-circuit;
+		// fall through to normal request processing with preReq.
 	}
 	if preReq == nil {
 		bifrost.releasePluginPipeline(pipeline)
@@ -4632,7 +4632,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
-	// From here on, all paths are non-streaming and can safely defer pipeline release.
+	// From here on, the pipeline is not used to process individual stream chunks,
+	// so it is safe to defer its release.
 	defer bifrost.releasePluginPipeline(pipeline)
 
 	// Check if provider is closing before attempting to send (lock-free atomic check)
