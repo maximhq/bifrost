@@ -114,8 +114,12 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		for _, pc := range vk.ProviderConfigs {
 			if pc.Provider == string(provider) {
 				if p.modelCatalog != nil && p.inMemoryStore != nil {
-					providerConfig := p.inMemoryStore.GetConfiguredProviders()[provider]
-					if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, &providerConfig, pc.AllowedModels) {
+					providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
+					providerConfigPtr := &providerConfig
+					if !ok {
+						providerConfigPtr = nil
+					}
+					if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, providerConfigPtr, pc.AllowedModels) {
 						isAllowed = true
 						break
 					}

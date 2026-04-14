@@ -677,8 +677,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		isProviderAllowed := false
 		if p.modelCatalog != nil && p.inMemoryStore != nil {
 			provider := schemas.ModelProvider(config.Provider)
-			providerConfig := p.inMemoryStore.GetConfiguredProviders()[provider]
-			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(provider, modelStr, &providerConfig, config.AllowedModels)
+			providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
+			providerConfigPtr := &providerConfig
+			if !ok {
+				providerConfigPtr = nil
+			}
+			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(provider, modelStr, providerConfigPtr, config.AllowedModels)
 		} else {
 			// Fallback when model catalog is not available: simple string matching
 			// ["*"] = allow all models; [] = deny all models

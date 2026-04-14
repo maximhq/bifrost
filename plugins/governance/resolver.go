@@ -274,8 +274,12 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 			// and provider-prefixed allowed_models entries
 			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
-				providerConfig := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, &providerConfig, pc.AllowedModels)
+				providerConfig, ok := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
+				providerConfigPtr := &providerConfig
+				if !ok {
+					providerConfigPtr = nil
+				}
+				return r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels)
 			}
 			// Fallback when model catalog is not available: simple string matching
 			// ["*"] = allow all models; [] = deny all models
