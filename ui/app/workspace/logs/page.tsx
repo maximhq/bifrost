@@ -8,6 +8,7 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
@@ -29,7 +30,7 @@ import type {
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -223,12 +224,12 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
+					try {
+						return JSON.parse(urlState.metadata_filters);
+					} catch {
+						return undefined;
+					}
+				})()
 				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
@@ -478,6 +479,11 @@ export default function LogsPage() {
 						const successCount = (prevStats.success_rate / 100) * prevStats.total_requests;
 						const newSuccessCount = log.status === "success" ? successCount + 1 : successCount;
 						newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100;
+
+						// Update user-facing success rate (same approximation as success_rate)
+						const userSuccessCount = ((prevStats.user_facing_success_rate ?? 0) / 100) * prevStats.total_requests;
+						const newUserSuccessCount = log.status === "success" ? userSuccessCount + 1 : userSuccessCount;
+						newStats.user_facing_success_rate = (newUserSuccessCount / newStats.total_requests) * 100;
 
 						// Update average latency
 						if (log.latency) {
@@ -819,6 +825,13 @@ export default function LogsPage() {
 				title: "Success Rate",
 				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
 				icon: <CheckCircle className="size-4" />,
+				description: "Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
+			},
+			{
+				title: "User Success Rate",
+				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${(stats.user_facing_success_rate ?? 0).toFixed(2)}%` : "-",
+				icon: <CheckCircle className="size-4" />,
+				description: "Success rate as perceived by the end user. It includes fallback chains as one request.",
 			},
 			{
 				title: "Avg Latency",
@@ -905,12 +918,29 @@ export default function LogsPage() {
 			) : (
 				<div className="mx-auto flex h-full w-full flex-col">
 					<div className="flex h-full flex-col gap-2 overflow-hidden">
-						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
+						<div className="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
 										<div className="w-full min-w-0">
-											<div className="text-muted-foreground text-xs">{card.title}</div>
+											<div className="text-muted-foreground flex items-center gap-1 text-xs">
+												{card.title}
+												{"description" in card && card.description && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<button
+																type="button"
+																aria-label={`${card.title} info`}
+																data-testid={`logs-metric-info-${card.title.toLowerCase().replace(/\s+/g, "-")}`}
+																className="inline-flex items-center"
+															>
+																<Info className="size-3 cursor-help" />
+															</button>
+														</TooltipTrigger>
+														<TooltipContent className="max-w-72 text-left text-xs text-wrap">{card.description}</TooltipContent>
+													</Tooltip>
+												)}
+											</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
 									</CardContent>
