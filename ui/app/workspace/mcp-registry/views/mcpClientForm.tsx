@@ -85,7 +85,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	) => {
 		setForm((prev) => {
 			if (field === "connection_type" && value === "stdio") {
-				return { ...prev, connection_type: "stdio" as MCPConnectionType, auth_type: "none" as MCPAuthType, headers: undefined, oauth_config: undefined };
+				return {
+					...prev,
+					connection_type: "stdio" as MCPConnectionType,
+					auth_type: "none" as MCPAuthType,
+					headers: undefined,
+					oauth_config: undefined,
+				};
 			}
 			return { ...prev, [field]: value };
 		});
@@ -156,51 +162,45 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		// Connection type specific validation
 		...(form.connection_type === "http" || form.connection_type === "sse"
 			? [
-				Validator.required(connectionStringValue?.trim(), "Connection URL is required"),
-				Validator.pattern(
-					connectionStringValue,
-					/^((https?:\/\/.+)|(env\.[A-Z_]+))$/,
-					"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
-				),
-				...(headersValidationError ? [Validator.custom(false, headersValidationError)] : []),
-			]
+					Validator.required(connectionStringValue?.trim(), "Connection URL is required"),
+					Validator.pattern(
+						connectionStringValue,
+						/^((https?:\/\/.+)|(env\.[A-Z_]+))$/,
+						"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
+					),
+					...(headersValidationError ? [Validator.custom(false, headersValidationError)] : []),
+				]
 			: []),
 
 		// STDIO validation
 		...(form.connection_type === "stdio"
 			? [
-				Validator.required(form.stdio_config?.command?.trim(), "Command is required for STDIO connections"),
-				Validator.pattern(form.stdio_config?.command || "", /^[^<>|&;]+$/, "Command cannot contain special shell characters"),
-			]
+					Validator.required(form.stdio_config?.command?.trim(), "Command is required for STDIO connections"),
+					Validator.pattern(form.stdio_config?.command || "", /^[^<>|&;]+$/, "Command cannot contain special shell characters"),
+				]
 			: []),
 
 		// OAuth validation
-		...((form.auth_type === "oauth" || form.auth_type === "per_user_oauth")
+		...(form.auth_type === "oauth" || form.auth_type === "per_user_oauth"
 			? [
-				// Client ID is optional if provider supports dynamic registration (RFC 7591)
-				// URLs are optional (will be discovered), but if provided must be valid
-				...(form.oauth_config?.authorize_url
-					? [
-						Validator.pattern(
-							form.oauth_config.authorize_url,
-							/^https?:\/\/.+$/,
-							"Authorize URL must start with http:// or https://",
-						),
-					]
-					: []),
-				...(form.oauth_config?.token_url
-					? [Validator.pattern(form.oauth_config.token_url, /^https?:\/\/.+$/, "Token URL must start with http:// or https://")]
-					: []),
-				...(form.oauth_config?.registration_url
-					? [
-						Validator.pattern(
-							form.oauth_config.registration_url,
-							/^https?:\/\/.+$/,
-							"Registration URL must start with http:// or https://",
-						),
-					]
-					: []),
-			]
+					// Client ID is optional if provider supports dynamic registration (RFC 7591)
+					// URLs are optional (will be discovered), but if provided must be valid
+					...(form.oauth_config?.authorize_url
+						? [Validator.pattern(form.oauth_config.authorize_url, /^https?:\/\/.+$/, "Authorize URL must start with http:// or https://")]
+						: []),
+					...(form.oauth_config?.token_url
+						? [Validator.pattern(form.oauth_config.token_url, /^https?:\/\/.+$/, "Token URL must start with http:// or https://")]
+						: []),
+					...(form.oauth_config?.registration_url
+						? [
+								Validator.pattern(
+									form.oauth_config.registration_url,
+									/^https?:\/\/.+$/,
+									"Registration URL must start with http:// or https://",
+								),
+							]
+						: []),
+				]
 			: []),
 	]);
 
@@ -223,22 +223,22 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				form.connection_type === "stdio"
 					? {
-						command: form.stdio_config?.command || "",
-						args: parseArrayFromText(argsText),
-						envs: parseArrayFromText(envsText),
-					}
+							command: form.stdio_config?.command || "",
+							args: parseArrayFromText(argsText),
+							envs: parseArrayFromText(envsText),
+						}
 					: undefined,
 			oauth_config:
-				(form.auth_type === "oauth" || form.auth_type === "per_user_oauth")
+				form.auth_type === "oauth" || form.auth_type === "per_user_oauth"
 					? {
-						client_id: form.oauth_config?.client_id || "", // Can be empty for dynamic registration
-						client_secret: form.oauth_config?.client_secret || undefined,
-						authorize_url: form.oauth_config?.authorize_url || undefined,
-						token_url: form.oauth_config?.token_url || undefined,
-						registration_url: form.oauth_config?.registration_url || undefined,
-						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-						server_url: form.connection_string?.value || undefined, // Set server_url from connection_string
-					}
+							client_id: form.oauth_config?.client_id || "", // Can be empty for dynamic registration
+							client_secret: form.oauth_config?.client_secret || undefined,
+							authorize_url: form.oauth_config?.authorize_url || undefined,
+							token_url: form.oauth_config?.token_url || undefined,
+							registration_url: form.oauth_config?.registration_url || undefined,
+							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+							server_url: form.connection_string?.value || undefined, // Set server_url from connection_string
+						}
 					: undefined,
 			headers: form.auth_type === "headers" && form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
 			tools_to_execute: ["*"],
@@ -300,9 +300,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 								<SelectValue placeholder="Select connection type" />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="http" data-testid="connection-type-http">HTTP (Streamable)</SelectItem>
-								<SelectItem value="sse" data-testid="connection-type-sse">Server-Sent Events (SSE)</SelectItem>
-								<SelectItem value="stdio" data-testid="connection-type-stdio">STDIO</SelectItem>
+								<SelectItem value="http" data-testid="connection-type-http">
+									HTTP (Streamable)
+								</SelectItem>
+								<SelectItem value="sse" data-testid="connection-type-sse">
+									Server-Sent Events (SSE)
+								</SelectItem>
+								<SelectItem value="stdio" data-testid="connection-type-stdio">
+									STDIO
+								</SelectItem>
 							</SelectContent>
 						</Select>
 					</div>
@@ -318,7 +324,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											target="_blank"
 											rel="noopener noreferrer"
 											data-testid="code-mode-link-help"
-											className="text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+											className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
 											aria-label="Learn more about Code Mode"
 										>
 											<Info className="h-4 w-4 cursor-help" />
@@ -384,12 +390,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									</TooltipProvider>
 								</div>
 
-							<EnvVarInput
-								value={form.connection_string}
-								onChange={handleConnectionStringChange}
-								placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
-								data-testid="connection-url-input"
-							/>
+								<EnvVarInput
+									value={form.connection_string}
+									onChange={handleConnectionStringChange}
+									placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
+									data-testid="connection-url-input"
+								/>
 							</div>
 							<div className="w-full space-y-2">
 								<Label>Authentication Type</Label>
@@ -398,10 +404,18 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										<SelectValue placeholder="Select authentication type" />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="none" data-testid="auth-type-none">None</SelectItem>
-										<SelectItem value="headers" data-testid="auth-type-headers">Headers</SelectItem>
-										<SelectItem value="oauth" data-testid="auth-type-oauth">OAuth 2.0</SelectItem>
-										<SelectItem value="per_user_oauth" data-testid="auth-type-per-user-oauth">Per-User OAuth 2.0</SelectItem>
+										<SelectItem value="none" data-testid="auth-type-none">
+											None
+										</SelectItem>
+										<SelectItem value="headers" data-testid="auth-type-headers">
+											Headers
+										</SelectItem>
+										<SelectItem value="oauth" data-testid="auth-type-oauth">
+											OAuth 2.0
+										</SelectItem>
+										<SelectItem value="per_user_oauth" data-testid="auth-type-per-user-oauth">
+											Per-User OAuth 2.0
+										</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -542,7 +556,6 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							</div>
 						</>
 					)}
-
 				</div>
 				{/* Form Footer */}
 				<div className="dark:bg-card border-border bg-white px-4 py-6">

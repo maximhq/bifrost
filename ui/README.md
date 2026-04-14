@@ -96,6 +96,7 @@ Model Context Protocol integration for advanced AI capabilities including tool i
 Extend Bifrost with powerful plugins for observability, testing, caching, and custom functionality.
 
 **Available Plugins:**
+
 - [Maxim Logger](https://docs.getbifrost.ai/features/observability/maxim) - Advanced LLM observability
 - [Response Mocker](https://docs.getbifrost.ai/features/plugins/mocker) - Mock responses for testing
 - [Semantic Cache](https://docs.getbifrost.ai/features/semantic-caching) - Intelligent response caching
@@ -141,16 +142,16 @@ const { data: logs, error, isLoading } = useGetLogsQuery({ filters, pagination }
 const [createProvider] = useCreateProviderMutation();
 
 const handleCreate = async () => {
-  try {
-    await createProvider({
-      provider: "openai",
-      keys: [{ value: "sk-...", models: ["gpt-4"], weight: 1 }],
-      // ... other config
-    }).unwrap();
-    // Success handling
-  } catch (error) {
-    console.error(getErrorMessage(error));
-  }
+	try {
+		await createProvider({
+			provider: "openai",
+			keys: [{ value: "sk-...", models: ["gpt-4"], weight: 1 }],
+			// ... other config
+		}).unwrap();
+		// Success handling
+	} catch (error) {
+		console.error(getErrorMessage(error));
+	}
 };
 ```
 

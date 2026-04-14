@@ -86,9 +86,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		? stringValue
 			? [{ label: stringValue, value: stringValue }]
 			: []
-		: arrayValue.map((model) => (
-			model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }
-		));
+		: arrayValue.map((model) => (model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }));
 
 	// Fetch initial models on mount or when provider/keys/vks change
 	useEffect(() => {
@@ -116,9 +114,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	const loadOptions = useCallback(
 		(query: string, callback: (options: ModelOption[]) => void) => {
 			// Prepend "Allow All Models" when allowAllOption is enabled and query matches (or is empty)
-			const prefix: ModelOption[] = allowAllOption && (!query || "all models".includes(query.toLowerCase()))
-				? [ALL_MODELS_OPTION]
-				: [];
+			const prefix: ModelOption[] = allowAllOption && (!query || "all models".includes(query.toLowerCase())) ? [ALL_MODELS_OPTION] : [];
 
 			if (!provider && !shouldLoadOnEmpty) {
 				callback(prefix);
@@ -209,29 +205,38 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 
 	// Handle input change - track in both state and ref
 	// Per react-select docs: ignore input clear on blur, menu close, and set-value (selection)
-	const handleInputChange = useCallback((newValue: string, actionMeta: { action: string }) => {
-		// Don't clear input on blur or menu close (preserves search while browsing)
-		if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
-			return;
-		}
-		setInputValue(newValue);
-		inputValueRef.current = newValue;
-	}, [isSingleSelect]);
+	const handleInputChange = useCallback(
+		(newValue: string, actionMeta: { action: string }) => {
+			// Don't clear input on blur or menu close (preserves search while browsing)
+			if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
+				return;
+			}
+			setInputValue(newValue);
+			inputValueRef.current = newValue;
+		},
+		[isSingleSelect],
+	);
 
 	// Convert API data to options for default display
 	const defaultOptions: ModelOption[] = useMemo(() => {
 		const prefix = allowAllOption ? [ALL_MODELS_OPTION] : [];
 		if (shouldUseBaseModels) {
-			return [...prefix, ...(baseModelsData?.models?.map((model) => ({
-				label: model,
-				value: model,
-			})) || [])];
+			return [
+				...prefix,
+				...(baseModelsData?.models?.map((model) => ({
+					label: model,
+					value: model,
+				})) || []),
+			];
 		}
-		return [...prefix, ...(modelsData?.models?.map((model) => ({
-			label: model.name,
-			value: model.name,
-			provider: model.provider,
-		})) || [])];
+		return [
+			...prefix,
+			...(modelsData?.models?.map((model) => ({
+				label: model.name,
+				value: model.name,
+				provider: model.provider,
+			})) || []),
+		];
 	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
@@ -250,7 +255,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			isCreatable={true}
 			dynamicOptionCreation={true}
 			createOptionText={"Press enter to add new model"}
-			defaultOptions={defaultOptions.length > 0 ? defaultOptions : [] as Option<ModelOption>[]}
+			defaultOptions={defaultOptions.length > 0 ? defaultOptions : ([] as Option<ModelOption>[])}
 			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
 			placeholder={placeholder}
 			disabled={shouldBeDisabled}
@@ -267,26 +272,30 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			emptyResultPlaceholder={provider || shouldLoadOnEmpty ? "Start typing to search models..." : "Please select a provider first"}
 			views={{
 				dropdownIndicator: isSingleSelect ? undefined : () => <></>,
-				singleValue: isSingleSelect ? (singleValueProps: SingleValueProps<ModelOption>) => (
-					<span className="absolute left-1.5 text-sm">{singleValueProps.data.label}</span>
-				) : undefined,
-				multiValue: isSingleSelect ? undefined : (multiValueProps: MultiValueProps<ModelOption>) => {
-					return (
-						<div
-							{...multiValueProps.innerProps}
-							className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
-						>
-							{multiValueProps.data.label}{" "}
-							<X
-								className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
-								onClick={(e) => {
-									e.stopPropagation();
-									multiValueProps.removeProps.onClick?.(e as any);
-								}}
-							/>
-						</div>
-					);
-				},
+				singleValue: isSingleSelect
+					? (singleValueProps: SingleValueProps<ModelOption>) => (
+							<span className="absolute left-1.5 text-sm">{singleValueProps.data.label}</span>
+						)
+					: undefined,
+				multiValue: isSingleSelect
+					? undefined
+					: (multiValueProps: MultiValueProps<ModelOption>) => {
+							return (
+								<div
+									{...multiValueProps.innerProps}
+									className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
+								>
+									{multiValueProps.data.label}{" "}
+									<X
+										className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
+										onClick={(e) => {
+											e.stopPropagation();
+											multiValueProps.removeProps.onClick?.(e as any);
+										}}
+									/>
+								</div>
+							);
+						},
 				option: (optionProps: OptionProps<ModelOption>) => {
 					const { Option } = components;
 					return (

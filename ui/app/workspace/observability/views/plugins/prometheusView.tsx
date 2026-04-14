@@ -83,7 +83,13 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
-				<PrometheusFormFragment onSave={handlePrometheusConfigSave} currentConfig={currentConfig} metricsEndpoint={metricsEndpoint} onDelete={onDelete} isDeleting={isDeleting} />
+				<PrometheusFormFragment
+					onSave={handlePrometheusConfigSave}
+					currentConfig={currentConfig}
+					metricsEndpoint={metricsEndpoint}
+					onDelete={onDelete}
+					isDeleting={isDeleting}
+				/>
 			</div>
 		</div>
 	);

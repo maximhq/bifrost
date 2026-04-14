@@ -80,7 +80,8 @@ function splitOn(expr: string, op: "&&" | "||"): string[] {
 	const trimmed = expr.trim();
 	const s = isWrappedInParens(trimmed) ? trimmed.slice(1, -1) : trimmed;
 	const parts: string[] = [];
-	let depth = 0, current = "";
+	let depth = 0,
+		current = "";
 	for (let i = 0; i < s.length; i++) {
 		const ch = s[i];
 		if (ch === "(" || ch === "[") depth++;
@@ -117,8 +118,13 @@ export function expandCEL(cel: string): string[][] {
 	const orBranches = splitOn(trimmed, "||");
 	const result: string[][] = [];
 	for (const branch of orBranches) {
-		const andParts = splitOn(branch.trim(), "&&").map((p) => p.trim()).filter(Boolean);
-		if (!andParts.length) { result.push([branch.trim()]); continue; }
+		const andParts = splitOn(branch.trim(), "&&")
+			.map((p) => p.trim())
+			.filter(Boolean);
+		if (!andParts.length) {
+			result.push([branch.trim()]);
+			continue;
+		}
 
 		// For each AND part, check if it is a parenthesized OR — expand recursively
 		// and Cartesian-product with the accumulated combinations so far.
@@ -145,7 +151,8 @@ export function expandCEL(cel: string): string[][] {
  * Collapses whitespace around operators so "a == b" and "a==b" are the same key.
  */
 export function normalizeCond(cond: string): string {
-	return cond.trim()
+	return cond
+		.trim()
 		.replace(/\s*(==|!=|>=|<=|>|<)\s*/g, (_, op) => ` ${op} `)
 		.replace(/\s+/g, " ");
 }

@@ -145,8 +145,6 @@ export default function PluginsView(props: Props) {
 		return errorKeywords.some((keyword) => log.toLowerCase().includes(keyword.toLowerCase()));
 	};
 
-
-
 	return (
 		<div className="ml-4 w-full">
 			<Form {...form}>
@@ -175,7 +173,13 @@ export default function PluginsView(props: Props) {
 									<FormControl>
 										<div className="flex flex-wrap gap-1">
 											{selectedPlugin.status.types.map((type) => (
-												<Badge key={type} variant="outline" className={cn("h-5 px-2 text-xs font-medium uppercase", getPluginTypeColor(type))}>{type}</Badge>
+												<Badge
+													key={type}
+													variant="outline"
+													className={cn("h-5 px-2 text-xs font-medium uppercase", getPluginTypeColor(type))}
+												>
+													{type}
+												</Badge>
 											))}
 										</div>
 									</FormControl>
@@ -188,7 +192,7 @@ export default function PluginsView(props: Props) {
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between">
 										<div className="space-y-0.5">
-											<FormLabel	>Enabled</FormLabel>
+											<FormLabel>Enabled</FormLabel>
 											<FormDescription>Enable or disable this plugin</FormDescription>
 										</div>
 										<FormControl>
@@ -312,7 +316,12 @@ export default function PluginsView(props: Props) {
 							<Trash2Icon className="h-4 w-4" />
 							Delete Plugin
 						</Button>
-						<Button type="button" variant="outline" onClick={() => form.reset()} disabled={!form.formState.isDirty || !hasUpdatePluginAccess}>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => form.reset()}
+							disabled={!form.formState.isDirty || !hasUpdatePluginAccess}
+						>
 							Reset
 						</Button>
 						<Button type="submit" disabled={isLoading || !form.formState.isDirty || !hasUpdatePluginAccess}>

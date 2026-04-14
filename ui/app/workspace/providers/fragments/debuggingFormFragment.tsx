@@ -46,7 +46,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 			send_back_raw_response: provider.send_back_raw_response ?? false,
 			store_raw_request_response: provider.store_raw_request_response ?? false,
 		});
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
@@ -72,7 +72,6 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6" data-testid="provider-config-debugging-content">
 				<div className="space-y-4">
-
 					{/* Send Back Raw Request */}
 					<FormField
 						control={form.control}
@@ -173,14 +172,13 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
 													</TooltipTrigger>
 													<TooltipContent>
-														Override per-request with header: <code>x-bf-store-raw-request-response: {String(!storeRawRequestResponse)}</code>
+														Override per-request with header:{" "}
+														<code>x-bf-store-raw-request-response: {String(!storeRawRequestResponse)}</code>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											Persist raw request and response payloads in log records.
-										</p>
+										<p className="text-muted-foreground text-xs">Persist raw request and response payloads in log records.</p>
 									</div>
 									<FormControl>
 										<Switch
@@ -199,7 +197,6 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 							</FormItem>
 						)}
 					/>
-
 				</div>
 
 				<div className="flex justify-end space-x-2 pb-6">

@@ -144,7 +144,7 @@ export function WebSocketProvider({ children, path = "/ws" }: WebSocketProviderP
 				// Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 32s (max)
 				retryCountRef.current = Math.min(retryCountRef.current + 1, 6);
 				const delay = Math.pow(2, retryCountRef.current) * 500;
-				
+
 				reconnectTimeoutRef.current = setTimeout(connect, delay);
 			};
 

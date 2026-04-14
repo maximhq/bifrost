@@ -82,9 +82,7 @@ export default function MultiBudgetLines({
 			</div>
 
 			{lines.length === 0 && (
-				<div className="rounded-md border border-dashed p-3 text-center text-sm text-muted-foreground">
-					No budget limits configured.
-				</div>
+				<div className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-sm">No budget limits configured.</div>
 			)}
 
 			{lines.map((line, index) => {
@@ -110,16 +108,14 @@ export default function MultiBudgetLines({
 								variant="ghost"
 								size="icon"
 								type="button"
-								className="mb-0.5 h-8 w-8 shrink-0 text-destructive"
+								className="text-destructive mb-0.5 h-8 w-8 shrink-0"
 								onClick={() => removeLine(index)}
 							>
 								<Trash2 className="h-4 w-4" />
 							</Button>
 						</div>
 						{isDuplicate && (
-							<p className="text-xs text-destructive pl-0.5">
-								Duplicate reset period — each budget line must use a different interval.
-							</p>
+							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period — each budget line must use a different interval.</p>
 						)}
 					</div>
 				);

@@ -15,7 +15,7 @@ import { validateRegexPattern } from "@/lib/utils/celConverterRouting";
 import { useEffect, useState } from "react";
 import { ValueEditorProps, ValueEditorType } from "react-querybuilder";
 
-export function ValueEditor({ value, handleOnChange, operator, fieldData, type, }: ValueEditorProps) {
+export function ValueEditor({ value, handleOnChange, operator, fieldData, type }: ValueEditorProps) {
 	// Compute all conditions upfront before any early returns
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";
@@ -122,7 +122,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 				placeholder="Search for a model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
-				className="w-[360px] border-input"
+				className="border-input w-[360px]"
 			/>
 		);
 	}
@@ -189,11 +189,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 				<SelectTrigger className="w-[360px]">
 					{isProviderField && value ? (
 						<div className="flex items-center gap-2">
-							<RenderProviderIcon
-								provider={value as ProviderIconType}
-								size="sm"
-								className="h-4 w-4"
-							/>
+							<RenderProviderIcon provider={value as ProviderIconType} size="sm" className="h-4 w-4" />
 							<span>{getProviderLabel(value)}</span>
 						</div>
 					) : (
@@ -212,13 +208,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 						let displayLabel = optLabel;
 
 						if (isProviderField) {
-							iconElement = (
-								<RenderProviderIcon
-									provider={optName as ProviderIconType}
-									size="sm"
-									className="h-4 w-4"
-								/>
-							);
+							iconElement = <RenderProviderIcon provider={optName as ProviderIconType} size="sm" className="h-4 w-4" />;
 							displayLabel = getProviderLabel(optName);
 						}
 
@@ -247,7 +237,6 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 			/>
 		);
 	}
-
 
 	const placeholder = isArrayOperator
 		? "Enter comma-separated values or JSON array"
@@ -278,12 +267,9 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 					value={value || ""}
 					onChange={(e) => handleOnChange(e.target.value)}
 					placeholder={placeholder}
-					className={`w-[360px] font-mono text-sm ${regexError ? "border-red-500 bg-red-50 dark:bg-red-950" : ""
-						}`}
+					className={`w-[360px] font-mono text-sm ${regexError ? "border-red-500 bg-red-50 dark:bg-red-950" : ""}`}
 				/>
-				{regexError && (
-					<p className="text-xs text-red-600 dark:text-red-400">{regexError}</p>
-				)}
+				{regexError && <p className="text-xs text-red-600 dark:text-red-400">{regexError}</p>}
 			</div>
 		);
 	}

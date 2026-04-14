@@ -68,10 +68,7 @@ export default function MCPLogsPage() {
 
 	// Derive selectedLog from URL param
 	const selectedLogId = urlState.selected_log || null;
-	const selectedLog = useMemo(
-		() => (selectedLogId ? logs.find((l) => l.id === selectedLogId) ?? null : null),
-		[selectedLogId, logs],
-	);
+	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
 
 	// Refresh time range defaults on page focus/visibility
 	useEffect(() => {
@@ -136,9 +133,13 @@ export default function MCPLogsPage() {
 		// Only re-derive filters when filter-related URL params change (not pagination)
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[
-			urlState.tool_names, urlState.server_labels, urlState.status,
-			urlState.virtual_key_ids, urlState.content_search,
-			urlState.start_time, urlState.end_time,
+			urlState.tool_names,
+			urlState.server_labels,
+			urlState.status,
+			urlState.virtual_key_ids,
+			urlState.content_search,
+			urlState.start_time,
+			urlState.end_time,
 		],
 	);
 
@@ -270,7 +271,6 @@ export default function MCPLogsPage() {
 					return updatedLogs;
 				});
 
-	
 				setTotalItems((prev: number) => prev + 1);
 			}
 		} else if (operation === "update") {
@@ -299,7 +299,6 @@ export default function MCPLogsPage() {
 					return prevLogs.map((existingLog) => (existingLog.id === log.id ? log : existingLog));
 				});
 
-	
 				// Update stats for completed requests
 				if (log.status === "success" || log.status === "error") {
 					setStats((prevStats) => {
@@ -448,10 +447,7 @@ export default function MCPLogsPage() {
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
 	// Navigation for log detail sheet
-	const selectedLogIndex = useMemo(
-		() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1),
-		[selectedLogId, logs],
-	);
+	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
 	const handleLogNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -527,7 +523,7 @@ export default function MCPLogsPage() {
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
-										<div className="min-w-0 w-full">
+										<div className="w-full min-w-0">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
 											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
@@ -580,4 +576,3 @@ export default function MCPLogsPage() {
 		</div>
 	);
 }
-

@@ -146,8 +146,17 @@ function AllocationTable({
 	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown;
 
 	const SortHeader = ({ field, children }: { field: AllocationSortField; children: React.ReactNode }) => (
-		<th scope="col" aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-			<button type="button" onClick={() => onSort(field)} data-testid={`pprof-sort-${field}`} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
+		<th
+			scope="col"
+			aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+			className="px-4 py-3 text-left text-sm font-medium text-zinc-400"
+		>
+			<button
+				type="button"
+				onClick={() => onSort(field)}
+				data-testid={`pprof-sort-${field}`}
+				className="flex cursor-pointer items-center gap-1 hover:text-zinc-200"
+			>
 				{children}
 				{sortField === field && <SortIcon className="h-3 w-3" />}
 			</button>
@@ -254,7 +263,7 @@ function GoroutineGroupRow({
 						if (filePath) onSkip(filePath);
 					}}
 					data-testid="pprof-goroutine-skip"
-					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
+					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-zinc-700 hover:text-zinc-300 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500"
 					title="Hide goroutines from this file"
 					aria-label="Hide goroutines from this file"
 				>

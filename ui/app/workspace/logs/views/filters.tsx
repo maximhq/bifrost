@@ -200,7 +200,12 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					});
 				}}
 			/>
-			<FilterPopover filters={filters} onFilterChange={handleFilterChange} onMetadataFilterChange={handleMetadataFilterChange} showMissingCost />
+			<FilterPopover
+				filters={filters}
+				onFilterChange={handleFilterChange}
+				onMetadataFilterChange={handleMetadataFilterChange}
+				showMissingCost
+			/>
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-7.5">

@@ -17,9 +17,7 @@ import { Control, UseFormReturn } from "react-hook-form";
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
 
 /** Normalize form value (object or legacy JSON string) for the alias map editor. */
-function normalizeAliasesValue(
-	v: Record<string, string> | string | undefined | null,
-): Record<string, string> {
+function normalizeAliasesValue(v: Record<string, string> | string | undefined | null): Record<string, string> {
 	if (v == null) {
 		return {};
 	}
@@ -101,7 +99,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			const clientSecret = form.getValues("key.azure_key_config.client_secret");
 			const tenantId = form.getValues("key.azure_key_config.tenant_id");
 			const apiKey = form.getValues("key.value");
-			const hasEntraField = clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
+			const hasEntraField =
+				clientId?.value || clientId?.env_var || clientSecret?.value || clientSecret?.env_var || tenantId?.value || tenantId?.env_var;
 			const hasApiKey = apiKey?.value || apiKey?.env_var;
 			let detected: "api_key" | "entra_id" | "default_credential" = "api_key";
 			if (hasEntraField) {
@@ -350,8 +349,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem data-testid="apikey-aliases-field">
 								<FormLabel>Aliases (Optional)</FormLabel>
 								<FormDescription>
-									Map each request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint ID,
-									etc.) or just a custom name, e.g. &quot;claude-sonnet-4-5&quot; -&gt; &quot;custom-claude-4.5-sonnet&quot;.
+									Map each request model name to the provider&apos;s identifier (deployment name, inference profile ID, fine-tuned endpoint
+									ID, etc.) or just a custom name, e.g. &quot;claude-sonnet-4-5&quot; -&gt; &quot;custom-claude-4.5-sonnet&quot;.
 								</FormDescription>
 								<FormControl>
 									<div data-testid="apikey-aliases-table">
@@ -670,12 +669,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormItem>
 									<FormLabel>API Key (Supported only for gemini and fine-tuned models)</FormLabel>
 									<FormControl>
-										<EnvVarInput
-											data-testid="apikey-vertex-api-key-input"
-											placeholder="API Key or env.MY_KEY"
-											type="text"
-											{...field}
-										/>
+										<EnvVarInput data-testid="apikey-vertex-api-key-input" placeholder="API Key or env.MY_KEY" type="text" {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>

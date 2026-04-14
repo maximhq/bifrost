@@ -1,7 +1,5 @@
-
-
 export function capitalize(name: string) {
-    return name.charAt(0).toUpperCase() + name.slice(1);
+	return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 // Cleans raw input into a valid numeric string:

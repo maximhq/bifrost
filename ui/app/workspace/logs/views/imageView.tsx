@@ -29,7 +29,7 @@ function getImageSrc(b64: string): string {
 // Helper function to get method type label from request type
 function getMethodTypeLabel(requestType?: string): string {
 	if (!requestType) return "Image Generation";
-	
+
 	const normalizedType = requestType.toLowerCase();
 	if (normalizedType.includes("image_edit")) {
 		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Edit";
@@ -44,7 +44,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 	const [currentIndex, setCurrentIndex] = useState(0);
 
 	// Get all valid images
-	const images = imageOutput?.data?.filter(img => img.url || img.b64_json) ?? [];
+	const images = imageOutput?.data?.filter((img) => img.url || img.b64_json) ?? [];
 	const totalImages = images.length;
 	const currentImage = images[currentIndex] ?? null;
 
@@ -56,13 +56,13 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 		if (totalImages === 0) {
 			setCurrentIndex(0);
 		} else {
-			setCurrentIndex(prev => Math.min(prev, totalImages - 1));
+			setCurrentIndex((prev) => Math.min(prev, totalImages - 1));
 		}
 	}, [totalImages]);
 
 	// Looping navigation
-	const goToPrevious = () => setCurrentIndex(prev => prev === 0 ? totalImages - 1 : prev - 1);
-	const goToNext = () => setCurrentIndex(prev => prev === totalImages - 1 ? 0 : prev + 1);
+	const goToPrevious = () => setCurrentIndex((prev) => (prev === 0 ? totalImages - 1 : prev - 1));
+	const goToNext = () => setCurrentIndex((prev) => (prev === totalImages - 1 ? 0 : prev + 1));
 
 	return (
 		<div className="space-y-4">
@@ -100,7 +100,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 												alt={`Input image ${i + 1}`}
 												className="max-h-48 max-w-48 rounded border object-contain"
 											/>
-										) : null
+										) : null,
 									)}
 								</div>
 							</div>
@@ -132,7 +132,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 			)}
 
 			{/* Image Output */}
-			{(currentImage) && (
+			{currentImage && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<Image className="h-4 w-4" />
@@ -147,19 +147,21 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 										<div className="font-mono text-xs">{currentImage.revised_prompt}</div>
 									</div>
 								)}
-								<ImageMessage 
+								<ImageMessage
 									image={{
 										...currentImage,
-									output_format: imageOutput?.output_format,
-									}} 
+										output_format: imageOutput?.output_format,
+									}}
 								/>
 
 								{totalImages > 1 && (
-									<div className="flex items-center justify-center gap-4 mt-3">
+									<div className="mt-3 flex items-center justify-center gap-4">
 										<Button variant="outline" size="sm" onClick={goToPrevious} aria-label="Previous image" title="Previous image">
 											<ChevronLeft className="h-4 w-4" />
 										</Button>
-										<span className="text-sm text-muted-foreground">{currentIndex + 1} / {totalImages}</span>
+										<span className="text-muted-foreground text-sm">
+											{currentIndex + 1} / {totalImages}
+										</span>
 										<Button variant="outline" size="sm" onClick={goToNext} aria-label="Next image" title="Next image">
 											<ChevronRight className="h-4 w-4" />
 										</Button>

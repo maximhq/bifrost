@@ -464,7 +464,6 @@ const RichTextarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 				e.preventDefault();
 				setShowDropdown(false);
 			}
-
 		};
 
 		const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {

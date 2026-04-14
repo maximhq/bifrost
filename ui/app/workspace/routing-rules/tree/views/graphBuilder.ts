@@ -52,15 +52,34 @@ export interface TrieNode {
 	terminals: RoutingRule[];
 }
 
-interface LNode { id: string; kind: "source" | "condition" | "rule" | "target"; data: any; w: number; h: number; }
-interface LEdge { source: string; target: string; label?: string; color?: string; isChainBack?: boolean; isChainWeak?: boolean; sourceHandle?: string; targetHandle?: string; }
+interface LNode {
+	id: string;
+	kind: "source" | "condition" | "rule" | "target";
+	data: any;
+	w: number;
+	h: number;
+}
+interface LEdge {
+	source: string;
+	target: string;
+	label?: string;
+	color?: string;
+	isChainBack?: boolean;
+	isChainWeak?: boolean;
+	sourceHandle?: string;
+	targetHandle?: string;
+}
 
 // ─── Trie construction ────────────────────────────────────────────────────
 
 export function buildTrie(rules: RoutingRule[]): TrieNode {
 	let uid = 0;
-	const mkNode = (c: string | null): TrieNode =>
-		({ id: c === null ? "root" : `n${++uid}`, condition: c, children: new Map(), terminals: [] });
+	const mkNode = (c: string | null): TrieNode => ({
+		id: c === null ? "root" : `n${++uid}`,
+		condition: c,
+		children: new Map(),
+		terminals: [],
+	});
 	const root = mkNode(null);
 
 	// Pre-collect all (rule, normalized-path) pairs so we can compute frequencies.
@@ -106,9 +125,14 @@ export function mergeSubtrees(root: TrieNode): void {
 		if (nodeCanon.has(node.id)) return nodeCanon.get(node.id)!;
 		if (seen.has(node.id)) return node.id;
 		seen.add(node.id);
-		const termKey = node.terminals.map((r) => r.id).sort().join(",");
+		const termKey = node.terminals
+			.map((r) => r.id)
+			.sort()
+			.join(",");
 		const childKey = Array.from(node.children.entries())
-			.map(([c, ch]) => `${c}:${canon(ch, new Set(seen))}`).sort().join("|");
+			.map(([c, ch]) => `${c}:${canon(ch, new Set(seen))}`)
+			.sort()
+			.join("|");
 		const key = `${node.condition}::${termKey}::${childKey}`;
 		nodeCanon.set(node.id, key);
 		if (!registry.has(key)) registry.set(key, node);
@@ -148,7 +172,10 @@ function collectTerminals(node: TrieNode, seen = new Set<string>()): RoutingRule
 function nodeColor(node: TrieNode, cache?: Map<string, string | null>): string | null {
 	if (cache?.has(node.id)) return cache.get(node.id)!;
 	const rules = collectTerminals(node);
-	if (!rules.length) { cache?.set(node.id, null); return null; }
+	if (!rules.length) {
+		cache?.set(node.id, null);
+		return null;
+	}
 	// Deduplicate by rule.id before counting — collectTerminals returns one entry
 	// per OR-expanded path, so a multi-branch rule would otherwise be over-counted.
 	const uniqueRules = [...new Map(rules.map((r) => [r.id, r])).values()];
@@ -161,7 +188,12 @@ function nodeColor(node: TrieNode, cache?: Map<string, string | null>): string |
 			count,
 		}))
 		.filter((e): e is { color: string; count: number } => !!e.color);
-	const result = entries.length ? blendColors(entries.map((e) => e.color), entries.map((e) => e.count)) : null;
+	const result = entries.length
+		? blendColors(
+				entries.map((e) => e.color),
+				entries.map((e) => e.count),
+			)
+		: null;
 	cache?.set(node.id, result);
 	return result;
 }
@@ -369,10 +401,7 @@ function computeLRLayout(lNodes: LNode[], lEdges: LEdge[]): Map<string, { x: num
 }
 
 /** Move the source node so it sits at the vertical centre of the rest of the graph. */
-function centerSourceVertically(
-	positions: Map<string, { x: number; y: number }>,
-	lNodes: LNode[],
-): void {
+function centerSourceVertically(positions: Map<string, { x: number; y: number }>, lNodes: LNode[]): void {
 	const sourceEntry = lNodes.find((n) => n.id === "source");
 	const sourcePos = positions.get("source");
 	if (!sourceEntry || !sourcePos) return;
@@ -401,10 +430,15 @@ export function buildGraph(rules: RoutingRule[]): { nodes: Node[]; edges: Edge[]
 	mergeSubtrees(trie);
 	const { lNodes, lEdges } = collectDAGStructure(trie);
 	// Chain-back edges form cycles — exclude them from layout (forward edges only).
-	const positions = computeLRLayout(lNodes, lEdges.filter((e) => !e.isChainBack));
+	const positions = computeLRLayout(
+		lNodes,
+		lEdges.filter((e) => !e.isChainBack),
+	);
 
 	const kindType: Record<string, string> = {
-		source: "rfSource", condition: "rfCondition", rule: "rfRule",
+		source: "rfSource",
+		condition: "rfCondition",
+		rule: "rfRule",
 	};
 
 	const rfNodes: Node[] = lNodes.map((ln) => ({

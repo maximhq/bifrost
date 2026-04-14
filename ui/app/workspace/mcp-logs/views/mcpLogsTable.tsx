@@ -1,5 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import {
+	buildPinStyle,
+	ColumnConfigDropdown,
+	DraggableColumnHeader,
+	PIN_SHADOW_LEFT,
+	PIN_SHADOW_RIGHT,
+	useColumnConfig,
+	useHeaderCellRefs,
+	usePinOffsets,
+} from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
@@ -139,12 +148,7 @@ export function MCPLogsDataTable({
 				<div className="flex-1">
 					<MCPLogFilters filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
 				</div>
-				<ColumnConfigDropdown
-					entries={entries}
-					labels={COLUMN_LABELS}
-					onToggleVisibility={toggleVisibility}
-					onReset={reset}
-				/>
+				<ColumnConfigDropdown entries={entries} labels={COLUMN_LABELS} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
 			<div className="max-h-[calc(100vh-16.5rem)] rounded-sm border">
 				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
@@ -210,7 +214,7 @@ export function MCPLogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
 											{row.getVisibleCells().map((cell) => {
 												const pinned = cell.column.getIsPinned();
 												return (

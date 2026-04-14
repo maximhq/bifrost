@@ -20,8 +20,7 @@ const inputVariants = cva(
 );
 
 export interface NumberInputProps
-	extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange" | "value" | "defaultValue">,
-		VariantProps<typeof inputVariants> {
+	extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange" | "value" | "defaultValue">, VariantProps<typeof inputVariants> {
 	min?: number;
 	max?: number;
 	step?: number;

@@ -57,7 +57,7 @@ describe("getMessage", () => {
 			input_history: [
 				{
 					role: "tool",
-					content: [{ type: "text", text: "{\"nextResponse\":\"tool result\"}" }],
+					content: [{ type: "text", text: '{"nextResponse":"tool result"}' }],
 				},
 				{
 					role: "user",
@@ -70,7 +70,7 @@ describe("getMessage", () => {
 			},
 		} as unknown as LogEntry;
 
-		expect(getMessage(log)).toBe("Tool Result: {\"nextResponse\":\"tool result\"}\nUser: who are you?\nAssistant: I am the assistant.");
+		expect(getMessage(log)).toBe('Tool Result: {"nextResponse":"tool result"}\nUser: who are you?\nAssistant: I am the assistant.');
 	});
 
 	it("returns realtime assistant tool calls from output message", () => {

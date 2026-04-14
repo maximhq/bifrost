@@ -78,7 +78,6 @@ export function FilterPopover({
 		(category === "Providers" && providersLoading) ||
 		(category !== "Status" && category !== "Type" && category !== "Providers" && !category.startsWith("Metadata: ") && filterDataLoading);
 
-
 	const filterKeyMap: Record<string, keyof LogFiltersType> = {
 		Status: "status",
 		Providers: "providers",
@@ -174,16 +173,17 @@ export function FilterPopover({
 	};
 
 	const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
-	const selectedCount = Object.entries(filters).reduce((count, [key, value]) => {
-		if (excludedKeys.includes(key)) {
-			return count;
-		}
-		if (Array.isArray(value)) {
-			const nameMap = dedupedCountKeys[key];
-			return count + (nameMap ? countUniqueNames(value, nameMap) : value.length);
-		}
-		return count + (value ? 1 : 0);
-	}, 0) + (filters.metadata_filters ? Object.keys(filters.metadata_filters).length : 0);
+	const selectedCount =
+		Object.entries(filters).reduce((count, [key, value]) => {
+			if (excludedKeys.includes(key)) {
+				return count;
+			}
+			if (Array.isArray(value)) {
+				const nameMap = dedupedCountKeys[key];
+				return count + (nameMap ? countUniqueNames(value, nameMap) : value.length);
+			}
+			return count + (value ? 1 : 0);
+		}, 0) + (filters.metadata_filters ? Object.keys(filters.metadata_filters).length : 0);
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -192,9 +192,7 @@ export function FilterPopover({
 					<FilterIcon className="h-4 w-4" />
 					Filters
 					{selectedCount > 0 && (
-						<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
-							{selectedCount}
-						</span>
+						<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">{selectedCount}</span>
 					)}
 				</Button>
 			</PopoverTrigger>
@@ -263,43 +261,47 @@ export function FilterPopover({
 														<Check className="text-primary-foreground size-3" />
 													</div>
 													<span className={cn(category === "Status" && "lowercase")}>
-														{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] :
-															category === "Routing Engines" ? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value) : value}
+														{category === "Type"
+															? RequestTypeLabels[value as keyof typeof RequestTypeLabels]
+															: category === "Routing Engines"
+																? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value)
+																: value}
 													</span>
 												</CommandItem>
 											);
 										})
 									)}
-									{category.startsWith("Metadata: ") && (() => {
-									const metadataKey = category.replace("Metadata: ", "");
-									const activeValue = filters.metadata_filters?.[metadataKey];
-									const isCustom = activeValue && !values.includes(activeValue);
-									const displayValue = customMetadataInputs[category] ?? (isCustom ? activeValue : "");
-									return (
-										<div className="flex items-center gap-1 px-2 py-1">
-											<input
-												className="h-7 w-full rounded border bg-transparent px-2 text-sm placeholder:text-muted-foreground"
-												placeholder="Custom value..."
-												data-testid={`filter-custom-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
-												value={displayValue}
-												onChange={(e) => {
-													const newVal = e.target.value;
-													setCustomMetadataInputs((prev) => ({ ...prev, [category]: newVal }));
-													if (newVal === "" && isCustom) {
-														onMetadataFilterChange?.(metadataKey, undefined);
-													}
-												}}
-												onKeyDown={(e) => {
-													if (e.key === "Enter" && customMetadataInputs[category]?.trim()) {
-														handleFilterSelect(category, customMetadataInputs[category].trim());
-													}
-													e.stopPropagation();
-												}}
-												onClick={(e) => e.stopPropagation()}
-											/>
-										</div>
-									);
-								})()}
+									{category.startsWith("Metadata: ") &&
+										(() => {
+											const metadataKey = category.replace("Metadata: ", "");
+											const activeValue = filters.metadata_filters?.[metadataKey];
+											const isCustom = activeValue && !values.includes(activeValue);
+											const displayValue = customMetadataInputs[category] ?? (isCustom ? activeValue : "");
+											return (
+												<div className="flex items-center gap-1 px-2 py-1">
+													<input
+														className="placeholder:text-muted-foreground h-7 w-full rounded border bg-transparent px-2 text-sm"
+														placeholder="Custom value..."
+														data-testid={`filter-custom-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+														value={displayValue}
+														onChange={(e) => {
+															const newVal = e.target.value;
+															setCustomMetadataInputs((prev) => ({ ...prev, [category]: newVal }));
+															if (newVal === "" && isCustom) {
+																onMetadataFilterChange?.(metadataKey, undefined);
+															}
+														}}
+														onKeyDown={(e) => {
+															if (e.key === "Enter" && customMetadataInputs[category]?.trim()) {
+																handleFilterSelect(category, customMetadataInputs[category].trim());
+															}
+															e.stopPropagation();
+														}}
+														onClick={(e) => e.stopPropagation()}
+													/>
+												</div>
+											);
+										})()}
 								</CommandGroup>
 							))}
 					</CommandList>

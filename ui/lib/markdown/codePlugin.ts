@@ -68,10 +68,7 @@ const rememberTokens = (key: string, result: TokensResult): void => {
 	}
 };
 
-const getHighlighter = async (
-	lang: SupportedLang | "text",
-	themes: [SupportedTheme, SupportedTheme],
-): Promise<HighlighterCore> => {
+const getHighlighter = async (lang: SupportedLang | "text", themes: [SupportedTheme, SupportedTheme]): Promise<HighlighterCore> => {
 	if (!highlighterPromise) {
 		highlighterPromise = createHighlighterCore({
 			themes: [],
@@ -135,9 +132,7 @@ export function createCodePlugin(options: CodePluginOptions = {}): CodeHighlight
 		highlight({ code, language, themes: optThemes }, callback) {
 			const lang = normalizeLanguage(language);
 			const themesPair: [SupportedTheme, SupportedTheme] =
-				isSupportedTheme(optThemes[0]) && isSupportedTheme(optThemes[1])
-					? [optThemes[0], optThemes[1]]
-					: themes;
+				isSupportedTheme(optThemes[0]) && isSupportedTheme(optThemes[1]) ? [optThemes[0], optThemes[1]] : themes;
 			const key = cacheKey(code, lang, themesPair);
 
 			const cached = tokenCache.get(key);

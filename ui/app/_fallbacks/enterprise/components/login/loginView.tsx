@@ -87,7 +87,7 @@ export default function LoginView() {
 		return (
 			<div className="flex min-h-screen items-center justify-center p-4">
 				<div className="w-full max-w-md">
-					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
+					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 						<div className="flex items-center justify-center">
 							<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
 						</div>
@@ -103,7 +103,7 @@ export default function LoginView() {
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
 			<div className="w-full max-w-md">
-				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
+				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
 						<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
@@ -145,20 +145,16 @@ export default function LoginView() {
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									required
-									className="text-sm pr-10"
+									className="pr-10 text-sm"
 									autoComplete="current-password"
 								/>
 								<button
 									type="button"
 									onClick={() => setShowPassword(!showPassword)}
-									className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+									className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
 									aria-label={showPassword ? "Hide password" : "Show password"}
 								>
-									{showPassword ? (
-										<EyeOff className="h-4 w-4" />
-									) : (
-										<Eye className="h-4 w-4" />
-									)}
+									{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
 								</button>
 							</div>
 						</div>

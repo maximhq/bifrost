@@ -12,7 +12,8 @@
  */
 @font-face {
 	font-family: Geist;
-	src: url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
+	src:
+		url("/static/fonts/Geist-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/Geist-Variable.woff2") format("woff2");
 	font-weight: 100 900;
 	font-style: normal;
@@ -21,7 +22,8 @@
 
 @font-face {
 	font-family: Geist;
-	src: url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
+	src:
+		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/Geist-Italic-Variable.woff2") format("woff2");
 	font-weight: 100 900;
 	font-style: italic;
@@ -30,7 +32,8 @@
 
 @font-face {
 	font-family: "Geist Mono";
-	src: url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
+	src:
+		url("/static/fonts/GeistMono-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/GeistMono-Variable.woff2") format("woff2");
 	font-weight: 100 900;
 	font-style: normal;
@@ -39,7 +42,8 @@
 
 @font-face {
 	font-family: "Geist Mono";
-	src: url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2-variations"),
+	src:
+		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2-variations"),
 		url("/static/fonts/GeistMono-Italic-Variable.woff2") format("woff2");
 	font-weight: 100 900;
 	font-style: italic;
@@ -259,7 +263,6 @@ body {
 .query-builder-wrapper {
 	padding: 1rem;
 	padding-inline: 0.5rem;
-
 }
 
 [data-radix-scroll-area-viewport].no-table > div {
@@ -356,6 +359,7 @@ div.content-container:has(.no-border-parent) {
 
 /* // Custom styling for streamdown */
 
-[data-streamdown="code-block"], [data-streamdown="code-block-body"]{
+[data-streamdown="code-block"],
+[data-streamdown="code-block-body"] {
 	@apply rounded-sm!;
 }

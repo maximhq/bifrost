@@ -1,4 +1,3 @@
-
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useEffect } from "react";
@@ -36,7 +35,10 @@ export default function NumberFieldView(props: Props) {
 			<FieldLabel label={field.label} helpText={field.helpText} onClear={props.onClear}>
 				{field.range && config[field.id] !== undefined && (
 					<NumberInput
-						className={cn("ml-auto h-[24px] w-[80px] text-center shrink-0", invalid ? "border-border-error focus-visible:ring-border-error" : "")}
+						className={cn(
+							"ml-auto h-[24px] w-[80px] text-center shrink-0",
+							invalid ? "border-border-error focus-visible:ring-border-error" : "",
+						)}
 						value={config[field.id] as number}
 						disabled={props.disabled && props.disabled === true}
 						onChange={(value) => props.onChange(value)}

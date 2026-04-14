@@ -44,11 +44,7 @@ function formatLatency(ms: number): string {
 
 function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
 	if (isNew) {
-		return (
-			<span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-				new
-			</span>
-		);
+		return <span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">new</span>;
 	}
 
 	if (value === 0) {
@@ -87,7 +83,13 @@ function SortableHeader({
 	const isActive = currentSort === field;
 	const ariaSort = isActive ? (currentOrder === "asc" ? "ascending" : "descending") : "none";
 	return (
-		<button type="button" data-testid={`sort-${field}-btn`} aria-sort={ariaSort} className="hover:text-foreground inline-flex items-center gap-1 transition-colors" onClick={() => onSort(field)}>
+		<button
+			type="button"
+			data-testid={`sort-${field}-btn`}
+			aria-sort={ariaSort}
+			className="hover:text-foreground inline-flex items-center gap-1 transition-colors"
+			onClick={() => onSort(field)}
+		>
 			{label}
 			{isActive ? (
 				currentOrder === "desc" ? (

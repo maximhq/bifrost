@@ -1,5 +1,5 @@
-import ModelLimitsView from "@/app/workspace/model-limits/views/modelLimitsView"
+import ModelLimitsView from "@/app/workspace/model-limits/views/modelLimitsView";
 
 export default function ProvidersModelLimitsPage() {
-	return <ModelLimitsView />
+	return <ModelLimitsView />;
 }
