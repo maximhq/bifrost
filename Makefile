@@ -64,7 +64,12 @@ install-ui: cleanup-enterprise
 	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
 	@$(ECHO) "$(GREEN)Node.js and npm are installed$(NC)"
-	@cd ui && npm ci
+	@if [ ! -d "ui/node_modules" ] || [ "ui/package.json" -nt "ui/node_modules/.package-lock.json" ] || [ "ui/package-lock.json" -nt "ui/node_modules/.package-lock.json" ]; then \
+		$(ECHO) "$(YELLOW)Dependencies changed, running npm ci...$(NC)"; \
+		cd ui && npm ci; \
+	else \
+		$(ECHO) "$(GREEN)UI dependencies up to date, skipping install$(NC)"; \
+	fi
 	@which next > /dev/null || ($(ECHO) "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
 	@$(ECHO) "$(GREEN)UI deps are in sync$(NC)"
 
