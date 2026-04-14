@@ -283,9 +283,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddCodexAuthSessionsTable(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationCleanupCodexBrowserAuthColumns(ctx, db); err != nil {
-		return err
-	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
 		return err
 	}
@@ -4035,32 +4032,6 @@ func migrationAddCodexAuthSessionsTable(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running codex auth sessions table migration: %s", err.Error())
-	}
-	return nil
-}
-
-func migrationCleanupCodexBrowserAuthColumns(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "cleanup_codex_browser_auth_columns",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			mg := tx.Migrator()
-			obsoleteColumns := []string{"state", "code_verifier", "authorize_url"}
-			for _, column := range obsoleteColumns {
-				if mg.HasColumn(&tables.TableCodexAuthSession{}, column) {
-					if err := mg.DropColumn(&tables.TableCodexAuthSession{}, column); err != nil {
-						return fmt.Errorf("failed to drop obsolete codex auth column %s: %w", column, err)
-					}
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running codex browser auth cleanup migration: %s", err.Error())
 	}
 	return nil
 }

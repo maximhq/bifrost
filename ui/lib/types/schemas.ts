@@ -164,7 +164,7 @@ export const vllmKeyConfigSchema = z.object({
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
 
-export const codexAuthMethodSchema = z.enum(["browser", "device", "manual"]);
+export const codexAuthMethodSchema = z.enum(["device", "manual"]);
 
 export const codexKeyConfigSchema = z
 	.object({

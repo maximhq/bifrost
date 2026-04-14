@@ -35,7 +35,7 @@ interface CodexAuthControlsProps {
 	form: UseFormReturn<any>;
 	isEditing: boolean;
 	isConfigManaged: boolean;
-	onEnsurePersisted?: (authMethod?: "browser" | "device" | "manual") => Promise<string | null>;
+	onEnsurePersisted?: (authMethod?: "device" | "manual") => Promise<string | null>;
 }
 
 export function CodexAuthControls({ providerName, keyId, form, isEditing, isConfigManaged, onEnsurePersisted }: CodexAuthControlsProps) {

@@ -28,7 +28,7 @@ interface Props {
 	form: UseFormReturn<any>;
 	isEditing?: boolean;
 	isConfigManaged?: boolean;
-	onEnsurePersisted?: (authMethod?: "browser" | "device" | "manual") => Promise<string | null>;
+	onEnsurePersisted?: (authMethod?: "device" | "manual") => Promise<string | null>;
 }
 
 // Batch API form field for all providers

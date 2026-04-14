@@ -47,7 +47,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 					blacklisted_models: [],
 					weight: 1.0,
 					enabled: true,
-					...(provider.name === "codex" ? { codex_key_config: { ...DefaultCodexKeyConfig, auth_method: "browser" } } : {}),
+					...(provider.name === "codex" ? { codex_key_config: { ...DefaultCodexKeyConfig, auth_method: "device" } } : {}),
 				} as ProviderKeyFormValues),
 		},
 	});
@@ -70,7 +70,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty]);
 
 	const persistDraftKey = useCallback(
-		async (authMethod?: "browser" | "device" | "manual") => {
+		async (authMethod?: "device" | "manual") => {
 			if (authMethod) {
 				form.setValue("key.codex_key_config.auth_method", authMethod, { shouldDirty: true });
 			}

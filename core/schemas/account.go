@@ -117,9 +117,8 @@ type VLLMKeyConfig struct {
 type CodexAuthMethod string
 
 const (
-	CodexAuthMethodBrowser CodexAuthMethod = "browser"
-	CodexAuthMethodDevice  CodexAuthMethod = "device"
-	CodexAuthMethodManual  CodexAuthMethod = "manual"
+	CodexAuthMethodDevice CodexAuthMethod = "device"
+	CodexAuthMethodManual CodexAuthMethod = "manual"
 )
 
 // CodexKeyConfig holds ChatGPT Plus/Pro subscription credentials used by the Codex provider.

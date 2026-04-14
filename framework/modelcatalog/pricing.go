@@ -833,20 +833,16 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
 func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
-	lookupProvider := provider
-
-	pricing, exists := mc.getPricing(model, lookupProvider, requestType)
+	pricing, exists := mc.getPricing(model, provider, requestType)
 	if exists {
-		patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), model, requestType, *pricing)
-		return &patched
+		return pricing
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricing(deployment, lookupProvider, requestType)
+		pricing, exists = mc.getPricing(deployment, provider, requestType)
 		if exists {
-			patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), deployment, requestType, *pricing)
-			return &patched
+			return pricing
 		}
 	}
 

@@ -1,0 +1,91 @@
+---
+title: "Codex"
+description: "ChatGPT Plus/Pro-backed Codex provider guide and caveats"
+icon: "code"
+---
+
+## Overview
+
+The `codex` provider lets Bifrost route requests through ChatGPT Plus/Pro-backed Codex access instead of the standard OpenAI API key flow.
+
+<Warning>
+	This provider depends on the ChatGPT/Codex subscription flow and a non-public upstream surface that can change without notice. It is best
+	treated as an experimental compatibility path, not the default production path for most deployments.
+</Warning>
+
+<Tip>
+	For production workloads, prefer standard API-backed providers such as [OpenAI](/providers/supported-providers/openai),
+	[Anthropic](/providers/supported-providers/anthropic), [Bedrock](/providers/supported-providers/bedrock), or [Vertex
+	AI](/providers/supported-providers/vertex). Those providers have stable public APIs, clearer support boundaries, and more predictable
+	operational behavior.
+</Tip>
+
+## Supported Operations
+
+| Operation        | Non-Streaming | Streaming | Notes                                                                        |
+| ---------------- | ------------- | --------- | ---------------------------------------------------------------------------- |
+| List Models      | ✅            | -         | Returns a curated Codex model list                                           |
+| Chat Completions | ✅            | ✅        | Non-stream requests are internally adapted to the stream-first upstream path |
+| Responses API    | ✅            | ✅        | Native upstream path                                                         |
+
+All other OpenAI-style operations are unsupported.
+
+## Authentication
+
+Codex uses a device-code flow in the Bifrost UI:
+
+1. Create or open a Codex key in the Providers UI.
+2. Click **Connect with OpenAI**.
+3. Open the verification link.
+4. Enter the displayed code on the OpenAI page.
+5. Bifrost stores the resulting refresh/access credentials in the config store.
+
+For gateway deployments, use a persistent config store such as Postgres. Ephemeral local storage inside a pod will lose Codex credentials on restart.
+
+## Configuration Mode
+
+`config.json` support remains available for manual/static credentials, but interactive device authentication is best suited to DB-backed provider management.
+
+When using config mode, provide a Codex key via `codex_key_config`:
+
+```json
+{
+	"providers": {
+		"codex": {
+			"keys": [
+				{
+					"key_id": "codex-primary",
+					"name": "Codex Primary",
+					"codex_key_config": {
+						"refresh_token": "env.CODEX_REFRESH_TOKEN",
+						"account_id": "env.CODEX_ACCOUNT_ID",
+						"auth_method": "manual"
+					}
+				}
+			]
+		}
+	}
+}
+```
+
+## Request Compatibility Notes
+
+The upstream Codex endpoint is stricter than the standard OpenAI API. Bifrost adapts requests for compatibility, including:
+
+- forcing `store=false`
+- adding default `instructions` when missing
+- converting non-stream requests to the stream-first upstream flow internally
+- stripping unsupported tuning parameters such as:
+  - `temperature`
+  - `top_p`
+  - `max_output_tokens`
+  - `presence_penalty`
+  - `frequency_penalty`
+
+Tool-calling and stream handling are normalized back into Bifrost's OpenAI-compatible response shapes.
+
+## Operational Guidance
+
+- Prefer API-key providers for production automation and long-term reliability.
+- Keep Codex credentials in a persistent DB-backed config store.
+- Expect upstream behavior to change more often than stable public provider APIs.

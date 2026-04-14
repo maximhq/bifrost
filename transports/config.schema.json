@@ -1699,7 +1699,7 @@
 									},
 									"auth_method": {
 										"type": "string",
-										"enum": ["browser", "device", "manual"],
+										"enum": ["device", "manual"],
 										"description": "How this Codex credential set was provisioned"
 									}
 								},
@@ -2275,7 +2275,7 @@
 								},
 								"auth_method": {
 									"type": "string",
-									"enum": ["browser", "device", "manual"],
+									"enum": ["device", "manual"],
 									"description": "How this Codex credential set was provisioned"
 								}
 							},

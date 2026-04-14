@@ -106,7 +106,7 @@ export interface VLLMKeyConfig {
 	model_name: string;
 }
 
-export type CodexAuthMethod = "browser" | "device" | "manual";
+export type CodexAuthMethod = "device" | "manual";
 
 export interface CodexKeyConfig {
 	refresh_token: EnvVar;
