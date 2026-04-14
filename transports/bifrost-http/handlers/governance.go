@@ -81,9 +81,9 @@ type CreateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
-	TeamID     *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
-	CustomerID *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
-	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
+	TeamID          *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
+	CustomerID      *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
+	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`     // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // When true, all budgets reset at clean calendar boundaries
@@ -107,8 +107,8 @@ type UpdateVirtualKeyRequest struct {
 		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
-	TeamID     *string                 `json:"team_id,omitempty"`
-	CustomerID *string                 `json:"customer_id,omitempty"`
+	TeamID          *string                 `json:"team_id,omitempty"`
+	CustomerID      *string                 `json:"customer_id,omitempty"`
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
@@ -475,6 +475,16 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	if req.IsActive != nil {
 		isActive = *req.IsActive
 	}
+	// Fetch providers from DB to ensure up-to-date data in cluster mode.
+	providerSet := map[schemas.ModelProvider]struct{}{}
+	if req.ProviderConfigs != nil {
+		var err error
+		providerSet, err = h.getConfiguredProviderSet(ctx)
+		if err != nil {
+			SendError(ctx, 500, fmt.Sprintf("Failed to load providers: %v", err))
+			return
+		}
+	}
 	var vk configstoreTables.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		vk = configstoreTables.TableVirtualKey{
@@ -512,12 +522,12 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		if len(req.Budgets) > 0 {
 			for _, b := range req.Budgets {
 				budget := configstoreTables.TableBudget{
-					ID:              uuid.NewString(),
-					MaxLimit:        b.MaxLimit,
-					ResetDuration:   b.ResetDuration,
-					LastReset: budgetLastReset(vk.CalendarAligned, b.ResetDuration),
-					CurrentUsage:    0,
-					VirtualKeyID:    &vk.ID,
+					ID:            uuid.NewString(),
+					MaxLimit:      b.MaxLimit,
+					ResetDuration: b.ResetDuration,
+					LastReset:     budgetLastReset(vk.CalendarAligned, b.ResetDuration),
+					CurrentUsage:  0,
+					VirtualKeyID:  &vk.ID,
 				}
 				if err := validateBudget(&budget); err != nil {
 					return err
@@ -535,7 +545,13 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				if err := pc.KeyIDs.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 				}
-
+				providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
+				if providerName == "" {
+					return &badRequestError{err: fmt.Errorf("provider name is required")}
+				}
+				if _, ok := providerSet[providerName]; !ok {
+					return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
+				}
 				// Get keys for this provider config if specified
 				var keys []configstoreTables.TableKey
 				allowAllKeys := false
@@ -554,7 +570,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 
 				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 					VirtualKeyID:  vk.ID,
-					Provider:      pc.Provider,
+					Provider:      string(providerName),
 					Weight:        pc.Weight,
 					AllowedModels: pc.AllowedModels,
 					AllowAllKeys:  allowAllKeys,
@@ -717,6 +733,14 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to retrieve virtual key")
 		return
+	}
+	providerSet := map[schemas.ModelProvider]struct{}{}
+	if req.ProviderConfigs != nil {
+		providerSet, err = h.getConfiguredProviderSet(ctx)
+		if err != nil {
+			SendError(ctx, 500, fmt.Sprintf("Failed to load providers: %v", err))
+			return
+		}
 	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		var rateLimitIDToDelete string
@@ -888,6 +912,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			requestConfigsMap := make(map[uint]bool)
 			// Process new configs: create new ones and update existing ones
 			for _, pc := range req.ProviderConfigs {
+				providerName := schemas.ModelProvider(strings.TrimSpace(pc.Provider))
+				if providerName == "" {
+					return &badRequestError{err: fmt.Errorf("provider name is required")}
+				}
+				if _, ok := providerSet[providerName]; !ok {
+					return &badRequestError{err: fmt.Errorf("invalid provider name: %s", pc.Provider)}
+				}
 				if pc.ID == nil {
 					if err := pc.AllowedModels.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
@@ -915,7 +946,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// Create new provider config
 					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 						VirtualKeyID:  vk.ID,
-						Provider:      pc.Provider,
+						Provider:      string(providerName),
 						Weight:        pc.Weight,
 						AllowedModels: pc.AllowedModels,
 						AllowAllKeys:  allowAllKeys,
@@ -980,7 +1011,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
-					existing.Provider = pc.Provider
+					existing.Provider = string(providerName)
 					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
 
@@ -1408,22 +1439,22 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			LastReset:       budgetLastReset(false, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:            uuid.NewString(),
+				MaxLimit:      req.Budget.MaxLimit,
+				ResetDuration: req.Budget.ResetDuration,
+				LastReset:     budgetLastReset(false, req.Budget.ResetDuration),
+				CurrentUsage:  0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			team.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		team.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1542,24 +1573,24 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					team.Budget = nil
 				}
 			} else if team.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.Budget = &budget
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
+					return err
+				}
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1571,21 +1602,21 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				LastReset:       budgetLastReset(false, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.BudgetID = &budget.ID
-			team.Budget = &budget
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.BudgetID = &budget.ID
+				team.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -1809,22 +1840,22 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			Name: req.Name,
 		}
 
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			LastReset:       budgetLastReset(false, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:            uuid.NewString(),
+				MaxLimit:      req.Budget.MaxLimit,
+				ResetDuration: req.Budget.ResetDuration,
+				LastReset:     budgetLastReset(false, req.Budget.ResetDuration),
+				CurrentUsage:  0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			customer.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		customer.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1933,24 +1964,24 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 					customer.Budget = nil
 				}
 			} else if customer.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.Budget = &budget
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
+					return err
+				}
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1962,21 +1993,21 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				LastReset:       budgetLastReset(false, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.BudgetID = &budget.ID
-			customer.Budget = &budget
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.BudgetID = &budget.ID
+				customer.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2180,6 +2211,22 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 	return nil
 }
 
+func (h *GovernanceHandler) getConfiguredProviderSet(ctx context.Context) (map[schemas.ModelProvider]struct{}, error) {
+	providers, err := h.configStore.GetProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	providerSet := make(map[schemas.ModelProvider]struct{}, len(providers))
+	for _, provider := range providers {
+		providerName := schemas.ModelProvider(strings.TrimSpace(provider.Name))
+		if providerName == "" {
+			continue
+		}
+		providerSet[providerName] = struct{}{}
+	}
+	return providerSet, nil
+}
+
 // validateBudget validates the budget
 func validateBudget(budget *configstoreTables.TableBudget) error {
 	if budget.MaxLimit < 0 || budget.MaxLimit == 0 {
@@ -2350,11 +2397,11 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		// Create budget if provided
 		if req.Budget != nil {
 			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        req.Budget.MaxLimit,
-				ResetDuration:   req.Budget.ResetDuration,
-				LastReset:       budgetLastReset(false, req.Budget.ResetDuration),
-				CurrentUsage:    0,
+				ID:            uuid.NewString(),
+				MaxLimit:      req.Budget.MaxLimit,
+				ResetDuration: req.Budget.ResetDuration,
+				LastReset:     budgetLastReset(false, req.Budget.ResetDuration),
+				CurrentUsage:  0,
 			}
 			if err := validateBudget(&budget); err != nil {
 				return err
@@ -2447,24 +2494,24 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 					mc.Budget = nil
 				}
 			} else if mc.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.Budget = &budget
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
+					return err
+				}
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -2476,21 +2523,21 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				LastReset:       budgetLastReset(false, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.BudgetID = &budget.ID
-			mc.Budget = &budget
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.BudgetID = &budget.ID
+				mc.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2709,44 +2756,44 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 					provider.Budget = nil
 				}
 			} else if provider.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.Budget = &budget
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
+					return err
+				}
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
 					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
 				}
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				LastReset:       budgetLastReset(false, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.BudgetID = &budget.ID
-			provider.Budget = &budget
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     budgetLastReset(false, *req.Budget.ResetDuration),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.BudgetID = &budget.ID
+				provider.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
