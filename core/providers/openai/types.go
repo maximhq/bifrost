@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/schemas"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const MinMaxCompletionTokens = 16
@@ -427,8 +428,23 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					}
 				}
 
-				// Strip CacheControl and FileType from tool message output blocks if needed
-				if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				// Collapse text-only tool output blocks into a single string.
+				// OpenAI's Responses API defines function_call_output.output as
+				// a string; Anthropic's multi-turn tool_result content arrives
+				// as an array of content blocks and has to be flattened here.
+				// Strict upstream implementations (e.g. Ollama Cloud) return a
+				// 400 otherwise.
+				if msg.ResponsesToolMessage.Output != nil &&
+					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
+					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &flattened
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
@@ -527,6 +543,12 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 		}
 		// Check output blocks
 		if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+			// Text-only block arrays must be flattened to a string — OpenAI's
+			// Responses API defines function_call_output.output as a string
+			// and strict upstreams reject the array form.
+			if isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
+				return true
+			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 				if block.CacheControl != nil {
 					return true
@@ -538,6 +560,41 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 		}
 	}
 	return false
+}
+
+// isFunctionCallOutputBlocksFlattenable reports whether a function_call_output
+// content block slice contains only text blocks and can therefore be collapsed
+// into a single string for the OpenAI Responses API wire format.
+func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageContentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeText &&
+			block.Type != schemas.ResponsesOutputMessageContentTypeText {
+			return false
+		}
+		if block.Text == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// flattenFunctionCallOutputBlocks concatenates the text of every block in the
+// slice. Callers must first verify flattenability via
+// isFunctionCallOutputBlocksFlattenable.
+func flattenFunctionCallOutputBlocks(blocks []schemas.ResponsesMessageContentBlock) string {
+	var b strings.Builder
+	for i, block := range blocks {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if block.Text != nil {
+			b.WriteString(*block.Text)
+		}
+	}
+	return b.String()
 }
 
 // filterSupportedAnnotations filters out unsupported (non-OpenAI native) citation types
