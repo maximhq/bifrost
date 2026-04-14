@@ -46,8 +46,6 @@ type ModelCatalog struct {
 	// with pricing cache rebuilds.
 	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
 	overridesMu       sync.RWMutex
-	codexPricingModes map[schemas.ModelProvider]schemas.CodexPricingMode
-	codexPricingMu    sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -224,7 +222,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
-		codexPricingModes:      make(map[schemas.ModelProvider]schemas.CodexPricingMode),
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -673,10 +670,23 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	// Explicit allowedModels without prefix
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels []string) bool {
-	// Case 1: Empty allowedModels = use catalog to determine support
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels []string) bool {
+	isCustomProvider := false
+	hasListModelsEndpointDisabled := false
+	if providerConfig != nil {
+		isCustomProvider = providerConfig.CustomProviderConfig != nil
+		hasListModelsEndpointDisabled = !providerConfig.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)
+	}
+
+	// Case 1: Unrestricted allowedModels (empty or ["*"]) = use catalog to determine support
 	// This leverages GetProvidersForModel which already handles all cross-provider logic
-	if len(allowedModels) == 0 {
+	isUnrestricted := len(allowedModels) == 0 || (len(allowedModels) == 1 && allowedModels[0] == "*")
+	if isUnrestricted {
+		// Custom providers without a list-models endpoint can't be in the catalog,
+		// so allow any model through rather than blocking on missing catalog data
+		if isCustomProvider && hasListModelsEndpointDisabled {
+			return true
+		}
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
 	}
@@ -1042,7 +1052,6 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
-		codexPricingModes:   make(map[schemas.ModelProvider]schemas.CodexPricingMode),
 		done:                make(chan struct{}),
 	}
 }

@@ -253,7 +253,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
-			CodexConfig:              providerConfig.CodexConfig,
 			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
@@ -570,7 +569,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
-		CodexConfig:              configCopy.CodexConfig,
 		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
 	}
@@ -596,6 +594,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			CodexKeyConfig:     key.CodexKeyConfig,
 			ConfigHash:         key.ConfigHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -734,7 +733,6 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
-			CodexConfig:              dbProvider.CodexConfig,
 			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
@@ -787,7 +785,6 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
-		CodexConfig:              dbProvider.CodexConfig,
 		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
@@ -869,6 +866,26 @@ func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.Mode
 	}
 
 	return fmt.Errorf("either keyID or provider must be non-empty")
+}
+
+func (s *RDBConfigStore) PersistCodexKeyConfig(ctx context.Context, keyID string, keyConfig *schemas.CodexKeyConfig) error {
+	if keyConfig == nil {
+		return nil
+	}
+
+	var dbKey tables.TableKey
+	if err := s.db.WithContext(ctx).Where("provider = ? AND key_id = ?", string(schemas.Codex), keyID).First(&dbKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to load codex key for persistence: %w", err)
+	}
+
+	dbKey.CodexKeyConfig = keyConfig
+	if err := s.db.WithContext(ctx).Save(&dbKey).Error; err != nil {
+		return fmt.Errorf("failed to persist codex key config: %w", err)
+	}
+	return nil
 }
 
 // GetMCPConfig retrieves the MCP configuration from the database.

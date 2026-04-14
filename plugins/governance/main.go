@@ -161,7 +161,7 @@ func Init(
 	}
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
+	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -263,7 +263,7 @@ func InitFromStore(
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 	}
-	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
+	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 	engine, err := NewRoutingEngine(governanceStore, logger)
 	if err != nil {
@@ -576,8 +576,10 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
 		// and provider-prefixed allowed_models entries
 		isProviderAllowed := false
-		if p.modelCatalog != nil {
-			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(config.Provider), modelStr, config.AllowedModels)
+		if p.modelCatalog != nil && p.inMemoryStore != nil {
+			provider := schemas.ModelProvider(config.Provider)
+			providerConfig := p.inMemoryStore.GetConfiguredProviders()[provider]
+			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(provider, modelStr, &providerConfig, config.AllowedModels)
 		} else {
 			// Fallback when model catalog is not available: simple string matching
 			if len(config.AllowedModels) == 0 {

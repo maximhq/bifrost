@@ -165,7 +165,6 @@ export const vllmKeyConfigSchema = z.object({
 });
 
 export const codexAuthMethodSchema = z.enum(["browser", "device", "manual"]);
-export const codexPricingModeSchema = z.enum(["included_zero", "openai_equivalent"]);
 
 export const codexKeyConfigSchema = z
 	.object({
@@ -190,10 +189,6 @@ export const codexKeyConfigSchema = z
 			});
 		}
 	});
-
-export const codexConfigSchema = z.object({
-	pricing_mode: codexPricingModeSchema.default("included_zero"),
-});
 
 // Model provider key schema
 export const modelProviderKeySchema = z
@@ -575,7 +570,6 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	codex_config: codexConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
@@ -594,7 +588,6 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
-	codex_config: codexConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
@@ -614,7 +607,6 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	codex_config: codexConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
@@ -628,7 +620,6 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	codex_config: codexConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
@@ -744,12 +735,6 @@ export const openaiConfigFormSchema = z.object({
 });
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;
-
-export const codexConfigFormSchema = z.object({
-	pricing_mode: codexPricingModeSchema,
-});
-
-export type CodexConfigFormSchema = z.infer<typeof codexConfigFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z

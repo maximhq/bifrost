@@ -107,7 +107,6 @@ export interface VLLMKeyConfig {
 }
 
 export type CodexAuthMethod = "browser" | "device" | "manual";
-export type CodexPricingMode = "included_zero" | "openai_equivalent";
 
 export interface CodexKeyConfig {
 	refresh_token: EnvVar;
@@ -124,10 +123,6 @@ export const DefaultCodexKeyConfig: CodexKeyConfig = {
 	account_id: { value: "", env_var: "", from_env: false },
 	auth_method: "manual",
 } as const satisfies Required<CodexKeyConfig>;
-
-export interface CodexConfig {
-	pricing_mode?: CodexPricingMode;
-}
 
 // Default VLLMKeyConfig
 export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
@@ -345,7 +340,6 @@ export interface ModelProviderConfig {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	codex_config?: CodexConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -376,7 +370,6 @@ export interface AddProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	codex_config?: CodexConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 
@@ -391,7 +384,6 @@ export interface UpdateProviderRequest {
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
-	codex_config?: CodexConfig;
 	pricing_overrides?: ProviderPricingOverride[];
 }
 

@@ -277,7 +277,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddCodexConfigColumns(ctx, db); err != nil {
+	if err := migrationAddCodexKeyColumns(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddCodexAuthSessionsTable(ctx, db); err != nil {
@@ -378,9 +378,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 				"store_raw_request_response",
 				"encryption_status",
 			}
-			if migrator.HasColumn(&tables.TableProvider{}, "codex_config_json") {
-				selectColumns = append(selectColumns, "codex_config_json")
-			}
 			if err := tx.
 				Select(selectColumns).
 				Find(&providers).Error; err != nil {
@@ -395,7 +392,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
-					CodexConfig:              provider.CodexConfig,
 					PricingOverrides:         provider.PricingOverrides,
 				}
 				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
@@ -2007,7 +2003,6 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 							SendBackRawRequest:       provider.SendBackRawRequest,
 							SendBackRawResponse:      provider.SendBackRawResponse,
 							CustomProviderConfig:     provider.CustomProviderConfig,
-							CodexConfig:              provider.CodexConfig,
 						}
 						hash, err := providerConfig.GenerateConfigHash(provider.Name)
 						if err != nil {
@@ -3977,18 +3972,13 @@ func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB
 	return nil
 }
 
-// migrationAddCodexConfigColumns adds codex_config_json to providers and codex credential columns to config_keys.
-func migrationAddCodexConfigColumns(ctx context.Context, db *gorm.DB) error {
+// migrationAddCodexKeyColumns adds Codex credential columns to config_keys.
+func migrationAddCodexKeyColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_codex_config_columns",
+		ID: "add_codex_key_columns",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
-			if !mg.HasColumn(&tables.TableProvider{}, "codex_config_json") {
-				if err := mg.AddColumn(&tables.TableProvider{}, "CodexConfigJSON"); err != nil {
-					return fmt.Errorf("failed to add codex_config_json column: %w", err)
-				}
-			}
 			columns := []string{"CodexRefreshToken", "CodexAccessToken", "CodexAccessTokenExpiresAt", "CodexAccountID", "CodexAuthMethod"}
 			for _, column := range columns {
 				if !mg.HasColumn(&tables.TableKey{}, column) {
@@ -4010,16 +4000,11 @@ func migrationAddCodexConfigColumns(ctx context.Context, db *gorm.DB) error {
 					}
 				}
 			}
-			if mg.HasColumn(&tables.TableProvider{}, "codex_config_json") {
-				if err := mg.DropColumn(&tables.TableProvider{}, "codex_config_json"); err != nil {
-					return fmt.Errorf("failed to drop codex_config_json column: %w", err)
-				}
-			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running codex config columns migration: %s", err.Error())
+		return fmt.Errorf("error running codex key columns migration: %s", err.Error())
 	}
 	return nil
 }

@@ -268,6 +268,8 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `output_cost_per_token_batches` | Output token cost for batch requests |
 | `input_cost_per_token_priority` | Input token cost for priority requests |
 | `output_cost_per_token_priority` | Output token cost for priority requests |
+| `input_cost_per_token_flex` | Input token cost for flex requests |
+| `output_cost_per_token_flex` | Output token cost for flex requests |
 | `input_cost_per_character` | Input cost per character (character-billed models) |
 
 ### Token tier costs
@@ -277,7 +279,13 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `input_cost_per_token_above_128k_tokens` | Input cost above 128k context |
 | `output_cost_per_token_above_128k_tokens` | Output cost above 128k context |
 | `input_cost_per_token_above_200k_tokens` | Input cost above 200k context |
+| `input_cost_per_token_above_200k_tokens_priority` | Input cost above 200k context for priority requests |
 | `output_cost_per_token_above_200k_tokens` | Output cost above 200k context |
+| `output_cost_per_token_above_200k_tokens_priority` | Output cost above 200k context for priority requests |
+| `input_cost_per_token_above_272k_tokens` | Input cost above 272k context |
+| `input_cost_per_token_above_272k_tokens_priority` | Input cost above 272k context for priority requests |
+| `output_cost_per_token_above_272k_tokens` | Output cost above 272k context |
+| `output_cost_per_token_above_272k_tokens_priority` | Output cost above 272k context for priority requests |
 
 ### Cache costs
 
@@ -287,7 +295,11 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `cache_read_input_token_cost` | Cost to read a cached input token |
 | `cache_creation_input_token_cost_above_200k_tokens` | Cache creation above 200k context |
 | `cache_read_input_token_cost_above_200k_tokens` | Cache read above 200k context |
+| `cache_read_input_token_cost_above_200k_tokens_priority` | Cache read above 200k context for priority requests |
 | `cache_read_input_token_cost_priority` | Priority cache read cost |
+| `cache_read_input_token_cost_flex` | Flex cache read cost |
+| `cache_read_input_token_cost_above_272k_tokens` | Cache read above 272k context |
+| `cache_read_input_token_cost_above_272k_tokens_priority` | Cache read above 272k context for priority requests |
 | `cache_read_input_image_token_cost` | Cache read cost for image tokens |
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
 

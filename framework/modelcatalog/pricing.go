@@ -834,14 +834,6 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	lookupProvider := provider
-	if provider == string(schemas.Codex) {
-		switch mc.getCodexPricingMode(schemas.Codex) {
-		case schemas.CodexPricingModeOpenAIEquivalent:
-			lookupProvider = string(schemas.OpenAI)
-		default:
-			return zeroPricing(provider, model, requestType)
-		}
-	}
 
 	pricing, exists := mc.getPricing(model, lookupProvider, requestType)
 	if exists {

@@ -7,7 +7,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
-	CodexConfigFormFragment,
 	GovernanceFormFragment,
 	OpenAIConfigFormFragment,
 	ProxyFormFragment,
@@ -74,16 +73,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
-	const isCodex = provider.name === "codex";
 	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		const baseTabs = availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-		if (isCodex) {
-			baseTabs.push({ id: "codex-config", label: "Codex Config" });
-		}
-		return baseTabs;
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily, isCodex]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -134,9 +128,6 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="openai-config">
 							<OpenAIConfigFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="codex-config">
-							<CodexConfigFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="network">
 							<NetworkFormFragment provider={provider} />

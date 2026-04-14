@@ -153,7 +153,9 @@ func (h *CodexAuthHandler) refreshSessionState(ctx context.Context, session *con
 		return err
 	}
 	if statusCode == http.StatusOK && deviceToken != nil {
-		tokens, err := providerCodex.ExchangeDeviceAuthorizationCode(pollCtx, h.httpClient, deviceToken.AuthorizationCode, deviceToken.CodeVerifier)
+		exchangeCtx, exchangeCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer exchangeCancel()
+		tokens, err := providerCodex.ExchangeDeviceAuthorizationCode(exchangeCtx, h.httpClient, deviceToken.AuthorizationCode, deviceToken.CodeVerifier)
 		if err != nil {
 			session.Status = codexAuthSessionFailed
 			message := err.Error()
@@ -210,9 +212,6 @@ func (h *CodexAuthHandler) persistTokensToKey(ctx context.Context, keyID string,
 			updatedKeys[idx].CodexKeyConfig.AccountID = existingAccountID
 		}
 		providerConfig.Keys = updatedKeys
-		if providerConfig.CodexConfig == nil {
-			providerConfig.CodexConfig = &schemas.CodexConfig{PricingMode: schemas.CodexPricingModeIncludedZero}
-		}
 		return h.store.UpdateProviderConfig(ctx, schemas.Codex, *providerConfig)
 	}
 	return fmt.Errorf("Codex key %s not found", keyID)

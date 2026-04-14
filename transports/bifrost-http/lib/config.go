@@ -3120,21 +3120,26 @@ func (c *Config) PersistCodexKeyCredentials(ctx context.Context, keyID string, r
 		return nil
 	}
 
-	c.Mu.RLock()
+	if c.ConfigStore != nil {
+		if err := c.ConfigStore.PersistCodexKeyConfig(ctx, keyID, refreshed); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("failed to persist codex key credentials: %w", err)
+		}
+	}
+
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
 	existingConfig, exists := c.Providers[schemas.Codex]
-	c.Mu.RUnlock()
 	if !exists {
 		return ErrNotFound
 	}
-
-	updated := existingConfig
-	updated.Keys = append([]schemas.Key(nil), existingConfig.Keys...)
-	found := false
-	for idx := range updated.Keys {
-		if updated.Keys[idx].ID != keyID {
+	for idx := range existingConfig.Keys {
+		if existingConfig.Keys[idx].ID != keyID {
 			continue
 		}
-		current := updated.Keys[idx].CodexKeyConfig
+		current := existingConfig.Keys[idx].CodexKeyConfig
 		merged := &schemas.CodexKeyConfig{}
 		if current != nil {
 			*merged = *current
@@ -3146,33 +3151,11 @@ func (c *Config) PersistCodexKeyCredentials(ctx context.Context, keyID string, r
 		if refreshed.AccountID != nil {
 			merged.AccountID = refreshed.AccountID
 		}
-		updated.Keys[idx].CodexKeyConfig = merged
-		found = true
-		break
+		existingConfig.Keys[idx].CodexKeyConfig = merged
+		c.Providers[schemas.Codex] = existingConfig
+		return nil
 	}
-	if !found {
-		return ErrNotFound
-	}
-
-	if c.ConfigStore != nil {
-		dbErr := c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			if err := c.ConfigStore.UpdateProvider(ctx, schemas.Codex, updated, tx); err != nil {
-				if errors.Is(err, configstore.ErrNotFound) {
-					return ErrNotFound
-				}
-				return fmt.Errorf("failed to persist Codex key credentials: %w", err)
-			}
-			return nil
-		})
-		if dbErr != nil {
-			return dbErr
-		}
-	}
-
-	c.Mu.Lock()
-	c.Providers[schemas.Codex] = updated
-	c.Mu.Unlock()
-	return nil
+	return ErrNotFound
 }
 
 // RemoveProvider removes a provider configuration from memory.
@@ -3790,13 +3773,6 @@ func applyProviderPricingOverrides(catalog *modelcatalog.ModelCatalog, providers
 	for provider, providerConfig := range providers {
 		if err := catalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
 			logger.Warn("failed to load pricing overrides for provider %s: %v", provider, err)
-		}
-		if provider == schemas.Codex {
-			mode := schemas.CodexPricingModeIncludedZero
-			if providerConfig.CodexConfig != nil && providerConfig.CodexConfig.PricingMode != "" {
-				mode = providerConfig.CodexConfig.PricingMode
-			}
-			catalog.SetCodexPricingMode(provider, mode)
 		}
 	}
 }

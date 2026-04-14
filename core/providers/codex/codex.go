@@ -14,6 +14,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/singleflight"
 )
 
 const defaultBaseURL = "https://chatgpt.com/backend-api/codex"
@@ -33,10 +34,11 @@ var defaultModels = []string{
 type CodexProvider struct {
 	logger              schemas.Logger
 	client              *fasthttp.Client
+	authHTTPClient      *http.Client
+	refreshGroup        singleflight.Group
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
-	config              *schemas.CodexConfig
 }
 
 func NewCodexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*CodexProvider, error) {
@@ -65,10 +67,10 @@ func NewCodexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*C
 	return &CodexProvider{
 		logger:              logger,
 		client:              client,
+		authHTTPClient:      &http.Client{Timeout: 20 * time.Second},
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
-		config:              config.CodexConfig,
 	}, nil
 }
 
@@ -92,12 +94,19 @@ func (provider *CodexProvider) authHeaders(ctx *schemas.BifrostContext, key sche
 			if refreshToken := strings.TrimSpace(key.CodexKeyConfig.RefreshToken.GetValue()); refreshToken != "" {
 				requestCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
-				tokens, err := RefreshAccessToken(requestCtx, &http.Client{Timeout: 20 * time.Second}, refreshToken)
+				refreshKey := key.ID
+				if refreshKey == "" {
+					refreshKey = refreshToken
+				}
+				result, err, _ := provider.refreshGroup.Do(refreshKey, func() (interface{}, error) {
+					return RefreshAccessToken(requestCtx, provider.authHTTPClient, refreshToken)
+				})
 				if err != nil {
 					statusCode := http.StatusBadGateway
 					message := fmt.Sprintf("failed to refresh Codex access token: %v", err)
 					return nil, &schemas.BifrostError{IsBifrostError: true, StatusCode: &statusCode, Error: &schemas.ErrorField{Message: message}, ExtraFields: schemas.BifrostErrorExtraFields{Provider: provider.GetProviderKey()}}
 				}
+				tokens := result.(*TokenResponse)
 				headers["Authorization"] = "Bearer " + tokens.AccessToken
 				accountID := ExtractAccountID(tokens)
 				if accountID != "" {

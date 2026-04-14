@@ -492,25 +492,12 @@ type ProviderConfig struct {
 	StoreRawRequestResponse bool                      `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig             `json:"openai_config,omitempty"`
-	CodexConfig             *CodexConfig              `json:"codex_config,omitempty"`
 	PricingOverrides        []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
 	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
-}
-
-type CodexPricingMode string
-
-const (
-	CodexPricingModeIncludedZero     CodexPricingMode = "included_zero"
-	CodexPricingModeOpenAIEquivalent CodexPricingMode = "openai_equivalent"
-)
-
-// CodexConfig holds provider-level settings for the ChatGPT Plus/Pro-backed Codex provider.
-type CodexConfig struct {
-	PricingMode CodexPricingMode `json:"pricing_mode,omitempty"`
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
@@ -546,10 +533,6 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
 	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
 		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
-	}
-
-	if config.CodexConfig != nil && config.CodexConfig.PricingMode == "" {
-		config.CodexConfig.PricingMode = CodexPricingModeIncludedZero
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races

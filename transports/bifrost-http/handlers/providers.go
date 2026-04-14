@@ -71,7 +71,6 @@ type ProviderResponse struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
-	CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`           // Codex-specific configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
 	ProviderStatus           ProviderStatus                    `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                            `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
@@ -213,7 +212,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`  // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
-		CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`                // Codex-specific configuration
 		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	}{}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -288,7 +286,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
-		CodexConfig:              payload.CodexConfig,
 		PricingOverrides:         payload.PricingOverrides,
 	}
 	// Validate custom provider configuration before persisting
@@ -309,13 +306,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if h.inMemoryStore.ModelCatalog != nil {
 		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(payload.Provider, config.PricingOverrides); err != nil {
 			logger.Warn("Failed to set pricing overrides for provider %s: %v", payload.Provider, err)
-		}
-		if payload.Provider == schemas.Codex {
-			mode := schemas.CodexPricingModeIncludedZero
-			if config.CodexConfig != nil && config.CodexConfig.PricingMode != "" {
-				mode = config.CodexConfig.PricingMode
-			}
-			h.inMemoryStore.ModelCatalog.SetCodexPricingMode(payload.Provider, mode)
 		}
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
@@ -340,7 +330,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
-			CodexConfig:              config.CodexConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -377,7 +366,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"` // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`     // Custom provider configuration
 		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`              // OpenAI-specific configuration
-		CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`               // Codex-specific configuration
 		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`          // Provider-level pricing overrides
 	}{}
 
@@ -425,7 +413,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
-		CodexConfig:              oldConfigRaw.CodexConfig,
 		PricingOverrides:         oldConfigRaw.PricingOverrides,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
@@ -514,7 +501,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.OpenAIConfig = payload.OpenAIConfig
-	config.CodexConfig = payload.CodexConfig
 	config.PricingOverrides = payload.PricingOverrides
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
@@ -556,13 +542,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(provider, config.PricingOverrides); err != nil {
 			logger.Warn("Failed to set pricing overrides for provider %s: %v", provider, err)
 		}
-		if provider == schemas.Codex {
-			mode := schemas.CodexPricingModeIncludedZero
-			if config.CodexConfig != nil && config.CodexConfig.PricingMode != "" {
-				mode = config.CodexConfig.PricingMode
-			}
-			h.inMemoryStore.ModelCatalog.SetCodexPricingMode(provider, mode)
-		}
 	}
 
 	// Attempt model discovery
@@ -585,7 +564,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
-			CodexConfig:              config.CodexConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -913,19 +891,19 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 }
 
 // keyAllowsModelForList reports whether a provider key permits model for catalog listing.
-func keyAllowsModelForList(provider schemas.ModelProvider, model string, key schemas.Key, modelCatalog *modelcatalog.ModelCatalog) bool {
-	if len(key.BlacklistedModels) > 0 && keyModelListAllowsModel(provider, model, key.BlacklistedModels, modelCatalog) {
+func keyAllowsModelForList(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, key schemas.Key, modelCatalog *modelcatalog.ModelCatalog) bool {
+	if len(key.BlacklistedModels) > 0 && keyModelListAllowsModel(provider, model, providerConfig, key.BlacklistedModels, modelCatalog) {
 		return false
 	}
 	if len(key.Models) > 0 {
-		return keyModelListAllowsModel(provider, model, key.Models, modelCatalog)
+		return keyModelListAllowsModel(provider, model, providerConfig, key.Models, modelCatalog)
 	}
 	return true
 }
 
 // keyModelListAllowsModel reports whether model matches a key allow/deny list entry,
 // using catalog-aware alias matching when model metadata is available.
-func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
+func keyModelListAllowsModel(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
 	if len(allowedModels) == 0 {
 		return false
 	}
@@ -934,7 +912,7 @@ func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allow
 		return slices.Contains(allowedModels, model)
 	}
 
-	if modelCatalog.IsModelAllowedForProvider(provider, model, allowedModels) {
+	if modelCatalog.IsModelAllowedForProvider(provider, model, providerConfig, allowedModels) {
 		return true
 	}
 
@@ -1032,7 +1010,7 @@ func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provide
 	for _, model := range models {
 		grantedBy := make([]string, 0, len(matchedKeys))
 		for _, matched := range matchedKeys {
-			if keyAllowsModelForList(provider, model, matched.key, modelCatalog) {
+			if keyAllowsModelForList(provider, model, config, matched.key, modelCatalog) {
 				grantedBy = append(grantedBy, matched.id)
 			}
 		}
@@ -1331,7 +1309,6 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
-		CodexConfig:              config.CodexConfig,
 		PricingOverrides:         config.PricingOverrides,
 		ProviderStatus:           status,
 		Status:                   config.Status,

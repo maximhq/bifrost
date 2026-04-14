@@ -88,6 +88,7 @@ type ConfigStore interface {
 	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error
+	PersistCodexKeyConfig(ctx context.Context, keyID string, keyConfig *schemas.CodexKeyConfig) error
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)

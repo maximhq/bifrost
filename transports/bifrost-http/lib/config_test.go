@@ -444,6 +444,22 @@ func (m *MockConfigStore) UpdateProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
+func (m *MockConfigStore) PersistCodexKeyConfig(ctx context.Context, keyID string, keyConfig *schemas.CodexKeyConfig) error {
+	provider, ok := m.providers[schemas.Codex]
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	for idx := range provider.Keys {
+		if provider.Keys[idx].ID != keyID {
+			continue
+		}
+		provider.Keys[idx].CodexKeyConfig = keyConfig
+		m.providers[schemas.Codex] = provider
+		return nil
+	}
+	return configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	delete(m.providers, provider)
 	return nil

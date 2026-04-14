@@ -1,7 +1,6 @@
 export { AllowedRequestsFields } from "./allowedRequestsFields";
 export { BetaHeadersFormFragment } from "./betaHeadersFormFragment";
 export { CodexAuthControls } from "./codexAuthControls";
-export { CodexConfigFormFragment } from "./codexConfigFormFragment";
 export { ApiKeyFormFragment } from "./apiKeysFormFragment";
 export { ApiStructureFormFragment } from "./apiStructureFormFragment";
 export { DebuggingFormFragment } from "./debuggingFormFragment";

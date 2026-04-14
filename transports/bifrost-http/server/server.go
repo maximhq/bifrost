@@ -502,13 +502,6 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerInfo.PricingOverrides); err != nil {
 		logger.Warn("failed to refresh pricing overrides for provider %s: %v", provider, err)
 	}
-	if provider == schemas.Codex {
-		mode := schemas.CodexPricingModeIncludedZero
-		if providerInfo.CodexConfig != nil && providerInfo.CodexConfig.PricingMode != "" {
-			mode = providerInfo.CodexConfig.PricingMode
-		}
-		s.Config.ModelCatalog.SetCodexPricingMode(provider, mode)
-	}
 
 	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
@@ -588,7 +581,6 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
 	s.Config.ModelCatalog.DeleteProviderPricingOverrides(provider)
-	s.Config.ModelCatalog.DeleteCodexPricingMode(provider)
 
 	return nil
 }
@@ -766,13 +758,6 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		for provider, providerConfig := range s.Config.Providers {
 			if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
 				logger.Warn("failed to seed pricing overrides for provider %s: %v", provider, err)
-			}
-			if provider == schemas.Codex {
-				mode := schemas.CodexPricingModeIncludedZero
-				if providerConfig.CodexConfig != nil && providerConfig.CodexConfig.PricingMode != "" {
-					mode = providerConfig.CodexConfig.PricingMode
-				}
-				s.Config.ModelCatalog.SetCodexPricingMode(provider, mode)
 			}
 		}
 	} else {
@@ -1162,7 +1147,8 @@ func (s *BifrostHTTPServer) persistCodexCredentialRefresh(keyID string, refreshe
 	if s.Config == nil || refreshed == nil {
 		return nil
 	}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	defer ctx.Cancel()
 	return s.Config.PersistCodexKeyCredentials(ctx, keyID, refreshed)
 }
 

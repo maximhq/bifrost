@@ -25,7 +25,7 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -60,7 +60,7 @@ func TestUsageTracker_UpdateUsage_VirtualKeyNotFound(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -94,7 +94,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 	defer tracker.Cleanup()
 
@@ -157,7 +157,7 @@ func TestUsageTracker_Cleanup(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
 	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
 
 	// Should cleanup without error
