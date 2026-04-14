@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,8 @@ func newTestCatalog(modelPool map[schemas.ModelProvider][]string, baseModelIndex
 		baseModelIndex:    baseModelIndex,
 		pricingData:       make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides: make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		codexPricingModes: make(map[schemas.ModelProvider]schemas.CodexPricingMode),
+		logger:            bifrost.NewNoOpLogger(),
 	}
 }
 

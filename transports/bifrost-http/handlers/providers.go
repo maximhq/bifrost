@@ -71,6 +71,7 @@ type ProviderResponse struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
+	CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`           // Codex-specific configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
 	ProviderStatus           ProviderStatus                    `json:"provider_status"`                  // Health/initialization status of the provider
 	Status                   string                            `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
@@ -212,6 +213,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`  // Capture raw request/response for internal logging only
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+		CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`                // Codex-specific configuration
 		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	}{}
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -286,6 +288,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
+		CodexConfig:              payload.CodexConfig,
 		PricingOverrides:         payload.PricingOverrides,
 	}
 	// Validate custom provider configuration before persisting
@@ -306,6 +309,13 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if h.inMemoryStore.ModelCatalog != nil {
 		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(payload.Provider, config.PricingOverrides); err != nil {
 			logger.Warn("Failed to set pricing overrides for provider %s: %v", payload.Provider, err)
+		}
+		if payload.Provider == schemas.Codex {
+			mode := schemas.CodexPricingModeIncludedZero
+			if config.CodexConfig != nil && config.CodexConfig.PricingMode != "" {
+				mode = config.CodexConfig.PricingMode
+			}
+			h.inMemoryStore.ModelCatalog.SetCodexPricingMode(payload.Provider, mode)
 		}
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
@@ -330,6 +340,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			CodexConfig:              config.CodexConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -357,16 +368,17 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	var payload = struct {
-		Keys                     []schemas.Key                     `json:"keys"`                             // API keys for the provider
-		NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                   // Network-related settings
-		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`      // Concurrency settings
-		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`           // Proxy configuration
-		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
-		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+		Keys                     []schemas.Key                     `json:"keys"`                                 // API keys for the provider
+		NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                       // Network-related settings
+		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`          // Concurrency settings
+		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`               // Proxy configuration
+		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`      // Include raw request in BifrostResponse
+		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`     // Include raw response in BifrostResponse
 		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"` // Capture raw request/response for internal logging only
-		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
-		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
-		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
+		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`     // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`              // OpenAI-specific configuration
+		CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`               // Codex-specific configuration
+		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`          // Provider-level pricing overrides
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -413,6 +425,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
+		CodexConfig:              oldConfigRaw.CodexConfig,
 		PricingOverrides:         oldConfigRaw.PricingOverrides,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
@@ -501,6 +514,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.OpenAIConfig = payload.OpenAIConfig
+	config.CodexConfig = payload.CodexConfig
 	config.PricingOverrides = payload.PricingOverrides
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
@@ -542,6 +556,13 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		if err := h.inMemoryStore.ModelCatalog.SetProviderPricingOverrides(provider, config.PricingOverrides); err != nil {
 			logger.Warn("Failed to set pricing overrides for provider %s: %v", provider, err)
 		}
+		if provider == schemas.Codex {
+			mode := schemas.CodexPricingModeIncludedZero
+			if config.CodexConfig != nil && config.CodexConfig.PricingMode != "" {
+				mode = config.CodexConfig.PricingMode
+			}
+			h.inMemoryStore.ModelCatalog.SetCodexPricingMode(provider, mode)
+		}
 	}
 
 	// Attempt model discovery
@@ -564,6 +585,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			CodexConfig:              config.CodexConfig,
 			PricingOverrides:         config.PricingOverrides,
 			Status:                   config.Status,
 			Description:              config.Description,
@@ -1309,6 +1331,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
+		CodexConfig:              config.CodexConfig,
 		PricingOverrides:         config.PricingOverrides,
 		ProviderStatus:           status,
 		Status:                   config.Status,
@@ -1391,8 +1414,8 @@ func validatePricingOverrideNonNegativeFields(index int, override schemas.Provid
 		"input_cost_per_token_above_200k_tokens":            override.InputCostPerTokenAbove200kTokens,
 		"output_cost_per_token_above_200k_tokens":           override.OutputCostPerTokenAbove200kTokens,
 		"cache_creation_input_token_cost_above_200k_tokens": override.CacheCreationInputTokenCostAbove200kTokens,
-		"cache_read_input_token_cost_above_200k_tokens": override.CacheReadInputTokenCostAbove200kTokens,
-		"cache_read_input_token_cost":                   override.CacheReadInputTokenCost,
+		"cache_read_input_token_cost_above_200k_tokens":     override.CacheReadInputTokenCostAbove200kTokens,
+		"cache_read_input_token_cost":                       override.CacheReadInputTokenCost,
 		"cache_creation_input_token_cost":                   override.CacheCreationInputTokenCost,
 		"input_cost_per_token_batches":                      override.InputCostPerTokenBatches,
 		"output_cost_per_token_batches":                     override.OutputCostPerTokenBatches,

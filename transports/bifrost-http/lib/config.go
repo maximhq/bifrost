@@ -3112,6 +3112,69 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 	return nil
 }
 
+// PersistCodexKeyCredentials updates the persisted and in-memory credentials for a Codex key
+// without triggering a provider reload. The DB remains the source of truth; the in-memory
+// update is only to avoid repeated refreshes on the current instance.
+func (c *Config) PersistCodexKeyCredentials(ctx context.Context, keyID string, refreshed *schemas.CodexKeyConfig) error {
+	if refreshed == nil {
+		return nil
+	}
+
+	c.Mu.RLock()
+	existingConfig, exists := c.Providers[schemas.Codex]
+	c.Mu.RUnlock()
+	if !exists {
+		return ErrNotFound
+	}
+
+	updated := existingConfig
+	updated.Keys = append([]schemas.Key(nil), existingConfig.Keys...)
+	found := false
+	for idx := range updated.Keys {
+		if updated.Keys[idx].ID != keyID {
+			continue
+		}
+		current := updated.Keys[idx].CodexKeyConfig
+		merged := &schemas.CodexKeyConfig{}
+		if current != nil {
+			*merged = *current
+		}
+		merged.RefreshToken = refreshed.RefreshToken
+		merged.AccessToken = refreshed.AccessToken
+		merged.AccessTokenExpiresAt = refreshed.AccessTokenExpiresAt
+		merged.AuthMethod = refreshed.AuthMethod
+		if refreshed.AccountID != nil {
+			merged.AccountID = refreshed.AccountID
+		}
+		updated.Keys[idx].CodexKeyConfig = merged
+		found = true
+		break
+	}
+	if !found {
+		return ErrNotFound
+	}
+
+	if c.ConfigStore != nil {
+		dbErr := c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := c.ConfigStore.UpdateProvider(ctx, schemas.Codex, updated, tx); err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return ErrNotFound
+				}
+				return fmt.Errorf("failed to persist Codex key credentials: %w", err)
+			}
+			return nil
+		})
+		if dbErr != nil {
+			return dbErr
+		}
+	}
+
+	c.Mu.Lock()
+	c.Providers[schemas.Codex] = updated
+	c.Mu.Unlock()
+	return nil
+}
+
 // RemoveProvider removes a provider configuration from memory.
 func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	c.Mu.Lock()
@@ -3727,6 +3790,13 @@ func applyProviderPricingOverrides(catalog *modelcatalog.ModelCatalog, providers
 	for provider, providerConfig := range providers {
 		if err := catalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
 			logger.Warn("failed to load pricing overrides for provider %s: %v", provider, err)
+		}
+		if provider == schemas.Codex {
+			mode := schemas.CodexPricingModeIncludedZero
+			if providerConfig.CodexConfig != nil && providerConfig.CodexConfig.PricingMode != "" {
+				mode = providerConfig.CodexConfig.PricingMode
+			}
+			catalog.SetCodexPricingMode(provider, mode)
 		}
 	}
 }

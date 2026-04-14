@@ -2,6 +2,7 @@
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -13,9 +14,10 @@ import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Info, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
+import { CodexAuthControls } from "./codexAuthControls";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
@@ -24,6 +26,9 @@ interface Props {
 	control: Control<any>;
 	providerName: string;
 	form: UseFormReturn<any>;
+	isEditing?: boolean;
+	isConfigManaged?: boolean;
+	onEnsurePersisted?: (authMethod?: "browser" | "device" | "manual") => Promise<string | null>;
 }
 
 // Batch API form field for all providers
@@ -49,13 +54,17 @@ function BatchAPIFormField({ control, form }: { control: Control<any>; form: Use
 	);
 }
 
-export function ApiKeyFormFragment({ control, providerName, form }: Props) {
+export function ApiKeyFormFragment({ control, providerName, form, isEditing = false, isConfigManaged = false, onEnsurePersisted }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isCodex = providerName === "codex";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+	const [showManualCodexCredentials, setShowManualCodexCredentials] = useState(
+		isConfigManaged || form.getValues("key.codex_key_config.auth_method") === "manual",
+	);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -171,7 +180,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for Azure when using Entra ID/Default Credential, and for Bedrock when not using API Key auth */}
-			{!isAzure && !isBedrock && (
+			{!isAzure && !isBedrock && !isCodex && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -184,6 +193,98 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormMessage />
 						</FormItem>
 					)}
+				/>
+			)}
+			{isCodex && (
+				<Collapsible
+					open={showManualCodexCredentials}
+					onOpenChange={(open) => {
+						setShowManualCodexCredentials(open);
+						if (open) {
+							form.setValue("key.codex_key_config.auth_method", "manual", { shouldDirty: true });
+						}
+					}}
+				>
+					<div className="rounded-sm border p-4">
+						<CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+							<div className="space-y-1">
+								<div className="text-sm font-medium">Manual credentials (advanced)</div>
+								<p className="text-muted-foreground text-xs">
+									Most users should use the connect flow above. Only open this if you already have Codex tokens and want to manage them
+									manually.
+								</p>
+							</div>
+							<ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${showManualCodexCredentials ? "rotate-180" : ""}`} />
+						</CollapsibleTrigger>
+						<CollapsibleContent className="data-[state=closed]:animate-collapse-up data-[state=open]:animate-collapse-down overflow-hidden">
+							<div className="mt-4 space-y-4">
+								<FormField
+									control={control}
+									name={`key.codex_key_config.refresh_token`}
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Refresh Token</FormLabel>
+											<FormControl>
+												<EnvVarInput placeholder="Refresh token or env.CODEX_REFRESH_TOKEN" type="text" {...field} />
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={control}
+									name={`key.codex_key_config.access_token`}
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Cached Access Token</FormLabel>
+											<FormControl>
+												<EnvVarInput placeholder="Optional access token or env.CODEX_ACCESS_TOKEN" type="text" {...field} />
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<div className="grid gap-4 md:grid-cols-2">
+									<FormField
+										control={control}
+										name={`key.codex_key_config.account_id`}
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>ChatGPT Account ID</FormLabel>
+												<FormControl>
+													<EnvVarInput placeholder="Optional account id or env.CODEX_ACCOUNT_ID" type="text" {...field} />
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name={`key.codex_key_config.access_token_expires_at`}
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Access Token Expiry</FormLabel>
+												<FormControl>
+													<Input placeholder="2026-04-14T12:00:00Z" type="text" {...field} value={field.value || ""} />
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</div>
+							</div>
+						</CollapsibleContent>
+					</div>
+				</Collapsible>
+			)}
+			{isCodex && (
+				<CodexAuthControls
+					providerName={providerName}
+					keyId={form.getValues("key.id")}
+					form={form}
+					isEditing={isEditing}
+					isConfigManaged={isConfigManaged}
+					onEnsurePersisted={onEnsurePersisted}
 				/>
 			)}
 			{!isVLLM && (

@@ -277,6 +277,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddCodexConfigColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCodexAuthSessionsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationCleanupCodexBrowserAuthColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
 		return err
 	}
@@ -356,20 +365,24 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 			// dirty after upgrade. StoreRawRequestResponse is now part of the
 			// hash input; rows written before this migration have stale hashes.
 			var providers []tables.TableProvider
+			selectColumns := []string{
+				"id",
+				"name",
+				"network_config_json",
+				"concurrency_buffer_json",
+				"proxy_config_json",
+				"custom_provider_config_json",
+				"pricing_overrides_json",
+				"send_back_raw_request",
+				"send_back_raw_response",
+				"store_raw_request_response",
+				"encryption_status",
+			}
+			if migrator.HasColumn(&tables.TableProvider{}, "codex_config_json") {
+				selectColumns = append(selectColumns, "codex_config_json")
+			}
 			if err := tx.
-				Select(
-					"id",
-					"name",
-					"network_config_json",
-					"concurrency_buffer_json",
-					"proxy_config_json",
-					"custom_provider_config_json",
-					"pricing_overrides_json",
-					"send_back_raw_request",
-					"send_back_raw_response",
-					"store_raw_request_response",
-					"encryption_status",
-				).
+				Select(selectColumns).
 				Find(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
 			}
@@ -382,6 +395,7 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
+					CodexConfig:              provider.CodexConfig,
 					PricingOverrides:         provider.PricingOverrides,
 				}
 				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
@@ -1993,6 +2007,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 							SendBackRawRequest:       provider.SendBackRawRequest,
 							SendBackRawResponse:      provider.SendBackRawResponse,
 							CustomProviderConfig:     provider.CustomProviderConfig,
+							CodexConfig:              provider.CodexConfig,
 						}
 						hash, err := providerConfig.GenerateConfigHash(provider.Name)
 						if err != nil {
@@ -3958,6 +3973,109 @@ func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCodexConfigColumns adds codex_config_json to providers and codex credential columns to config_keys.
+func migrationAddCodexConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_codex_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableProvider{}, "codex_config_json") {
+				if err := mg.AddColumn(&tables.TableProvider{}, "CodexConfigJSON"); err != nil {
+					return fmt.Errorf("failed to add codex_config_json column: %w", err)
+				}
+			}
+			columns := []string{"CodexRefreshToken", "CodexAccessToken", "CodexAccessTokenExpiresAt", "CodexAccountID", "CodexAuthMethod"}
+			for _, column := range columns {
+				if !mg.HasColumn(&tables.TableKey{}, column) {
+					if err := mg.AddColumn(&tables.TableKey{}, column); err != nil {
+						return fmt.Errorf("failed to add %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{"codex_auth_method", "codex_account_id", "codex_access_token_expires_at", "codex_access_token", "codex_refresh_token"}
+			for _, column := range columns {
+				if mg.HasColumn(&tables.TableKey{}, column) {
+					if err := mg.DropColumn(&tables.TableKey{}, column); err != nil {
+						return fmt.Errorf("failed to drop %s column: %w", column, err)
+					}
+				}
+			}
+			if mg.HasColumn(&tables.TableProvider{}, "codex_config_json") {
+				if err := mg.DropColumn(&tables.TableProvider{}, "codex_config_json"); err != nil {
+					return fmt.Errorf("failed to drop codex_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running codex config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddCodexAuthSessionsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_codex_auth_sessions_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableCodexAuthSession{}) {
+				if err := mg.CreateTable(&tables.TableCodexAuthSession{}); err != nil {
+					return fmt.Errorf("failed to create codex auth sessions table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableCodexAuthSession{}) {
+				if err := mg.DropTable(&tables.TableCodexAuthSession{}); err != nil {
+					return fmt.Errorf("failed to drop codex auth sessions table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running codex auth sessions table migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationCleanupCodexBrowserAuthColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "cleanup_codex_browser_auth_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			obsoleteColumns := []string{"state", "code_verifier", "authorize_url"}
+			for _, column := range obsoleteColumns {
+				if mg.HasColumn(&tables.TableCodexAuthSession{}, column) {
+					if err := mg.DropColumn(&tables.TableCodexAuthSession{}, column); err != nil {
+						return fmt.Errorf("failed to drop obsolete codex auth column %s: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running codex browser auth cleanup migration: %s", err.Error())
 	}
 	return nil
 }

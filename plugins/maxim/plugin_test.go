@@ -84,6 +84,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 //   - MAXIM_LOGGER_ID: Your Maxim logger repository ID
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestMaximLoggerPlugin(t *testing.T) {
+	if os.Getenv("MAXIM_API_KEY") == "" || os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("Skipping Maxim integration test because MAXIM_API_KEY or OPENAI_API_KEY is not set")
+	}
 	ctx := context.Background()
 	// Initialize the Maxim plugin
 	plugin, err := getPlugin()

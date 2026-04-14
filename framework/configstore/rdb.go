@@ -253,6 +253,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
+			CodexConfig:              providerConfig.CodexConfig,
 			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
@@ -299,6 +300,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				BedrockKeyConfig:   key.BedrockKeyConfig,
 				ReplicateKeyConfig: key.ReplicateKeyConfig,
 				VLLMKeyConfig:      key.VLLMKeyConfig,
+				CodexKeyConfig:     key.CodexKeyConfig,
 				ConfigHash:         keyHash,
 				Status:             string(key.Status),
 				Description:        key.Description,
@@ -469,6 +471,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
+			CodexKeyConfig:     key.CodexKeyConfig,
 			ConfigHash:         keyHash,
 			Status:             string(key.Status),
 			Description:        key.Description,
@@ -567,6 +570,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
+		CodexConfig:              configCopy.CodexConfig,
 		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
 	}
@@ -714,6 +718,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 				VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+				CodexKeyConfig:     dbKey.CodexKeyConfig,
 				ConfigHash:         dbKey.ConfigHash,
 				Status:             schemas.KeyStatusType(dbKey.Status),
 				Description:        dbKey.Description,
@@ -729,6 +734,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
+			CodexConfig:              dbProvider.CodexConfig,
 			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
@@ -765,6 +771,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 			VLLMKeyConfig:      dbKey.VLLMKeyConfig,
+			CodexKeyConfig:     dbKey.CodexKeyConfig,
 			ConfigHash:         dbKey.ConfigHash,
 			Status:             schemas.KeyStatusType(dbKey.Status),
 			Description:        dbKey.Description,
@@ -780,6 +787,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
+		CodexConfig:              dbProvider.CodexConfig,
 		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
@@ -3600,4 +3608,37 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 		return nil, fmt.Errorf("failed to get oauth config by token id: %w", result.Error)
 	}
 	return &config, nil
+}
+
+func (s *RDBConfigStore) GetCodexAuthSessionByID(ctx context.Context, id string) (*tables.TableCodexAuthSession, error) {
+	var session tables.TableCodexAuthSession
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&session)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get codex auth session: %w", result.Error)
+	}
+	return &session, nil
+}
+
+func (s *RDBConfigStore) CreateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error {
+	if err := s.db.WithContext(ctx).Create(session).Error; err != nil {
+		return fmt.Errorf("failed to create codex auth session: %w", err)
+	}
+	return nil
+}
+
+func (s *RDBConfigStore) UpdateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error {
+	if err := s.db.WithContext(ctx).Save(session).Error; err != nil {
+		return fmt.Errorf("failed to update codex auth session: %w", err)
+	}
+	return nil
+}
+
+func (s *RDBConfigStore) DeleteCodexAuthSession(ctx context.Context, id string) error {
+	if err := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableCodexAuthSession{}).Error; err != nil {
+		return fmt.Errorf("failed to delete codex auth session: %w", err)
+	}
+	return nil
 }

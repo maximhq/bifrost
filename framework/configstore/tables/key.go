@@ -64,6 +64,13 @@ type TableKey struct {
 	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
 
+	// Codex config fields (embedded)
+	CodexRefreshToken         *schemas.EnvVar `gorm:"type:text" json:"codex_refresh_token,omitempty"`
+	CodexAccessToken          *schemas.EnvVar `gorm:"type:text" json:"codex_access_token,omitempty"`
+	CodexAccessTokenExpiresAt *string         `gorm:"type:varchar(255)" json:"codex_access_token_expires_at,omitempty"`
+	CodexAccountID            *schemas.EnvVar `gorm:"type:text" json:"codex_account_id,omitempty"`
+	CodexAuthMethod           *string         `gorm:"type:varchar(32)" json:"codex_auth_method,omitempty"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -80,6 +87,7 @@ type TableKey struct {
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
 	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
 	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
+	CodexKeyConfig     *schemas.CodexKeyConfig     `gorm:"-" json:"codex_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -342,6 +350,41 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VLLMModelName = nil
 	}
 
+	if k.CodexKeyConfig != nil {
+		refreshToken := k.CodexKeyConfig.RefreshToken
+		k.CodexRefreshToken = &refreshToken
+		if k.CodexKeyConfig.AccessToken != nil {
+			accessToken := *k.CodexKeyConfig.AccessToken
+			k.CodexAccessToken = &accessToken
+		} else {
+			k.CodexAccessToken = nil
+		}
+		if k.CodexKeyConfig.AccountID != nil {
+			accountID := *k.CodexKeyConfig.AccountID
+			k.CodexAccountID = &accountID
+		} else {
+			k.CodexAccountID = nil
+		}
+		if k.CodexKeyConfig.AccessTokenExpiresAt != nil {
+			expiresAt := *k.CodexKeyConfig.AccessTokenExpiresAt
+			k.CodexAccessTokenExpiresAt = &expiresAt
+		} else {
+			k.CodexAccessTokenExpiresAt = nil
+		}
+		if k.CodexKeyConfig.AuthMethod != "" {
+			authMethod := string(k.CodexKeyConfig.AuthMethod)
+			k.CodexAuthMethod = &authMethod
+		} else {
+			k.CodexAuthMethod = nil
+		}
+	} else {
+		k.CodexRefreshToken = nil
+		k.CodexAccessToken = nil
+		k.CodexAccountID = nil
+		k.CodexAccessTokenExpiresAt = nil
+		k.CodexAuthMethod = nil
+	}
+
 	// Encrypt sensitive fields after serialization
 	if encrypt.IsEnabled() {
 		if err := encryptEnvVar(&k.Value); err != nil {
@@ -410,6 +453,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		// VLLM
 		if err := encryptEnvVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to encrypt vllm url: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.CodexRefreshToken); err != nil {
+			return fmt.Errorf("failed to encrypt codex refresh token: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.CodexAccessToken); err != nil {
+			return fmt.Errorf("failed to encrypt codex access token: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.CodexAccountID); err != nil {
+			return fmt.Errorf("failed to encrypt codex account id: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -488,6 +540,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// VLLM
 		if err := decryptEnvVarPtr(&k.VLLMUrl); err != nil {
 			return fmt.Errorf("failed to decrypt vllm url: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.CodexRefreshToken); err != nil {
+			return fmt.Errorf("failed to decrypt codex refresh token: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.CodexAccessToken); err != nil {
+			return fmt.Errorf("failed to decrypt codex access token: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.CodexAccountID); err != nil {
+			return fmt.Errorf("failed to decrypt codex account id: %w", err)
 		}
 	}
 
@@ -637,6 +698,29 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VLLMKeyConfig = vllmConfig
 	} else {
 		k.VLLMKeyConfig = nil
+	}
+	if k.CodexRefreshToken != nil || k.CodexAccessToken != nil || k.CodexAccountID != nil || k.CodexAccessTokenExpiresAt != nil || k.CodexAuthMethod != nil {
+		codexConfig := &schemas.CodexKeyConfig{
+			RefreshToken: *schemas.NewEnvVar(""),
+		}
+		if k.CodexRefreshToken != nil {
+			codexConfig.RefreshToken = *k.CodexRefreshToken
+		}
+		if k.CodexAccessToken != nil {
+			codexConfig.AccessToken = k.CodexAccessToken
+		}
+		if k.CodexAccountID != nil {
+			codexConfig.AccountID = k.CodexAccountID
+		}
+		if k.CodexAccessTokenExpiresAt != nil {
+			codexConfig.AccessTokenExpiresAt = k.CodexAccessTokenExpiresAt
+		}
+		if k.CodexAuthMethod != nil {
+			codexConfig.AuthMethod = schemas.CodexAuthMethod(*k.CodexAuthMethod)
+		}
+		k.CodexKeyConfig = codexConfig
+	} else {
+		k.CodexKeyConfig = nil
 	}
 	return nil
 }

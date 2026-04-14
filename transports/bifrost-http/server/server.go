@@ -502,6 +502,13 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerInfo.PricingOverrides); err != nil {
 		logger.Warn("failed to refresh pricing overrides for provider %s: %v", provider, err)
 	}
+	if provider == schemas.Codex {
+		mode := schemas.CodexPricingModeIncludedZero
+		if providerInfo.CodexConfig != nil && providerInfo.CodexConfig.PricingMode != "" {
+			mode = providerInfo.CodexConfig.PricingMode
+		}
+		s.Config.ModelCatalog.SetCodexPricingMode(provider, mode)
+	}
 
 	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
@@ -581,6 +588,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	}
 	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
 	s.Config.ModelCatalog.DeleteProviderPricingOverrides(provider)
+	s.Config.ModelCatalog.DeleteCodexPricingMode(provider)
 
 	return nil
 }
@@ -758,6 +766,13 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		for provider, providerConfig := range s.Config.Providers {
 			if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
 				logger.Warn("failed to seed pricing overrides for provider %s: %v", provider, err)
+			}
+			if provider == schemas.Codex {
+				mode := schemas.CodexPricingModeIncludedZero
+				if providerConfig.CodexConfig != nil && providerConfig.CodexConfig.PricingMode != "" {
+					mode = providerConfig.CodexConfig.PricingMode
+				}
+				s.Config.ModelCatalog.SetCodexPricingMode(provider, mode)
 			}
 		}
 	} else {
@@ -1019,6 +1034,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// lib.ChainMiddlewares chains multiple middlewares together
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	codexAuthHandler := handlers.NewCodexAuthHandler(s.Config)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
@@ -1028,6 +1044,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	codexAuthHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1122,6 +1139,14 @@ func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
+	if s.Config != nil && s.Config.ConfigStore != nil {
+		commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return func(ctx *fasthttp.RequestCtx) {
+				ctx.SetUserValue(schemas.BifrostContextKeyCodexCredentialPersister, schemas.CodexCredentialPersister(s.persistCodexCredentialRefresh))
+				next(ctx)
+			}
+		})
+	}
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
@@ -1131,6 +1156,14 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 		logger.Warn("prometheus plugin not found, skipping telemetry middleware")
 	}
 	return commonMiddlewares
+}
+
+func (s *BifrostHTTPServer) persistCodexCredentialRefresh(keyID string, refreshed *schemas.CodexKeyConfig) error {
+	if s.Config == nil || refreshed == nil {
+		return nil
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	return s.Config.PersistCodexKeyCredentials(ctx, keyID, refreshed)
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.

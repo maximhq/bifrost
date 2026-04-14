@@ -4,7 +4,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, BetaHeadersFormFragment, GovernanceFormFragment, OpenAIConfigFormFragment, ProxyFormFragment } from "../fragments";
+import {
+	ApiStructureFormFragment,
+	BetaHeadersFormFragment,
+	CodexConfigFormFragment,
+	GovernanceFormFragment,
+	OpenAIConfigFormFragment,
+	ProxyFormFragment,
+} from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -67,11 +74,16 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
+	const isCodex = provider.name === "codex";
 	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
+		const baseTabs = availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
+		if (isCodex) {
+			baseTabs.push({ id: "codex-config", label: "Codex Config" });
+		}
+		return baseTabs;
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily, isCodex]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -122,6 +134,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="openai-config">
 							<OpenAIConfigFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="codex-config">
+							<CodexConfigFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="network">
 							<NetworkFormFragment provider={provider} />

@@ -272,6 +272,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
+	CodexConfig              *schemas.CodexConfig              `json:"codex_config,omitempty"`                // Codex-specific configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
@@ -293,6 +294,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
+		CodexConfig:              p.CodexConfig,
 		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
@@ -418,6 +420,24 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		if key.CodexKeyConfig != nil {
+			codexConfig := &schemas.CodexKeyConfig{
+				RefreshToken: key.CodexKeyConfig.RefreshToken,
+				AuthMethod:   key.CodexKeyConfig.AuthMethod,
+			}
+			codexConfig.RefreshToken = *key.CodexKeyConfig.RefreshToken.Redacted()
+			if key.CodexKeyConfig.AccessToken != nil {
+				codexConfig.AccessToken = key.CodexKeyConfig.AccessToken.Redacted()
+			}
+			if key.CodexKeyConfig.AccountID != nil {
+				codexConfig.AccountID = key.CodexKeyConfig.AccountID.Redacted()
+			}
+			if key.CodexKeyConfig.AccessTokenExpiresAt != nil {
+				codexConfig.AccessTokenExpiresAt = key.CodexKeyConfig.AccessTokenExpiresAt
+			}
+			redactedConfig.Keys[i].CodexKeyConfig = codexConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -470,6 +490,14 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash OpenAIConfig
 	if p.OpenAIConfig != nil {
 		data, err := sonic.Marshal(p.OpenAIConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	if p.CodexConfig != nil {
+		data, err := sonic.Marshal(p.CodexConfig)
 		if err != nil {
 			return "", err
 		}
@@ -580,6 +608,13 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	if key.CodexKeyConfig != nil {
+		data, err := sonic.Marshal(key.CodexKeyConfig)
 		if err != nil {
 			return "", err
 		}

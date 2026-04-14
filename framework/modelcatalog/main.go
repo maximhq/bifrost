@@ -46,6 +46,8 @@ type ModelCatalog struct {
 	// with pricing cache rebuilds.
 	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
 	overridesMu       sync.RWMutex
+	codexPricingModes map[schemas.ModelProvider]schemas.CodexPricingMode
+	codexPricingMu    sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -88,8 +90,8 @@ type PricingEntry struct {
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	// Costs - 200k Tier
-	InputCostPerTokenAbove200kTokens         *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	InputCostPerTokenAbove200kTokensPriority *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
+	InputCostPerTokenAbove200kTokens          *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
 	// Costs - 272k Tier
@@ -222,6 +224,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		codexPricingModes:      make(map[schemas.ModelProvider]schemas.CodexPricingMode),
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -1039,6 +1042,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		codexPricingModes:   make(map[schemas.ModelProvider]schemas.CodexPricingMode),
 		done:                make(chan struct{}),
 	}
 }

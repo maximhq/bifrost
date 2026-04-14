@@ -3,7 +3,7 @@ import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form } from "@/components/ui/form";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
-import { ModelProvider } from "@/lib/types/config";
+import { DefaultCodexKeyConfig, ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
@@ -30,6 +30,7 @@ type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }: Props) {
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isEditing = provider?.keys?.[keyIndex] !== undefined;
+	const isCodex = provider.name === "codex";
 	const currentKey = provider?.keys?.[keyIndex];
 
 	const form = useForm({
@@ -37,14 +38,17 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			key: (provider?.keys?.[keyIndex] as ProviderKeyFormValues) ?? {
-				id: uuid(),
-				name: "",
-				models: [],
-				blacklisted_models: [],
-				weight: 1.0,
-				enabled: true,
-			},
+			key:
+				(provider?.keys?.[keyIndex] as ProviderKeyFormValues) ??
+				({
+					id: uuid(),
+					name: "",
+					models: [],
+					blacklisted_models: [],
+					weight: 1.0,
+					enabled: true,
+					...(provider.name === "codex" ? { codex_key_config: { ...DefaultCodexKeyConfig, auth_method: "browser" } } : {}),
+				} as ProviderKeyFormValues),
 		},
 	});
 
@@ -65,14 +69,41 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		return null;
 	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty]);
 
+	const persistDraftKey = useCallback(
+		async (authMethod?: "browser" | "device" | "manual") => {
+			if (authMethod) {
+				form.setValue("key.codex_key_config.auth_method", authMethod, { shouldDirty: true });
+			}
+
+			const isValid = await form.trigger(["key.name"]);
+			if (!isValid) {
+				return null;
+			}
+
+			const value = modelProviderKeySchema.parse(form.getValues("key"));
+			if (provider.name === "codex") {
+				value.codex_key_config = {
+					...DefaultCodexKeyConfig,
+					...value.codex_key_config,
+				};
+			}
+			const keys = provider.keys ?? [];
+			const normalizedValue = value as ProviderKeyFormValues;
+			const updatedKeys = [...keys.slice(0, keyIndex), normalizedValue, ...keys.slice(keyIndex + 1)] as typeof provider.keys;
+			const updatedProvider = await updateProvider({
+				...provider,
+				keys: updatedKeys,
+			}).unwrap();
+
+			const persistedKey = updatedProvider.keys[keyIndex] ?? value;
+			form.reset({ key: persistedKey });
+			return persistedKey.id;
+		},
+		[form, keyIndex, provider, updateProvider],
+	);
+
 	const onSubmit = (value: any) => {
-		const keys = provider.keys ?? [];
-		const updatedKeys = [...keys.slice(0, keyIndex), value.key, ...keys.slice(keyIndex + 1)];
-		updateProvider({
-			...provider,
-			keys: updatedKeys,
-		})
-			.unwrap()
+		persistDraftKey(value.key?.codex_key_config?.auth_method)
 			.then(() => {
 				onSave();
 			})
@@ -86,8 +117,15 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
-				{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
+				<ApiKeyFormFragment
+					control={form.control}
+					providerName={provider.name}
+					form={form}
+					isEditing={isEditing}
+					isConfigManaged={!isCodex && Boolean(currentKey?.config_hash)}
+					onEnsurePersisted={persistDraftKey}
+				/>
+				{isEditing && !isCodex && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				<div className="dark:bg-card bg-white pt-6">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">

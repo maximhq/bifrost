@@ -833,17 +833,28 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
 func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
+	lookupProvider := provider
+	if provider == string(schemas.Codex) {
+		switch mc.getCodexPricingMode(schemas.Codex) {
+		case schemas.CodexPricingModeOpenAIEquivalent:
+			lookupProvider = string(schemas.OpenAI)
+		default:
+			return zeroPricing(provider, model, requestType)
+		}
+	}
 
-	pricing, exists := mc.getPricing(model, provider, requestType)
+	pricing, exists := mc.getPricing(model, lookupProvider, requestType)
 	if exists {
-		return pricing
+		patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), model, requestType, *pricing)
+		return &patched
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricing(deployment, provider, requestType)
+		pricing, exists = mc.getPricing(deployment, lookupProvider, requestType)
 		if exists {
-			return pricing
+			patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), deployment, requestType, *pricing)
+			return &patched
 		}
 	}
 

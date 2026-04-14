@@ -270,6 +270,12 @@ type ConfigStore interface {
 	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
 
+	// Codex auth sessions
+	GetCodexAuthSessionByID(ctx context.Context, id string) (*tables.TableCodexAuthSession, error)
+	CreateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error
+	UpdateCodexAuthSession(ctx context.Context, session *tables.TableCodexAuthSession) error
+	DeleteCodexAuthSession(ctx context.Context, id string) error
+
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 

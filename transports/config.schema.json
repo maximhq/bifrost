@@ -209,6 +209,9 @@
         "cohere": {
           "$ref": "#/$defs/provider"
         },
+        "codex": {
+          "$ref": "#/$defs/provider_with_codex_config"
+        },
         "azure": {
           "$ref": "#/$defs/provider_with_azure_config"
         },
@@ -1766,6 +1769,34 @@
                   "model_name"
                 ],
                 "additionalProperties": false
+              },
+              "codex_key_config": {
+                "type": "object",
+                "properties": {
+                  "refresh_token": {
+                    "type": "string",
+                    "description": "Codex refresh token (can use env. prefix)"
+                  },
+                  "access_token": {
+                    "type": "string",
+                    "description": "Optional cached Codex access token (can use env. prefix)"
+                  },
+                  "access_token_expires_at": {
+                    "type": "string",
+                    "description": "Optional RFC3339 access token expiry"
+                  },
+                  "account_id": {
+                    "type": "string",
+                    "description": "Optional ChatGPT account id (can use env. prefix)"
+                  },
+                  "auth_method": {
+                    "type": "string",
+                    "enum": ["browser", "device", "manual"],
+                    "description": "How this Codex credential set was provisioned"
+                  }
+                },
+                "required": ["refresh_token"],
+                "additionalProperties": false
               }
             },
             "oneOf": [
@@ -1775,7 +1806,8 @@
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["codex_key_config"] }
                   ]
                 }
               },
@@ -1785,7 +1817,8 @@
                   "anyOf": [
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["codex_key_config"] }
                   ]
                 }
               },
@@ -1795,7 +1828,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["codex_key_config"] }
                   ]
                 }
               },
@@ -1805,7 +1839,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["codex_key_config"] }
                   ]
                 }
               },
@@ -1815,15 +1850,37 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["codex_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["codex_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               }
             ],
-            "required": [
-              "key_id",
-              "name",
-              "value"
+            "allOf": [
+              {
+                "required": ["key_id", "name"]
+              },
+              {
+                "oneOf": [
+                  { "required": ["value"] },
+                  { "required": ["azure_key_config"] },
+                  { "required": ["vertex_key_config"] },
+                  { "required": ["bedrock_key_config"] },
+                  { "required": ["vllm_key_config"] },
+                  { "required": ["codex_key_config"] }
+                ]
+              }
             ]
           }
         }
@@ -2633,6 +2690,60 @@
       "required": [
         "keys"
       ],
+      "additionalProperties": false
+    },
+    "provider_with_codex_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/base_key"
+          },
+          "minItems": 1,
+          "description": "Codex subscription credentials for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "codex_config": {
+          "type": "object",
+          "properties": {
+            "pricing_mode": {
+              "type": "string",
+              "enum": ["included_zero", "openai_equivalent"],
+              "description": "How Codex requests should be priced in Bifrost analytics and governance"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
+        }
+      },
+      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {
