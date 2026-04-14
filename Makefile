@@ -121,7 +121,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	@$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"
 	@if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
 	else \
 		cd ui && npm run dev & \
 	fi

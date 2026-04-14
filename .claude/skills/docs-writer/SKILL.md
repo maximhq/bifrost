@@ -6,7 +6,7 @@ allowed-tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch, mcp__co
 
 # Bifrost Documentation Writer
 
-Write, update, and review Mintlify MDX documentation for Bifrost features. Performs thorough codebase research across both the Next.js UI and Go backend, validates config.json examples against the schema, and follows established documentation conventions.
+Write, update, and review Mintlify MDX documentation for Bifrost features. Performs thorough codebase research across both the React UI and Go backend, validates config.json examples against the schema, and follows established documentation conventions.
 
 ## Usage
 
@@ -103,7 +103,7 @@ Read the doc and cross-reference against the current codebase to identify:
 
 ### 2a. Explore the UI Code
 
-The UI is a Next.js application. Feature pages live under `ui/app/workspace/<feature>/`.
+The UI is a React + Vite + TanStack Router application. Feature pages live under `ui/app/workspace/<feature>/`.
 
 ```bash
 # List the feature directory structure
@@ -285,7 +285,7 @@ If the feature involves external libraries or protocols:
 **Common libraries to research:**
 - `mintlify` -- For MDX component syntax (Tabs, Info, Note, etc.)
 - `mark3labs/mcp-go` -- For MCP-related features
-- `next.js` -- For UI architecture context
+- `react` -- For UI architecture context
 - Provider SDKs -- For provider-specific features
 
 ### 3b. Use WebSearch for Additional Context
@@ -785,7 +785,7 @@ bifrost/
 │   ├── contributing/                  # Developer contribution guides
 │   ├── benchmarking/                  # Performance benchmarks
 │   └── changelogs/                    # Version changelogs
-├── ui/                                # Next.js UI application
+├── ui/                                # React + Vite UI application
 │   └── app/workspace/                 # Feature pages
 │       ├── providers/                 # Provider management
 │       ├── virtual-keys/              # Virtual key management
