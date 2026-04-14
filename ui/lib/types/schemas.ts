@@ -716,10 +716,10 @@ export const otelConfigSchema = z
 		service_name: z.string().optional(),
 		collector_url: z.string().default(""),
 		trace_type: z
-			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+			.enum(["genai_extension", "vercel", "open_inference"], {
 				message: "Please select a trace type",
 			})
-			.default("otel"),
+			.default("genai_extension"),
 		headers: z.record(z.string(), z.string()).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {

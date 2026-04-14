@@ -645,7 +645,7 @@ bifrost:
       config:
         service_name: "bifrost-test"
         collector_url: "otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
         metrics_enabled: true
         metrics_endpoint: "otel-collector:4317"
@@ -718,7 +718,7 @@ assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4
 assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'
 assert_field_value 'plugins: otel service_name' '.plugins.[5].config.service_name' '"bifrost-test"'
 assert_field_value 'plugins: otel collector_url' '.plugins.[5].config.collector_url' '"otel-collector:4317"'
-assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"otel"'
+assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"genai_extension"'
 assert_field_value 'plugins: otel protocol' '.plugins.[5].config.protocol' '"grpc"'
 assert_field_value 'plugins: otel metrics_enabled' '.plugins.[5].config.metrics_enabled' 'true'
 assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[5].config.metrics_endpoint' '"otel-collector:4317"'
@@ -1183,6 +1183,97 @@ assert_field_value 'config_store.config.max_open_conns' '.config_store.config.ma
 assert_field_value 'logs_store.type (postgres)' '.logs_store.type' '"postgres"'
 assert_field_value 'logs_store.config.max_idle_conns' '.logs_store.config.max_idle_conns' '5'
 assert_field_value 'logs_store.config.max_open_conns' '.logs_store.config.max_open_conns' '50'
+
+###############################################################################
+# Object Storage (logsStore.objectStorage)
+###############################################################################
+
+# S3 with inline credentials — exercises camelCase → snake_case mapping in _helpers.tpl
+cat > "$TMPDIR/values-objstore-s3.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "prod"
+      compress: true
+      region: "us-east-1"
+      endpoint: "https://minio.internal:9000"
+      accessKeyId: "AKIA..."
+      secretAccessKey: "secret"
+      roleArn: "arn:aws:iam::123:role/bifrost"
+      forcePathStyle: true
+VALS
+
+render_config "$TMPDIR/values-objstore-s3.yaml"
+assert_field_value 'logs_store.object_storage.type (s3)' '.logs_store.object_storage.type' '"s3"'
+assert_field_value 'logs_store.object_storage.bucket' '.logs_store.object_storage.bucket' '"bifrost-logs"'
+assert_field_value 'logs_store.object_storage.prefix' '.logs_store.object_storage.prefix' '"prod"'
+assert_field_value 'logs_store.object_storage.compress' '.logs_store.object_storage.compress' 'true'
+assert_field_value 'logs_store.object_storage.region' '.logs_store.object_storage.region' '"us-east-1"'
+assert_field_value 'logs_store.object_storage.endpoint' '.logs_store.object_storage.endpoint' '"https://minio.internal:9000"'
+assert_field_value 'logs_store.object_storage.access_key_id' '.logs_store.object_storage.access_key_id' '"AKIA..."'
+assert_field_value 'logs_store.object_storage.secret_access_key' '.logs_store.object_storage.secret_access_key' '"secret"'
+assert_field_value 'logs_store.object_storage.role_arn' '.logs_store.object_storage.role_arn' '"arn:aws:iam::123:role/bifrost"'
+assert_field_value 'logs_store.object_storage.force_path_style' '.logs_store.object_storage.force_path_style' 'true'
+
+# S3 with existingSecret — exercises env.BIFROST_OBJECT_STORAGE_* substitution path
+cat > "$TMPDIR/values-objstore-s3-secret.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      existingSecret: "bifrost-os-creds"
+      accessKeyIdKey: "access-key-id"
+      secretAccessKeyKey: "secret-access-key"
+      sessionTokenKey: "session-token"
+      roleArnKey: "role-arn"
+VALS
+
+render_config "$TMPDIR/values-objstore-s3-secret.yaml"
+assert_field_value 'logs_store.object_storage.access_key_id (env)' '.logs_store.object_storage.access_key_id' '"env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID"'
+assert_field_value 'logs_store.object_storage.secret_access_key (env)' '.logs_store.object_storage.secret_access_key' '"env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY"'
+assert_field_value 'logs_store.object_storage.session_token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
+assert_field_value 'logs_store.object_storage.role_arn (env)' '.logs_store.object_storage.role_arn' '"env.BIFROST_OBJECT_STORAGE_ROLE_ARN"'
+
+# GCS — exercises project_id + credentials_json mapping
+cat > "$TMPDIR/values-objstore-gcs.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: gcs
+      bucket: "bifrost-gcs-bucket"
+      projectId: "my-gcp-project"
+      credentialsJson: "/etc/gcs/creds.json"
+VALS
+
+render_config "$TMPDIR/values-objstore-gcs.yaml"
+assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_storage.type' '"gcs"'
+assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
+assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
+assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
 
 ###############################################################################
 # Summary

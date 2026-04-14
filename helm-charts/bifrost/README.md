@@ -632,7 +632,7 @@ bifrost:
       config:
         service_name: "bifrost"
         collector_url: "http://otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
 ```
 

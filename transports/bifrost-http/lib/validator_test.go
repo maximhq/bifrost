@@ -1205,7 +1205,7 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1226,7 +1226,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 				"enabled": true,
 				"name": "otel",
 				"config": {
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1269,7 +1269,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingProtocol(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel"
+					"trace_type": "genai_extension"
 				}
 			}
 		]

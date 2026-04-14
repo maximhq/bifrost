@@ -770,7 +770,9 @@
                     "trace_type": {
                       "type": "string",
                       "enum": [
-                        "otel"
+                        "genai_extension",
+                        "vercel",
+                        "open_inference"
                       ],
                       "description": "Type of trace to use for the OTEL collector"
                     },
