@@ -2480,6 +2480,24 @@ func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Conte
 	return configs, nil
 }
 
+// GetVirtualKeyMCPConfigsByMCPClientStringIDs retrieves all VK MCP configs for a set of string client IDs
+// (the ClientID varchar column, not the DB primary key) in one query.
+func (s *RDBConfigStore) GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context.Context, clientIDs []string) ([]tables.TableVirtualKeyMCPConfig, error) {
+	if len(clientIDs) == 0 {
+		return nil, nil
+	}
+	var configs []tables.TableVirtualKeyMCPConfig
+	err := s.db.WithContext(ctx).
+		Preload("MCPClient").
+		Joins("JOIN config_mcp_clients ON config_mcp_clients.id = governance_virtual_key_mcp_configs.mcp_client_id").
+		Where("config_mcp_clients.client_id IN ?", clientIDs).
+		Find(&configs).Error
+	if err != nil {
+		return nil, err
+	}
+	return configs, nil
+}
+
 // CreateVirtualKeyMCPConfig creates a new virtual key MCP config in the database.
 func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualKeyMCPConfig *tables.TableVirtualKeyMCPConfig, tx ...*gorm.DB) error {
 	var txDB *gorm.DB

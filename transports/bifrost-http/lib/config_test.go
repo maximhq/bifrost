@@ -809,6 +809,10 @@ func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientIDs(ctx context.Cont
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx context.Context, clientIDs []string) ([]tables.TableVirtualKeyMCPConfig, error) {
+	return nil, nil
+}
+
 // Virtual key provider config
 func (m *MockConfigStore) GetVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string) ([]tables.TableVirtualKeyProviderConfig, error) {
 	return nil, nil

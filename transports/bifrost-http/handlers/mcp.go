@@ -120,12 +120,52 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	for _, client := range clientsInBifrost {
 		connectedClientsMap[client.Config.ID] = client
 	}
+
+	// Build VK id→name lookup from in-memory governance data
+	vkNameByID := make(map[string]string)
+	if h.governanceManager != nil {
+		if gd := h.governanceManager.GetGovernanceData(); gd != nil {
+			for _, vk := range gd.VirtualKeys {
+				vkNameByID[vk.ID] = vk.Name
+			}
+		}
+	}
+
+	// Batch-fetch all VK assignments for these clients in a single query
+	assignmentsByClientStringID := make(map[string][]configstoreTables.TableVirtualKeyMCPConfig)
+	if h.store.ConfigStore != nil {
+		clientIDs := make([]string, 0, len(configsInStore.ClientConfigs))
+		for _, c := range configsInStore.ClientConfigs {
+			clientIDs = append(clientIDs, c.ID)
+		}
+		allAssignments, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientStringIDs(ctx, clientIDs)
+		if err != nil {
+			logger.Error("failed to fetch VK assignments for MCP clients: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve MCP client virtual key assignments")
+			return
+		}
+		for _, a := range allAssignments {
+			id := a.MCPClient.ClientID
+			assignmentsByClientStringID[id] = append(assignmentsByClientStringID[id], a)
+		}
+	}
+
 	// Build the final client list, including errored clients
 	clients := make([]MCPClientResponse, 0, len(configsInStore.ClientConfigs))
 
 	for _, configClient := range configsInStore.ClientConfigs {
 		// Redact sensitive fields before sending to UI
 		redactedConfig := h.store.RedactMCPClientConfig(configClient)
+
+		vkConfigs := []MCPVKConfigResponse{}
+		for _, a := range assignmentsByClientStringID[configClient.ID] {
+			vkConfigs = append(vkConfigs, MCPVKConfigResponse{
+				VirtualKeyID:   a.VirtualKeyID,
+				VirtualKeyName: vkNameByID[a.VirtualKeyID],
+				ToolsToExecute: a.ToolsToExecute,
+			})
+		}
+
 		if connectedClient, exists := connectedClientsMap[configClient.ID]; exists {
 			// Sort tools alphabetically by name
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
@@ -135,16 +175,18 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 			})
 
 			clients = append(clients, MCPClientResponse{
-				Config: redactedConfig,
-				Tools:  sortedTools,
-				State:  connectedClient.State,
+				Config:    redactedConfig,
+				Tools:     sortedTools,
+				State:     connectedClient.State,
+				VKConfigs: vkConfigs,
 			})
 		} else {
 			// Client is in config but not connected, mark as errored
 			clients = append(clients, MCPClientResponse{
-				Config: redactedConfig,
-				Tools:  []schemas.ChatToolFunction{}, // No tools available since connection failed
-				State:  schemas.MCPConnectionStateError,
+				Config:    redactedConfig,
+				Tools:     []schemas.ChatToolFunction{}, // No tools available since connection failed
+				State:     schemas.MCPConnectionStateError,
+				VKConfigs: vkConfigs,
 			})
 		}
 	}
