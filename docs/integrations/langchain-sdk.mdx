@@ -122,7 +122,7 @@ const anthropicLlm = new ChatAnthropic({
 // Google models via Langchain
 const googleLlm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
-  baseURL
+  baseUrl: baseURL
 });
 
 // All work the same way
@@ -326,7 +326,7 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
-  baseURL: "http://localhost:8080/langchain",
+  baseUrl: "http://localhost:8080/langchain",
   additionalHeaders: {
     "x-bf-vk": "your-virtual-key",  // Virtual key for governance
   }
