@@ -77,12 +77,28 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 	},
 }
 
-// webSearchItemIDs tracks item IDs for WebSearch tools to skip their argument deltas
-// Maps item_id (string) -> true for WebSearch tools that need delta skipping
-var webSearchItemIDs sync.Map
+// anthropicToResponsesStreamState holds per-request state for the Bifrost→Anthropic
+// stream conversion direction.
+type anthropicToResponsesStreamState struct {
+	// webSearchItemIDs tracks item IDs for WebSearch tools so their argument deltas
+	// can be skipped and regenerated synthetically (with sanitization) at output_item.done.
+	webSearchItemIDs map[string]bool
+}
 
-// webFetchItemIDs tracks item IDs for WebFetch tools to skip their argument deltas
-var webFetchItemIDs sync.Map
+type anthropicToResponsesStreamStateKeyType struct{}
+
+var anthropicToResponsesStreamStateKey = anthropicToResponsesStreamStateKeyType{}
+
+// getOrCreateAnthropicToResponsesStreamState returns the per-request conversion state,
+// creating and storing it in ctx on first access.
+func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *anthropicToResponsesStreamState {
+	if v := ctx.Value(anthropicToResponsesStreamStateKey); v != nil {
+		return v.(*anthropicToResponsesStreamState)
+	}
+	state := &anthropicToResponsesStreamState{}
+	ctx.SetValue(anthropicToResponsesStreamStateKey, state)
+	return state
+}
 
 // acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
 func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
@@ -1580,10 +1596,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 									contentBlock.Input = json.RawMessage("{}")
 
 									// Track WebSearch tools so we can skip their argument deltas
+									// and regenerate them synthetically (with sanitization) at output_item.done
 									if bifrostResp.Item.ResponsesToolMessage.Name != nil &&
 										*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
 										bifrostResp.Item.ID != nil {
-										webSearchItemIDs.Store(*bifrostResp.Item.ID, true)
+										streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+										if streamState.webSearchItemIDs == nil {
+											streamState.webSearchItemIDs = make(map[string]bool)
+										}
+										streamState.webSearchItemIDs[*bifrostResp.Item.ID] = true
 									}
 								}
 							}
@@ -1691,12 +1712,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
-		// Skip WebSearch/WebFetch tool argument deltas - they will be sent synthetically in output_item.done
+		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
 		if bifrostResp.ItemID != nil {
-			if _, isWebSearch := webSearchItemIDs.Load(*bifrostResp.ItemID); isWebSearch {
-				return nil
-			}
-			if _, isWebFetch := webFetchItemIDs.Load(*bifrostResp.ItemID); isWebFetch {
+			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+			if streamState.webSearchItemIDs[*bifrostResp.ItemID] {
 				return nil
 			}
 		}
@@ -1768,52 +1787,46 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		// Handle WebSearch tool completion with sanitization and synthetic delta generation
+		if bifrostResp.Item != nil &&
+			bifrostResp.Item.Type != nil &&
+			*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			bifrostResp.Item.ResponsesToolMessage != nil &&
+			bifrostResp.Item.ResponsesToolMessage.Name != nil &&
+			*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
+			bifrostResp.Item.ResponsesToolMessage.Arguments != nil {
 
-		// check for claude-cli user agent
-		if ctx != nil {
-			if IsClaudeCodeRequest(ctx) {
-				// check for WebSearch tool
-				if bifrostResp.Item != nil &&
-					bifrostResp.Item.Type != nil &&
-					*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall &&
-					bifrostResp.Item.ResponsesToolMessage != nil &&
-					bifrostResp.Item.ResponsesToolMessage.Name != nil &&
-					*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
-					bifrostResp.Item.ResponsesToolMessage.Arguments != nil {
+			argumentsJSON := sanitizeWebSearchArguments(*bifrostResp.Item.ResponsesToolMessage.Arguments)
+			bifrostResp.Item.ResponsesToolMessage.Arguments = &argumentsJSON
 
-					argumentsJSON := sanitizeWebSearchArguments(*bifrostResp.Item.ResponsesToolMessage.Arguments)
-					bifrostResp.Item.ResponsesToolMessage.Arguments = &argumentsJSON
+			// Generate synthetic input_json_delta events for the sanitized WebSearch arguments
+			// This replaces the delta events that were skipped earlier
+			var events []*AnthropicStreamEvent
 
-					// Generate synthetic input_json_delta events for the sanitized WebSearch arguments
-					// This replaces the delta events that were skipped earlier
-					var events []*AnthropicStreamEvent
-
-					// Use OutputIndex for proper Anthropic indexing, fallback to ContentIndex
-					var indexToUse *int
-					if bifrostResp.OutputIndex != nil {
-						indexToUse = bifrostResp.OutputIndex
-					} else if bifrostResp.ContentIndex != nil {
-						indexToUse = bifrostResp.ContentIndex
-					}
-
-					deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
-					events = append(events, deltaEvents...)
-
-					// Add the content_block_stop event at the end
-					stopEvent := &AnthropicStreamEvent{
-						Type:  AnthropicStreamEventTypeContentBlockStop,
-						Index: indexToUse,
-					}
-					events = append(events, stopEvent)
-
-					// Clean up the tracking for this WebSearch item
-					if bifrostResp.Item.ID != nil {
-						webSearchItemIDs.Delete(*bifrostResp.Item.ID)
-					}
-
-					return events
-				}
+			// Use OutputIndex for proper Anthropic indexing, fallback to ContentIndex
+			var indexToUse *int
+			if bifrostResp.OutputIndex != nil {
+				indexToUse = bifrostResp.OutputIndex
+			} else if bifrostResp.ContentIndex != nil {
+				indexToUse = bifrostResp.ContentIndex
 			}
+
+			deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
+			events = append(events, deltaEvents...)
+
+			// Add the content_block_stop event at the end
+			stopEvent := &AnthropicStreamEvent{
+				Type:  AnthropicStreamEventTypeContentBlockStop,
+				Index: indexToUse,
+			}
+			events = append(events, stopEvent)
+
+			// Clean up the tracking for this WebSearch item
+			if bifrostResp.Item.ID != nil {
+				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+				delete(streamState.webSearchItemIDs, *bifrostResp.Item.ID)
+			}
+
+			return events
 		}
 
 		if bifrostResp.Item != nil &&
