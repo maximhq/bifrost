@@ -55,7 +55,7 @@ export function ExportPopover({ getData, onPreloadData, onPdfExport, onPdfExport
 
 			await generatePdf(sections, "dashboard-export", {
 				branding: {
-					logoSrc: "/bifrost-logo.png",
+					logoSrc: "/bifrost-logo.webp",
 					text: "Powered by",
 				},
 			});
