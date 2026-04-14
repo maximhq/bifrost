@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -2921,4 +2922,67 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 		assert.LessOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(24576),
 			"flash effort budget must not exceed model maximum 24576")
 	})
+}
+
+// Regression: GenAI /generateContent path must not turn thinkingLevel into a derived
+// thinkingBudget (which changes Gemini 3.x behavior). Inbound should set effort only;
+// outbound for Gemini 3+ should emit thinkingLevel again.
+func TestGenAIThinkingLevel_RoundTripPreservesLevelNotBudget(t *testing.T) {
+	level := "MiNiMaL"
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model: "gemini-3-flash-preview",
+		GenerationConfig: gemini.GenerationConfig{
+			ThinkingConfig: &gemini.GenerationConfigThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingLevel:   &level,
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := geminiReq.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, bifrostReq.Params)
+	require.NotNil(t, bifrostReq.Params.Reasoning)
+	require.NotNil(t, bifrostReq.Params.Reasoning.Effort)
+	assert.Equal(t, "minimal", *bifrostReq.Params.Reasoning.Effort)
+	assert.Nil(t, bifrostReq.Params.Reasoning.MaxTokens, "thinkingLevel must not populate reasoning max_tokens")
+
+	roundTrip, err := gemini.ToGeminiResponsesRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, roundTrip)
+	require.NotNil(t, roundTrip.GenerationConfig.ThinkingConfig)
+	tc := roundTrip.GenerationConfig.ThinkingConfig
+	require.NotNil(t, tc.ThinkingLevel)
+	assert.Equal(t, "minimal", *tc.ThinkingLevel)
+	assert.Nil(t, tc.ThinkingBudget, "round-trip must not synthesize thinkingBudget from level-only config")
+}
+
+// Regression: MAX_TOKENS from Gemini must survive Gemini → Bifrost → Gemini on the GenAI path
+// (StopReason used to be dropped, so clients saw STOP instead of MAX_TOKENS).
+func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:        0,
+				FinishReason: gemini.FinishReasonMaxTokens,
+				Content: &gemini.Content{
+					Role: "model",
+					Parts: []*gemini.Part{
+						{Text: "partial essay..."},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.StopReason)
+	assert.Equal(t, "length", *bifrostResp.StopReason)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 1)
+	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }

@@ -197,8 +197,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			level := *config.ThinkingConfig.ThinkingLevel
 			var effort string
 
-			// Map Gemini thinking level to Bifrost effort
-			switch level {
+			switch strings.ToLower(level) {
 			case "minimal":
 				effort = "minimal"
 			case "low":
@@ -212,12 +211,6 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 			}
 
 			params.Reasoning.Effort = schemas.Ptr(effort)
-
-			// Also convert to budget for compatibility
-			if effort != "none" {
-				budget, _ := providerUtils.GetBudgetTokensFromReasoningEffort(effort, budgetRange.Min, budgetRange.Max)
-				params.Reasoning.MaxTokens = schemas.Ptr(budget)
-			}
 		}
 	}
 	if config.CandidateCount > 0 {
@@ -545,18 +538,33 @@ func convertFileDataToBytes(fileData string) ([]byte, string) {
 var (
 	// Maps Gemini finish reasons to Bifrost format
 	geminiFinishReasonToBifrost = map[FinishReason]string{
-		FinishReasonStop:                  "stop",
-		FinishReasonMaxTokens:             "length",
-		FinishReasonSafety:                "content_filter",
-		FinishReasonRecitation:            "content_filter",
-		FinishReasonLanguage:              "content_filter",
-		FinishReasonOther:                 "stop",
-		FinishReasonBlocklist:             "content_filter",
-		FinishReasonProhibitedContent:     "content_filter",
-		FinishReasonSPII:                  "content_filter",
-		FinishReasonMalformedFunctionCall: "stop",
-		FinishReasonImageSafety:           "content_filter",
-		FinishReasonUnexpectedToolCall:    "tool_calls",
+		FinishReasonStop:                    "stop",
+		FinishReasonMaxTokens:               "length",
+		FinishReasonSafety:                  "content_filter",
+		FinishReasonRecitation:              "content_filter",
+		FinishReasonLanguage:                "content_filter",
+		FinishReasonOther:                   "stop",
+		FinishReasonBlocklist:               "content_filter",
+		FinishReasonProhibitedContent:       "content_filter",
+		FinishReasonSPII:                    "content_filter",
+		FinishReasonMalformedFunctionCall:   "stop",
+		FinishReasonImageSafety:             "content_filter",
+		FinishReasonImageProhibitedContent:  "content_filter",
+		FinishReasonImageOther:              "stop",
+		FinishReasonNoImage:                 "stop",
+		FinishReasonImageRecitation:         "content_filter",
+		FinishReasonUnexpectedToolCall:      "stop",
+		FinishReasonTooManyToolCalls:        "stop",
+		FinishReasonMissingThoughtSignature: "stop",
+		FinishReasonMalformedResponse:       "stop",
+	}
+
+	// Maps Bifrost canonical finish reasons back to the most representative Gemini finish reason
+	bifrostToGeminiFinishReason = map[string]FinishReason{
+		"stop":           FinishReasonStop,
+		"length":         FinishReasonMaxTokens,
+		"content_filter": FinishReasonSafety,
+		"tool_calls":     FinishReasonStop,
 	}
 )
 
@@ -566,6 +574,14 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
+func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
+	if geminiReason, ok := bifrostToGeminiFinishReason[bifrostReason]; ok {
+		return geminiReason
+	}
+	return FinishReasonStop
 }
 
 // ConvertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage

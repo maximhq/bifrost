@@ -504,7 +504,13 @@ func isErrorFinishReason(reason FinishReason) bool {
 		reason == FinishReasonProhibitedContent ||
 		reason == FinishReasonSPII ||
 		reason == FinishReasonImageSafety ||
-		reason == FinishReasonUnexpectedToolCall
+		reason == FinishReasonUnexpectedToolCall ||
+		reason == FinishReasonMissingThoughtSignature ||
+		reason == FinishReasonMalformedResponse ||
+		reason == FinishReasonImageProhibitedContent ||
+		reason == FinishReasonImageRecitation ||
+		reason == FinishReasonTooManyToolCalls ||
+		reason == FinishReasonNoImage
 }
 
 // createErrorResponse creates a complete BifrostChatResponse for error cases

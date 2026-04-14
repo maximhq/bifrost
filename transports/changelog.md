@@ -1,2 +1,3 @@
 - fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
 - fix: Bedrock integration - update to use InvokeModelRawChunks for multi-event support [@tefimov](https://github.com/tefimov)
+- fix: gemini preserves thinkingLevel parameters during round-trip and finish reason mapping
