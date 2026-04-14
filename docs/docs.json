@@ -1,717 +1,773 @@
 {
-	"$schema": "https://mintlify.com/schema.json",
-	"name": "Bifrost",
-	"logo": {
-		"dark": "/media/bifrost-logo-dark.png",
-		"light": "/media/bifrost-logo.png"
-	},
-	"banner": {
-		"content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
-		"dismissible": true
-	},
-	"theme": "mint",
-	"colors": {
-		"primary": "#0C3B43",
-		"light": "#07C983"
-	},
-	"styles": {
-		"latex": true
-	},
-	"favicon": "favicon.ico",
-	"navbar": {
-		"links": [
-			{
-				"label": "Discord",
-				"href": "https://discord.gg/exN5KAydbU",
-				"icon": "discord"
-			},
-			{
-				"label": "GitHub",
-				"href": "https://github.com/maximhq/bifrost",
-				"icon": "github"
-			}
-		],
-		"primary": {
-			"type": "button",
-			"label": "Book a demo",
-			"href": "https://www.getmaxim.ai/bifrost/book-a-demo"
-		}
-	},
-	"navigation": {
-		"global": {
-			"anchors": [
-				{
-					"anchor": "Discord",
-					"icon": "discord",
-					"href": "https://discord.gg/exN5KAydbU"
-				},
-				{
-					"anchor": "Try Enterprise",
-					"icon": "building",
-					"href": "https://www.getmaxim.ai/bifrost/enterprise"
-				}
-			]
-		},
-		"tabs": [
-			{
-				"tab": "Documentation",
-				"icon": "book-open-cover",
-				"groups": [
-					{
-						"group": "Overview",
-						"icon": "book-open-cover",
-						"pages": ["overview"]
-					},
-					{
-						"group": "Quick Start",
-						"icon": "rocket",
-						"pages": [
-							{
-								"group": "Gateway",
-								"icon": "server",
-								"pages": [
-									"quickstart/gateway/setting-up",
-									"quickstart/gateway/setting-up-auth",
-									"quickstart/gateway/provider-configuration",
-									"quickstart/gateway/streaming",
-									"quickstart/gateway/tool-calling",
-									"quickstart/gateway/multimodal",
-									"quickstart/gateway/reranking",
-									"quickstart/gateway/integrations"
-								]
-							},
-							"quickstart/cli/getting-started",
-							{
-								"group": "Use as Go SDK",
-								"icon": "code",
-								"pages": [
-									"quickstart/go-sdk/setting-up",
-									"quickstart/go-sdk/provider-configuration",
-									"quickstart/go-sdk/context-keys",
-									"quickstart/go-sdk/streaming",
-									"quickstart/go-sdk/tool-calling",
-									"quickstart/go-sdk/multimodal",
-									"quickstart/go-sdk/reranking",
-									"quickstart/go-sdk/logger"
-								]
-							}
-						]
-					},
-					{
-						"group": "Migration Guides",
-						"icon": "arrow-up-right-dots",
-						"pages": ["migration-guides/v1.5.0"]
-					},
-					{
-						"group": "SDK Integrations",
-						"icon": "plug",
-						"pages": ["integrations/what-is-an-integration"]
-					},
-					{
-						"group": "Providers & Guides",
-						"icon": "solar-system",
-						"pages": [
-							{
-								"group": "Supported Providers",
-								"icon": "bars-progress",
-								"pages": [
-									"providers/supported-providers/overview",
-									"providers/supported-providers/anthropic",
-									"providers/supported-providers/azure",
-									"providers/supported-providers/bedrock",
-									"providers/supported-providers/cerebras",
-									"providers/supported-providers/cohere",
-									"providers/supported-providers/codex",
-									"providers/supported-providers/databricks",
-									"providers/supported-providers/elevenlabs",
-									"providers/supported-providers/fireworks",
-									"providers/supported-providers/gemini",
-									"providers/supported-providers/groq",
-									"providers/supported-providers/huggingface",
-									"providers/supported-providers/mistral",
-									"providers/supported-providers/nebius",
-									"providers/supported-providers/ollama",
-									"providers/supported-providers/openai",
-									"providers/supported-providers/openrouter",
-									"providers/supported-providers/parasail",
-									"providers/supported-providers/perplexity",
-									"providers/supported-providers/replicate",
-									"providers/supported-providers/runway",
-									"providers/supported-providers/sgl",
-									"providers/supported-providers/vertex",
-									"providers/supported-providers/vllm",
-									"providers/supported-providers/xai"
-								]
-							},
-							"providers/routing-rules",
-							"providers/provider-routing",
-							"providers/aliasing-models",
-							"providers/reasoning",
-							"providers/performance",
-							"providers/custom-providers",
-							"providers/custom-pricing",
-							"providers/request-options"
-						]
-					},
-					{
-						"group": "MCP Gateway",
-						"icon": "toolbox",
-						"pages": [
-							"mcp/overview",
-							"mcp/connecting-to-servers",
-							"mcp/oauth",
-							"mcp/per-user-oauth",
-							"mcp/tool-execution",
-							"mcp/agent-mode",
-							"mcp/code-mode",
-							"mcp/gateway-url",
-							"mcp/tool-hosting",
-							"mcp/filtering"
-						]
-					},
-					{
-						"group": "Custom plugins",
-						"icon": "puzzle-piece",
-						"pages": [
-							"plugins/getting-started",
-							"plugins/building-dynamic-binary",
-							"plugins/sequencing",
-							{
-								"group": "Writing Plugins",
-								"icon": "code",
-								"pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
-							},
-							"plugins/migration-guide"
-						]
-					},
-					{
-						"group": "Open Source Features",
-						"icon": "bolt",
-						"pages": [
-							"features/drop-in-replacement",
-							"features/fallbacks",
-							"features/litellm-compat",
-							"features/keys-management",
-							"features/async-inference",
-							{
-								"group": "Governance",
-								"icon": "user-lock",
-								"pages": [
-									"features/governance/virtual-keys",
-									"features/governance/routing",
-									"features/governance/budget-and-limits",
-									"features/governance/mcp-tools",
-									"features/governance/required-headers"
-								]
-							},
-							"features/telemetry",
-							"features/semantic-caching",
-							{
-								"group": "Prompt Repository",
-								"icon": "folder",
-								"pages": ["features/prompt-repository/playground", "features/prompt-repository/prompts-plugin"]
-							},
-							{
-								"group": "Plugins",
-								"icon": "puzzle-piece",
-								"pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
-							}
-						]
-					},
-					{
-						"group": "Enterprise Features",
-						"icon": "building",
-						"pages": [
-							"enterprise/guardrails",
-							"enterprise/clustering",
-							"enterprise/adaptive-load-balancing",
-							{
-								"group": "Advanced Governance",
-								"icon": "shield-check",
-								"pages": ["enterprise/advanced-governance", "enterprise/rbac"]
-							},
-							"enterprise/mcp-with-fa",
-							"enterprise/vault-support",
-							"enterprise/invpc-deployments",
-							"enterprise/custom-plugins",
-							"enterprise/audit-logs",
-							"enterprise/log-exports"
-						]
-					}
-				]
-			},
-			{
-				"tab": "Integrations",
-				"icon": "plug",
-				"groups": [
-					{
-						"group": "CLI Agents & Editors",
-						"icon": "command",
-						"pages": [
-							"cli-agents/overview",
-							"cli-agents/cursor",
-							"cli-agents/librechat",
-							"cli-agents/claude-code",
-							"cli-agents/claude-for-office",
-							"cli-agents/codex-cli",
-							"cli-agents/gemini-cli",
-							"cli-agents/qwen-code",
-							"cli-agents/opencode",
-							"cli-agents/zed-editor",
-							"cli-agents/roo-code",
-							"cli-agents/open-webui"
-						]
-					},
-					{
-						"group": "SDKs & Frameworks",
-						"icon": "code",
-						"pages": [
-							{
-								"group": "OpenAI SDK",
-								"icon": "openai",
-								"pages": ["integrations/openai-sdk/overview", "integrations/openai-sdk/files-and-batch"]
-							},
-							{
-								"group": "Anthropic SDK",
-								"icon": "asterisk",
-								"pages": ["integrations/anthropic-sdk/overview", "integrations/anthropic-sdk/files-and-batch"]
-							},
-							{
-								"group": "Bedrock SDK",
-								"icon": "aws",
-								"pages": ["integrations/bedrock-sdk/overview", "integrations/bedrock-sdk/files-and-batch"]
-							},
-							{
-								"group": "GenAI SDK",
-								"icon": "diamond",
-								"pages": ["integrations/genai-sdk/overview"]
-							},
-							"integrations/litellm-sdk",
-							"integrations/langchain-sdk",
-							"integrations/pydanticai-sdk",
-							"integrations/passthrough"
-						]
-					},
-					{
-						"group": "Identity Providers (SSO)",
-						"icon": "id-card",
-						"pages": ["enterprise/setting-up-okta", "enterprise/setting-up-entra"]
-					},
-					{
-						"group": "Content Safety (Guardrails)",
-						"icon": "road-barrier",
-						"pages": [
-							"integrations/guardrails/aws-bedrock",
-							"integrations/guardrails/azure-content-safety",
-							"integrations/guardrails/grayswan",
-							"integrations/guardrails/patronus-ai"
-						]
-					},
-					{
-						"group": "Secret Management (Vaults)",
-						"icon": "vault",
-						"pages": [
-							"integrations/vaults/hashicorp-vault",
-							"integrations/vaults/aws-secrets-manager",
-							"integrations/vaults/google-secret-manager",
-							"integrations/vaults/azure-key-vault"
-						]
-					},
-					{
-						"group": "Observability",
-						"icon": "binoculars",
-						"pages": [
-							"features/observability/default",
-							"features/observability/maxim",
-							"features/observability/otel",
-							"features/observability/prometheus",
-							"enterprise/datadog-connector"
-						]
-					},
-					{
-						"group": "Vector Databases",
-						"icon": "database",
-						"pages": [
-							"integrations/vector-databases/weaviate",
-							"integrations/vector-databases/redis",
-							"integrations/vector-databases/qdrant",
-							"integrations/vector-databases/pinecone"
-						]
-					}
-				]
-			},
-			{
-				"tab": "Developer Guides",
-				"icon": "wrench",
-				"groups": [
-					{
-						"group": "Contributing",
-						"icon": "code",
-						"pages": [
-							"contributing/setting-up-repo",
-							"contributing/raising-a-pr",
-							"contributing/code-conventions",
-							"contributing/adding-a-provider",
-							"contributing/adding-a-configstore",
-							"contributing/adding-a-logstore",
-							"contributing/adding-a-vectorstore"
-						]
-					}
-				]
-			},
-			{
-				"tab": "Deployment Guides",
-				"icon": "server",
-				"pages": [
-					{
-						"group": "Platform specific guides",
-						"icon": "swatchbook",
-						"pages": ["deployment-guides/k8s", "deployment-guides/ecs", "deployment-guides/helm", "deployment-guides/fly"]
-					},
-					{
-						"group": "Enterprise Deployment",
-						"icon": "building",
-						"pages": [
-							"deployment-guides/enterprise/overview",
-							"deployment-guides/enterprise/aws",
-							"deployment-guides/enterprise/gcp",
-							"deployment-guides/enterprise/azure",
-							"deployment-guides/enterprise/on-premise"
-						]
-					},
-					{
-						"group": "Common setup instructions",
-						"icon": "book",
-						"pages": ["deployment-guides/how-to/install-make", "deployment-guides/how-to/multinode", "deployment-guides/docker-tuning"]
-					}
-				]
-			},
-			{
-				"tab": "API Reference",
-				"icon": "code",
-				"groups": [
-					{
-						"group": "API Reference",
-						"openapi": "openapi/openapi.json"
-					}
-				]
-			},
-			{
-				"tab": "Architecture",
-				"icon": "codepen",
-				"pages": [
-					{
-						"group": "Core Architecture",
-						"icon": "sitemap",
-						"pages": [
-							"architecture/core/concurrency",
-							"architecture/core/request-flow",
-							"architecture/core/mcp",
-							"architecture/core/plugins"
-						]
-					},
-					{
-						"group": "Framework",
-						"icon": "screwdriver-wrench",
-						"pages": [
-							"architecture/framework/what-is-framework",
-							"architecture/framework/model-catalog",
-							"architecture/framework/config-store",
-							"architecture/framework/log-store",
-							"architecture/framework/vector-store",
-							"architecture/framework/streaming"
-						]
-					}
-				]
-			},
-			{
-				"tab": "Security",
-				"icon": "shield",
-				"pages": ["security"]
-			},
-			{
-				"tab": "Benchmarks",
-				"icon": "chart-line",
-				"pages": ["benchmarking/getting-started", "benchmarking/t3.medium", "benchmarking/t3.xl", "benchmarking/run-your-own-benchmarks"]
-			},
-			{
-				"tab": "Changelogs",
-				"icon": "bolt",
-				"menu": [
-					{
-						"item": "Open Source",
-						"icon": "rocket",
-						"pages": [
-							"changelogs/v1.5.0-prerelease3",
-							"changelogs/v1.5.0-prerelease2",
-							"changelogs/v1.5.0-prerelease1",
-							"changelogs/v1.4.22",
-							"changelogs/v1.4.21",
-							{
-								"group": "March 2026",
-								"pages": [
-									"changelogs/v1.4.20",
-									"changelogs/v1.4.19",
-									"changelogs/v1.4.18",
-									"changelogs/v1.4.17",
-									"changelogs/v1.4.16",
-									"changelogs/v1.4.15",
-									"changelogs/v1.4.14",
-									"changelogs/v1.4.13",
-									"changelogs/v1.4.12",
-									"changelogs/v1.4.11",
-									"changelogs/v1.4.10"
-								]
-							},
-							{
-								"group": "February 2026",
-								"pages": [
-									"changelogs/v1.4.9",
-									"changelogs/v1.4.8",
-									"changelogs/v1.4.7",
-									"changelogs/v1.4.6",
-									"changelogs/v1.4.5",
-									"changelogs/v1.4.4"
-								]
-							},
-							{
-								"group": "January 2026",
-								"pages": [
-									"changelogs/v1.4.3",
-									"changelogs/v1.4.2",
-									"changelogs/v1.4.1",
-									"changelogs/v1.4.0",
-									"changelogs/v1.4.0-prerelease10",
-									"changelogs/v1.4.0-prerelease9",
-									"changelogs/v1.4.0-prerelease8",
-									"changelogs/v1.4.0-prerelease7",
-									"changelogs/v1.4.0-prerelease6",
-									"changelogs/v1.4.0-prerelease5",
-									"changelogs/v1.4.0-prerelease4",
-									"changelogs/v1.4.0-prerelease3",
-									"changelogs/v1.3.63",
-									"changelogs/v1.3.62",
-									"changelogs/v1.3.61",
-									"changelogs/v1.3.60",
-									"changelogs/v1.3.59",
-									"changelogs/v1.3.58",
-									"changelogs/v1.3.57",
-									"changelogs/v1.3.56"
-								]
-							},
-							{
-								"group": "December 2025",
-								"pages": [
-									"changelogs/v1.4.0-prerelease2",
-									"changelogs/v1.4.0-prerelease1",
-									"changelogs/v1.3.54",
-									"changelogs/v1.3.53",
-									"changelogs/v1.3.52",
-									"changelogs/v1.3.51",
-									"changelogs/v1.3.50",
-									"changelogs/v1.3.49",
-									"changelogs/v1.3.48",
-									"changelogs/v1.3.47",
-									"changelogs/v1.3.46",
-									"changelogs/v1.3.45",
-									"changelogs/v1.3.44",
-									"changelogs/v1.3.43",
-									"changelogs/v1.3.42",
-									"changelogs/v1.3.41",
-									"changelogs/v1.3.40",
-									"changelogs/v1.3.39",
-									"changelogs/v1.3.38"
-								]
-							},
-							{
-								"group": "November 2025",
-								"pages": [
-									"changelogs/v1.3.37",
-									"changelogs/v1.3.36",
-									"changelogs/v1.3.35",
-									"changelogs/v1.3.34",
-									"changelogs/v1.3.33",
-									"changelogs/v1.3.32",
-									"changelogs/v1.3.31",
-									"changelogs/v1.3.30",
-									"changelogs/v1.3.29",
-									"changelogs/v1.3.28",
-									"changelogs/v1.3.27",
-									"changelogs/v1.3.26",
-									"changelogs/v1.3.25",
-									"changelogs/v1.3.24",
-									"changelogs/v1.3.23",
-									"changelogs/v1.3.22",
-									"changelogs/v1.3.21",
-									"changelogs/v1.3.20",
-									"changelogs/v1.3.19",
-									"changelogs/v1.3.18"
-								]
-							},
-							{
-								"group": "October 2025",
-								"pages": [
-									"changelogs/v1.3.17",
-									"changelogs/v1.3.16",
-									"changelogs/v1.3.15",
-									"changelogs/v1.3.14",
-									"changelogs/v1.3.13",
-									"changelogs/v1.3.12",
-									"changelogs/v1.3.11",
-									"changelogs/v1.3.10",
-									"changelogs/v1.3.9",
-									"changelogs/v1.3.8",
-									"changelogs/v1.3.7",
-									"changelogs/v1.3.6",
-									"changelogs/v1.3.5",
-									"changelogs/v1.3.4",
-									"changelogs/v1.3.3",
-									"changelogs/v1.3.2",
-									"changelogs/v1.3.1",
-									"changelogs/v1.3.0",
-									"changelogs/v1.3.0-prerelease7",
-									"changelogs/v1.3.0-prerelease6",
-									"changelogs/v1.3.0-prerelease5",
-									"changelogs/v1.3.0-prerelease4",
-									"changelogs/v1.3.0-prerelease3",
-									"changelogs/v1.3.0-prerelease2",
-									"changelogs/v1.3.0-prerelease1",
-									"changelogs/v1.2.24",
-									"changelogs/v1.2.23"
-								]
-							},
-							{
-								"group": "September 2025",
-								"pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
-							}
-						]
-					},
-					{
-						"item": "Enterprise",
-						"icon": "building",
-						"pages": [
-							"changelogs/ent-v1.4.0-prerelease2",
-							"changelogs/ent-v1.3.17",
-							"changelogs/ent-v1.4.0-prerelease1",
-							"changelogs/ent-v1.3.16",
-							"changelogs/ent-v1.3.15",
-							"changelogs/ent-v1.3.14",
-							"changelogs/ent-v1.3.13",
-							"changelogs/ent-v1.3.12",
-							"changelogs/ent-v1.3.11",
-							"changelogs/ent-v1.3.10",
-							"changelogs/ent-v1.3.9",
-							"changelogs/ent-v1.3.8"
-						]
-					},
-					{
-						"item": "Bifrost CLI",
-						"icon": "laptop-code",
-						"pages": ["changelogs/cli-v0.10.3", "changelogs/cli-v0.10.2", "changelogs/cli-v0.10.1", "changelogs/cli-v0.10.0"]
-					}
-				]
-			}
-		]
-	},
-	"redirects": [
-		{
-			"source": "/quickstart/gateway/cli-agents",
-			"destination": "/cli-agents/overview"
-		},
-		{
-			"source": "/quickstart/gateway/cli-agents/overview",
-			"destination": "/cli-agents/overview"
-		},
-		{
-			"source": "/quickstart/gateway/cli-agents/cursor",
-			"destination": "/cli-agents/cursor"
-		},
-		{
-			"source": "/quickstart/gateway/cli-agents/opencode",
-			"destination": "/cli-agents/opencode"
-		},
-		{
-			"source": "/quickstart/gateway/cli-agents/zed",
-			"destination": "/cli-agents/zed-editor"
-		},
-		{
-			"source": "/quickstart/gateway/cli-agents/librechat",
-			"destination": "/cli-agents/librechat"
-		},
-		{
-			"source": "/providers/supported-headers",
-			"destination": "/providers/request-options"
-		},
-		{
-			"source": "/features/unified-interface",
-			"destination": "/providers/supported-providers/overview"
-		},
-		{
-			"source": "/providers/huggingface",
-			"destination": "/providers/supported-providers/huggingface"
-		},
-		{
-			"source": "/plugins/writing-plugin",
-			"destination": "/plugins/writing-go-plugin"
-		},
-		{
-			"source": "/features/mcp/overview",
-			"destination": "/mcp/overview"
-		},
-		{
-			"source": "/features/mcp/connecting-to-servers",
-			"destination": "/mcp/connecting-to-servers"
-		},
-		{
-			"source": "/features/mcp/tool-execution",
-			"destination": "/mcp/tool-execution"
-		},
-		{
-			"source": "/features/mcp/agent-mode",
-			"destination": "/mcp/agent-mode"
-		},
-		{
-			"source": "/features/mcp/code-mode",
-			"destination": "/mcp/code-mode"
-		},
-		{
-			"source": "/features/mcp/gateway-url",
-			"destination": "/mcp/gateway-url"
-		},
-		{
-			"source": "/features/mcp/tool-hosting",
-			"destination": "/mcp/tool-hosting"
-		},
-		{
-			"source": "/features/mcp/filtering",
-			"destination": "/mcp/filtering"
-		},
-		{
-			"source": "/enterprise/governance",
-			"destination": "/enterprise/advanced-governance"
-		},
-		{
-			"source": "/features/enterprise/scim",
-			"destination": "/enterprise/setting-up-okta"
-		},
-		{
-			"source": "/enterprise/intelligent-load-balancing",
-			"destination": "/enterprise/adaptive-load-balancing"
-		},
-		{
-			"source": "/enterprise/users",
-			"destination": "/enterprise/setting-up-okta"
-		},
-		{
-			"source": "/enterprise/data-connectors/datadog",
-			"destination": "/enterprise/datadog-connector"
-		}
-	],
-	"footer": {
-		"socials": {
-			"x": "https://x.com/getmaximai",
-			"github": "https://github.com/maximhq/bifrost",
-			"linkedin": "https://linkedin.com/company/maxim-ai"
-		}
-	}
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Bifrost",
+  "logo": {
+    "dark": "/media/bifrost-logo-dark.png",
+    "light": "/media/bifrost-logo.png"
+  },
+  "banner": {
+    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
+    "dismissible": true
+  },
+  "theme": "mint",
+  "colors": {
+    "primary": "#0C3B43",
+    "light": "#07C983"
+  },
+  "styles": {
+    "latex": true
+  },
+  "favicon": "favicon.ico",
+  "navbar": {
+    "links": [
+      {
+        "label": "Discord",
+        "href": "https://discord.gg/exN5KAydbU",
+        "icon": "discord"
+      },
+      {
+        "label": "GitHub",
+        "href": "https://github.com/maximhq/bifrost",
+        "icon": "github"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Book a demo",
+      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
+    }
+  },
+  "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Discord",
+          "icon": "discord",
+          "href": "https://discord.gg/exN5KAydbU"
+        },
+        {
+          "anchor": "Try Enterprise",
+          "icon": "building",
+          "href": "https://www.getmaxim.ai/bifrost/enterprise"
+        }
+      ]
+    },
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "icon": "book-open-cover",
+        "groups": [
+          {
+            "group": "Overview",
+            "icon": "book-open-cover",
+            "pages": [
+              "overview"
+            ]
+          },
+          {
+            "group": "Quick Start",
+            "icon": "rocket",
+            "pages": [
+              {
+                "group": "Gateway",
+                "icon": "server",
+                "pages": [
+                  "quickstart/gateway/setting-up",
+                  "quickstart/gateway/setting-up-auth",
+                  "quickstart/gateway/provider-configuration",
+                  "quickstart/gateway/streaming",
+                  "quickstart/gateway/tool-calling",
+                  "quickstart/gateway/multimodal",
+                  "quickstart/gateway/reranking",
+                  "quickstart/gateway/integrations"
+                ]
+              },
+              "quickstart/cli/getting-started",
+              {
+                "group": "Use as Go SDK",
+                "icon": "code",
+                "pages": [
+                  "quickstart/go-sdk/setting-up",
+                  "quickstart/go-sdk/provider-configuration",
+                  "quickstart/go-sdk/context-keys",
+                  "quickstart/go-sdk/streaming",
+                  "quickstart/go-sdk/tool-calling",
+                  "quickstart/go-sdk/multimodal",
+                  "quickstart/go-sdk/reranking",
+                  "quickstart/go-sdk/logger"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Migration Guides",
+            "icon": "arrow-up-right-dots",
+            "pages": [
+              "migration-guides/v1.5.0"
+            ]
+          },
+          {
+            "group": "SDK Integrations",
+            "icon": "plug",
+            "pages": [
+              "integrations/what-is-an-integration"
+            ]
+          },
+          {
+            "group": "Providers & Guides",
+            "icon": "solar-system",
+            "pages": [
+              {
+                "group": "Supported Providers",
+                "icon": "bars-progress",
+                "pages": [
+                  "providers/supported-providers/overview",
+                  "providers/supported-providers/anthropic",
+                  "providers/supported-providers/azure",
+                  "providers/supported-providers/bedrock",
+                  "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cohere",
+                  "providers/supported-providers/codex",
+                  "providers/supported-providers/databricks",
+                  "providers/supported-providers/elevenlabs",
+                  "providers/supported-providers/fireworks",
+                  "providers/supported-providers/gemini",
+                  "providers/supported-providers/groq",
+                  "providers/supported-providers/huggingface",
+                  "providers/supported-providers/mistral",
+                  "providers/supported-providers/nebius",
+                  "providers/supported-providers/ollama",
+                  "providers/supported-providers/openai",
+                  "providers/supported-providers/openrouter",
+                  "providers/supported-providers/parasail",
+                  "providers/supported-providers/perplexity",
+                  "providers/supported-providers/replicate",
+                  "providers/supported-providers/runway",
+                  "providers/supported-providers/sgl",
+                  "providers/supported-providers/vertex",
+                  "providers/supported-providers/vllm",
+                  "providers/supported-providers/xai"
+                ]
+              },
+              "providers/routing-rules",
+              "providers/provider-routing",
+              "providers/aliasing-models",
+              "providers/reasoning",
+              "providers/performance",
+              "providers/custom-providers",
+              "providers/custom-pricing",
+              "providers/request-options"
+            ]
+          },
+          {
+            "group": "MCP Gateway",
+            "icon": "toolbox",
+            "pages": [
+              "mcp/overview",
+              "mcp/connecting-to-servers",
+              "mcp/oauth",
+              "mcp/per-user-oauth",
+              "mcp/tool-execution",
+              "mcp/agent-mode",
+              "mcp/code-mode",
+              "mcp/gateway-url",
+              "mcp/tool-hosting",
+              "mcp/filtering"
+            ]
+          },
+          {
+            "group": "Custom plugins",
+            "icon": "puzzle-piece",
+            "pages": [
+              "plugins/getting-started",
+              "plugins/building-dynamic-binary",
+              "plugins/sequencing",
+              {
+                "group": "Writing Plugins",
+                "icon": "code",
+                "pages": [
+                  "plugins/writing-go-plugin",
+                  "plugins/writing-wasm-plugin"
+                ]
+              },
+              "plugins/migration-guide"
+            ]
+          },
+          {
+            "group": "Open Source Features",
+            "icon": "bolt",
+            "pages": [
+              "features/drop-in-replacement",
+              "features/fallbacks",
+              "features/litellm-compat",
+              "features/keys-management",
+              "features/async-inference",
+              {
+                "group": "Governance",
+                "icon": "user-lock",
+                "pages": [
+                  "features/governance/virtual-keys",
+                  "features/governance/routing",
+                  "features/governance/budget-and-limits",
+                  "features/governance/mcp-tools",
+                  "features/governance/required-headers"
+                ]
+              },
+              "features/telemetry",
+              "features/semantic-caching",
+              {
+                "group": "Prompt Repository",
+                "icon": "folder",
+                "pages": [
+                  "features/prompt-repository/playground",
+                  "features/prompt-repository/prompts-plugin"
+                ]
+              },
+              {
+                "group": "Plugins",
+                "icon": "puzzle-piece",
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Enterprise Features",
+            "icon": "building",
+            "pages": [
+              "enterprise/guardrails",
+              "enterprise/clustering",
+              "enterprise/adaptive-load-balancing",
+              {
+                "group": "Advanced Governance",
+                "icon": "shield-check",
+                "pages": [
+                  "enterprise/advanced-governance",
+                  "enterprise/rbac"
+                ]
+              },
+              "enterprise/mcp-with-fa",
+              "enterprise/vault-support",
+              "enterprise/invpc-deployments",
+              "enterprise/custom-plugins",
+              "enterprise/audit-logs",
+              "enterprise/log-exports"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "icon": "plug",
+        "groups": [
+          {
+            "group": "CLI Agents & Editors",
+            "icon": "command",
+            "pages": [
+              "cli-agents/overview",
+              "cli-agents/cursor",
+              "cli-agents/librechat",
+              "cli-agents/claude-code",
+              "cli-agents/claude-for-office",
+              "cli-agents/codex-cli",
+              "cli-agents/gemini-cli",
+              "cli-agents/qwen-code",
+              "cli-agents/opencode",
+              "cli-agents/zed-editor",
+              "cli-agents/roo-code",
+              "cli-agents/open-webui"
+            ]
+          },
+          {
+            "group": "SDKs & Frameworks",
+            "icon": "code",
+            "pages": [
+              {
+                "group": "OpenAI SDK",
+                "icon": "openai",
+                "pages": [
+                  "integrations/openai-sdk/overview",
+                  "integrations/openai-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Anthropic SDK",
+                "icon": "asterisk",
+                "pages": [
+                  "integrations/anthropic-sdk/overview",
+                  "integrations/anthropic-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Bedrock SDK",
+                "icon": "aws",
+                "pages": [
+                  "integrations/bedrock-sdk/overview",
+                  "integrations/bedrock-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "GenAI SDK",
+                "icon": "diamond",
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
+              },
+              "integrations/litellm-sdk",
+              "integrations/langchain-sdk",
+              "integrations/pydanticai-sdk",
+              "integrations/passthrough"
+            ]
+          },
+          {
+            "group": "Identity Providers (SSO)",
+            "icon": "id-card",
+            "pages": [
+              "enterprise/setting-up-okta",
+              "enterprise/setting-up-entra"
+            ]
+          },
+          {
+            "group": "Content Safety (Guardrails)",
+            "icon": "road-barrier",
+            "pages": [
+              "integrations/guardrails/aws-bedrock",
+              "integrations/guardrails/azure-content-safety",
+              "integrations/guardrails/grayswan",
+              "integrations/guardrails/patronus-ai"
+            ]
+          },
+          {
+            "group": "Secret Management (Vaults)",
+            "icon": "vault",
+            "pages": [
+              "integrations/vaults/hashicorp-vault",
+              "integrations/vaults/aws-secrets-manager",
+              "integrations/vaults/google-secret-manager",
+              "integrations/vaults/azure-key-vault"
+            ]
+          },
+          {
+            "group": "Observability",
+            "icon": "binoculars",
+            "pages": [
+              "features/observability/default",
+              "features/observability/maxim",
+              "features/observability/otel",
+              "features/observability/prometheus",
+              "enterprise/datadog-connector"
+            ]
+          },
+          {
+            "group": "Vector Databases",
+            "icon": "database",
+            "pages": [
+              "integrations/vector-databases/weaviate",
+              "integrations/vector-databases/redis",
+              "integrations/vector-databases/qdrant",
+              "integrations/vector-databases/pinecone"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guides",
+        "icon": "wrench",
+        "groups": [
+          {
+            "group": "Contributing",
+            "icon": "code",
+            "pages": [
+              "contributing/setting-up-repo",
+              "contributing/raising-a-pr",
+              "contributing/code-conventions",
+              "contributing/adding-a-provider",
+              "contributing/adding-a-configstore",
+              "contributing/adding-a-logstore",
+              "contributing/adding-a-vectorstore"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment Guides",
+        "icon": "server",
+        "pages": [
+          {
+            "group": "Platform specific guides",
+            "icon": "swatchbook",
+            "pages": [
+              "deployment-guides/k8s",
+              "deployment-guides/ecs",
+              "deployment-guides/helm",
+              "deployment-guides/fly"
+            ]
+          },
+          {
+            "group": "Enterprise Deployment",
+            "icon": "building",
+            "pages": [
+              "deployment-guides/enterprise/overview",
+              "deployment-guides/enterprise/aws",
+              "deployment-guides/enterprise/gcp",
+              "deployment-guides/enterprise/azure",
+              "deployment-guides/enterprise/on-premise"
+            ]
+          },
+          {
+            "group": "Common setup instructions",
+            "icon": "book",
+            "pages": [
+              "deployment-guides/how-to/install-make",
+              "deployment-guides/how-to/multinode",
+              "deployment-guides/docker-tuning"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "API Reference",
+            "openapi": "openapi/openapi.json"
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "icon": "codepen",
+        "pages": [
+          {
+            "group": "Core Architecture",
+            "icon": "sitemap",
+            "pages": [
+              "architecture/core/concurrency",
+              "architecture/core/request-flow",
+              "architecture/core/mcp",
+              "architecture/core/plugins"
+            ]
+          },
+          {
+            "group": "Framework",
+            "icon": "screwdriver-wrench",
+            "pages": [
+              "architecture/framework/what-is-framework",
+              "architecture/framework/model-catalog",
+              "architecture/framework/config-store",
+              "architecture/framework/log-store",
+              "architecture/framework/vector-store",
+              "architecture/framework/streaming"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Security",
+        "icon": "shield",
+        "pages": [
+          "security"
+        ]
+      },
+      {
+        "tab": "Benchmarks",
+        "icon": "chart-line",
+        "pages": [
+          "benchmarking/getting-started",
+          "benchmarking/t3.medium",
+          "benchmarking/t3.xl",
+          "benchmarking/run-your-own-benchmarks"
+        ]
+      },
+      {
+        "tab": "Changelogs",
+        "icon": "bolt",
+        "menu": [
+          {
+            "item": "Open Source",
+            "icon": "rocket",
+            "pages": [
+              "changelogs/v1.5.0-prerelease3",
+              "changelogs/v1.5.0-prerelease2",
+              "changelogs/v1.5.0-prerelease1",
+              "changelogs/v1.4.22",
+              "changelogs/v1.4.21",
+              {
+                "group": "March 2026",
+                "pages": [
+                  "changelogs/v1.4.20",
+                  "changelogs/v1.4.19",
+                  "changelogs/v1.4.18",
+                  "changelogs/v1.4.17",
+                  "changelogs/v1.4.16",
+                  "changelogs/v1.4.15",
+                  "changelogs/v1.4.14",
+                  "changelogs/v1.4.13",
+                  "changelogs/v1.4.12",
+                  "changelogs/v1.4.11",
+                  "changelogs/v1.4.10"
+                ]
+              },
+              {
+                "group": "February 2026",
+                "pages": [
+                  "changelogs/v1.4.9",
+                  "changelogs/v1.4.8",
+                  "changelogs/v1.4.7",
+                  "changelogs/v1.4.6",
+                  "changelogs/v1.4.5",
+                  "changelogs/v1.4.4"
+                ]
+              },
+              {
+                "group": "January 2026",
+                "pages": [
+                  "changelogs/v1.4.3",
+                  "changelogs/v1.4.2",
+                  "changelogs/v1.4.1",
+                  "changelogs/v1.4.0",
+                  "changelogs/v1.4.0-prerelease10",
+                  "changelogs/v1.4.0-prerelease9",
+                  "changelogs/v1.4.0-prerelease8",
+                  "changelogs/v1.4.0-prerelease7",
+                  "changelogs/v1.4.0-prerelease6",
+                  "changelogs/v1.4.0-prerelease5",
+                  "changelogs/v1.4.0-prerelease4",
+                  "changelogs/v1.4.0-prerelease3",
+                  "changelogs/v1.3.63",
+                  "changelogs/v1.3.62",
+                  "changelogs/v1.3.61",
+                  "changelogs/v1.3.60",
+                  "changelogs/v1.3.59",
+                  "changelogs/v1.3.58",
+                  "changelogs/v1.3.57",
+                  "changelogs/v1.3.56"
+                ]
+              },
+              {
+                "group": "December 2025",
+                "pages": [
+                  "changelogs/v1.4.0-prerelease2",
+                  "changelogs/v1.4.0-prerelease1",
+                  "changelogs/v1.3.54",
+                  "changelogs/v1.3.53",
+                  "changelogs/v1.3.52",
+                  "changelogs/v1.3.51",
+                  "changelogs/v1.3.50",
+                  "changelogs/v1.3.49",
+                  "changelogs/v1.3.48",
+                  "changelogs/v1.3.47",
+                  "changelogs/v1.3.46",
+                  "changelogs/v1.3.45",
+                  "changelogs/v1.3.44",
+                  "changelogs/v1.3.43",
+                  "changelogs/v1.3.42",
+                  "changelogs/v1.3.41",
+                  "changelogs/v1.3.40",
+                  "changelogs/v1.3.39",
+                  "changelogs/v1.3.38"
+                ]
+              },
+              {
+                "group": "November 2025",
+                "pages": [
+                  "changelogs/v1.3.37",
+                  "changelogs/v1.3.36",
+                  "changelogs/v1.3.35",
+                  "changelogs/v1.3.34",
+                  "changelogs/v1.3.33",
+                  "changelogs/v1.3.32",
+                  "changelogs/v1.3.31",
+                  "changelogs/v1.3.30",
+                  "changelogs/v1.3.29",
+                  "changelogs/v1.3.28",
+                  "changelogs/v1.3.27",
+                  "changelogs/v1.3.26",
+                  "changelogs/v1.3.25",
+                  "changelogs/v1.3.24",
+                  "changelogs/v1.3.23",
+                  "changelogs/v1.3.22",
+                  "changelogs/v1.3.21",
+                  "changelogs/v1.3.20",
+                  "changelogs/v1.3.19",
+                  "changelogs/v1.3.18"
+                ]
+              },
+              {
+                "group": "October 2025",
+                "pages": [
+                  "changelogs/v1.3.17",
+                  "changelogs/v1.3.16",
+                  "changelogs/v1.3.15",
+                  "changelogs/v1.3.14",
+                  "changelogs/v1.3.13",
+                  "changelogs/v1.3.12",
+                  "changelogs/v1.3.11",
+                  "changelogs/v1.3.10",
+                  "changelogs/v1.3.9",
+                  "changelogs/v1.3.8",
+                  "changelogs/v1.3.7",
+                  "changelogs/v1.3.6",
+                  "changelogs/v1.3.5",
+                  "changelogs/v1.3.4",
+                  "changelogs/v1.3.3",
+                  "changelogs/v1.3.2",
+                  "changelogs/v1.3.1",
+                  "changelogs/v1.3.0",
+                  "changelogs/v1.3.0-prerelease7",
+                  "changelogs/v1.3.0-prerelease6",
+                  "changelogs/v1.3.0-prerelease5",
+                  "changelogs/v1.3.0-prerelease4",
+                  "changelogs/v1.3.0-prerelease3",
+                  "changelogs/v1.3.0-prerelease2",
+                  "changelogs/v1.3.0-prerelease1",
+                  "changelogs/v1.2.24",
+                  "changelogs/v1.2.23"
+                ]
+              },
+              {
+                "group": "September 2025",
+                "pages": [
+                  "changelogs/v1.2.22",
+                  "changelogs/v1.2.21"
+                ]
+              }
+            ]
+          },
+          {
+            "item": "Enterprise",
+            "icon": "building",
+            "pages": [
+              "changelogs/ent-v1.4.0-prerelease2",
+              "changelogs/ent-v1.3.17",
+              "changelogs/ent-v1.4.0-prerelease1",
+              "changelogs/ent-v1.3.16",
+              "changelogs/ent-v1.3.15",
+              "changelogs/ent-v1.3.14",
+              "changelogs/ent-v1.3.13",
+              "changelogs/ent-v1.3.12",
+              "changelogs/ent-v1.3.11",
+              "changelogs/ent-v1.3.10",
+              "changelogs/ent-v1.3.9",
+              "changelogs/ent-v1.3.8"
+            ]
+          },
+          {
+            "item": "Bifrost CLI",
+            "icon": "laptop-code",
+            "pages": [
+              "changelogs/cli-v0.10.3",
+              "changelogs/cli-v0.10.2",
+              "changelogs/cli-v0.10.1",
+              "changelogs/cli-v0.10.0"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "redirects": [
+    {
+      "source": "/quickstart/gateway/cli-agents",
+      "destination": "/cli-agents/overview"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/overview",
+      "destination": "/cli-agents/overview"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/cursor",
+      "destination": "/cli-agents/cursor"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/opencode",
+      "destination": "/cli-agents/opencode"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/zed",
+      "destination": "/cli-agents/zed-editor"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/librechat",
+      "destination": "/cli-agents/librechat"
+    },
+    {
+      "source": "/providers/supported-headers",
+      "destination": "/providers/request-options"
+    },
+    {
+      "source": "/features/unified-interface",
+      "destination": "/providers/supported-providers/overview"
+    },
+    {
+      "source": "/providers/huggingface",
+      "destination": "/providers/supported-providers/huggingface"
+    },
+    {
+      "source": "/plugins/writing-plugin",
+      "destination": "/plugins/writing-go-plugin"
+    },
+    {
+      "source": "/features/mcp/overview",
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/features/mcp/connecting-to-servers",
+      "destination": "/mcp/connecting-to-servers"
+    },
+    {
+      "source": "/features/mcp/tool-execution",
+      "destination": "/mcp/tool-execution"
+    },
+    {
+      "source": "/features/mcp/agent-mode",
+      "destination": "/mcp/agent-mode"
+    },
+    {
+      "source": "/features/mcp/code-mode",
+      "destination": "/mcp/code-mode"
+    },
+    {
+      "source": "/features/mcp/gateway-url",
+      "destination": "/mcp/gateway-url"
+    },
+    {
+      "source": "/features/mcp/tool-hosting",
+      "destination": "/mcp/tool-hosting"
+    },
+    {
+      "source": "/features/mcp/filtering",
+      "destination": "/mcp/filtering"
+    },
+    {
+      "source": "/enterprise/governance",
+      "destination": "/enterprise/advanced-governance"
+    },
+    {
+      "source": "/features/enterprise/scim",
+      "destination": "/enterprise/setting-up-okta"
+    },
+    {
+      "source": "/enterprise/intelligent-load-balancing",
+      "destination": "/enterprise/adaptive-load-balancing"
+    },
+    {
+      "source": "/enterprise/users",
+      "destination": "/enterprise/setting-up-okta"
+    },
+    {
+      "source": "/enterprise/data-connectors/datadog",
+      "destination": "/enterprise/datadog-connector"
+    }
+  ],
+  "footer": {
+    "socials": {
+      "x": "https://x.com/getmaximai",
+      "github": "https://github.com/maximhq/bifrost",
+      "linkedin": "https://linkedin.com/company/maxim-ai"
+    }
+  }
 }
