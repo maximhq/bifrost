@@ -20,6 +20,12 @@ if ! command -v go >/dev/null 2>&1; then
   exit 2
 fi
 
+# Ensure go.work exists. Matches the convention used by every other
+# Go-touching CI wrapper (test-bifrost-http.sh, test-all-plugins.sh, etc.)
+# — setup-go-workspace.sh is idempotent: returns early when go.work is
+# already present, so local developers aren't re-initialised.
+source "$SCRIPT_DIR/setup-go-workspace.sh"
+
 echo "🔍 Validating Go ↔ config.schema.json sync (recursive, AST-based)"
 echo "=================================================================="
 
