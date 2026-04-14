@@ -11,7 +11,10 @@ interface VirtualKeysEmptyStateProps {
 
 export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualKeysEmptyStateProps) {
 	return (
-		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center" data-testid="virtual-keys-empty-state">
+		<div
+			className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+			data-testid="virtual-keys-empty-state"
+		>
 			<div className="text-muted-foreground">
 				<KeyRound className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
@@ -31,12 +34,7 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Add your first virtual key"
-						onClick={onAddClick}
-						disabled={!canCreate}
-						data-testid="create-vk-btn"
-					>
+					<Button aria-label="Add your first virtual key" onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
 						Add Virtual Key
 					</Button>
 				</div>

@@ -21,9 +21,7 @@ export function ActionButton({ handleOnClick, label, className, title }: ActionP
 
 	// Icon-only remove button needs an accessible name (no visible label is rendered)
 	const iconOnly = isRemoveButton;
-	const ariaLabel = iconOnly
-		? (labelStr?.trim() || (typeof title === "string" ? title.trim() : "") || "Remove")
-		: undefined;
+	const ariaLabel = iconOnly ? labelStr?.trim() || (typeof title === "string" ? title.trim() : "") || "Remove" : undefined;
 
 	return (
 		<Button

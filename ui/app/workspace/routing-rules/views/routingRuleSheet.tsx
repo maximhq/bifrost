@@ -6,13 +6,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
-import {
-	Sheet,
-	SheetContent,
-	SheetDescription,
-	SheetHeader,
-	SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -29,16 +23,8 @@ import {
 	DEFAULT_ROUTING_TARGET,
 	ROUTING_RULE_SCOPES,
 } from "@/lib/types/routingRules";
-import {
-	useCreateRoutingRuleMutation,
-	useUpdateRoutingRuleMutation,
-	useGetRoutingRulesQuery,
-} from "@/lib/store/apis/routingRulesApi";
-import {
-	useGetVirtualKeysQuery,
-	useGetTeamsQuery,
-	useGetCustomersQuery,
-} from "@/lib/store/apis/governanceApi";
+import { useCreateRoutingRuleMutation, useUpdateRoutingRuleMutation, useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
+import { useGetVirtualKeysQuery, useGetTeamsQuery, useGetCustomersQuery } from "@/lib/store/apis/governanceApi";
 import { useGetProvidersQuery, useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { toast } from "sonner";
 import { Suspense, lazy } from "react";
@@ -46,10 +32,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Separator } from "@/components/ui/separator";
 import { getErrorMessage } from "@/lib/store";
-import {
-	validateRoutingRules,
-	validateRateLimitAndBudgetRules
-} from "@/lib/utils/celConverterRouting";
+import { validateRoutingRules, validateRateLimitAndBudgetRules } from "@/lib/utils/celConverterRouting";
 
 interface RoutingRuleDialogProps {
 	open: boolean;
@@ -75,12 +58,7 @@ const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) 
 	</Suspense>
 );
 
-export function RoutingRuleSheet({
-	open,
-	onOpenChange,
-	editingRule,
-	onSuccess,
-}: RoutingRuleDialogProps) {
+export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }: RoutingRuleDialogProps) {
 	const { data: rulesData } = useGetRoutingRulesQuery();
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
@@ -123,7 +101,7 @@ export function RoutingRuleSheet({
 			...providersData.map((p) => p.name),
 			...(targets.map((t) => t.provider).filter(Boolean) as string[]),
 			...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
-			...(rules.flatMap((r) => (r.fallbacks ?? []).map((f) => f.split("/")[0]?.trim()).filter(Boolean))),
+			...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => f.split("/")[0]?.trim()).filter(Boolean)),
 		]),
 	);
 
@@ -141,13 +119,15 @@ export function RoutingRuleSheet({
 			setValue("enabled", editingRule.enabled);
 			setValue("chain_rule", editingRule.chain_rule ?? false);
 			if (editingRule.targets && editingRule.targets.length > 0) {
-				setTargets(editingRule.targets.map((t) => ({
-					...DEFAULT_ROUTING_TARGET,
-					provider: t.provider || "",
-					model: t.model || "",
-					key_id: t.key_id || "",
-					weight: t.weight,
-				})));
+				setTargets(
+					editingRule.targets.map((t) => ({
+						...DEFAULT_ROUTING_TARGET,
+						provider: t.provider || "",
+						model: t.model || "",
+						key_id: t.key_id || "",
+						weight: t.weight,
+					})),
+				);
 			} else {
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			}
@@ -184,7 +164,7 @@ export function RoutingRuleSheet({
 	};
 
 	const updateTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
-		setTargets((prev) => prev.map((t, i) => i === index ? { ...t, [field]: value } : t));
+		setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
 	};
 
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
@@ -244,27 +224,24 @@ export function RoutingRuleSheet({
 			})),
 			fallbacks: validFallbacks,
 			scope: data.scope,
-			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
+			scope_id: data.scope === "global" ? undefined : data.scope_id || undefined,
 			priority: data.priority,
 			enabled: data.enabled,
 			chain_rule: data.chain_rule,
 			query: query,
 		};
 
-		const submitPromise = isEditing && editingRule
-			? updateRoutingRule({
-				id: editingRule.id,
-				data: payload,
-			}).unwrap()
-			: createRoutingRule(payload).unwrap();
+		const submitPromise =
+			isEditing && editingRule
+				? updateRoutingRule({
+						id: editingRule.id,
+						data: payload,
+					}).unwrap()
+				: createRoutingRule(payload).unwrap();
 
 		submitPromise
 			.then(() => {
-				toast.success(
-					isEditing
-						? "Routing rule updated successfully"
-						: "Routing rule created successfully",
-				);
+				toast.success(isEditing ? "Routing rule updated successfully" : "Routing rule created successfully");
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);
@@ -287,15 +264,11 @@ export function RoutingRuleSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden p-8">
+			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
-					<SheetTitle>
-						{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}
-					</SheetTitle>
+					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
 					<SheetDescription>
-						{isEditing
-							? "Update the routing rule configuration"
-							: "Create a new CEL-based routing rule for intelligent request routing"}
+						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -316,12 +289,7 @@ export function RoutingRuleSheet({
 					{/* Description */}
 					<div className="space-y-3">
 						<Label htmlFor="description">Description</Label>
-						<Textarea
-							id="description"
-							placeholder="Describe what this rule does..."
-							rows={2}
-							{...register("description")}
-						/>
+						<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
 					</div>
 
 					{/* Enabled Switch */}
@@ -330,11 +298,7 @@ export function RoutingRuleSheet({
 							<Label htmlFor="enabled">Enable Rule</Label>
 							<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
 						</div>
-						<Switch
-							id="enabled"
-							checked={enabled}
-							onCheckedChange={(checked) => setValue("enabled", checked)}
-						/>
+						<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 					</div>
 
 					{/* Chain Rule Switch */}
@@ -342,7 +306,8 @@ export function RoutingRuleSheet({
 						<div className="space-y-0.5">
 							<Label htmlFor="chain_rule">Chain Rule</Label>
 							<p className="text-muted-foreground text-sm">
-								After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for composing rules — e.g. normalize a model alias first, then route based on the canonical name.
+								After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
+								composing rules — e.g. normalize a model alias first, then route based on the canonical name.
 							</p>
 						</div>
 						<Switch
@@ -357,11 +322,14 @@ export function RoutingRuleSheet({
 					<div className="grid grid-cols-2 gap-4">
 						<div className="space-y-3">
 							<Label htmlFor="scope">Scope</Label>
-							<Select value={scope} onValueChange={(value) => {
-								setValue("scope", value as any);
-								// Clear scope_id when scope changes
-								setValue("scope_id", "");
-							}}>
+							<Select
+								value={scope}
+								onValueChange={(value) => {
+									setValue("scope", value as any);
+									// Clear scope_id when scope changes
+									setValue("scope_id", "");
+								}}
+							>
 								<SelectTrigger className="w-full">
 									<SelectValue placeholder="Select scope..." />
 								</SelectTrigger>
@@ -446,8 +414,10 @@ export function RoutingRuleSheet({
 							{((scope === "team" && teamsData.teams.length === 0) ||
 								(scope === "customer" && customersData.customers.length === 0) ||
 								(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-									<p className="text-sm text-muted-foreground">No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available</p>
-								)}
+								<p className="text-muted-foreground text-sm">
+									No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+								</p>
+							)}
 							{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 						</div>
 					)}
@@ -471,8 +441,10 @@ export function RoutingRuleSheet({
 					</div>
 
 					{/* Note about Token/Request Limits and Budget Configuration */}
-					<p className="text-xs text-muted-foreground">
-						Note: Ensure token limits, request limits, and budget are configured in <strong>Model Providers → Configurations → {'{provider}'} → Governance</strong> (provider-level) or <strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+					<p className="text-muted-foreground text-xs">
+						Note: Ensure token limits, request limits, and budget are configured in{" "}
+						<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
+						<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
 					</p>
 
 					<Separator />
@@ -482,7 +454,7 @@ export function RoutingRuleSheet({
 						<div className="flex items-center justify-between">
 							<div>
 								<Label>Routing Targets</Label>
-								<p className="text-muted-foreground text-xs mt-0.5">
+								<p className="text-muted-foreground mt-0.5 text-xs">
 									Weights must sum to 1. Leave provider or model empty to use the incoming request value.
 								</p>
 							</div>
@@ -491,7 +463,7 @@ export function RoutingRuleSheet({
 								variant="outline"
 								size="sm"
 								onClick={addTarget}
-								className="gap-2 shrink-0"
+								className="shrink-0 gap-2"
 								data-testid="routing-rule-target-add"
 							>
 								<Plus className="h-4 w-4" />
@@ -515,11 +487,11 @@ export function RoutingRuleSheet({
 						</div>
 
 						{/* Weight sum indicator */}
-						<div className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}>
+						<div
+							className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
+						>
 							Total weight: {totalWeight.toFixed(4)}
-							{Math.abs(totalWeight - 1) > 0.001 && (
-								<span className="text-destructive">(must equal 1)</span>
-							)}
+							{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
 						</div>
 					</div>
 
@@ -580,11 +552,7 @@ export function RoutingRuleSheet({
 														{availableProviders.map((prov) => (
 															<SelectItem key={prov} value={prov}>
 																<div className="flex items-center gap-2">
-																	<RenderProviderIcon
-																		provider={prov as ProviderIconType}
-																		size="sm"
-																		className="h-4 w-4"
-																	/>
+																	<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
 																	<span>{getProviderLabel(prov)}</span>
 																</div>
 															</SelectItem>
@@ -654,12 +622,14 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 		: [];
 
 	return (
-		<div className="rounded-lg border p-3 space-y-3" data-testid={`routing-target-${index}`}>
+		<div className="space-y-3 rounded-lg border p-3" data-testid={`routing-target-${index}`}>
 			<div className="flex items-center justify-between">
-				<span className="text-sm font-medium text-muted-foreground">Target {index + 1}</span>
+				<span className="text-muted-foreground text-sm font-medium">Target {index + 1}</span>
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-1.5">
-						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-xs text-muted-foreground shrink-0">Weight</Label>
+						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">
+							Weight
+						</Label>
 						<Input
 							id={`routing-target-${index}-weight-input`}
 							type="number"
@@ -690,7 +660,9 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 
 			<div className="grid grid-cols-2 gap-3">
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-provider-label`} className="text-xs">Provider</Label>
+					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
+						Provider
+					</Label>
 					<div className="flex gap-1.5">
 						<Select
 							value={target.provider}
@@ -703,7 +675,7 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 							<SelectTrigger
 								id={`routing-target-${index}-provider-select`}
 								aria-labelledby={`routing-target-${index}-provider-label`}
-								className="flex-1 h-9 text-sm"
+								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-provider-select`}
 							>
 								<SelectValue placeholder="Incoming (optional)" />
@@ -712,11 +684,7 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 								{availableProviders.map((prov) => (
 									<SelectItem key={prov} value={prov}>
 										<div className="flex items-center gap-2">
-											<RenderProviderIcon
-												provider={prov as ProviderIconType}
-												size="sm"
-												className="h-4 w-4"
-											/>
+											<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
 											<span>{getProviderLabel(prov)}</span>
 										</div>
 									</SelectItem>
@@ -728,7 +696,11 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 								type="button"
 								variant="outline"
 								size="sm"
-								onClick={() => { onUpdate(index, "provider", ""); onUpdate(index, "model", ""); onUpdate(index, "key_id", ""); }}
+								onClick={() => {
+									onUpdate(index, "provider", "");
+									onUpdate(index, "model", "");
+									onUpdate(index, "key_id", "");
+								}}
 								className="h-9 w-9 p-0"
 								aria-label={`Clear provider for target ${index + 1}`}
 								data-testid={`routing-target-${index}-provider-clear`}
@@ -740,7 +712,9 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 				</div>
 
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-model-label`} className="text-xs">Model</Label>
+					<Label id={`routing-target-${index}-model-label`} className="text-xs">
+						Model
+					</Label>
 					<div className="flex gap-1.5">
 						<div className="flex-1" data-testid={`routing-target-${index}-model-select`}>
 							<ModelMultiselect
@@ -774,13 +748,15 @@ function TargetRow({ target, index, availableProviders, allKeys, showRemove, onU
 
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span></Label>
+					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
+						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
 							<SelectTrigger
 								id={`routing-target-${index}-apikey-select`}
 								aria-labelledby={`routing-target-${index}-apikey-label`}
-								className="flex-1 h-9 text-sm"
+								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-apikey-select`}
 							>
 								<SelectValue placeholder="Select key (optional)" />

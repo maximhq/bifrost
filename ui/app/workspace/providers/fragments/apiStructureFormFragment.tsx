@@ -65,14 +65,16 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	const onSubmit = (data: FormCustomProviderConfig) => {
 		// Create updated provider configuration
-		updateProvider(buildProviderUpdatePayload(provider, {
-			custom_provider_config: {
-				base_provider_type: data.base_provider_type as unknown as BaseProvider,
-				is_key_less: data.is_key_less ?? false,
-				allowed_requests: data.allowed_requests,
-				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
-			},
-		}))
+		updateProvider(
+			buildProviderUpdatePayload(provider, {
+				custom_provider_config: {
+					base_provider_type: data.base_provider_type as unknown as BaseProvider,
+					is_key_less: data.is_key_less ?? false,
+					allowed_requests: data.allowed_requests,
+					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
+				},
+			}),
+		)
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
@@ -133,7 +135,13 @@ export function ApiStructureFormFragment({ provider }: Props) {
 											</label>
 											<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
 										</div>
-										<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} disabled={!hasUpdateProviderAccess} />
+										<Switch
+											id="drop-excess-requests"
+											size="md"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasUpdateProviderAccess}
+										/>
 									</div>
 								</FormItem>
 							)}
@@ -142,7 +150,11 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				</div>
 
 				{/* Allowed Requests Configuration */}
-				<AllowedRequestsFields control={form.control} providerType={form.watch("base_provider_type") as BaseProvider} disabled={!hasUpdateProviderAccess} />
+				<AllowedRequestsFields
+					control={form.control}
+					providerType={form.watch("base_provider_type") as BaseProvider}
+					disabled={!hasUpdateProviderAccess}
+				/>
 
 				{/* Form Actions */}
 				<div className="flex justify-end space-x-2 py-2">
@@ -152,7 +164,11 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
+								<Button
+									type="submit"
+									disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess}
+									isLoading={isUpdatingProvider}
+								>
 									Save API Structure Configuration
 								</Button>
 							</TooltipTrigger>

@@ -1,19 +1,19 @@
-import FormFooter from "@/components/formFooter"
-import { Badge } from "@/components/ui/badge"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import NumberAndSelect from "@/components/ui/numberAndSelect"
-import { resetDurationOptions } from "@/lib/constants/governance"
-import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store"
-import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance"
-import { formatCurrency } from "@/lib/utils/governance"
-import { Validator } from "@/lib/utils/validation"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { formatDistanceToNow } from "date-fns"
-import isEqual from "lodash.isequal"
-import { useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+import FormFooter from "@/components/formFooter";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { resetDurationOptions } from "@/lib/constants/governance";
+import { getErrorMessage, useCreateCustomerMutation, useUpdateCustomerMutation } from "@/lib/store";
+import { CreateCustomerRequest, Customer, UpdateCustomerRequest } from "@/lib/types/governance";
+import { formatCurrency } from "@/lib/utils/governance";
+import { Validator } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { formatDistanceToNow } from "date-fns";
+import isEqual from "lodash.isequal";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 interface CustomerDialogProps {
 	customer?: Customer | null;
@@ -50,21 +50,21 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 };
 
 export default function CustomerDialog({ customer, onSave, onCancel }: CustomerDialogProps) {
-  const isEditing = !!customer
-  const [initialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer))
-  const [formData, setFormData] = useState<CustomerFormData>({
-    ...initialState,
-    isDirty: false,
-  })
+	const isEditing = !!customer;
+	const [initialState] = useState<Omit<CustomerFormData, "isDirty">>(createInitialState(customer));
+	const [formData, setFormData] = useState<CustomerFormData>({
+		...initialState,
+		isDirty: false,
+	});
 
-  const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update)
-  const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess
+	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
+	const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess;
 
-  // RTK Query hooks
-  const [createCustomer, { isLoading: isCreating }] = useCreateCustomerMutation()
-  const [updateCustomer, { isLoading: isUpdating }] = useUpdateCustomerMutation()
-  const loading = isCreating || isUpdating
+	// RTK Query hooks
+	const [createCustomer, { isLoading: isCreating }] = useCreateCustomerMutation();
+	const [updateCustomer, { isLoading: isUpdating }] = useUpdateCustomerMutation();
+	const loading = isCreating || isUpdating;
 
 	// Track isDirty state
 	useEffect(() => {
@@ -81,7 +81,16 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+	}, [
+		formData.name,
+		formData.budgetMaxLimit,
+		formData.budgetResetDuration,
+		formData.tokenMaxLimit,
+		formData.tokenResetDuration,
+		formData.requestMaxLimit,
+		formData.requestResetDuration,
+		initialState,
+	]);
 
 	// Values for validation and submission (already numbers)
 	const budgetMaxLimitNum = formData.budgetMaxLimit;
@@ -158,13 +167,16 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!customer.rate_limit;
-				const hasRateLimit = (tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
+				const hasRateLimit =
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null);
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
 						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {} as UpdateCustomerRequest["rate_limit"];
@@ -187,12 +199,16 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				}
 
 				// Add rate limit if enabled (token or request limits)
-				if ((tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) || (requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)) {
+				if (
+					(tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null) ||
+					(requestMaxLimitNum !== undefined && requestMaxLimitNum !== null)
+				) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimitNum,
 						token_reset_duration: tokenMaxLimitNum !== undefined && tokenMaxLimitNum !== null ? formData.tokenResetDuration : undefined,
 						request_max_limit: requestMaxLimitNum,
-						request_reset_duration: requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
+						request_reset_duration:
+							requestMaxLimitNum !== undefined && requestMaxLimitNum !== null ? formData.requestResetDuration : undefined,
 					};
 				}
 
@@ -272,9 +288,9 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && (customer?.budget || customer?.rate_limit) && (
-							<div className="rounded-lg border bg-muted/50 p-4 space-y-4">
+							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
 								<p className="text-sm font-medium">Current Usage</p>
-								<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{customer?.budget && (
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">Budget</p>
@@ -299,10 +315,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 											<p className="text-muted-foreground text-xs">Tokens</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{customer.rate_limit.token_current_usage.toLocaleString()} / {customer.rate_limit.token_max_limit.toLocaleString()}
+													{customer.rate_limit.token_current_usage.toLocaleString()} /{" "}
+													{customer.rate_limit.token_max_limit.toLocaleString()}
 												</span>
 												<Badge
-													variant={customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"}
+													variant={
+														customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"
+													}
 													className="text-xs"
 												>
 													{Math.round((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100)}%
@@ -318,10 +337,13 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 											<p className="text-muted-foreground text-xs">Requests</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{customer.rate_limit.request_current_usage.toLocaleString()} / {customer.rate_limit.request_max_limit.toLocaleString()}
+													{customer.rate_limit.request_current_usage.toLocaleString()} /{" "}
+													{customer.rate_limit.request_max_limit.toLocaleString()}
 												</span>
 												<Badge
-													variant={customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"}
+													variant={
+														customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"
+													}
 													className="text-xs"
 												>
 													{Math.round((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100)}%
@@ -337,7 +359,14 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						)}
 					</div>
 
-					<FormFooter validator={validator} label="Customer" onCancel={onCancel} isLoading={loading} isEditing={isEditing} hasPermission={hasPermission} />
+					<FormFooter
+						validator={validator}
+						label="Customer"
+						onCancel={onCancel}
+						isLoading={loading}
+						isEditing={isEditing}
+						hasPermission={hasPermission}
+					/>
 				</form>
 			</DialogContent>
 		</Dialog>

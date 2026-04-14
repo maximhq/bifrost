@@ -31,12 +31,7 @@ export function TeamsEmptyState({ onAddClick, canCreate = true }: TeamsEmptyStat
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Add your first team"
-						onClick={onAddClick}
-						disabled={!canCreate}
-						data-testid="team-button-add"
-					>
+					<Button aria-label="Add your first team" onClick={onAddClick} disabled={!canCreate} data-testid="team-button-add">
 						Add Team
 					</Button>
 				</div>

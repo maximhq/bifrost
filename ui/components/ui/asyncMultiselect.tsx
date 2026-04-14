@@ -573,7 +573,6 @@ function CustomOption<T>(props: OptionProps<Option<T>> & { selectProps: CustomOp
 }
 
 function CustomControl<T>(props: ControlProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.controlView) {
 		return props.selectProps.controlView(props);
 	}
@@ -617,7 +616,6 @@ function CustomMultiValueLabel<T>(props: MultiValueGenericProps<Option<T>> & { s
 }
 
 function CustomMultiValue<T>(props: MultiValueProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.multiValueView) {
 		return props.selectProps.multiValueView(props);
 	}
@@ -626,8 +624,6 @@ function CustomMultiValue<T>(props: MultiValueProps<Option<T>> & { selectProps: 
 }
 
 function CustomGroupHeading<T>(props: GroupHeadingProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
-
 	if (props.selectProps.groupHeadingView) {
 		return props.selectProps.groupHeadingView(props);
 	}
@@ -646,7 +642,6 @@ function CustomGroup<T>(props: GroupProps<Option<T>> & { selectProps: CustomComp
 }
 
 function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.clearIndicatorView) {
 		return props.selectProps.clearIndicatorView(props);
 	}
@@ -655,8 +650,6 @@ function CustomClearIndicator<T>(props: ClearIndicatorProps<Option<T>> & { selec
 }
 
 function CustomIndicatorSeparator<T>(props: IndicatorSeparatorProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
-
 	if (props.selectProps.indicatorSeparatorView) {
 		return props.selectProps.indicatorSeparatorView(props);
 	}
@@ -665,7 +658,6 @@ function CustomIndicatorSeparator<T>(props: IndicatorSeparatorProps<Option<T>> &
 }
 
 function CustomInput<T>(props: InputProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.inputView) {
 		return props.selectProps.inputView(props);
 	}
@@ -682,7 +674,6 @@ function CustomLoadingIndicator<T>(props: LoadingIndicatorProps<Option<T>> & { s
 }
 
 function CustomMenu<T>(props: MenuProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.menuView) {
 		return props.selectProps.menuView(props);
 	}
@@ -691,7 +682,6 @@ function CustomMenu<T>(props: MenuProps<Option<T>> & { selectProps: CustomCompon
 }
 
 function CustomMenuList<T>(props: MenuListProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.menuListView) {
 		return props.selectProps.menuListView(props);
 	}
@@ -700,7 +690,6 @@ function CustomMenuList<T>(props: MenuListProps<Option<T>> & { selectProps: Cust
 }
 
 function CustomMultiValueContainer<T>(props: MultiValueGenericProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.multiValueContainerView) {
 		return props.selectProps.multiValueContainerView(props);
 	}
@@ -709,7 +698,6 @@ function CustomMultiValueContainer<T>(props: MultiValueGenericProps<Option<T>> &
 }
 
 function CustomNoOptionsMessage<T>(props: NoticeProps<Option<T>> & { selectProps: CustomComponentsProps }) {
-
 	if (props.selectProps.noOptionsMessageView) {
 		return props.selectProps.noOptionsMessageView(props);
 	}
@@ -718,7 +706,6 @@ function CustomNoOptionsMessage<T>(props: NoticeProps<Option<T>> & { selectProps
 }
 
 function CustomPlaceholder<T>(props: PlaceholderProps<Option<T>> & { selectProps: CustomPlaceholderProps & CustomComponentsProps }) {
-
 	if (props.selectProps.placeholderView) {
 		return props.selectProps.placeholderView(props);
 	}

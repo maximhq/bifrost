@@ -224,7 +224,7 @@ export function HeadersTable<T extends HeaderValue>({
 									}}
 									className={cn(
 										"border-b last:border-0 transition-colors",
-										isHighlighted && "bg-yellow-100 dark:bg-yellow-900/20 animate-pulse"
+										isHighlighted && "bg-yellow-100 dark:bg-yellow-900/20 animate-pulse",
 									)}
 								>
 									<TableCell className="p-2">
@@ -245,14 +245,11 @@ export function HeadersTable<T extends HeaderValue>({
 													data-column="key"
 													onChange={(e) => handleKeyChange(key, e.target.value, headerValue, index)}
 													onKeyDown={(e) => handleKeyDown(e, index, "key")}
-													className={cn(
-														"border-0 focus-visible:ring-0 focus-visible:ring-offset-0",
-														hasConflict && "text-destructive"
-													)}
+													className={cn("border-0 focus-visible:ring-0 focus-visible:ring-offset-0", hasConflict && "text-destructive")}
 													disabled={disabled}
 												/>
 											)}
-											{hasConflict && <span className="px-3 text-xs text-destructive">Duplicate key</span>}
+											{hasConflict && <span className="text-destructive px-3 text-xs">Duplicate key</span>}
 										</div>
 									</TableCell>
 									<TableCell className="p-2">

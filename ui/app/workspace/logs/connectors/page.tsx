@@ -1,5 +1,5 @@
-import ObservabilityConnectorsView from "@/app/workspace/observability/views/observabilityView"
+import ObservabilityConnectorsView from "@/app/workspace/observability/views/observabilityView";
 
 export default function ConnectorsPage() {
-  return <ObservabilityConnectorsView />
+	return <ObservabilityConnectorsView />;
 }

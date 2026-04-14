@@ -1,7 +1,7 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { ClientLayout } from "../clientLayout";
 
-function WorkspaceLayout({ children }: { children: React.ReactNode }) {	
+function WorkspaceLayout({ children }: { children: React.ReactNode }) {
 	return <ClientLayout>{children}</ClientLayout>;
 }
 

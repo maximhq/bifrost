@@ -43,8 +43,16 @@ export function getRealtimeTurnMessages(log?: LogEntry): { tool?: string; user?:
 	const toolMessages = log?.input_history?.filter((message) => message.role === "tool") || [];
 	const userMessages = log?.input_history?.filter((message) => message.role === "user") || [];
 	return {
-		tool: toolMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
-		user: userMessages.map((m) => getMessageFromContent(m.content)).filter(Boolean).join("\n") || "",
+		tool:
+			toolMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
+		user:
+			userMessages
+				.map((m) => getMessageFromContent(m.content))
+				.filter(Boolean)
+				.join("\n") || "",
 		assistant: log?.output_message ? getMessageFromContent(log.output_message.content) : "",
 		assistantToolCall: getAssistantToolCallSummary(log),
 	};
@@ -120,22 +128,29 @@ export function LogMessageCell({ log, maxWidth = "max-w-[400px]" }: { log: LogEn
 	return (
 		<div className="flex items-center gap-1.5">
 			{isLargePayload && (
-				<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
+				<span
+					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
+					title="Large payload - streamed directly to provider"
+				>
 					LP
 				</span>
 			)}
-			{realtimeMessages && (realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+			{realtimeMessages &&
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div className={cn(maxWidth, "font-mono text-sm font-normal leading-5")} title={input || "-"}>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
-					{realtimeMessages.assistantToolCall ? <div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div> : null}
+					{realtimeMessages.assistantToolCall ? (
+						<div className="truncate">Assistant Tool Call: {realtimeMessages.assistantToolCall}</div>
+					) : null}
 					{realtimeMessages.assistant ? <div className="truncate">Assistant: {realtimeMessages.assistant}</div> : null}
 				</div>
 			) : (
 				<div className={cn(maxWidth, "truncate font-mono text-sm font-normal")} title={input || "-"}>
-					{input || (isLargePayload
-					? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
-					: "-")}
+					{input ||
+						(isLargePayload
+							? `Large payload ${log.is_large_payload_request && log.is_large_payload_response ? "request & response" : log.is_large_payload_request ? "request" : "response"}`
+							: "-")}
 				</div>
 			)}
 		</div>
@@ -202,7 +217,6 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 			accessorKey: "model",
 			header: "Model",
 			cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
-
 		},
 		{
 			accessorKey: "latency",
@@ -215,7 +229,9 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 			cell: ({ row }) => {
 				const latency = row.original.latency;
 				return (
-					<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+					<div className="pl-4 font-mono text-sm">
+						{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}
+					</div>
 				);
 			},
 		},
@@ -272,7 +288,14 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" aria-label="Delete log" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
+				<Button
+					variant="outline"
+					size="icon"
+					aria-label="Delete log"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+					onClick={() => onDelete(log)}
+					disabled={!hasDeleteAccess}
+				>
 					<Trash2 />
 				</Button>
 			);

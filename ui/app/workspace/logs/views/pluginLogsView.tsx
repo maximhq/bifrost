@@ -50,7 +50,10 @@ function PluginSection({ name, entries }: { name: string; entries: PluginLogEntr
 		<div className="rounded-md border">
 			<button
 				type="button"
-				data-testid={`plugin-logs-toggle-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`}
+				data-testid={`plugin-logs-toggle-${name
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/(^-|-$)/g, "")}`}
 				onClick={() => setIsOpen(!isOpen)}
 				className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm"
 			>

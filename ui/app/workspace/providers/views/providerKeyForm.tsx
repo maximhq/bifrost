@@ -93,14 +93,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		}
 		const mutation = isEditing
 			? updateProviderKey({
-				provider: provider.name,
-				keyId: currentKey!.id,
-				key,
-			})
+					provider: provider.name,
+					keyId: currentKey!.id,
+					key,
+				})
 			: createProviderKey({
-				provider: provider.name,
-				key,
-			});
+					provider: provider.name,
+					key,
+				});
 
 		mutation
 			.unwrap()

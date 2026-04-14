@@ -362,7 +362,12 @@ export function RoutingTreeView() {
 			<div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3">
 				<GitBranch className="h-10 w-10 opacity-20" />
 				<p className="text-sm">No routing rules to display</p>
-				<Button variant="outline" size="sm" data-testid="routing-tree-back-empty-btn" onClick={() => navigate({ to: "/workspace/routing-rules" })}>
+				<Button
+					variant="outline"
+					size="sm"
+					data-testid="routing-tree-back-empty-btn"
+					onClick={() => navigate({ to: "/workspace/routing-rules" })}
+				>
 					<ArrowLeft className="mr-1.5 h-4 w-4" />
 					Back to rules
 				</Button>

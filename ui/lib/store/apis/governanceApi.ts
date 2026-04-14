@@ -39,7 +39,15 @@ import {
 } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
-type PricingOverrideQueryArgs = { scopeKind?: string; virtualKeyID?: string; providerID?: string; providerKeyID?: string; limit?: number; offset?: number; search?: string };
+type PricingOverrideQueryArgs = {
+	scopeKind?: string;
+	virtualKeyID?: string;
+	providerID?: string;
+	providerKeyID?: string;
+	limit?: number;
+	offset?: number;
+	search?: string;
+};
 
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({

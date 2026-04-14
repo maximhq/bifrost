@@ -75,9 +75,7 @@ export function DraggableColumnHeader<TData>({
 		>
 			{header.isPlaceholder ? null : (
 				<div className="group/col flex items-center">
-					<div className="flex-1">
-						{flexRender(header.column.columnDef.header, header.getContext())}
-					</div>
+					<div className="flex-1">{flexRender(header.column.columnDef.header, header.getContext())}</div>
 					{isConfigurable && (
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>

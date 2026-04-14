@@ -1,9 +1,9 @@
-import ObservabilityView from "../views/observabilityView"
+import ObservabilityView from "../views/observabilityView";
 
 export default function ObservabilityPage() {
-  return (
-    <div className="mx-auto flex w-full max-w-7xl">
-      <ObservabilityView />
-    </div>
-  )
+	return (
+		<div className="mx-auto flex w-full max-w-7xl">
+			<ObservabilityView />
+		</div>
+	);
 }

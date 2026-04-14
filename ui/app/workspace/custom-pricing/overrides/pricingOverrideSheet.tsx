@@ -161,9 +161,19 @@ export const PRICING_FIELDS = [
 	},
 	{ key: "cache_read_input_token_cost_priority", label: "Cache read / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "cache_read_input_token_cost_flex", label: "Cache read / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost_above_200k_tokens_priority", label: "Cache read / token (>200k, priority)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_read_input_token_cost_above_200k_tokens_priority",
+		label: "Cache read / token (>200k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "cache_read_input_token_cost_above_272k_tokens", label: "Cache read / token (>272k)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost_above_272k_tokens_priority", label: "Cache read / token (>272k, priority)", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cache_read_input_token_cost_above_272k_tokens_priority",
+		label: "Cache read / token (>272k, priority)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
 	{ key: "search_context_cost_per_query", label: "Search context / query", group: "chat", requestTypeGroups: ["chat", "rerank"] },
 	{ key: "code_interpreter_cost_per_session", label: "Code interpreter / session", group: "chat", requestTypeGroups: ["chat"] },
 	// Audio fields

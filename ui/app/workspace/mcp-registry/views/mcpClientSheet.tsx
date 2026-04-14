@@ -63,9 +63,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
-	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>(
-		(mcpClient.config.allowed_extra_headers || []).join(", "),
-	);
+	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -289,7 +287,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				// and all of those tools are now auto-executed. When specific tools are
 				// explicitly listed, keep the explicit list to avoid sending "*" when only
 				// a subset of tools is enabled.
-				if (isAllToolsMode && newAutoExecute.length === allToolNames.length && allToolNames.every((tool) => newAutoExecute.includes(tool))) {
+				if (
+					isAllToolsMode &&
+					newAutoExecute.length === allToolNames.length &&
+					allToolNames.every((tool) => newAutoExecute.includes(tool))
+				) {
 					newAutoExecute = ["*"];
 				}
 			} else {
@@ -414,9 +416,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
 															<p>
-																When enabled, this MCP server is accessible to all virtual keys without requiring explicit
-																per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP
-																config for this server, that config takes precedence and overrides this behaviour.
+																When enabled, this MCP server is accessible to all virtual keys without requiring explicit per-key
+																assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server,
+																that config takes precedence and overrides this behaviour.
 															</p>
 														</TooltipContent>
 													</Tooltip>
@@ -509,9 +511,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs">
-															<p>
-																Allowlist of headers that callers can forward to this MCP server at request time.
-															</p>
+															<p>Allowlist of headers that callers can forward to this MCP server at request time.</p>
 														</TooltipContent>
 													</Tooltip>
 												</TooltipProvider>
@@ -528,7 +528,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													}}
 													onBlur={() => {
 														const parsed = allowedExtraHeadersRaw.trim()
-															? allowedExtraHeadersRaw.split(",").map((h) => h.trim()).filter(Boolean)
+															? allowedExtraHeadersRaw
+																	.split(",")
+																	.map((h) => h.trim())
+																	.filter(Boolean)
 															: [];
 														field.onChange(parsed);
 														field.onBlur();
@@ -555,7 +558,13 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										wrap={true}
 										code={JSON.stringify(
 											(() => {
-												const { client_id:_client_id, name:_name, tools_to_execute:_tools_to_execute, headers:_headers, ...rest } = mcpClient.config;
+												const {
+													client_id: _client_id,
+													name: _name,
+													tools_to_execute: _tools_to_execute,
+													headers: _headers,
+													...rest
+												} = mcpClient.config;
 												return rest;
 											})(),
 											null,
@@ -823,11 +832,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								)}
 
 								{mcpClient.tools && mcpClient.tools.length > 0 && (
-									<div className="space-y-4 pb-10 mt-6">
+									<div className="mt-6 space-y-4 pb-10">
 										<div className="flex flex-col gap-2">
 											<div className="flex items-center justify-between">
 												<div className="flex items-center gap-2">
-													<div className="font-semibold text-md">Virtual Key Access</div>
+													<div className="text-md font-semibold">Virtual Key Access</div>
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>
@@ -840,7 +849,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													</TooltipProvider>
 												</div>
 												{vkOptions.length > 0 && (
-													<Select value={vkSelectValue} onValueChange={(v) => { addVKConfig(v); setVKSearch(""); setVKSelectValue(""); }}>
+													<Select
+														value={vkSelectValue}
+														onValueChange={(v) => {
+															addVKConfig(v);
+															setVKSearch("");
+															setVKSelectValue("");
+														}}
+													>
 														<SelectTrigger
 															className="h-7.5 w-auto gap-1.5 px-2 py-1 text-sm font-medium"
 															data-testid="mcpclient-virtualkey-add-trigger"
@@ -858,12 +874,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																	className="h-7 text-sm"
 																/>
 															</div>
-															{vkOptions.length > 0 ? vkOptions.map((opt) => (
-																<SelectItem key={opt.value} value={opt.value}>
-																	{opt.label}
-																</SelectItem>
-															)) : (
-																<div className="px-2 py-1.5 text-sm text-muted-foreground">No virtual keys found</div>
+															{vkOptions.length > 0 ? (
+																vkOptions.map((opt) => (
+																	<SelectItem key={opt.value} value={opt.value}>
+																		{opt.label}
+																	</SelectItem>
+																))
+															) : (
+																<div className="text-muted-foreground px-2 py-1.5 text-sm">No virtual keys found</div>
 															)}
 														</SelectContent>
 													</Select>
@@ -911,9 +929,15 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																			}
 																			updateVKConfigTools(vc.virtual_key_id, next);
 																		}}
-																		placeholder={vc.tools_to_execute.includes("*") ? "All tools allowed" : vc.tools_to_execute.length === 0 ? "No tools allowed" : "Select tools..."}
+																		placeholder={
+																			vc.tools_to_execute.includes("*")
+																				? "All tools allowed"
+																				: vc.tools_to_execute.length === 0
+																					? "No tools allowed"
+																					: "Select tools..."
+																		}
 																		maxCount={3}
-																		className="bg-background dark:bg-input/30 border-input rounded-sm text-foreground hover:bg-accent hover:text-accent-foreground font-normal"
+																		className="bg-background dark:bg-input/30 border-input text-foreground hover:bg-accent hover:text-accent-foreground rounded-sm font-normal"
 																	/>
 																</TableCell>
 																<TableCell>
@@ -949,6 +973,6 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					</form>
 				</Form>
 			</SheetContent>
-		</Sheet >
+		</Sheet>
 	);
 }

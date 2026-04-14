@@ -202,14 +202,10 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 							? {
 									token_max_limit: data.tokenMaxLimit,
 									token_reset_duration:
-										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null
-											? data.tokenResetDuration || "1h"
-											: undefined,
+										data.tokenMaxLimit !== undefined && data.tokenMaxLimit !== null ? data.tokenResetDuration || "1h" : undefined,
 									request_max_limit: data.requestMaxLimit,
 									request_reset_duration:
-										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null
-											? data.requestResetDuration || "1h"
-											: undefined,
+										data.requestMaxLimit !== undefined && data.requestMaxLimit !== null ? data.requestResetDuration || "1h" : undefined,
 								}
 							: undefined,
 				}).unwrap();

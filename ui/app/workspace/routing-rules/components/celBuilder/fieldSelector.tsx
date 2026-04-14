@@ -12,11 +12,7 @@ import { FieldSelectorProps, RuleGroupType, RuleType } from "react-querybuilder"
 /**
  * Recursively find and update a rule's value by path in the query tree.
  */
-function updateRuleValueAtPath(
-	query: RuleGroupType,
-	targetPath: number[],
-	newValue: string,
-): RuleGroupType {
+function updateRuleValueAtPath(query: RuleGroupType, targetPath: number[], newValue: string): RuleGroupType {
 	if (targetPath.length === 0) return query;
 
 	const [currentIndex, ...restPath] = targetPath;
@@ -28,11 +24,7 @@ function updateRuleValueAtPath(
 		newRules[currentIndex] = { ...rule, value: newValue };
 	} else {
 		// Recurse into nested group
-		newRules[currentIndex] = updateRuleValueAtPath(
-			newRules[currentIndex] as RuleGroupType,
-			restPath,
-			newValue,
-		);
+		newRules[currentIndex] = updateRuleValueAtPath(newRules[currentIndex] as RuleGroupType, restPath, newValue);
 	}
 
 	return { ...query, rules: newRules };
@@ -40,10 +32,7 @@ function updateRuleValueAtPath(
 
 export function FieldSelector({ value, handleOnChange, options, rule, path, schema }: FieldSelectorProps) {
 	// Check if this is a keyValue field (headers/params)
-	const fieldData = useMemo(
-		() => schema?.fields?.find((f) => "value" in f && f.value === value),
-		[schema?.fields, value],
-	);
+	const fieldData = useMemo(() => schema?.fields?.find((f) => "value" in f && f.value === value), [schema?.fields, value]);
 	const isKeyValueField = fieldData && "inputType" in fieldData && fieldData.inputType === "keyValue";
 
 	// Parse the key from the rule's value ("key:value" or just "key")

@@ -59,7 +59,15 @@ const getValidatedStatus = (status: string): Status => {
 	return "processing";
 };
 
-export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNavigate, hasPrev = false, hasNext = false }: MCPLogDetailSheetProps) {
+export function MCPLogDetailSheet({
+	log,
+	open,
+	onOpenChange,
+	handleDelete,
+	onNavigate,
+	hasPrev = false,
+	hasNext = false,
+}: MCPLogDetailSheetProps) {
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
 	// Keyboard navigation: arrow up/down to navigate between logs
@@ -81,10 +89,26 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNav
 						</SheetTitle>
 					</div>
 					<div className="flex items-center">
-						<Button variant="ghost" className="size-8" disabled={!hasPrev} onClick={() => onNavigate?.("prev")} aria-label="Previous log" data-testid="mcp-log-nav-prev" type="button">
+						<Button
+							variant="ghost"
+							className="size-8"
+							disabled={!hasPrev}
+							onClick={() => onNavigate?.("prev")}
+							aria-label="Previous log"
+							data-testid="mcp-log-nav-prev"
+							type="button"
+						>
 							<ChevronUp className="size-4" />
 						</Button>
-						<Button variant="ghost" className="size-8" disabled={!hasNext} onClick={() => onNavigate?.("next")} aria-label="Next log" data-testid="mcp-log-nav-next" type="button">
+						<Button
+							variant="ghost"
+							className="size-8"
+							disabled={!hasNext}
+							onClick={() => onNavigate?.("next")}
+							aria-label="Next log"
+							data-testid="mcp-log-nav-next"
+							type="button"
+						>
 							<ChevronDown className="size-4" />
 						</Button>
 					</div>
@@ -143,7 +167,11 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete, onNav
 							<LogEntryDetailsView
 								className="w-full"
 								label="End Timestamp"
-								value={isValid(new Date(log.timestamp)) ? format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa") : "Invalid date"}
+								value={
+									isValid(new Date(log.timestamp))
+										? format(addMilliseconds(new Date(log.timestamp), log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
+										: "Invalid date"
+								}
 							/>
 							<LogEntryDetailsView className="w-full" label="Latency" value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"} />
 						</div>

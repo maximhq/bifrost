@@ -35,7 +35,13 @@ interface OtelFormFragmentProps {
 	isLoading?: boolean;
 }
 
-export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: OtelFormFragmentProps) {
+export function OtelFormFragment({
+	currentConfig: initialConfig,
+	onSave,
+	onDelete,
+	isDeleting = false,
+	isLoading = false,
+}: OtelFormFragmentProps) {
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({

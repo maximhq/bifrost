@@ -57,15 +57,17 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 	const watchedProxyType = form.watch("proxy_config.type");
 
 	const onSubmit = (data: ProxyOnlyFormSchema) => {
-		updateProvider(buildProviderUpdatePayload(provider, {
-			proxy_config: {
-				type: data.proxy_config?.type ?? "none",
-				url: data.proxy_config?.url || undefined,
-				username: data.proxy_config?.username || undefined,
-				password: data.proxy_config?.password || undefined,
-				ca_cert_pem: data.proxy_config?.ca_cert_pem || undefined,
-			},
-		}))
+		updateProvider(
+			buildProviderUpdatePayload(provider, {
+				proxy_config: {
+					type: data.proxy_config?.type ?? "none",
+					url: data.proxy_config?.url || undefined,
+					username: data.proxy_config?.username || undefined,
+					password: data.proxy_config?.password || undefined,
+					ca_cert_pem: data.proxy_config?.ca_cert_pem || undefined,
+				},
+			}),
+		)
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
@@ -90,7 +92,11 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 							render={({ field }) => (
 								<FormItem>
 									<FormLabel>Proxy Type</FormLabel>
-									<Select onValueChange={field.onChange} value={field.value === "none" ? "" : field.value} disabled={!hasUpdateProviderAccess}>
+									<Select
+										onValueChange={field.onChange}
+										value={field.value === "none" ? "" : field.value}
+										disabled={!hasUpdateProviderAccess}
+									>
 										<FormControl>
 											<SelectTrigger className="w-48">
 												<SelectValue placeholder="Select type" />
@@ -121,7 +127,12 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										<FormItem>
 											<FormLabel>Proxy URL</FormLabel>
 											<FormControl>
-												<Input placeholder="http://proxy.example.com" {...field} value={field.value || ""} disabled={!hasUpdateProviderAccess} />
+												<Input
+													placeholder="http://proxy.example.com"
+													{...field}
+													value={field.value || ""}
+													disabled={!hasUpdateProviderAccess}
+												/>
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -148,7 +159,13 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 											<FormItem>
 												<FormLabel>Password</FormLabel>
 												<FormControl>
-													<Input type="password" placeholder="Proxy password" {...field} value={field.value || ""} disabled={!hasUpdateProviderAccess} />
+													<Input
+														type="password"
+														placeholder="Proxy password"
+														{...field}
+														value={field.value || ""}
+														disabled={!hasUpdateProviderAccess}
+													/>
 												</FormControl>
 												<FormMessage />
 											</FormItem>

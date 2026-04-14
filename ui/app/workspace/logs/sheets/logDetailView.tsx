@@ -211,7 +211,11 @@ export function LogDetailView({
 				<div className="space-y-4">
 					<BlockHeader title="Timings" />
 					<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
-						<LogEntryDetailsView className="w-full" label="Start Timestamp" value={format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa")} />
+						<LogEntryDetailsView
+							className="w-full"
+							label="Start Timestamp"
+							value={format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa")}
+						/>
 						<LogEntryDetailsView
 							className="w-full"
 							label="End Timestamp"

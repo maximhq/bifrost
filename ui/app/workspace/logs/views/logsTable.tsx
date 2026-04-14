@@ -1,5 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import {
+	buildPinStyle,
+	ColumnConfigDropdown,
+	DraggableColumnHeader,
+	PIN_SHADOW_LEFT,
+	PIN_SHADOW_RIGHT,
+	useColumnConfig,
+	useHeaderCellRefs,
+	usePinOffsets,
+} from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
@@ -166,12 +175,7 @@ export function LogsDataTable({
 						fetchStats={fetchStats}
 					/>
 				</div>
-				<ColumnConfigDropdown
-					entries={entries}
-					labels={columnLabels}
-					onToggleVisibility={toggleVisibility}
-					onReset={reset}
-				/>
+				<ColumnConfigDropdown entries={entries} labels={columnLabels} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
 
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
@@ -238,7 +242,7 @@ export function LogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
 											{row.getVisibleCells().map((cell) => {
 												const pinned = cell.column.getIsPinned();
 												return (
@@ -279,7 +283,14 @@ export function LogsDataTable({
 				</div>
 
 				<div className="flex items-center gap-2">
-					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} data-testid="prev-page" aria-label="Previous page">
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => goToPage(currentPage - 1)}
+						disabled={currentPage <= 1}
+						data-testid="prev-page"
+						aria-label="Previous page"
+					>
 						<ChevronLeft className="size-3" />
 					</Button>
 

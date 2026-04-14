@@ -120,7 +120,9 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
 						/>
 						{displayModels.map((model, idx) => (
-							<Bar isAnimationActive={false}								key={model}
+							<Bar
+								isAnimationActive={false}
+								key={model}
 								dataKey={`model_${idx}`}
 								stackId="cost"
 								fill={getModelColor(idx)}
@@ -154,7 +156,9 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 						/>
 						<Tooltip content={<CustomTooltip selectedModel={selectedModel} models={data.models} />} />
 						{displayModels.map((model, idx) => (
-							<Area isAnimationActive={false}								key={model}
+							<Area
+								isAnimationActive={false}
+								key={model}
 								type="monotone"
 								dataKey={`model_${idx}`}
 								stackId="1"

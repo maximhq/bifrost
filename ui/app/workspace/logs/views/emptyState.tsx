@@ -239,7 +239,7 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 	}, []);
 
 	const isUnexpectedError = error && error.includes("An unexpected error occurred");
-	
+
 	return (
 		<div className="dark:bg-card flex w-full flex-col items-center justify-center space-y-8 bg-white">
 			{error && (

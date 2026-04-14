@@ -89,8 +89,24 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-						<Bar isAnimationActive={false} dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="success"
+							stackId="requests"
+							fill={CHART_COLORS.success}
+							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="error"
+							stackId="requests"
+							fill={CHART_COLORS.error}
+							fillOpacity={0.9}
+							radius={[2, 2, 0, 0]}
+							barSize={30}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -123,7 +139,15 @@ export function LogVolumeChart({ data, chartType, startTime, endTime }: LogVolum
 							fill={CHART_COLORS.success}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="error"
+							stackId="1"
+							stroke={CHART_COLORS.error}
+							fill={CHART_COLORS.error}
+							fillOpacity={0.7}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>

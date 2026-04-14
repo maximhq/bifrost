@@ -1,11 +1,7 @@
 {
 	"compilerOptions": {
 		"target": "ES2017",
-		"lib": [
-			"dom",
-			"dom.iterable",
-			"esnext"
-		],
+		"lib": ["dom", "dom.iterable", "esnext"],
 		"allowJs": true,
 		"skipLibCheck": true,
 		"strict": true,
@@ -19,25 +15,11 @@
 		"incremental": true,
 		"types": ["vite/client"],
 		"paths": {
-			"@/*": [
-				"./*"
-			],
-			"@enterprise/*": [
-				"./app/enterprise/*",
-				"./app/_fallbacks/enterprise/*"
-			],
-			"@schemas/*": [
-				"./app/enterprise/lib/schemas/*",
-				"./app/_fallbacks/enterprise/lib/schemas/*"
-			]
+			"@/*": ["./*"],
+			"@enterprise/*": ["./app/enterprise/*", "./app/_fallbacks/enterprise/*"],
+			"@schemas/*": ["./app/enterprise/lib/schemas/*", "./app/_fallbacks/enterprise/lib/schemas/*"]
 		}
 	},
-	"include": [
-		"**/*.ts",
-		"**/*.tsx"
-	],
-	"exclude": [
-		"node_modules",
-		"out"
-	]
+	"include": ["**/*.ts", "**/*.tsx"],
+	"exclude": ["node_modules", "out"]
 }
