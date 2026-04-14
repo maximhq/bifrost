@@ -958,6 +958,63 @@ type Schema struct {
 	Type Type `json:"type,omitempty"`
 }
 
+// toInt64Ptr converts an any value (from JSON) to *int64, accepting both
+// JSON numbers (float64 from standard unmarshal) and JSON strings ("1" from
+// Google's protobuf int64 serialization). Returns nil for nil or unparseable values.
+func toInt64Ptr(v any) *int64 {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case float64:
+		i := int64(val)
+		return &i
+	case string:
+		i, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return nil
+		}
+		return &i
+	default:
+		return nil
+	}
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for Schema.
+// The `,string` tag on int64 fields (minLength, maxLength, etc.) only accepts
+// JSON strings like `"1"`, but standard JSON Schema sends numbers like `1`.
+// This method accepts both forms, fixing compatibility with non-protobuf clients.
+func (s *Schema) UnmarshalJSON(data []byte) error {
+	// Alias prevents infinite recursion by stripping Schema's UnmarshalJSON.
+	type Alias Schema
+	aux := &struct {
+		*Alias
+		// Override `,string`-tagged fields with `any` to accept both numbers and strings.
+		MaxItems      any `json:"maxItems,omitempty"`
+		MaxLength     any `json:"maxLength,omitempty"`
+		MaxProperties any `json:"maxProperties,omitempty"`
+		MinItems      any `json:"minItems,omitempty"`
+		MinLength     any `json:"minLength,omitempty"`
+		MinProperties any `json:"minProperties,omitempty"`
+	}{
+		Alias: (*Alias)(s),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Convert flex fields (number or string) to *int64.
+	s.MaxItems = toInt64Ptr(aux.MaxItems)
+	s.MaxLength = toInt64Ptr(aux.MaxLength)
+	s.MaxProperties = toInt64Ptr(aux.MaxProperties)
+	s.MinItems = toInt64Ptr(aux.MinItems)
+	s.MinLength = toInt64Ptr(aux.MinLength)
+	s.MinProperties = toInt64Ptr(aux.MinProperties)
+
+	return nil
+}
+
 // Type represents the type of the data.
 type Type string
 
