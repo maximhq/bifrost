@@ -4,7 +4,7 @@ import { useEffect } from "react";
 
 /**
  * App-wide top progress bar driven by TanStack Router navigation events.
- * Replaces @bprogress/next/app, which only works with the Next.js router.
+ * Replaces @bprogress/next/app, which only worked with the Next.js router.
  *
  * Subscribes to the router's pending state via subscribe() and toggles the
  * @bprogress/core bar accordingly.

@@ -78,7 +78,7 @@ export function AttachmentDisplay({
 				if (att.type === "image_url" && att.image_url?.url) {
 					return (
 						<div key={i} className="group/att relative max-w-full">
-							{/* eslint-disable-next-line @next/next/no-img-element */}
+							{/* eslint-disable-next-line jsx-a11y/alt-text */}
 							<img
 								src={att.image_url.url}
 								alt="attached image"

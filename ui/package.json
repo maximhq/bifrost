@@ -4,9 +4,8 @@
 	"private": true,
 	"scripts": {
 		"dev": "vite",
-		"build-enterprise": "vite build && npm run fix-paths",
-		"build": "vite build && npm run fix-paths && npm run copy-build",
-		"fix-paths": "node scripts/fix-paths.js",
+		"build-enterprise": "vite build",
+		"build": "vite build && npm run copy-build",
 		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
 		"start": "vite preview",
 		"lint": "oxlint",

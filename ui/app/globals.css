@@ -8,7 +8,7 @@
 
 /* ─── Local Geist fonts ───────────────────────────────────────────────────
  * Variable woff2 files self-hosted from public/static/fonts/.
- * Replaces @fontsource-variable/geist and next/font/google.
+ * Self-hosted variable woff2 files, replaces @fontsource-variable/geist.
  */
 @font-face {
 	font-family: Geist;

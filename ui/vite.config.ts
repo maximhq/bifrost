@@ -33,6 +33,7 @@ export default defineConfig({
 		}),
 	],
 	resolve: {
+		preserveSymlinks: true,
 		alias: {
 			"@": path.resolve(__dirname),
 			"@enterprise": isEnterpriseBuild
@@ -44,13 +45,11 @@ export default defineConfig({
 		},
 	},
 	define: {
-		// Shim Next.js public env vars so existing call sites keep working
-		// without a sweeping rename to import.meta.env. NODE_ENV is set by
-		// Vite (mode), but the literal `process.env.NODE_ENV` reference is
-		// not statically replaced unless we declare it here.
 		"process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "production"),
-		"process.env.NEXT_PUBLIC_IS_ENTERPRISE": JSON.stringify(isEnterpriseBuild ? "true" : "false"),
-		"process.env.NEXT_PUBLIC_DISABLE_PROFILER": JSON.stringify(process.env.NEXT_PUBLIC_DISABLE_PROFILER ?? ""),
+		"process.env.BIFROST_IS_ENTERPRISE": JSON.stringify(isEnterpriseBuild ? "true" : "false"),
+		"process.env.BIFROST_DISABLE_PROFILER": JSON.stringify(process.env.BIFROST_DISABLE_PROFILER ?? ""),
+		"process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY": JSON.stringify(process.env.ENTERPRISE_TRIAL_EXPIRY ?? ""),
+		"process.env.BIFROST_PORT": JSON.stringify(process.env.BIFROST_PORT ?? ""),
 	},
 	server: {
 		port: 3000,

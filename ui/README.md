@@ -4,7 +4,7 @@ A modern, production-ready web interface for the [Bifrost AI Gateway](https://gi
 
 ## Overview
 
-Bifrost UI is a Next.js-powered web dashboard that serves as the control center for your Bifrost AI Gateway. It provides an intuitive interface to monitor AI requests, configure providers, manage MCP clients, and analyze performance metrics.
+Bifrost UI is a React + Vite + TanStack Router web dashboard that serves as the control center for your Bifrost AI Gateway. It provides an intuitive interface to monitor AI requests, configure providers, manage MCP clients, and analyze performance metrics.
 
 ### Key Features
 
@@ -40,14 +40,14 @@ The development server runs on `http://localhost:3000` and connects to your Bifr
 
 ```bash
 # Development only - customize Bifrost backend port
-NEXT_PUBLIC_BIFROST_PORT=8080
+BIFROST_PORT=8080
 ```
 
 ## Architecture
 
 ### Technology Stack
 
-- **Framework**: Next.js 15 with App Router
+- **Framework**: React 19 + Vite + TanStack Router
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS + Radix UI components
 - **State Management**: Redux Toolkit with RTK Query
@@ -60,7 +60,7 @@ NEXT_PUBLIC_BIFROST_PORT=8080
 ```
 ┌─────────────────┐    HTTP/WebSocket    ┌──────────────────┐
 │   Bifrost UI    │ ◄─────────────────► │ Bifrost HTTP     │
-│   (Next.js)     │                     │ Transport (Go)   │
+│   (React+Vite)  │                     │ Transport (Go)   │
 └─────────────────┘                     └──────────────────┘
         │                                        │
         │ Build artifacts                        │
@@ -110,7 +110,7 @@ Extend Bifrost with powerful plugins for observability, testing, caching, and cu
 
 ```
 ui/
-├── app/                    # Next.js App Router pages
+├── app/                    # TanStack Router pages
 │   ├── page.tsx           # Main logs dashboard
 │   ├── config/            # Provider & MCP configuration
 │   ├── docs/              # Documentation browser
