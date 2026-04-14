@@ -553,6 +553,7 @@ export interface Pagination {
 export interface LogStats {
   total_requests: number;
   success_rate: number;
+  user_facing_success_rate: number;
   average_latency: number;
   total_tokens: number;
   total_cost: number;
