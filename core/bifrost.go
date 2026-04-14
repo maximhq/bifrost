@@ -4541,13 +4541,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	pipeline := bifrost.getPluginPipeline()
-	defer bifrost.releasePluginPipeline(pipeline)
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			bifrost.releasePluginPipeline(pipeline)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -4557,13 +4557,12 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		if shortCircuit.Stream != nil {
 			outputStream := make(chan *schemas.BifrostStreamChunk)
 
-			// Create a post hook runner cause pipeline object is put back in the pool on defer
-			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
-			}
-
+			// The goroutine takes ownership of the pipeline and releases it
+			// after the stream is fully drained. We must NOT defer release
+			// in the parent because it returns before the goroutine finishes.
 			go func() {
 				defer close(outputStream)
+				defer bifrost.releasePluginPipeline(pipeline)
 
 				for streamMsg := range shortCircuit.Stream {
 					if streamMsg == nil {
@@ -4591,7 +4590,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					}
 
 					// Run post hooks on the stream message
-					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, streamMsg.BifrostError)
+					processedResponse, processedError := pipeline.RunPostLLMHooks(ctx, bifrostResponse, streamMsg.BifrostError, preCount)
 
 					// Build the client-facing chunk via the shared helper, which strips raw
 					// request/response fields when in logging-only mode without mutating the
@@ -4610,13 +4609,17 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			bifrost.releasePluginPipeline(pipeline)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
 		}
+		// Empty short-circuit (all payload fields nil) is treated as no short-circuit;
+		// fall through to normal request processing with preReq.
 	}
 	if preReq == nil {
+		bifrost.releasePluginPipeline(pipeline)
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
@@ -4628,6 +4631,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+
+	// From here on, the pipeline is not used to process individual stream chunks,
+	// so it is safe to defer its release.
+	defer bifrost.releasePluginPipeline(pipeline)
 
 	// Check if provider is closing before attempting to send (lock-free atomic check)
 	// This prevents "send on closed channel" panics during provider removal/update
