@@ -469,6 +469,43 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 ```
 
+### Referencing Secrets in MCP Headers
+
+`bifrost.mcp.clientConfigs[].headers` is a free-form `map<string, string>`
+whose values can contain auth tokens. The chart does not wrap this map with
+a bespoke `secretRef` — a per-header dict would explode the values surface.
+Instead, use the standard pattern:
+
+1. Write `env.MY_HEADER_VAR` as the header value in `values.yaml`:
+   ```yaml
+   bifrost:
+     mcp:
+       clientConfigs:
+         - name: "my-mcp"
+           connectionType: "http"
+           headers:
+             Authorization: "env.MY_MCP_AUTH"
+   ```
+2. Inject the env var into the pod via the chart's top-level `envFrom:` or
+   `env:` pass-through — e.g., in `values.yaml`:
+   ```yaml
+   envFrom:
+     - secretRef:
+         name: my-mcp-auth-secret
+   # OR:
+   env:
+     - name: MY_MCP_AUTH
+       valueFrom:
+         secretKeyRef:
+           name: my-mcp-auth-secret
+           key: authorization
+   ```
+
+For `bifrost.mcp.clientConfigs[].connectionString` itself, prefer the
+chart-native `secretRef` (`name` + `connectionStringKey`) instead — the
+chart will inject `BIFROST_MCP_<NAME>_CONNECTION_STRING` and rewrite the
+config automatically.
+
 ## Example Configurations
 
 The chart includes pre-configured examples in `values-examples/`:

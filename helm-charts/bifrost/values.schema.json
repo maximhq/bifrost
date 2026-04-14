@@ -240,6 +240,15 @@
           "type": "string",
           "description": "Encryption key for sensitive data"
         },
+        "encryptionKeySecret": {
+          "type": "object",
+          "description": "Reference to an existing Kubernetes secret holding the encryption key. Takes precedence over `encryptionKey` when `name` is set.",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string", "default": "encryption-key" }
+          },
+          "additionalProperties": false
+        },
         "authConfig": {
           "$ref": "#/$defs/authConfig"
         },
@@ -900,7 +909,7 @@
                   },
                   "placement": {
                     "type": "string",
-                    "enum": ["pre_builtin", "post_builtin"],
+                    "enum": ["pre_builtin", "post_builtin", "builtin"],
                     "default": "post_builtin",
                     "description": "Plugin execution placement relative to built-in plugins"
                   },
@@ -2872,6 +2881,15 @@
         "connectionString": {
           "type": "string",
           "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "secretRef": {
+          "type": "object",
+          "description": "Reference to an existing Kubernetes secret holding the MCP connection_string. Chart injects BIFROST_MCP_<NAME>_CONNECTION_STRING and rewrites connection_string in config.json.",
+          "properties": {
+            "name": { "type": "string" },
+            "connectionStringKey": { "type": "string", "default": "connection-string" }
+          },
+          "additionalProperties": false
         },
         "authType": {
           "type": "string",

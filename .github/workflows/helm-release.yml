@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - main
+      - v1.5.0
     paths:
-      - 'helm-charts/bifrost/**'
-      - '.github/workflows/helm-release.yml'
+      - "helm-charts/bifrost/**"
+      - ".github/workflows/helm-release.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write  
+  contents: write
 
 jobs:
   release:
@@ -36,6 +37,11 @@ jobs:
         with:
           version: v4.0.0
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
       - name: Run chart-testing (lint)
         run: |
           helm lint helm-charts/bifrost
@@ -49,6 +55,11 @@ jobs:
         run: |
           chmod +x .github/workflows/scripts/validate-helm-config-fields.sh
           .github/workflows/scripts/validate-helm-config-fields.sh
+
+      - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
+        run: |
+          chmod +x .github/workflows/scripts/validate-schema-sync.sh
+          .github/workflows/scripts/validate-schema-sync.sh
 
       - name: Get chart version
         id: chart-version
@@ -105,5 +116,5 @@ jobs:
           destination_dir: helm-charts
           keep_files: false
           enable_jekyll: false
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"

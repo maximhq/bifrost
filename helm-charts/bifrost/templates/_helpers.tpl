@@ -814,6 +814,11 @@ false
 {{- if hasKey $client "allowOnAllVirtualKeys" }}
 {{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
 {{- end }}
+{{- /* Override connection_string with env var placeholder when secretRef is set */ -}}
+{{- if and $client.secretRef $client.secretRef.name }}
+{{- $envName := printf "BIFROST_MCP_%s_CONNECTION_STRING" (regexReplaceAll "[^A-Z0-9]+" (upper $client.name) "_") }}
+{{- $_ := set $cc "connection_string" (printf "env.%s" $envName) }}
+{{- end }}
 {{- $clientConfigs = append $clientConfigs $cc }}
 {{- end }}
 {{- $mcpConfig := dict "client_configs" $clientConfigs }}

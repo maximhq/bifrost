@@ -163,6 +163,14 @@ bifrost:
   # Can be set as a secret or environment variable
   encryptionKey: ""
 
+  # Use an existing Kubernetes secret for the encryption key.
+  # When `name` is set, takes precedence over `encryptionKey`: the chart
+  # injects BIFROST_ENCRYPTION_KEY into the pod via secretKeyRef and writes
+  # `encryption_key: "env.BIFROST_ENCRYPTION_KEY"` in the rendered config.json.
+  encryptionKeySecret:
+    name: ""
+    key: "encryption-key"
+
   # Authentication configuration (top-level)
   # This controls authentication for Bifrost API and dashboard
   authConfig:
@@ -323,6 +331,13 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+      #   # Optional: source connection_string from a Kubernetes secret.
+      #   # When set, chart injects BIFROST_MCP_<NAME>_CONNECTION_STRING
+      #   # into the pod and rewrites connection_string in config.json
+      #   # to `env.BIFROST_MCP_<NAME>_CONNECTION_STRING`.
+      #   secretRef:
+      #     name: ""                               # k8s secret name
+      #     connectionStringKey: "connection-string"  # key within the secret
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration)
     # Tool manager configuration
     toolManagerConfig:

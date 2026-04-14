@@ -74,15 +74,15 @@ bifrost:
         - name: "openai-primary"
           value: "sk-dummy-openai-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 2  # Gets 50% of traffic (2 out of 4 total weight)
-          models:
+          models: ["*"]
         - name: "openai-secondary"
           value: "sk-dummy-openai-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1  # Gets 25% of traffic
-          models:
+          models: ["*"]
         - name: "openai-backup"
           value: "sk-dummy-openai-key-3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1  # Gets 25% of traffic
-          models:
+          models: ["*"]
 
     # Anthropic - 2 API keys
     anthropic:
@@ -90,11 +90,11 @@ bifrost:
         - name: "anthropic-primary"
           value: "sk-ant-dummy-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
-          models:
+          models: ["*"]
         - name: "anthropic-secondary"
           value: "sk-ant-dummy-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
-          models:
+          models: ["*"]
 
     # Groq - 2 API keys
     groq:
@@ -102,11 +102,11 @@ bifrost:
         - name: "groq-primary"
           value: "gsk_dummy_groq_key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
-          models:
+          models: ["*"]
         - name: "groq-secondary"
           value: "gsk_dummy_groq_key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
-          models:
+          models: ["*"]
 
   # ==========================================================================
   # GOVERNANCE CONFIGURATION

@@ -186,6 +186,18 @@ spec:
                   name: {{ .Values.bifrost.plugins.maxim.secretRef.name }}
                   key: {{ .Values.bifrost.plugins.maxim.secretRef.key | default "api-key" }}
             {{- end }}
+            {{- /* MCP client connection strings from existing secrets (one per client with secretRef.name set) */ -}}
+            {{- if .Values.bifrost.mcp.enabled }}
+            {{- range $idx, $client := .Values.bifrost.mcp.clientConfigs }}
+            {{- if and $client.secretRef $client.secretRef.name }}
+            - name: BIFROST_MCP_{{ regexReplaceAll "[^A-Z0-9]+" (upper $client.name) "_" }}_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $client.secretRef.name }}
+                  key: {{ $client.secretRef.connectionStringKey | default "connection-string" }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- /* Governance auth credentials from existing secret */ -}}
             {{- if and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret }}
             - name: BIFROST_ADMIN_USERNAME
