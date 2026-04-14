@@ -749,8 +749,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 				params.StatusCode = result.PassthroughResponse.StatusCode
 			}
-			// Flip status for passthrough error responses (4xx/5xx from provider)
-			if isPassthroughErrorResponse(result) {
+			// Flip status for passthrough error responses (4xx/5xx from provider),
+			// but preserve "cancelled" which takes precedence.
+			if isPassthroughErrorResponse(result) && entry.Status != "cancelled" {
 				entry.Status = "error"
 			}
 		}
