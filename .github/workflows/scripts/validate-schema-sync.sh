@@ -20,11 +20,33 @@ if ! command -v go >/dev/null 2>&1; then
   exit 2
 fi
 
-# Ensure go.work exists. Matches the convention used by every other
-# Go-touching CI wrapper (test-bifrost-http.sh, test-all-plugins.sh, etc.)
-# — setup-go-workspace.sh is idempotent: returns early when go.work is
-# already present, so local developers aren't re-initialised.
-source "$SCRIPT_DIR/setup-go-workspace.sh"
+# Ensure go.work exists at the repo root. schemasync's packages.Load needs
+# it to resolve bifrost's local modules against each other. On fresh CI
+# runners go.work is not checked in, so we provision it here inline.
+# Sibling scripts (test-bifrost-http.sh etc.) call setup-go-workspace.sh
+# via `source`, but that relies on the `return` builtin which has
+# platform-dependent edge cases under `set -e`; we instead do the same
+# work inline so this wrapper is self-contained.
+if [ ! -f "$REPO_ROOT/go.work" ]; then
+  echo "🔧 Setting up Go workspace (go.work not found)..."
+  (
+    cd "$REPO_ROOT"
+    go work init
+    for mod in ./core ./framework \
+               ./plugins/compat ./plugins/governance ./plugins/jsonparser \
+               ./plugins/logging ./plugins/maxim ./plugins/mocker \
+               ./plugins/otel ./plugins/prompts ./plugins/semanticcache \
+               ./plugins/telemetry \
+               ./transports ./cli; do
+      if [ -f "$REPO_ROOT/$mod/go.mod" ]; then
+        go work use "$mod"
+      fi
+    done
+  )
+  echo "✅ Go workspace initialized at $REPO_ROOT/go.work"
+else
+  echo "🔍 Go workspace already exists at $REPO_ROOT/go.work, skipping initialization"
+fi
 
 echo "🔍 Validating Go ↔ config.schema.json sync (recursive, AST-based)"
 echo "=================================================================="
