@@ -102,9 +102,10 @@ variable "cluster_config" {
 }
 
 variable "scim_config" {
-  description = "SCIM/SSO configuration (enabled, provider: okta/entra, config). For Okta, config should include issuerUrl, clientId, clientSecret, and apiToken."
+  description = "SCIM/SSO configuration (enabled, provider: okta/entra, config)
   type        = any
   default     = null
+  sensitive   = true
 }
 
 variable "load_balancer_config" {
