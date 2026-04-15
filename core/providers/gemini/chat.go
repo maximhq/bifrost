@@ -9,9 +9,9 @@ import (
 )
 
 // ToGeminiChatCompletionRequest converts a BifrostChatRequest to Gemini's generation request format for chat completion
-func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *GeminiGenerationRequest {
+func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Create the base Gemini generation request
@@ -22,7 +22,11 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
-		geminiReq.GenerationConfig = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		var err error
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
+		if err != nil {
+			return nil, err
+		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
 			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
@@ -64,7 +68,7 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 		geminiReq.SystemInstruction = systemInstruction
 	}
 	geminiReq.Contents = contents
-	return geminiReq
+	return geminiReq, nil
 }
 
 // ToBifrostChatResponse converts a GenerateContentResponse to a BifrostChatResponse

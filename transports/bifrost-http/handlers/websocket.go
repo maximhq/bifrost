@@ -192,6 +192,7 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 	logEntry.ResponsesOutputParsed = nil
 	logEntry.EmbeddingOutputParsed = nil
 	logEntry.RerankOutputParsed = nil
+	logEntry.OCROutputParsed = nil
 	logEntry.ParamsParsed = nil
 	logEntry.ToolsParsed = nil
 	logEntry.ToolCallsParsed = nil

@@ -152,6 +152,39 @@ func ensureBedrockKeyConfig(key *schemas.Key) bool {
 	return false
 }
 
+// isStreamTransportError reports whether err is a transport-level connection
+// failure that occurred while reading the EventStream body — as opposed to a
+// semantic error (JSON parse failure, AWS exception event, etc.).
+//
+// Transport errors are caused by the underlying TCP/HTTP/2 connection being
+// closed or reset (e.g. AWS Bedrock closing idle connections after ~60 s).
+// They are retryable: the request has not yet been partially processed by the
+// provider, so a fresh connection can be used to retry transparently.
+//
+// Detected cases:
+//   - *net.OpError  — "use of closed network connection", connection reset, etc.
+//   - *net.DNSError — transient DNS failure
+//   - io.ErrUnexpectedEOF — HTTP/2 stream closed mid-frame (body abruptly ended)
+func isStreamTransportError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
+}
+
+// retryableBedrockExceptions maps AWS Bedrock EventStream exception types to
+// their HTTP status code equivalents. These exceptions are transient and should
+// be retried — the retry gate in executeRequestWithRetries checks StatusCode
+// against retryableStatusCodes (429, 500, 502, 503, 504).
+var retryableBedrockExceptions = map[string]int{
+	"throttlingException":         429,
+	"serviceUnavailableException": 503,
+	"modelNotReadyException":      503,
+	"internalServerException":     500,
+}
+
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
@@ -189,7 +222,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, "bedrock", provider.GetProviderKey()); err != nil {
+		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService, provider.GetProviderKey()); err != nil {
 			return nil, 0, nil, err
 		}
 	}
@@ -316,7 +349,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, "bedrock-agent-runtime", provider.GetProviderKey()); err != nil {
+		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService, provider.GetProviderKey()); err != nil {
 			return nil, 0, nil, err
 		}
 	}
@@ -424,7 +457,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	} else {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		// Sign the request using either explicit credentials or IAM role authentication
-		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "bedrock", providerName); err != nil {
+		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService, providerName); err != nil {
 			return nil, deployment, err
 		}
 	}
@@ -454,9 +487,27 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderNetworkError, respErr, providerName)
+			return nil, deployment, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   respErr,
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					Provider: providerName,
+				},
+			}
 		}
-		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
+		return nil, deployment, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderDoRequest,
+				Error:   respErr,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider: providerName,
+			},
+		}
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -670,7 +721,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
 
-		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, "bedrock", providerName); err != nil {
+		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService, providerName); err != nil {
 			return nil, err
 		}
 	}
@@ -939,7 +990,24 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.TextCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -958,8 +1026,27 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 						if err := sonic.Unmarshal(message.Payload, &bedrockErr); err == nil && bedrockErr.Message != "" {
 							errMsg = bedrockErr.Message
 						}
-						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+						// Retryable AWS exceptions must not set IsBifrostError:true — that would
+						// bypass the retry gate in executeRequestWithRetries. Instead emit
+						// IsBifrostError:false with the equivalent HTTP status code so the existing
+						// retryableStatusCodes gate handles the retry.
+						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+								IsBifrostError: false,
+								StatusCode:     &statusCode,
+								Error: &schemas.ErrorField{
+									Message: fmt.Sprintf("%s stream %s: %s", providerName, excType, errMsg),
+								},
+								ExtraFields: schemas.BifrostErrorExtraFields{
+									RequestType:    schemas.TextCompletionStreamRequest,
+									Provider:       providerName,
+									ModelRequested: request.Model,
+								},
+							}, responseChan, provider.logger)
+						} else {
+							err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
+						}
 						return
 					}
 				}
@@ -1178,7 +1265,24 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ChatCompletionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1194,7 +1298,26 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						}
 						errMsg := string(message.Payload)
 						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+						// Retryable AWS exceptions must not set IsBifrostError:true — that would
+						// bypass the retry gate in executeRequestWithRetries. Instead emit
+						// IsBifrostError:false with the equivalent HTTP status code so the existing
+						// retryableStatusCodes gate handles the retry.
+						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+								IsBifrostError: false,
+								StatusCode:     &statusCode,
+								Error: &schemas.ErrorField{
+									Message: err.Error(),
+								},
+								ExtraFields: schemas.BifrostErrorExtraFields{
+									RequestType:    schemas.ChatCompletionStreamRequest,
+									Provider:       providerName,
+									ModelRequested: request.Model,
+								},
+							}, responseChan, provider.logger)
+						} else {
+							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
+						}
 						return
 					}
 				}
@@ -1557,7 +1680,24 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
+				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				if isStreamTransportError(err) {
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: schemas.ErrProviderNetworkError,
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.ResponsesStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}, responseChan, provider.logger)
+				} else {
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+				}
 				return
 			}
 
@@ -1573,7 +1713,26 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						}
 						errMsg := string(message.Payload)
 						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+						// Retryable AWS exceptions must not set IsBifrostError:true — that would
+						// bypass the retry gate in executeRequestWithRetries. Instead emit
+						// IsBifrostError:false with the equivalent HTTP status code so the existing
+						// retryableStatusCodes gate handles the retry.
+						if statusCode, ok := retryableBedrockExceptions[excType]; ok {
+							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
+								IsBifrostError: false,
+								StatusCode:     &statusCode,
+								Error: &schemas.ErrorField{
+									Message: err.Error(),
+								},
+								ExtraFields: schemas.BifrostErrorExtraFields{
+									RequestType:    schemas.ResponsesStreamRequest,
+									Provider:       providerName,
+									ModelRequested: request.Model,
+								},
+							}, responseChan, provider.logger)
+						} else {
+							providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
+						}
 						return
 					}
 				}
@@ -1871,6 +2030,11 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	}
 
 	return bifrostResponse, nil
+}
+
+// OCR is not supported by the Bedrock provider.
+func (provider *BedrockProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Bedrock provider.
@@ -2911,7 +3075,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Sign request
-	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "bedrock", providerName); err != nil {
+	if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService, providerName); err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -3050,7 +3214,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	// Sign request
-	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "bedrock", providerName); bifrostErr != nil {
+	if bifrostErr := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService, providerName); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -3238,7 +3402,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "bedrock", providerName); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService, providerName); err != nil {
 			lastErr = err
 			continue
 		}
@@ -3382,7 +3546,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Sign request
-		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, "bedrock", providerName); err != nil {
+		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, key.BedrockKeyConfig.RoleARN, key.BedrockKeyConfig.ExternalID, key.BedrockKeyConfig.RoleSessionName, region, bedrockSigningService, providerName); err != nil {
 			lastErr = err
 			continue
 		}

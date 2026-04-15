@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -1407,9 +1407,9 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 			MCPToolset: &AnthropicMCPToolsetTool{
 				Type:          "mcp_toolset",
 				MCPServerName: "test-server",
-				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
+				DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: new(false)},
 				Configs: map[string]*AnthropicMCPToolsetConfig{
-					"tool_a": {Enabled: schemas.Ptr(true)},
+					"tool_a": {Enabled: new(true)},
 				},
 			},
 		}
@@ -1489,7 +1489,7 @@ func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
 			MCPServerName: "test-server",
 			DefaultConfig: &AnthropicMCPToolsetConfig{Enabled: schemas.Ptr(false)},
 			Configs: map[string]*AnthropicMCPToolsetConfig{
-				"search": {Enabled: schemas.Ptr(true)},
+				"search": {Enabled: new(true)},
 				"create": {Enabled: schemas.Ptr(true)},
 				"delete": {Enabled: schemas.Ptr(false)},
 			},

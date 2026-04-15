@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/core
 
-go 1.26.1
+go 1.26.2
 
 require (
 	cloud.google.com/go v0.123.0
@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/andybalholm/brotli v1.2.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.6
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.8
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.94.0
@@ -26,7 +26,7 @@ require (
 	github.com/tidwall/sjson v1.2.5
 	github.com/valyala/fasthttp v1.68.0
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9
-	golang.org/x/oauth2 v0.35.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
 )

@@ -377,13 +377,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// Preserve original key ordering of tool arguments for prompt caching.
 					// Using json.RawMessage avoids the map[string]interface{} round-trip
 					// that would destroy key order.
-					if toolCall.Function.Arguments != "" {
-						if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
-							toolUse.Input = json.RawMessage(compacted)
-						} else {
-							// Preserve original payload instead of silently dropping args.
-							toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
-						}
+					if toolCall.Function.Arguments == "" {
+						toolUse.Input = json.RawMessage("{}")
+					} else if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
+						toolUse.Input = json.RawMessage(compacted)
+					} else {
+						// Preserve original payload instead of silently dropping args.
+						toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
 					}
 
 					content = append(content, toolUse)

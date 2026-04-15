@@ -1,16 +1,16 @@
 import {
 	Combobox,
-	ComboboxInput,
 	ComboboxContent,
-	ComboboxList,
-	ComboboxItem,
 	ComboboxGroup,
+	ComboboxInput,
+	ComboboxItem,
 	ComboboxLabel,
+	ComboboxList,
 	ComboboxSeparator,
 } from "@/components/ui/combobox";
-import { useCallback, useMemo, useState } from "react";
-import type { DBKey, VirtualKey } from "@/lib/types/governance";
 import { Label } from "@/components/ui/label";
+import type { DBKey, VirtualKey } from "@/lib/types/governance";
+import { useCallback, useMemo, useState } from "react";
 
 export function ApiKeySelectorView({
 	providerKeys,

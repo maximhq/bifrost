@@ -57,6 +57,7 @@ const (
 	Replicate   ModelProvider = "replicate"
 	VLLM        ModelProvider = "vllm"
 	Runway      ModelProvider = "runway"
+	Fireworks   ModelProvider = "fireworks"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -94,6 +95,7 @@ var StandardProviders = []ModelProvider{
 	Replicate,
 	VLLM,
 	Runway,
+	Fireworks,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -144,6 +146,7 @@ const (
 	ContainerFileContentRequest  RequestType = "container_file_content"
 	ContainerFileDeleteRequest   RequestType = "container_file_delete"
 	RerankRequest                RequestType = "rerank"
+	OCRRequest                   RequestType = "ocr"
 	CountTokensRequest           RequestType = "count_tokens"
 	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	PassthroughRequest           RequestType = "passthrough"
@@ -245,6 +248,7 @@ const (
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
+	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                         // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
 )
 
 const (
@@ -312,6 +316,7 @@ type BifrostRequest struct {
 	CountTokensRequest           *BifrostResponsesRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
+	OCRRequest                   *BifrostOCRRequest
 	SpeechRequest                *BifrostSpeechRequest
 	TranscriptionRequest         *BifrostTranscriptionRequest
 	ImageGenerationRequest       *BifrostImageGenerationRequest
@@ -363,6 +368,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.RerankRequest != nil:
 		return br.RerankRequest.Provider, br.RerankRequest.Model, br.RerankRequest.Fallbacks
+	case br.OCRRequest != nil:
+		return br.OCRRequest.Provider, br.OCRRequest.Model, br.OCRRequest.Fallbacks
 	case br.SpeechRequest != nil:
 		return br.SpeechRequest.Provider, br.SpeechRequest.Model, br.SpeechRequest.Fallbacks
 	case br.TranscriptionRequest != nil:
@@ -480,6 +487,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.EmbeddingRequest.Provider = provider
 	case br.RerankRequest != nil:
 		br.RerankRequest.Provider = provider
+	case br.OCRRequest != nil:
+		br.OCRRequest.Provider = provider
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Provider = provider
 	case br.TranscriptionRequest != nil:
@@ -519,6 +528,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.EmbeddingRequest.Model = model
 	case br.RerankRequest != nil:
 		br.RerankRequest.Model = model
+	case br.OCRRequest != nil:
+		br.OCRRequest.Model = model
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Model = model
 	case br.TranscriptionRequest != nil:
@@ -548,6 +559,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.RerankRequest != nil:
 		br.RerankRequest.Fallbacks = fallbacks
+	case br.OCRRequest != nil:
+		br.OCRRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Fallbacks = fallbacks
 	case br.TranscriptionRequest != nil:
@@ -577,6 +590,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.RerankRequest != nil:
 		br.RerankRequest.RawRequestBody = rawRequestBody
+	case br.OCRRequest != nil:
+		br.OCRRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.RawRequestBody = rawRequestBody
 	case br.TranscriptionRequest != nil:
@@ -648,6 +663,7 @@ type BifrostResponse struct {
 	CountTokensResponse           *BifrostCountTokensResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	RerankResponse                *BifrostRerankResponse
+	OCRResponse                   *BifrostOCRResponse
 	SpeechResponse                *BifrostSpeechResponse
 	SpeechStreamResponse          *BifrostSpeechStreamResponse
 	TranscriptionResponse         *BifrostTranscriptionResponse
@@ -699,6 +715,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.EmbeddingResponse.ExtraFields
 	case r.RerankResponse != nil:
 		return &r.RerankResponse.ExtraFields
+	case r.OCRResponse != nil:
+		return &r.OCRResponse.ExtraFields
 	case r.SpeechResponse != nil:
 		return &r.SpeechResponse.ExtraFields
 	case r.SpeechStreamResponse != nil:

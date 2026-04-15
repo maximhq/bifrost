@@ -2202,7 +2202,11 @@ func convertResponsesToolChoice(toolChoice schemas.ResponsesToolChoice) *Bedrock
 			}
 			// If Name is nil or empty, return nil as we can't construct a valid tool choice
 			return nil
-		case schemas.ResponsesToolChoiceTypeAuto, schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
+		case schemas.ResponsesToolChoiceTypeAuto:
+			return &BedrockToolChoice{
+				Auto: &BedrockToolChoiceAuto{},
+			}
+		case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
 			return &BedrockToolChoice{
 				Any: &BedrockToolChoiceAny{},
 			}
@@ -2561,6 +2565,18 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil {
 								resultContent = append(resultContent, tryParseJSONIntoContentBlock(*block.Text))
+							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+								block.ResponsesInputMessageContentBlockImage != nil &&
+								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+								imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
+								if err != nil {
+									// Bedrock only supports base64 data URIs for images. If conversion
+									// fails (e.g. remote URL), the image is dropped from the tool result
+									// which silently degrades the model's ability to see tool output.
+									_ = fmt.Errorf("bedrock: converting tool result image: %w", err)
+								} else {
+									resultContent = append(resultContent, BedrockContentBlock{Image: imageSource})
+								}
 							}
 						}
 					}

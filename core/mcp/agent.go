@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	
+
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -291,13 +292,18 @@ func (a *AgentModeExecutor) executeAgent(
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
+					// Create a derived context with a unique MCP log ID so that the logging
+					// plugin can create separate log entries for each parallel tool call.
+					toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
+
 					// Create MCP request for this tool call
 					mcpRequest := &schemas.BifrostMCPRequest{
 						RequestType:                  schemas.MCPRequestTypeChatToolCall,
 						ChatAssistantMessageToolCall: &toolCall,
 					}
 
-					mcpResponse, toolErr := executeToolFunc(ctx, mcpRequest)
+					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
 					if toolErr != nil {
 						a.logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)

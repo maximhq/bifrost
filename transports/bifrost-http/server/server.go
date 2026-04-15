@@ -647,7 +647,14 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("failed to get client config: %v", err)
 	}
-	s.Config.ClientConfig = *config
+	if config == nil {
+		return fmt.Errorf("client config not found")
+	}
+	s.Config.ClientConfig = config
+	// Reloading whitelisted routes from the client config
+	if s.AuthMiddleware != nil {
+		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)
+	}
 	// Reloading config in bifrost client
 	if s.Client != nil {
 		account := lib.NewBaseAccount(s.Config)

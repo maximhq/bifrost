@@ -1,7 +1,7 @@
-import { Parameter } from "./types";
-import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import FieldLabel from "./fieldLabel";
+import { Parameter } from "./types";
 
 interface Props {
 	field: Parameter;
@@ -21,7 +21,7 @@ export default function TextFieldView(props: Props) {
 
 			<Input
 				id={field.id}
-				className="mr-2 ml-auto h-[35px] w-full"
+				className="mr-2 ml-auto h-8 w-full"
 				value={(config[field.id] as string) ?? ""}
 				disabled={props.disabled && props.disabled === true}
 				onChange={(e) => props.onChange(e.target.value || undefined)}

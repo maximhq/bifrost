@@ -47,50 +47,50 @@ func TestGemini(t *testing.T) {
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		PassthroughModel:     "gemini-2.5-flash",
 		Scenarios: llmtests.TestScenarios{
-			TextCompletion:        false, // Not supported
-			SimpleChat:            true,
-			CompletionStream:      true,
-			MultiTurnConversation: true,
-			ToolCalls:             true,
-			ToolCallsStreaming:    true,
+			TextCompletion:             false, // Not supported
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  true,
+			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			WebSearchTool:         true,
-			ImageURL:              false,
-			ImageBase64:           true,
-			MultipleImages:        false,
-			ImageGeneration:       true,
-			ImageGenerationStream: false,
-			ImageEdit:             true,
-			VideoGeneration:       false, // disabled for now because of long running operations
-			VideoRetrieve:         false,
-			VideoDownload:         false,
-			FileBase64:            true,
-			FileURL:               false, // supported files via gemini files api
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Transcription:         false,
-			TranscriptionStream:   false,
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true,
-			Reasoning:             true,
-			ListModels:            true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           false,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
-			PassthroughAPI:        true,
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			WebSearchTool:              true,
+			ImageURL:                   false,
+			ImageBase64:                true,
+			MultipleImages:             false,
+			ImageGeneration:            true,
+			ImageGenerationStream:      false,
+			ImageEdit:                  true,
+			VideoGeneration:            false, // disabled for now because of long running operations
+			VideoRetrieve:              false,
+			VideoDownload:              false,
+			FileBase64:                 true,
+			FileURL:                    false, // supported files via gemini files api
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Transcription:              false,
+			TranscriptionStream:        false,
+			SpeechSynthesis:            true,
+			SpeechSynthesisStream:      true,
+			Reasoning:                  true,
+			ListModels:                 true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                false,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			StructuredOutputs:          true, // Structured outputs with nullable enum support
+			PassthroughAPI:             true,
 		},
 	}
 
@@ -351,7 +351,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 }
 
 func TestMissingThoughtSignatureUsesBypassSentinel(t *testing.T) {
-	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{
 			{
@@ -393,7 +393,7 @@ func TestEmbeddedThoughtSignatureDoesNotUseBypassSentinel(t *testing.T) {
 	thoughtSig := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
 	callID := "call_1_ts_" + thoughtSig
 
-	result := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
+	result, err := gemini.ToGeminiChatCompletionRequest(&schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{{
 			Role: schemas.ChatMessageRoleAssistant,
@@ -944,7 +944,8 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -978,7 +979,8 @@ func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
@@ -1025,7 +1027,8 @@ func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
 		},
 	}
 
-	result := gemini.ToGeminiChatCompletionRequest(input)
+	result, err := gemini.ToGeminiChatCompletionRequest(input)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, result.Tools, 1)
 	fd := result.Tools[0].FunctionDeclarations[0]
@@ -1258,7 +1261,8 @@ func TestStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1393,7 +1397,8 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1701,7 +1706,8 @@ func TestParallelFunctionCallingConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			result, err := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -1934,7 +1940,8 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -2138,7 +2145,8 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.ToGeminiResponsesRequest(tt.input)
+			result, err := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NoError(t, err)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
 		})
@@ -2511,7 +2519,8 @@ func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
 		},
 	}
 
-	result := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	result, err := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 
 	// Collect all FunctionCall parts
@@ -2545,4 +2554,307 @@ func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
 	require.NotEqual(t, -1, descIdx, "block 1: missing description key in: %s", s1)
 	assert.True(t, commandIdx < descIdx,
 		"block 1: key order not preserved, expected command < description in: %s", s1)
+}
+
+// minimalChatInput returns a single user message for use in budget tests.
+func minimalChatInput() []schemas.ChatMessage {
+	return []schemas.ChatMessage{
+		{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+		},
+	}
+}
+
+// TestThinkingBudgetValidation_Chat verifies that ToGeminiChatCompletionRequest
+// enforces per-model thinking budget bounds when max_tokens is set explicitly.
+func TestThinkingBudgetValidation_Chat(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		budget       int
+		wantErr      bool
+		wantDisabled bool   // budget=0: expect IncludeThoughts=false
+		wantDynamic  bool   // budget=-1: expect ThinkingBudget=-1
+		wantBudget   *int32 // expected ThinkingBudget value when no error
+	}{
+		// gemini-2.5-pro: valid range [128, 32768]
+		{
+			name:       "pro_valid_budget",
+			model:      "gemini-2.5-pro",
+			budget:     1000,
+			wantBudget: func() *int32 { v := int32(1000); return &v }(),
+		},
+		{
+			name:       "pro_at_minimum",
+			model:      "gemini-2.5-pro",
+			budget:     128,
+			wantBudget: func() *int32 { v := int32(128); return &v }(),
+		},
+		{
+			name:       "pro_at_maximum",
+			model:      "gemini-2.5-pro",
+			budget:     32768,
+			wantBudget: func() *int32 { v := int32(32768); return &v }(),
+		},
+		{
+			name:    "pro_below_minimum",
+			model:   "gemini-2.5-pro",
+			budget:  50,
+			wantErr: true,
+		},
+		{
+			name:    "pro_above_maximum",
+			model:   "gemini-2.5-pro",
+			budget:  40000,
+			wantErr: true,
+		},
+
+		// gemini-2.5-flash: valid range [0, 24576]
+		{
+			name:       "flash_valid_budget",
+			model:      "gemini-2.5-flash",
+			budget:     5000,
+			wantBudget: func() *int32 { v := int32(5000); return &v }(),
+		},
+		{
+			name:    "flash_above_maximum",
+			model:   "gemini-2.5-flash",
+			budget:  30000,
+			wantErr: true,
+		},
+		// budget=300 is valid for flash (min=0) — this is the key disambiguation test:
+		// the same budget is rejected for flash-lite (min=512) but accepted for flash.
+		{
+			name:       "flash_budget_300_valid",
+			model:      "gemini-2.5-flash",
+			budget:     300,
+			wantBudget: func() *int32 { v := int32(300); return &v }(),
+		},
+
+		// gemini-2.5-flash-lite: valid range [512, 24576]
+		// budget=300 must be rejected here even though it passes for flash.
+		{
+			name:    "flash_lite_below_minimum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  300,
+			wantErr: true,
+		},
+		{
+			name:       "flash_lite_valid_budget",
+			model:      "gemini-2.5-flash-lite",
+			budget:     1000,
+			wantBudget: func() *int32 { v := int32(1000); return &v }(),
+		},
+		{
+			name:    "flash_lite_above_maximum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  30000,
+			wantErr: true,
+		},
+
+		// Unknown model — no entry in thinkingBudgetRanges, validation is skipped.
+		{
+			name:       "unknown_model_skips_validation",
+			model:      "gemini-2.0-flash-thinking",
+			budget:     50, // would be rejected for pro (min=128) but unknown model is not validated
+			wantBudget: func() *int32 { v := int32(50); return &v }(),
+		},
+
+		// Special values — exempt from range checks on any model.
+		{
+			name:         "budget_zero_disables_thinking",
+			model:        "gemini-2.5-pro",
+			budget:       0,
+			wantDisabled: true,
+		},
+		{
+			name:        "budget_minus_one_dynamic",
+			model:       "gemini-2.5-flash",
+			budget:      -1,
+			wantDynamic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model: tt.model,
+				Input: minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						MaxTokens: &tt.budget,
+					},
+				},
+			}
+
+			result, err := gemini.ToGeminiChatCompletionRequest(req)
+
+			if tt.wantErr {
+				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
+
+			tc := result.GenerationConfig.ThinkingConfig
+			switch {
+			case tt.wantDisabled:
+				assert.False(t, tc.IncludeThoughts, "IncludeThoughts should be false for budget=0")
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(0), *tc.ThinkingBudget)
+			case tt.wantDynamic:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(-1), *tc.ThinkingBudget)
+			default:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, *tt.wantBudget, *tc.ThinkingBudget)
+			}
+		})
+	}
+}
+
+// TestThinkingBudgetValidation_Responses verifies the same budget validation
+// for the Responses API path (ToGeminiResponsesRequest).
+func TestThinkingBudgetValidation_Responses(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		budget       int
+		wantErr      bool
+		wantDisabled bool
+		wantDynamic  bool
+		wantBudget   *int32
+	}{
+		// gemini-2.5-pro
+		{
+			name:       "pro_valid_budget",
+			model:      "gemini-2.5-pro",
+			budget:     2000,
+			wantBudget: func() *int32 { v := int32(2000); return &v }(),
+		},
+		{
+			name:    "pro_below_minimum",
+			model:   "gemini-2.5-pro",
+			budget:  100,
+			wantErr: true,
+		},
+		{
+			name:    "pro_above_maximum",
+			model:   "gemini-2.5-pro",
+			budget:  33000,
+			wantErr: true,
+		},
+
+		// gemini-2.5-flash-lite vs gemini-2.5-flash disambiguation
+		{
+			name:    "flash_lite_below_minimum",
+			model:   "gemini-2.5-flash-lite",
+			budget:  300,
+			wantErr: true,
+		},
+		{
+			name:       "flash_budget_300_valid",
+			model:      "gemini-2.5-flash",
+			budget:     300,
+			wantBudget: func() *int32 { v := int32(300); return &v }(),
+		},
+
+		// Special values
+		{
+			name:         "budget_zero_disables_thinking",
+			model:        "gemini-2.5-flash",
+			budget:       0,
+			wantDisabled: true,
+		},
+		{
+			name:        "budget_minus_one_dynamic",
+			model:       "gemini-2.5-pro",
+			budget:      -1,
+			wantDynamic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model: tt.model,
+				Params: &schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						MaxTokens: &tt.budget,
+					},
+				},
+			}
+
+			result, err := gemini.ToGeminiResponsesRequest(req)
+
+			if tt.wantErr {
+				require.Error(t, err, "expected error for budget %d on model %s", tt.budget, tt.model)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig, "ThinkingConfig should be set")
+
+			tc := result.GenerationConfig.ThinkingConfig
+			switch {
+			case tt.wantDisabled:
+				assert.False(t, tc.IncludeThoughts)
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(0), *tc.ThinkingBudget)
+			case tt.wantDynamic:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, int32(-1), *tc.ThinkingBudget)
+			default:
+				require.NotNil(t, tc.ThinkingBudget)
+				assert.Equal(t, *tt.wantBudget, *tc.ThinkingBudget)
+			}
+		})
+	}
+}
+
+// TestThinkingBudgetEffortUsesModelRange verifies that effort-based budget
+// calculation uses the correct model-specific range, not a global default.
+// In particular, gemini-2.5-flash-lite (min=512) must not use gemini-2.5-flash's
+// range (min=0), which would produce budgets below the model's minimum.
+func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
+	effort := "low"
+
+	t.Run("flash_lite_budget_respects_min_512", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash-lite",
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		assert.GreaterOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(512),
+			"flash-lite effort budget must be >= model minimum 512")
+	})
+
+	t.Run("flash_budget_may_start_from_zero", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Model: "gemini-2.5-flash",
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		}
+		result, err := gemini.ToGeminiChatCompletionRequest(req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		assert.GreaterOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(0))
+		assert.LessOrEqual(t, *result.GenerationConfig.ThinkingConfig.ThinkingBudget, int32(24576),
+			"flash effort budget must not exceed model maximum 24576")
+	})
 }

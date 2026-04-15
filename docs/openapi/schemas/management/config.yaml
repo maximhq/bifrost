@@ -31,18 +31,37 @@ ClientConfig:
     disable_content_logging:
       type: boolean
       description: Whether content logging is disabled
+    enforce_auth_on_inference:
+      type: boolean
+      description: Whether to enforce virtual key authentication on inference requests
     enforce_governance_header:
       type: boolean
-      description: Whether to enforce governance header
+      deprecated: true
+      description: "Deprecated: use enforce_auth_on_inference instead"
     allow_direct_keys:
       type: boolean
       description: Whether to allow direct API keys
     max_request_body_size_mb:
       type: integer
       description: Maximum request body size in MB
-    enable_litellm_fallbacks:
-      type: boolean
-      description: Whether LiteLLM fallbacks are enabled
+    compat:
+      type: object
+      description: Compat plugin configuration
+      properties:
+        convert_text_to_chat:
+          type: boolean
+          description: Convert text completion requests to chat
+        convert_chat_to_responses:
+          type: boolean
+          description: Convert chat completion requests to responses
+        should_drop_params:
+          type: boolean
+          description: Drop unsupported parameters based on model catalog
+        should_convert_params:
+          type: boolean
+          default: false
+          description: Converts model parameter values that are not supported by the model
+      additionalProperties: false
     log_retention_days:
       type: integer
       description: Number of days to retain logs

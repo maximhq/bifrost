@@ -427,7 +427,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
 			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
-				reqBody := gemini.ToGeminiChatCompletionRequest(request)
+				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
@@ -866,7 +869,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := gemini.ToGeminiChatCompletionRequest(request)
+				reqBody, err := gemini.ToGeminiChatCompletionRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
@@ -1158,7 +1164,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("responses input is not provided")
 				}
@@ -1421,7 +1430,10 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody := gemini.ToGeminiResponsesRequest(request)
+				reqBody, err := gemini.ToGeminiResponsesRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("responses input is not provided")
 				}
@@ -1843,6 +1855,11 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	return bifrostResponse, nil
+}
+
+// OCR is not supported by the Vertex provider.
+func (provider *VertexProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
 // SpeechStream is not supported by the Vertex provider.
@@ -2890,7 +2907,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return gemini.ToGeminiResponsesRequest(request), nil
+				return gemini.ToGeminiResponsesRequest(request)
 			},
 			providerName,
 		)

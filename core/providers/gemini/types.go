@@ -23,6 +23,22 @@ const DefaultReasoningMinBudget = 1024  // Default minimum reasoning budget for 
 const DynamicReasoningBudget = -1       // Special value for dynamic reasoning budget in Gemini
 const skipThoughtSignatureValidator = "skip_thought_signature_validator"
 
+type thinkingBudgetRange struct {
+	Min int
+	Max int
+}
+
+// thinkingBudgetRanges defines the valid thinkingBudget range per model family.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#set-budget
+var thinkingBudgetRanges = []struct {
+	prefix string
+	r      thinkingBudgetRange
+}{
+	{"gemini-2.5-flash-lite", thinkingBudgetRange{Min: 512, Max: 24576}},
+	{"gemini-2.5-pro", thinkingBudgetRange{Min: 128, Max: 32768}},
+	{"gemini-2.5-flash", thinkingBudgetRange{Min: 0, Max: 24576}},
+}
+
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
 const thoughtSignatureSeparator = "_ts_"
 

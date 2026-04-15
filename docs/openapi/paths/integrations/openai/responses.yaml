@@ -12,28 +12,30 @@ responses:
 
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses`).
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     parameters:
-      - name: x-bf-async
-        in: header
-        required: false
-        schema:
-          type: string
-          enum: ["true"]
-        description: Set to `true` to submit this request as an async job. Returns immediately with a job ID. Not compatible with streaming.
-      - name: x-bf-async-id
-        in: header
-        required: false
-        schema:
-          type: string
-        description: Poll for results of a previously submitted async job by providing the job ID returned from the initial async request.
-      - name: x-bf-async-job-result-ttl
-        in: header
-        required: false
-        schema:
-          type: integer
-          default: 3600
-        description: Override the default result TTL in seconds. Results expire after this duration from completion time.
+    - name: x-bf-async
+      in: header
+      required: false
+      schema:
+        type: string
+        enum: ["true"]
+      description: Set to `true` to submit this request as an async job. Returns immediately with a job ID. Not 
+        compatible with streaming.
+    - name: x-bf-async-id
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Poll for results of a previously submitted async job by providing the job ID returned from the 
+        initial async request.
+    - name: x-bf-async-job-result-ttl
+      in: header
+      required: false
+      schema:
+        type: integer
+        default: 3600
+      description: Override the default result TTL in seconds. Results expire after this duration from completion time.
     requestBody:
       required: true
       content:
@@ -55,24 +57,29 @@ responses:
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 azure-responses:
   post:
     operationId: azureCreateResponse
     summary: Create response (Azure OpenAI)
     tags:
-      - OpenAI Integration
-      - Azure Integration
+    - OpenAI Integration
+    - Azure Integration
     parameters:
-      - name: deployment-id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Azure deployment ID
-      - name: api-version
-        in: query
-        schema:
-          type: string
+    - name: deployment-id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Azure deployment ID
+    - name: api-version
+      in: query
+      schema:
+        type: string
     requestBody:
       required: true
       content:
@@ -95,6 +102,11 @@ azure-responses:
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
 
 # Input tokens endpoint (count tokens for Responses API format)
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 responses-input-tokens:
   post:
     operationId: openaiCountInputTokens
@@ -102,7 +114,7 @@ responses-input-tokens:
     description: |
       Counts the number of tokens in a Responses API request.
     tags:
-      - OpenAI Integration
+    - OpenAI Integration
     requestBody:
       required: true
       content:
@@ -120,3 +132,8 @@ responses-input-tokens:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

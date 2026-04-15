@@ -66,6 +66,11 @@ execute-tool:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
 
 clients:
   get:

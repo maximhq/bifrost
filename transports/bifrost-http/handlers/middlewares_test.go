@@ -2,8 +2,8 @@ package handlers
 
 import (
 	"bytes"
-	"compress/zlib"
 	"compress/gzip"
+	"compress/zlib"
 	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
@@ -35,7 +35,7 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -93,7 +93,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 	allowedOrigin := "https://example.com"
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{allowedOrigin},
 		},
 	}
@@ -124,7 +124,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 // TestCorsMiddleware_NonAllowedOrigins tests that non-allowed origins don't get CORS headers
 func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -155,7 +155,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 // TestCorsMiddleware_PreflightAllowedOrigin tests OPTIONS preflight requests for allowed origins
 func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 		},
 	}
@@ -192,7 +192,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightNonAllowedOrigin tests OPTIONS preflight requests for non-allowed origins
 func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -229,7 +229,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightLocalhost tests OPTIONS preflight requests for localhost
 func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -266,7 +266,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 // TestCorsMiddleware_NoOriginHeader tests behavior when no Origin header is present
 func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -845,7 +845,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{}, // No custom headers
 		},
@@ -881,7 +881,7 @@ func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"*"},
 			AllowedHeaders: []string{"*"},
 		},
@@ -917,7 +917,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"*"},
 		},
@@ -955,7 +955,7 @@ func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"*"},
 		},
@@ -995,7 +995,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"X-Custom-Header", "X-Another-Header"},
 		},
@@ -1040,7 +1040,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			// Include a header that's already in defaults
 			AllowedHeaders: []string{"Content-Type", "X-Custom-Header"},
@@ -1083,7 +1083,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 			AllowedHeaders: []string{"X-Development-Header"},
 		},
@@ -1117,7 +1117,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 			AllowedHeaders: []string{"X-Custom-Header"},
 		},
@@ -1268,7 +1268,7 @@ func TestFasthttpToHTTPRequest_PathParams(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1324,7 +1324,7 @@ func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1360,7 +1360,7 @@ func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1396,7 +1396,7 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1438,7 +1438,7 @@ func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1473,7 +1473,7 @@ func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.
 
 func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1503,7 +1503,7 @@ func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1580,7 +1580,7 @@ func TestShouldStreamDecompress(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1621,7 +1621,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1675,7 +1675,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T)
 
 func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1704,7 +1704,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1732,7 +1732,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *tes
 
 func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1772,7 +1772,7 @@ func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}

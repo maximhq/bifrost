@@ -4,9 +4,26 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.14
+**Latest Version:** 2.0.18
 
 ## Changelog
+
+### v2.0.18
+
+- Fixed MCP client config template to correctly map camelCase keys in Helm values:
+  - `toolsToExecute` → `tools_to_execute`
+  - `toolsToAutoExecute` → `tools_to_auto_execute`
+  - `authType` → `auth_type`
+  - `oauthConfigId` → `oauth_config_id`
+
+### v2.0.16
+
+- Fixed disabled custom plugins being completely removed from rendered config.json instead of being kept with `enabled: false`
+
+### v2.0.15
+
+- Added `whitelistedRoutes` client config property for routes that bypass auth middleware
+- Added `whitelistedRoutes` to Helm schema, values, and template rendering
 
 ### v2.0.14
 

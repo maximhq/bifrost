@@ -1,10 +1,10 @@
 
-import { useEffect } from "react";
-import { Parameter } from "./types";
-import { cn } from "@/lib/utils";
-import NumberInput from "../number";
 import { Slider } from "@/components/ui/slider";
+import { cn } from "@/lib/utils";
+import { useEffect } from "react";
+import NumberInput from "../number";
 import FieldLabel from "./fieldLabel";
+import { Parameter } from "./types";
 
 interface Props {
 	field: Parameter;

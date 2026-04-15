@@ -7,14 +7,14 @@ converse:
     description: |
       Sends messages to a model using AWS Bedrock Converse API format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
     requestBody:
       required: true
       content:
@@ -41,6 +41,11 @@ converse:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 converse-stream:
   post:
     operationId: bedrockConverseStream
@@ -48,14 +53,14 @@ converse-stream:
     description: |
       Streams messages from a model using AWS Bedrock Converse API format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
     requestBody:
       required: true
       content:
@@ -81,3 +86,8 @@ converse-stream:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

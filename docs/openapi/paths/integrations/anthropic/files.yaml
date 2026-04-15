@@ -7,13 +7,13 @@ files:
     description: |
       Uploads a file. Use x-model-provider header to specify the provider.
     tags:
-      - Anthropic Integration
+    - Anthropic Integration
     parameters:
-      - name: x-model-provider
-        in: header
-        schema:
-          type: string
-        description: Provider to use (defaults to anthropic)
+    - name: x-model-provider
+      in: header
+      schema:
+        type: string
+      description: Provider to use (defaults to anthropic)
     requestBody:
       required: true
       content:
@@ -39,30 +39,35 @@ files:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: anthropicListFiles
     summary: List files (Anthropic format)
     description: |
       Lists uploaded files.
     tags:
-      - Anthropic Integration
+    - Anthropic Integration
     parameters:
-      - name: x-model-provider
-        in: header
-        schema:
-          type: string
-        description: Provider to use (defaults to anthropic)
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          default: 30
-        description: Maximum files to return
-      - name: after_id
-        in: query
-        schema:
-          type: string
-        description: Cursor for pagination
+    - name: x-model-provider
+      in: header
+      schema:
+        type: string
+      description: Provider to use (defaults to anthropic)
+    - name: limit
+      in: query
+      schema:
+        type: integer
+        default: 30
+      description: Maximum files to return
+    - name: after_id
+      in: query
+      schema:
+        type: string
+      description: Cursor for pagination
     responses:
       '200':
         description: Successful response
@@ -83,6 +88,11 @@ files:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files-content:
   get:
     operationId: anthropicGetFileContent
@@ -91,26 +101,26 @@ files-content:
       Retrieves file content. Returns raw binary file data when Accept header is set to application/octet-stream,
       or file metadata as JSON when Accept header is set to application/json.
     tags:
-      - Anthropic Integration
+    - Anthropic Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
-      - name: x-model-provider
-        in: header
-        schema:
-          type: string
-        description: Provider for the file
-      - name: Accept
-        in: header
-        schema:
-          type: string
-          enum: [application/json, application/octet-stream]
-          default: application/json
-        description: Response content type - use application/octet-stream for binary download
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
+    - name: x-model-provider
+      in: header
+      schema:
+        type: string
+      description: Provider for the file
+    - name: Accept
+      in: header
+      schema:
+        type: string
+        enum: [application/json, application/octet-stream]
+        default: application/json
+      description: Response content type - use application/octet-stream for binary download
     responses:
       '200':
         description: |
@@ -148,6 +158,11 @@ files-content:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files-by-id:
   delete:
     operationId: anthropicDeleteFile
@@ -155,19 +170,19 @@ files-by-id:
     description: |
       Deletes an uploaded file.
     tags:
-      - Anthropic Integration
+    - Anthropic Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID to delete
-      - name: x-model-provider
-        in: header
-        schema:
-          type: string
-        description: Provider for the file
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID to delete
+    - name: x-model-provider
+      in: header
+      schema:
+        type: string
+      description: Provider for the file
     responses:
       '200':
         description: Successful response
@@ -187,3 +202,8 @@ files-by-id:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

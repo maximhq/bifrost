@@ -54,6 +54,11 @@ vectorConfig := &vectorstore.Config{
         Password: "",                      // Optional: Redis password
         DB:       0,                       // Optional: Redis database number (default: 0)
 
+        // Optional: TLS and cluster settings
+        UseTLS:             false,             // Enable TLS for encrypted connections
+        InsecureSkipVerify: false,             // Skip TLS cert verification
+        ClusterMode:        false,             // Use Redis Cluster client for cluster endpoints
+
         // Optional: Connection pool settings
         PoolSize:        10,               // Maximum socket connections
         MaxActiveConns:  10,               // Maximum active connections
@@ -89,6 +94,10 @@ if err != nil {
       "username": "",
       "password": "",
       "db": 0,
+      "use_tls": false,
+      "insecure_skip_verify": false,
+      "ca_cert_pem": "",
+      "cluster_mode": false,
       "pool_size": 10,
       "max_active_conns": 10,
       "min_idle_conns": 5,
@@ -113,6 +122,29 @@ if err != nil {
       "username": "your-username",
       "password": "your-password",
       "db": 0,
+      "use_tls": true,
+      "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+      "cluster_mode": false,
+      "context_timeout": "10s"
+    }
+  }
+}
+```
+
+**For managed Redis Cluster endpoints:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "your-cluster-endpoint:6379",
+      "username": "your-username",
+      "password": "your-password",
+      "db": 0,
+      "use_tls": true,
+      "ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+      "cluster_mode": true,
       "context_timeout": "10s"
     }
   }
@@ -139,6 +171,8 @@ Redis provides extensive connection pool configuration:
 ```go
 config := vectorstore.RedisConfig{
     Addr:            "localhost:6379",
+    UseTLS:          true,                     // Enable TLS
+    ClusterMode:     true,                     // Enable cluster mode
     PoolSize:        20,                    // Max socket connections
     MaxActiveConns:  20,                    // Max active connections
     MinIdleConns:    5,                     // Min idle connections
@@ -188,6 +222,10 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 ```
 
 ### Production Considerations
+
+<Info>
+**TLS and Cluster Mode**: Set `use_tls: true` to enable TLS encryption for the Redis connection, and `insecure_skip_verify: true` if using self-signed certificates. Set `cluster_mode: true` when connecting to a Redis Cluster endpoint. When cluster mode is enabled, the `db` field must be `0` (Redis Cluster does not support database selection).
+</Info>
 
 <Info>
 **Search Module Required**: Redis/Valkey integration requires a search module/API that supports `FT.*` commands (index creation and vector search). If `FT.INFO` or `FT.SEARCH` is unavailable, semantic caching will not work.

@@ -75,7 +75,7 @@
         },
         "enforce_governance_header": {
           "type": "boolean",
-          "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
+          "description": "Deprecated: use enforce_auth_on_inference"
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
@@ -138,6 +138,13 @@
             "type": "string"
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
+        },
+        "whitelisted_routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Routes that bypass auth middleware. Requests to these exact paths skip authentication checks."
         },
         "hide_deleted_virtual_keys_in_filters": {
           "type": "boolean",
@@ -245,6 +252,9 @@
           "$ref": "#/$defs/provider_with_vllm_config"
         },
         "huggingface": {
+          "$ref": "#/$defs/provider"
+        },
+        "fireworks": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -1430,6 +1440,9 @@
     "audit_logs": {
       "$ref": "#/$defs/audit_logs_config"
     },
+    "large_payload_optimization": {
+      "$ref": "#/$defs/large_payload_optimization"
+    },
     "websocket": {
       "$ref": "#/$defs/websocket_config"
     }
@@ -1682,12 +1695,54 @@
                     "type": "string",
                     "description": "AWS ARN"
                   },
+                  "role_arn": {
+                    "type": "string",
+                    "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                  },
+                  "external_id": {
+                    "type": "string",
+                    "description": "External ID for AssumeRole (can use env. prefix)"
+                  },
+                  "session_name": {
+                    "type": "string",
+                    "description": "Role session name for AssumeRole (can use env. prefix)"
+                  },
                   "deployments": {
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
                     },
                     "description": "Model to deployment mappings"
+                  },
+                  "batch_s3_config": {
+                    "type": "object",
+                    "description": "S3 bucket configuration for Bedrock batch operations",
+                    "properties": {
+                      "buckets": {
+                        "type": "array",
+                        "description": "List of S3 bucket configurations",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "bucket_name": {
+                              "type": "string",
+                              "description": "S3 bucket name"
+                            },
+                            "prefix": {
+                              "type": "string",
+                              "description": "S3 key prefix for batch files"
+                            },
+                            "is_default": {
+                              "type": "boolean",
+                              "description": "Whether this is the default bucket for batch operations"
+                            }
+                          },
+                          "required": ["bucket_name"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -1868,6 +1923,7 @@
         "responses_stream",
         "embedding",
         "rerank",
+        "ocr",
         "speech",
         "speech_stream",
         "transcription",
@@ -1951,6 +2007,7 @@
             "count_tokens": { "type": "boolean" },
             "embedding": { "type": "boolean" },
             "rerank": { "type": "boolean" },
+            "ocr": { "type": "boolean" },
             "speech": { "type": "boolean" },
             "speech_stream": { "type": "boolean" },
             "transcription": { "type": "boolean" },
@@ -2145,6 +2202,26 @@
                   "type": "string",
                   "description": "AWS session token (can use env. prefix)"
                 },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region"
+                },
+                "arn": {
+                  "type": "string",
+                  "description": "AWS ARN"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
                 "deployments": {
                   "type": "object",
                   "additionalProperties": {
@@ -2152,13 +2229,35 @@
                   },
                   "description": "Model to deployment mappings"
                 },
-                "arn": {
-                  "type": "string",
-                  "description": "AWS ARN"
-                },
-                "region": {
-                  "type": "string",
-                  "description": "AWS region"
+                "batch_s3_config": {
+                  "type": "object",
+                  "description": "S3 bucket configuration for Bedrock batch operations",
+                  "properties": {
+                    "buckets": {
+                      "type": "array",
+                      "description": "List of S3 bucket configurations",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bucket_name": {
+                            "type": "string",
+                            "description": "S3 bucket name"
+                          },
+                          "prefix": {
+                            "type": "string",
+                            "description": "S3 key prefix for batch files"
+                          },
+                          "is_default": {
+                            "type": "boolean",
+                            "description": "Whether this is the default bucket for batch operations"
+                          }
+                        },
+                        "required": ["bucket_name"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -2816,6 +2915,25 @@
           "description": "Redis database number (default: 0)",
           "default": 0
         },
+        "use_tls": {
+          "type": "boolean",
+          "description": "Use TLS for the Redis/Valkey connection (optional)",
+          "default": false
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Skip TLS certificate verification for Redis/Valkey connections. Use only when a trusted CA cannot be configured.",
+          "default": false
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for Redis/Valkey TLS connections"
+        },
+        "cluster_mode": {
+          "type": "boolean",
+          "description": "Use Redis Cluster mode. Required for cluster configuration endpoints; when enabled, db must be 0.",
+          "default": false
+        },
         "pool_size": {
           "type": "integer",
           "description": "Maximum number of socket connections (optional)"
@@ -3035,6 +3153,21 @@
                 "mdns"
               ],
               "description": "Discovery mechanism type"
+            },
+            "service_name": {
+              "type": "string",
+              "description": "Service name used for discovery (used by consul, etcd, UDP, and mDNS)"
+            },
+            "bind_port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port to bind for cluster communication"
+            },
+            "dial_timeout": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Timeout for discovery dial operations in nanoseconds"
             },
             "allowed_address_space": {
               "type": "array",
@@ -3407,6 +3540,53 @@
         "hmac_key": {
           "type": "string",
           "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of days to retain audit logs (0 means no retention limit)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "large_payload_optimization": {
+      "type": "object",
+      "description": "Large payload streaming optimization configuration. Detects large request/response payloads and streams them through without full materialization.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master toggle for large payload optimization (default: false)",
+          "default": false
+        },
+        "request_threshold_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Request body size in bytes above which streaming kicks in (default: 10MB)",
+          "default": 10485760
+        },
+        "response_threshold_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Response body size in bytes above which streaming kicks in (default: 10MB)",
+          "default": 10485760
+        },
+        "prefetch_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How much of the request to prefetch for metadata extraction in bytes (default: 64KB)",
+          "default": 65536
+        },
+        "max_payload_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum allowed payload size in bytes; reject above this (default: 500MB)",
+          "default": 524288000
+        },
+        "truncated_log_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many bytes to store as truncated preview in logs (default: 1MB)",
+          "default": 1048576
         }
       },
       "additionalProperties": false

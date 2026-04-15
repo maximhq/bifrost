@@ -1,0 +1,81 @@
+---
+title: "v1.4.22"
+description: "v1.4.22 changelog - 2026-04-11"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.22
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.22
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.22
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.22">
+## ✨ Features
+
+- **OAuth MCP** - add next-step hints to OAuth MCP client creation response
+- **Azure passthrough** - added azure passthrough support
+- **272k token tier** - add 272k token tier pricing support in pricing
+- **Flex and priority tier support** - added flex and priority tier support in pricing
+
+## 🐞 Fixed
+
+- **Response Backfill** — Added response parameter backfilling for chat completion and responses requests, ensuring model, object type, and created timestamp fields are always populated
+- **Mistral Provider Cleanup** — Removed redundant provider key normalization and duplicate OCR validation from Mistral provider
+
+</Update>
+<Update label="Core" description="1.4.19">
+- refactor: add BackfillParams methods to BifrostChatResponse and BifrostResponsesResponse for populating missing response fields
+- refactor: remove custom provider key normalization and redundant OCR validation from Mistral provider
+- fix: minor formatting inconsistencies in response type constants
+
+</Update>
+<Update label="Framework" description="1.2.38">
+- chore: upgraded core to v1.4.19
+- fix: don't mark oauth config expired on transient refresh failures
+- fix: only treat invalid_grant and unauthorized_client as permanent OAuth errors
+- feat: add tiered and priority/flex pricing support — 272k token tier fields, 200k priority variants, and tier selection based on service_tier in responses
+
+</Update>
+<Update label="governance" description="1.4.38">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="jsonparser" description="1.4.37">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="litellmcompat" description="0.0.27">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="logging" description="1.4.38">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="maxim" description="1.5.38">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="mocker" description="1.4.37">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="otel" description="1.1.37">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="semanticcache" description="1.4.36">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>
+<Update label="telemetry" description="1.4.38">
+- chore: upgraded core to v1.4.19 and framework to v1.2.38
+
+</Update>

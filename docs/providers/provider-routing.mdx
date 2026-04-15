@@ -427,19 +427,19 @@ This is particularly useful for proxy providers (OpenRouter, Vertex) where you w
 
 </Tab>
 
-<Tab title="Deployments (Key-Level Aliases)">
+<Tab title="Aliases (Key-Level)">
 
-**Key Concept**: Deployments are **key-specific** mappings that allow user-friendly model names to map to provider-specific deployment identifiers.
+**Key Concept**: Aliases are **key-level** mappings that allow user-friendly model names to map to provider-specific identifiers.
 
-**How Deployments Work**:
+**How Aliases Work**:
 - Defined at the **Key level**, not Virtual Key level
-- Structure: `deployments: {"alias": "deployment-id"}`
-- **Alias** (left side): User-facing model name used in requests
-- **Deployment ID** (right side): Provider-specific identifier sent to the API
+- Structure: `aliases: {"user-facing-name": "provider-specific-id"}`
+- **Alias key** (left side): User-facing model name used in requests
+- **Provider ID** (right side): Provider-specific identifier sent to the API
 
 **Azure OpenAI Example**:
 
-Provider configuration with deployment mapping:
+Provider configuration with alias mapping:
 ```json
 {
   "providers": {
@@ -448,13 +448,12 @@ Provider configuration with deployment mapping:
         {
           "name": "azure-prod-key",
           "value": "your-api-key",
-          "models": [],  // Not used when deployments exist
+          "aliases": {
+            "gpt-4o": "my-prod-gpt4o-deployment",
+            "gpt-4o-mini": "my-mini-deployment"
+          },
           "azure_key_config": {
-            "endpoint": "https://your-resource.openai.azure.com",
-            "deployments": {
-              "gpt-4o": "my-prod-gpt4o-deployment",
-              "gpt-4o-mini": "my-mini-deployment"
-            }
+            "endpoint": "https://your-resource.openai.azure.com"
           }
         }
       ]
@@ -467,9 +466,9 @@ Provider configuration with deployment mapping:
 1. **Allowed models derived from aliases**: `["gpt-4o", "gpt-4o-mini"]`
 2. **User requests with alias**: `{"model": "gpt-4o"}`
 3. **Bifrost validates**: `gpt-4o` is in derived allowed models ✅
-4. **Bifrost maps to deployment**: `gpt-4o` → `my-prod-gpt4o-deployment`
+4. **Bifrost resolves alias**: `gpt-4o` → `my-prod-gpt4o-deployment`
 5. **Sent to Azure**: Uses `my-prod-gpt4o-deployment` as the deployment name
-6. **Pricing lookup**: If pricing for deployment not found, falls back to alias `gpt-4o`
+6. **Pricing lookup**: If pricing for resolved ID not found, falls back to alias `gpt-4o`
 
 **Bedrock Example with Inference Profiles**:
 
@@ -480,15 +479,14 @@ Provider configuration with deployment mapping:
       "keys": [
         {
           "name": "bedrock-key",
-          "models": [],
+          "aliases": {
+            "claude-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "claude-opus": "us.anthropic.claude-3-opus-20240229-v1:0"
+          },
           "bedrock_key_config": {
             "access_key": "your-access-key",
             "secret_key": "your-secret-key",
-            "region": "us-east-1",
-            "deployments": {
-              "claude-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-              "claude-opus": "us.anthropic.claude-3-opus-20240229-v1:0"
-            }
+            "region": "us-east-1"
           }
         }
       ]
@@ -498,10 +496,10 @@ Provider configuration with deployment mapping:
 ```
 
 **What Happens**:
-1. **Allowed models**: `["claude-sonnet", "claude-opus"]` (from deployment aliases)
+1. **Allowed models**: `["claude-sonnet", "claude-opus"]` (from alias keys)
 2. **User requests**: `{"model": "claude-sonnet"}`
 3. **Bifrost validates**: `claude-sonnet` in allowed models ✅
-4. **Maps to inference profile**: `claude-sonnet` → `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
+4. **Resolves alias**: `claude-sonnet` → `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
 5. **Sent to Bedrock**: Full ARN used in API call
 
 **Priority of Model Restrictions**:
@@ -509,7 +507,7 @@ Provider configuration with deployment mapping:
 When determining allowed models for a key:
 ```
 1. If key.models is NOT empty → Use key.models
-2. Else if deployments exist → Use deployment aliases (map keys)
+2. Else if aliases exist → Use alias keys
 3. Else → All models allowed (use Model Catalog)
 ```
 
@@ -519,11 +517,12 @@ When determining allowed models for a key:
   "keys": [
     {
       "models": ["gpt-4o", "gpt-3.5-turbo"],  // Explicit restriction
+      "aliases": {
+        "gpt-4o": "my-deployment",
+        "gpt-4-turbo": "another-deployment"  // NOT accessible!
+      },
       "azure_key_config": {
-        "deployments": {
-          "gpt-4o": "my-deployment",
-          "gpt-4-turbo": "another-deployment"  // NOT accessible!
-        }
+        "endpoint": "https://your-resource.openai.azure.com"
       }
     }
   ]
@@ -536,39 +535,39 @@ Result: Only `["gpt-4o", "gpt-3.5-turbo"]` allowed (models field takes priority)
 {
   "keys": [
     {
+      "aliases": {
+        "claude-3-5-sonnet": "anthropic/claude-3-5-sonnet@20241022",
+        "gemini-pro": "google/gemini-1.5-pro"
+      },
       "vertex_key_config": {
         "project_id": "my-project",
-        "region": "us-central1",
-        "deployments": {
-          "claude-3-5-sonnet": "anthropic/claude-3-5-sonnet@20241022",
-          "gemini-pro": "google/gemini-1.5-pro"
-        }
+        "region": "us-central1"
       }
     }
   ]
 }
 ```
 
-**Use Cases for Deployments**:
+**Use Cases for Aliases**:
 - **Azure**: Map generic model names to specific deployment names in your Azure resource
 - **Bedrock**: Use short aliases for long inference profile ARNs
 - **Vertex**: Map to specific model versions or regional endpoints
-- **Multi-environment**: Different deployments per key (dev/staging/prod)
+- **Multi-environment**: Different aliases per key (dev/staging/prod)
 
 **Key Insight**:
 ```
 User Request: {"model": "gpt-4o"}
               ↓
-Validation: Check if "gpt-4o" in allowed models (derived from deployments)
+Validation: Check if "gpt-4o" in allowed models (derived from aliases)
               ↓
-Mapping: deployments["gpt-4o"] → "my-prod-gpt4o-deployment"
+Mapping: aliases["gpt-4o"] → "my-prod-gpt4o-deployment"
               ↓
 API Call: Uses "my-prod-gpt4o-deployment" as deployment ID
               ↓
-Pricing: Falls back to "gpt-4o" if deployment not in pricing data
+Pricing: Falls back to "gpt-4o" if resolved ID not in pricing data
 ```
 
-This allows user-friendly model names in requests while supporting provider-specific deployment patterns at the key level.
+This allows user-friendly model names in requests while supporting provider-specific identifier patterns at the key level.
 
 </Tab>
 

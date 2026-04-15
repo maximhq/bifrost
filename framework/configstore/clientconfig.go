@@ -59,6 +59,7 @@ type ClientConfig struct {
 	AsyncJobResultTTL               int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                 []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	LoggingHeaders                  []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	WhitelistedRoutes               []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	ConfigHash                      string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
 }
@@ -212,6 +213,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("requiredHeaders:"))
+		hash.Write(data)
+	}
+
+	// Hash WhitelistedRoutes (sorted for deterministic hashing)
+	if len(c.WhitelistedRoutes) > 0 {
+		sortedRoutes := make([]string, len(c.WhitelistedRoutes))
+		copy(sortedRoutes, c.WhitelistedRoutes)
+		sort.Strings(sortedRoutes)
+		data, err := sonic.Marshal(sortedRoutes)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("whitelistedRoutes:"))
 		hash.Write(data)
 	}
 

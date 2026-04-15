@@ -45,6 +45,7 @@ type UpdateLogData struct {
 	ResponsesOutput        []schemas.ResponsesMessage
 	EmbeddingOutput        []schemas.EmbeddingData
 	RerankOutput           []schemas.RerankResult
+	OCROutput              *schemas.BifrostOCRResponse // For OCR responses
 	ErrorDetails           *schemas.BifrostError
 	SpeechOutput           *schemas.BifrostSpeechResponse          // For non-streaming speech responses
 	TranscriptionOutput    *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
@@ -227,7 +228,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
+	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -449,6 +450,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Params = req.EmbeddingRequest.Params
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
+		case schemas.OCRRequest:
+			initialData.Params = req.OCRRequest.Params
 		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 			initialData.Params = req.SpeechRequest.Params
 			initialData.SpeechInput = req.SpeechRequest.Input
@@ -895,9 +898,17 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
+	// Use the per-tool-call unique MCP log ID (set by agent executor per goroutine) as the
+	// primary key. Fall back to requestID if not set (e.g. direct single tool call).
+	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+	if !ok || mcpLogID == "" {
+		mcpLogID = requestID
+	}
+
 	go func() {
 		entry := &logstore.MCPToolLog{
-			ID:          requestID,
+			ID:          mcpLogID,
+			RequestID:   requestID,
 			Timestamp:   createdTimestamp,
 			ToolName:    toolName,
 			ServerLabel: serverLabel,
@@ -967,6 +978,12 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty in PostMCPHook")
 		return resp, bifrostErr, nil
+	}
+
+	// Use the per-tool-call unique MCP log ID to find the correct log entry.
+	mcpLogID, ok := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+	if !ok || mcpLogID == "" {
+		mcpLogID = requestID
 	}
 
 	// Extract virtual key ID and name from context (set by governance plugin)
@@ -1055,7 +1072,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		}
 
 		processingErr := retryOnNotFound(p.ctx, func() error {
-			return p.store.UpdateMCPToolLog(p.ctx, requestID, updates)
+			return p.store.UpdateMCPToolLog(p.ctx, mcpLogID, updates)
 		})
 		if processingErr != nil {
 			p.logger.Warn("failed to process MCP tool log update for request %s: %v", requestID, processingErr)
@@ -1066,7 +1083,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			p.mu.Unlock()
 
 			if callback != nil {
-				if updatedEntry, getErr := p.store.FindMCPToolLog(p.ctx, requestID); getErr == nil {
+				if updatedEntry, getErr := p.store.FindMCPToolLog(p.ctx, mcpLogID); getErr == nil {
 					callback(updatedEntry)
 				} else {
 					p.logger.Warn("failed to find updated entry for callback: %v", getErr)

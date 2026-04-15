@@ -203,6 +203,7 @@ bifrost:
     # mcpCodeModeBindingLevel: ""    # Code mode binding level (server or tool)
     # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
+    # whitelistedRoutes: []           # Routes that bypass auth middleware
 
   # Framework configuration
   framework:
@@ -732,6 +733,10 @@ vectorStore:
       username: ""
       password: ""
       database: 0
+      useTls: false                # Enable TLS for Redis connection
+      insecureSkipVerify: false    # Skip TLS certificate verification
+      caCertPem: ""                # PEM-encoded CA certificate to trust for Redis TLS
+      clusterMode: false           # Use Redis Cluster mode (required for AWS MemoryDB)
       # Connection pool tuning (optional)
       # poolSize: 10             # Maximum number of socket connections
       # maxActiveConns: 0        # Maximum number of active connections

@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
+	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
@@ -986,6 +987,69 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 		return nil, err
 	}
 	return response.RerankResponse, nil
+}
+
+// OCRRequest sends an OCR request to the specified provider.
+func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "ocr request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.OCRRequest,
+			},
+		}
+	}
+	if strings.TrimSpace(string(req.Document.Type)) == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "document type not provided for ocr request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.OCRRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	if req.Document.Type == schemas.OCRDocumentTypeDocumentURL && (req.Document.DocumentURL == nil || strings.TrimSpace(*req.Document.DocumentURL) == "") {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "document_url not provided for document_url type ocr request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.OCRRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	if req.Document.Type == schemas.OCRDocumentTypeImageURL && (req.Document.ImageURL == nil || strings.TrimSpace(*req.Document.ImageURL) == "") {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image_url not provided for image_url type ocr request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.OCRRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.OCRRequest
+	bifrostReq.OCRRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.OCRResponse, nil
 }
 
 // SpeechRequest sends a speech request to the specified provider.
@@ -3614,6 +3678,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.Fireworks:
+		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -3961,6 +4027,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.RerankRequest = &tmp
+	}
+	if req.OCRRequest != nil {
+		tmp := *req.OCRRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.OCRRequest = &tmp
 	}
 
 	if req.SpeechRequest != nil {
@@ -5020,7 +5092,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		} else {
 			result, bifrostError = executeRequestWithRetries(req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return bifrost.handleProviderRequest(provider, req, key, keys)
+				return bifrost.handleProviderRequest(provider, config, req, key, keys)
 			}, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}
 
@@ -5086,7 +5158,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
-func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
@@ -5106,12 +5178,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 		response.ResponsesResponse = responsesResponse
 	case schemas.CountTokensRequest:
 		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
@@ -5131,6 +5205,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.RerankResponse = rerankResponse
+	case schemas.OCRRequest:
+		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.OCRResponse = ocrResponse
 	case schemas.SpeechRequest:
 		speechResponse, bifrostError := provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest)
 		if bifrostError != nil {
@@ -5939,6 +6019,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
+	req.OCRRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
 	req.ImageGenerationRequest = nil

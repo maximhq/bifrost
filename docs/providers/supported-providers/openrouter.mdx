@@ -21,7 +21,7 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | List Models | ✅ | - | `/v1/models` |
-| Embeddings | ❌ | ❌ | - |
+| Embeddings | ✅ | - | `/v1/embeddings` |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
@@ -29,7 +29,7 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
+**Unsupported Operations** (❌): Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
 
 **Note**: OpenRouter's Responses API is currently in **beta**.
 </Note>
@@ -131,11 +131,30 @@ Lists 100+ models available through OpenRouter, including:
 
 ---
 
+# 5. Embeddings
+
+OpenRouter supports embeddings through their OpenAI-compatible API. This allows you to generate vector embeddings for text using models from various providers.
+
+| Parameter | Mapping |
+|-----------|---------|
+| `input` | Direct pass-through (string or array of strings) |
+| `model` | Model ID (e.g., `cohere/embed-multilingual-v3.0`, `amazon/amazon-embeddings-v2`) |
+| `dimensions` | Number of dimensions for the output embedding |
+| `encoding_format` | Output format (`float` or `base64`) |
+
+**Supported Models:** OpenRouter supports various embedding models including:
+- Cohere (embed-multilingual-v3.0, embed-english-v3.0, etc.)
+- Amazon (amazon-embeddings-v2)
+- And other providers
+
+The embedding request/response follows the standard OpenAI format.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
 |---------|--------|
-| Embedding | Not offered by OpenRouter API |
 | Image Generation | Not offered by OpenRouter API |
 | Speech/TTS | Not offered by OpenRouter API |
 | Transcription/STT | Not offered by OpenRouter API |

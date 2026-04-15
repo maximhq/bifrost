@@ -155,14 +155,14 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   },
   "governance": {
     "virtual_keys": [
       {
         "id": "vk-001",
         "name": "Engineering Team API",
-        "value": "vk-engineering-main",
+        "value": "sk-bf-*",
         "description": "Main API key for engineering team",
         "is_active": true,
         "provider_configs": [
@@ -495,7 +495,7 @@ All governance-enabled requests must include the virtual key header:
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "x-bf-vk: vk-engineering-main" \
+  -H "x-bf-vk: sk-bf-*" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -520,7 +520,7 @@ curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "enforce_governance_header": true
+      "enforce_auth_on_inference": true
     }
   }'
 ```
@@ -531,7 +531,7 @@ curl -X PUT http://localhost:8080/api/config \
 ```json
 {
   "client": {
-    "enforce_governance_header": true
+    "enforce_auth_on_inference": true
   }
 }
 ```

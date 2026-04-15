@@ -1,0 +1,107 @@
+---
+title: "v1.4.0--prerelease2"
+description: "Enterprise v1.4.0-prerelease2"
+---
+
+<Update label="Bifrost Enterprise" description="v1.4.0-prerelease2">
+
+## Changelog
+
+This release introduces realtime (WebSocket/WebRTC) support, Fireworks AI as a new provider, a comprehensive SCIM provider expansion (Google Workspace, Keycloak, Zitadel, SailPoint), access profiles for fine-grained permission control, business units and teams for organizational hierarchy, a user ranking dashboard, and a guardrail verification flow.
+
+## ✨ Features
+
+- **Realtime Support** — WebSocket, WebRTC, and client secret handlers with session state management and transport context helpers for real-time streaming use cases
+- **Fireworks AI Provider** — Fireworks AI added as a first-class provider with native completions, responses, embeddings, and image generations
+- **Access Profiles** — Fine-grained permission control with access profiles for managing model access at team and business unit levels, including propagation dialogs and full CRUD UI
+- **SCIM Provider Expansion** — Added support for Google Workspace, Keycloak, Zitadel, and SailPoint identity providers with full SCIM provisioning, attribute mapping, and sync workflows
+- **Okta Custom Provider + Group Mapping** — Custom Okta provider configurations with attribute-to-role, team, and business unit mapping support
+- **Business Units & Teams** — New organizational hierarchy for managing users with business units, teams, sync dialogs, and detail sheets
+- **User Ranking Dashboard** — Dashboard for tracking and visualizing user activity and rankings
+- **Guardrail Verify Flow** — Verify guardrail configurations against providers (Azure, Bedrock, GraySwan) before deployment
+- **Per-User OAuth Consent** — Per-user OAuth consent flow with identity selection and MCP authentication
+- **Prompts Plugin** — New prompts plugin with direct key header resolver and selective message inclusion when committing prompt sessions
+- **Bedrock Embeddings & Image Gen** — Embeddings, image generation, edit, and variation support added to Bedrock provider
+- **Logging Tracking Fields** — Support for tracking userId, teamId, customerId, and businessUnitId in logging plugin
+- **Virtual Keys Export** — Sorting and CSV export added to virtual keys table
+- **Path Whitelisting** — Allow path whitelisting from security config
+- **Model Blacklist in Load Balancing** — Blacklist model support in the load balancing plugin to exclude specific models from routing
+- **Cluster Leader Badge** — Leader badge display added to cluster node view
+- **Server Bootstrap Timer** — Startup diagnostics with server bootstrap timer
+
+## 🐞 Fixed
+
+- **Traffic Distribution Label** — Added "last 10s" label to Traffic Distribution Sankey chart for clarity
+- **Node ID Consistency** — Generate unique node ID on config load with minor consistency fixes
+- **Leader Election Stability** — Increased leader election check interval to 10 seconds for improved stability
+- **Bedrock Tool Choice** — Fix bedrock tool choice conversion to auto
+- **Bedrock Streaming Retries** — Retry retryable AWS exceptions and stale/closed-connection errors in bedrock streaming
+- **Bedrock SigV4 Service** — Correct SigV4 service name for agent runtime rerank
+- **MCP Tool Logs** — Fix MCP tool logs not being captured correctly
+- **Routing Rule Targets** — Preserve routing rule targets for genai and bedrock paths
+- **Provider Budget Duplication** — Fix provider level multiline budget duplication issue
+- **Vertex Endpoint** — Fix vertex endpoint correction
+- **Gemini Thinking Budget** — Fix thinking budget validation for gemini models
+- **SQLite Migrations** — Fix SQLite migration connections, error handling, and disable foreign key checks during migration
+- **Tool Parameter Schemas** — Preserve explicit empty tool parameter schemas for openai passthrough
+- **List Models Output** — Include raw model ID in list-models output alongside aliases
+- **Config Schema** — Fix config schema for bedrock key config
+- **Data Race Fix** — Fix race in data reading from fasthttp request for integrations
+- **Model Listing** — Unify /api/models and /api/models/details listing behavior
+
+## 📀 Base OSS version
+
+`transports/v1.5.0-prerelease2`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+module github.com/maximhq/bifrost-enterprise
+
+go 1.26.1
+
+require (
+	cloud.google.com/go/bigquery v1.73.1
+	github.com/DataDog/datadog-go/v5 v5.6.0
+	github.com/DataDog/dd-trace-go/v2 v2.4.0
+	github.com/aws/aws-sdk-go-v2/config v1.32.11
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.11
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.1
+	github.com/bytedance/sonic v1.15.0
+	github.com/coreos/go-oidc/v3 v3.12.0
+	github.com/fasthttp/router v1.5.4
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/cel-go v0.26.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/grandcat/zeroconf v1.0.0
+	github.com/hashicorp/consul/api v1.22.0
+	github.com/hashicorp/memberlist v0.5.4
+	github.com/maximhq/bifrost/core v1.5.1
+	github.com/maximhq/bifrost/framework v1.3.1
+	github.com/maximhq/bifrost/plugins/governance v1.5.1
+	github.com/maximhq/bifrost/plugins/logging v1.5.1
+	github.com/maximhq/bifrost/transports v1.5.0-prerelease2
+	github.com/nakabonne/tstorage v0.3.6
+	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.40.0
+	github.com/tetratelabs/wazero v1.11.0
+	github.com/valyala/fasthttp v1.68.0
+	go.etcd.io/etcd/client/v3 v3.6.6
+	golang.org/x/crypto v0.49.0
+	golang.org/x/oauth2 v0.36.0
+	google.golang.org/api v0.265.0
+	google.golang.org/protobuf v1.36.11
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.1
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+)
+```
+
+
+</Update>
+
+
+

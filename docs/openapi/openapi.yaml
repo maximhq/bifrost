@@ -56,8 +56,17 @@ info:
     url: https://opensource.org/licenses/Apache-2.0
 
 servers:
-  - url: http://localhost:8080
-    description: Local development server
+  - url: "{baseUrl}"
+    description: Your Bifrost instance
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+        description: Base URL of your Bifrost instance (e.g. https://bifrost.mycompany.com)
+
+security:
+  - BearerAuth: []
+  - BasicAuth: []
+  - ApiKeyAuth: []
 
 tags:
   # Unified Inference API
@@ -548,6 +557,28 @@ paths:
   /api/pricing/force-sync:
     $ref: './paths/management/config.yaml#/force-sync-pricing'
 
+  # Users
+  /api/users:
+    $ref: './paths/management/users.yaml#/users'
+  /api/users/{id}:
+    $ref: './paths/management/users.yaml#/users-by-id'
+  /api/users/me/permissions:
+    $ref: './paths/management/users.yaml#/users-me-permissions'
+  /api/users/{id}/role:
+    $ref: './paths/management/users.yaml#/users-role'
+  /api/users/{id}/teams:
+    $ref: './paths/management/users.yaml#/users-teams'
+
+  # Teams
+  /api/teams:
+    $ref: './paths/management/users.yaml#/teams'
+  /api/teams/{id}:
+    $ref: './paths/management/users.yaml#/teams-by-id'
+  /api/teams/{id}/members:
+    $ref: './paths/management/users.yaml#/team-members'
+  /api/teams/{id}/members/{userId}:
+    $ref: './paths/management/users.yaml#/team-member-by-id'
+
   # Session
   /api/session/login:
     $ref: './paths/management/session.yaml#/login'
@@ -595,12 +626,44 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-by-id'
   /api/mcp/client/{id}/reconnect:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
+  /api/mcp/client/{id}/complete-oauth:
+    $ref: './paths/management/mcp.yaml#/client-complete-oauth'
 
-  # MCP - OAuth
+  # MCP - OAuth (server-level)
   /api/oauth/callback:
     $ref: './paths/management/oauth.yaml#/oauth-callback'
   /api/oauth/config/{id}/status:
     $ref: './paths/management/oauth.yaml#/oauth-config-status'
+
+  # Per-User OAuth 2.1 Authorization Server
+  /api/oauth/per-user/register:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-register'
+  /api/oauth/per-user/authorize:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-authorize'
+  /api/oauth/per-user/token:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-token'
+  /api/oauth/per-user/upstream/authorize:
+    $ref: './paths/management/oauth.yaml#/per-user-oauth-upstream-authorize'
+
+  # Per-User OAuth Consent Flow (browser UI)
+  /oauth/consent:
+    $ref: './paths/management/oauth.yaml#/consent-identity-page'
+  /oauth/consent/mcps:
+    $ref: './paths/management/oauth.yaml#/consent-mcps-page'
+  /api/oauth/per-user/consent/vk:
+    $ref: './paths/management/oauth.yaml#/consent-submit-vk'
+  /api/oauth/per-user/consent/user-id:
+    $ref: './paths/management/oauth.yaml#/consent-submit-user-id'
+  /api/oauth/per-user/consent/skip:
+    $ref: './paths/management/oauth.yaml#/consent-skip'
+  /api/oauth/per-user/consent/submit:
+    $ref: './paths/management/oauth.yaml#/consent-submit'
+
+  # OAuth Discovery (RFC 9728 + RFC 8414)
+  /.well-known/oauth-protected-resource:
+    $ref: './paths/management/oauth.yaml#/oauth-protected-resource-metadata'
+  /.well-known/oauth-authorization-server:
+    $ref: './paths/management/oauth.yaml#/oauth-authorization-server-metadata'
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
@@ -723,9 +786,48 @@ paths:
     $ref: './paths/management/infrastructure.yaml#/metrics'
 
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication. Use your provider API key or Bifrost authentication token.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: |
+        Basic authentication using username and password.
+    VirtualKeyAuth:
+      type: apiKey
+      in: header
+      name: x-bf-vk
+      description: |
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
+        Example: `sk-bf-*` prefixed keys.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        API key authentication via the `x-api-key` header.
+        Virtual keys (prefixed with `sk-bf-`) can also be passed here.
+
+  parameters:
+    AsyncJobId:
+      $ref: './paths/inference/async.yaml#/components/parameters/AsyncJobId'
+    AsyncResultTTL:
+      $ref: './paths/inference/async.yaml#/components/parameters/AsyncResultTTL'
+
   responses:
     BadRequest:
       description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    NotFound:
+      description: Resource not found
       content:
         application/json:
           schema:
@@ -887,6 +989,8 @@ components:
       $ref: './schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse'
 
     # ==================== GenAI (Gemini) Integration ====================
+    GeminiSchema:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiSchema'
     GeminiGenerationRequest:
       $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
     GeminiGenerationResponse:
