@@ -208,6 +208,89 @@ type BedrockContentBlock struct {
 	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
 }
 
+// UnmarshalJSON custom unmarshaler to handle both Anthropic Messages API format
+// (flat fields with "type", "tool_use_id") and Bedrock Converse format (nested objects)
+func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
+	// First, try to detect the format by looking for a "type" field
+	var raw map[string]interface{}
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	typeStr, hasType := raw["type"].(string)
+
+	// If we have a "type" field, this is Anthropic Messages API format
+	if hasType {
+		switch typeStr {
+		case "tool_result":
+			// Anthropic format: {"type": "tool_result", "tool_use_id": "...", "content": ...}
+			toolUseID, _ := raw["tool_use_id"].(string)
+			isError, _ := raw["is_error"].(bool)
+
+			// Parse content field (can be string or array)
+			var contentBlocks []BedrockContentBlock
+			if contentRaw, ok := raw["content"]; ok {
+				switch content := contentRaw.(type) {
+				case string:
+					// String content
+					contentBlocks = []BedrockContentBlock{{Text: &content}}
+				case []interface{}:
+					// Array of content blocks
+					for _, item := range content {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							if itemType, ok := itemMap["type"].(string); ok && itemType == "text" {
+								if text, ok := itemMap["text"].(string); ok {
+									contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &text})
+								}
+							}
+						}
+					}
+				}
+			}
+
+			status := "success"
+			if isError {
+				status = "error"
+			}
+
+			b.ToolResult = &BedrockToolResult{
+				ToolUseID: toolUseID,
+				Content:   contentBlocks,
+				Status:    &status,
+			}
+			return nil
+
+		case "text":
+			// Anthropic format text block: {"type": "text", "text": "..."}
+			if text, ok := raw["text"].(string); ok {
+				b.Text = &text
+			}
+			return nil
+
+		case "tool_use":
+			// Anthropic format tool use: {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+			toolUse := &BedrockToolUse{}
+			if id, ok := raw["id"].(string); ok {
+				toolUse.ToolUseID = id
+			}
+			if name, ok := raw["name"].(string); ok {
+				toolUse.Name = name
+			}
+			if input, ok := raw["input"]; ok {
+				inputBytes, _ := sonic.Marshal(input)
+				toolUse.Input = inputBytes
+			}
+			b.ToolUse = toolUse
+			return nil
+		}
+	}
+
+	// Otherwise, unmarshal as Bedrock Converse format (nested objects)
+	type Alias BedrockContentBlock
+	aux := (*Alias)(b)
+	return sonic.Unmarshal(data, aux)
+}
+
 type BedrockCachePointType string
 
 const (
@@ -526,12 +609,15 @@ type BedrockInvokeMessagesResponse struct {
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
 type BedrockInvokeMessagesContentBlock struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	ID       string      `json:"id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Input    interface{} `json:"input,omitempty"`
-	Thinking string      `json:"thinking,omitempty"`
+	Type       string      `json:"type"`
+	Text       string      `json:"text,omitempty"`
+	ID         string      `json:"id,omitempty"`
+	Name       string      `json:"name,omitempty"`
+	Input      interface{} `json:"input,omitempty"`
+	Thinking   string      `json:"thinking,omitempty"`
+	ToolUseID  string      `json:"tool_use_id,omitempty"`  // For tool_result blocks
+	Content    interface{} `json:"content,omitempty"`      // For tool_result blocks (string or array)
+	IsError    *bool       `json:"is_error,omitempty"`     // For tool_result blocks
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
