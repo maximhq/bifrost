@@ -269,7 +269,7 @@ export default function MCPClientsTable({ mcpClients, totalCount, refetch, searc
 
 										<AlertDialog>
 											<AlertDialogTrigger asChild>
-												<Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" disabled={!hasDeleteMCPClientAccess}>
+												<Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" disabled={!hasDeleteMCPClientAccess} aria-label={`Delete MCP server ${c.config.name}`}>
 													<Trash2 className="h-4 w-4" />
 												</Button>
 											</AlertDialogTrigger>

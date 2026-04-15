@@ -62,7 +62,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 						</SelectContent>
 					</Select>
 				)}
-				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)}>
+				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)} aria-label="Copy to clipboard">
 					<Copy className="size-4" />
 				</Button>
 			</div>
