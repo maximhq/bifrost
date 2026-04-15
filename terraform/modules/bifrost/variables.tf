@@ -102,7 +102,7 @@ variable "cluster_config" {
 }
 
 variable "scim_config" {
-  description = "SCIM/SSO configuration (enabled, provider: okta/entra, config)
+  description = "SCIM/SSO configuration (enabled, provider: okta/entra, config)."
   type        = any
   default     = null
   sensitive   = true
