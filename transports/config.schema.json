@@ -1319,7 +1319,7 @@
                       "type": "string",
                       "description": "Type of trace to use for the OTEL collector",
                       "enum": [
-                        "otel"
+                        "genai_extension"
                       ]
                     },
                     "protocol": {
