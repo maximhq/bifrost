@@ -52,6 +52,479 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 **Limitations**: Images must be in base64 or data URI format (remote URLs not supported). Text completion streaming is not supported.
 </Note>
 
+---
+
+## Setup & Configuration
+
+Bifrost signs every Bedrock request with AWS Signature Version 4 (SigV4). Four credential methods are supported — choose the one that matches your deployment environment.
+
+<Note>
+The `aliases` field (mapping model names to inference profile IDs, ARNs, or deployment identifiers) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside `bedrock_key_config` instead — see the [v1.5.0 Migration Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) for details.
+</Note>
+
+### 1. Explicit Credentials
+
+Provide `access_key` and `secret_key` directly. Optionally include `session_token` for temporary credentials.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"Explicit Credentials"**
+4. Set **Access Key**: Your AWS access key ID
+5. Set **Secret Key**: Your AWS secret access key
+6. Set **Session Token** (Optional): For temporary/assumed credentials
+7. Set **Region**: e.g., `us-east-1`
+8. Configure **Aliases**: Map model names to inference profile IDs
+9. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "bedrock"}'
+
+# Step 2: Create a key (Explicit Credentials)
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-key",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    },
+    "bedrock_key_config": {
+      "access_key": "env.AWS_ACCESS_KEY_ID",
+      "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+      "session_token": "env.AWS_SESSION_TOKEN",
+      "region": "us-east-1"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Replace the top-level `aliases` with `"deployments"` inside `bedrock_key_config`:
+```json
+"bedrock_key_config": {
+  "access_key": "env.AWS_ACCESS_KEY_ID",
+  "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+  "region": "us-east-1",
+  "deployments": {
+    "claude-3-5-sonnet": "arn:aws:bedrock:us-east-1::foundation-model/..."
+  }
+}
+```
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-key",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+          },
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "session_token": "env.AWS_SESSION_TOKEN",
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+<Note>
+On **v1.4.x**, use `deployments` inside `bedrock_key_config` instead of the top-level `aliases` field.
+</Note>
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Bedrock:
+        return []schemas.Key{
+            {
+                Models: []string{"*"},
+                Weight: 1.0,
+                Aliases: schemas.KeyAliases{
+                    "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                },
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
+                    SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
+                    SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
+                    Region:       schemas.NewEnvVar("us-east-1"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 2. IAM Role (IRSA / Instance Profile)
+
+Leave `access_key` and `secret_key` empty. Bifrost calls AWS SDK's `config.LoadDefaultConfig()`, which runs the full credential chain. This section covers IAM-role-based sources: EKS IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`), ECS task role, and EC2 instance profile (IMDS). No static credentials are stored anywhere.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"IAM Role (Inherited)"**
+4. Set **Region**: e.g., `us-east-1`
+5. Configure **Aliases** if needed
+6. Save
+
+Ensure your workload has an IAM role with Bedrock permissions attached (via IRSA, ECS task role, or EC2 instance profile).
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "bedrock"}'
+
+# Step 2: Create a key (IAM Role — no credentials)
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-iam",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    },
+    "bedrock_key_config": {
+      "region": "us-east-1"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, two differences apply:
+- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+- Replace the top-level `aliases` with `"deployments"` inside `bedrock_key_config`.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-iam",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+          },
+          "bedrock_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Bedrock:
+        return []schemas.Key{
+            {
+                Models: []string{"*"},
+                Weight: 1.0,
+                // Leave Value empty — Bifrost uses the IAM role bound to the workload
+                Aliases: schemas.KeyAliases{
+                    "claude-3-5-sonnet": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                },
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    // Leave AccessKey and SecretKey empty — resolved from IRSA/instance profile
+                    Region: schemas.NewEnvVar("us-east-1"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 3. Default Credential Chain
+
+Leave `access_key` and `secret_key` empty. Bifrost calls the same `config.LoadDefaultConfig()` as the IAM Role section — the full AWS SDK v2 credential chain runs. Use this when credentials come from environment variables or shared credential files rather than an attached IAM role.
+
+Full AWS SDK v2 credential resolution order:
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
+2. Web Identity Token File / IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`)
+3. Shared credentials and config files (`~/.aws/credentials`, `~/.aws/config`)
+4. EC2 instance metadata / IMDS
+5. ECS container credentials
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"IAM Role (Inherited)"** — this covers both assigned IAM roles and the default credential chain (env vars, `~/.aws/credentials`)
+4. Set **Region**: e.g., `us-east-1`
+5. Configure **Aliases** if needed
+6. Save
+
+Ensure `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set in the environment where Bifrost runs, or that `~/.aws/credentials` is configured.
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "bedrock"}'
+
+# Step 2: Create a key (Default Credential Chain — no credentials)
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-default-chain",
+    "models": ["*"],
+    "weight": 1.0,
+    "bedrock_key_config": {
+      "region": "us-east-1"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-default-chain",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Bedrock:
+        return []schemas.Key{
+            {
+                Models: []string{"*"},
+                Weight: 1.0,
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    // Leave AccessKey and SecretKey empty — resolved from env vars or ~/.aws/credentials
+                    Region: schemas.NewEnvVar("us-east-1"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### 4. STS AssumeRole
+
+Set `role_arn` to assume an IAM role before signing requests. STS AssumeRole can layer on top of either explicit credentials or the default credential chain.
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Under **Authentication Method**, select **"IAM Role (Inherited)"** or **"Explicit Credentials"** — AssumeRole fields are available on both tabs
+4. Set **Region**: e.g., `us-east-1`
+5. Set **Assume Role ARN**: The IAM role ARN (e.g., `arn:aws:iam::123456789012:role/BedrockRole`)
+6. Set **External ID** (Optional): Required when the role's trust policy demands it
+7. Set **Session Name** (Optional): Identifies the session in CloudTrail (default: `bifrost-session`)
+8. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+# Step 1: Create the provider
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "bedrock"}'
+
+# Step 2: Create a key (STS AssumeRole)
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-assume-role",
+    "models": ["*"],
+    "weight": 1.0,
+    "bedrock_key_config": {
+      "role_arn": "env.AWS_ROLE_ARN",
+      "external_id": "env.AWS_EXTERNAL_ID",
+      "session_name": "bifrost-session",
+      "region": "us-east-1"
+    }
+  }'
+```
+
+<Note>
+**On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+</Note>
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-assume-role",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "role_arn": "env.AWS_ROLE_ARN",
+            "external_id": "env.AWS_EXTERNAL_ID",
+            "session_name": "bifrost-session",
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Bedrock:
+        return []schemas.Key{
+            {
+                Models: []string{"*"},
+                Weight: 1.0,
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    RoleARN:         schemas.NewEnvVar("env.AWS_ROLE_ARN"),
+                    ExternalID:      schemas.NewEnvVar("env.AWS_EXTERNAL_ID"), // optional
+                    RoleSessionName: schemas.NewEnvVar("bifrost-session"),     // optional
+                    Region:      bifrost.Ptr("us-east-1"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+AssumeRole requires a valid source identity — it works when credentials are available via explicit `access_key`/`secret_key` or via the default credential chain. If no credentials are available from either source, AssumeRole will fail.
+</Note>
+
+**`bedrock_key_config` fields:**
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `region` | Yes | — | AWS region (e.g., `us-east-1`) |
+| `access_key` | No | — | AWS access key ID |
+| `secret_key` | No | — | AWS secret access key |
+| `session_token` | No | — | AWS session token (for temporary credentials) |
+| `arn` | No | — | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
+| `role_arn` | No | — | IAM role ARN for STS AssumeRole |
+| `external_id` | No | — | External ID for AssumeRole (when required by trust policy) |
+| `session_name` | No | `bifrost-session` | Session name for AssumeRole CloudTrail logs |
+
+**Key-level fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `aliases` | No | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+) |
+| `models` | Yes | Models this key can serve; use `["*"]` to allow all |
+
+---
+
 ## Beta Headers
 
 For Claude models on Bedrock, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.
@@ -1271,7 +1744,7 @@ Set `role_arn` to assume an IAM role before signing requests. AssumeRole require
 | `session_name` | No | `bifrost-session` | Identifies the session in CloudTrail logs |
 
 
-## Setup & Configuration
+## Inference Profiles & ARN Configuration
 
 ### How to Use ARNs and Application Inference Profiles
 
@@ -1320,21 +1793,6 @@ When using AWS Bedrock inference profiles or application inference profiles, you
   }
 }
 ```
-
-For detailed instructions on setting up AWS Bedrock authentication including credentials, IAM roles, regions, and deployment mapping, see the quickstart guides:
-
-<Tabs>
-<Tab title="Gateway">
-
-See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/gateway/provider-configuration#aws-bedrock)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
-
-</Tab>
-<Tab title="Go SDK">
-
-See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/go-sdk/provider-configuration#aws-bedrock)** in the Go SDK Quickstart for programmatic configuration examples.
-
-</Tab>
-</Tabs>
 
 ### Endpoints
 

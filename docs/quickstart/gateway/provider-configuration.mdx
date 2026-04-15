@@ -84,59 +84,55 @@ curl --location 'http://localhost:8080/api/providers' \
 
 <Tab title="Using config.json">
 
-<Note>
-Each key in a provider needs to have a unique name.
-</Note>
-
+<Note>Each key in a provider needs to have a unique name.</Note>
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ]
-        },
-        "anthropic": {
-            "keys": [
-                {
-                    "name": "anthropic-key",
-                    "value": "env.ANTHROPIC_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ]
-        },
-        "vllm-local": {
-            "keys": [
-                {
-                    "name": "vllm-key",
-                    "value": "dummy",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "network_config": {
-                "base_url": "http://vllm-endpoint:8000",
-                "default_request_timeout_in_seconds": 60
-            },
-            "custom_provider_config": {
-                "base_provider_type": "openai",
-                "allowed_requests": {
-                    "chat_completion": true,
-                    "chat_completion_stream": true
-                }
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ]
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    },
+    "vllm-local": {
+      "keys": [
+        {
+          "name": "vllm-key",
+          "value": "dummy",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://vllm-endpoint:8000",
+        "default_request_timeout_in_seconds": 60
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true
+        }
+      }
     }
+  }
 }
 ```
-
 
 </Tab>
 
@@ -147,7 +143,12 @@ Each key in a provider needs to have a unique name.
 </Tip>
 
 <Tip>
-**Air-gapped or self-signed certificates:** If your custom provider uses HTTPS with a self-signed or internal CA certificate, add `"insecure_skip_verify": true` or `"ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"` to `network_config`. See [Custom Providers - TLS](../../providers/custom-providers#tls-for-self-signed-or-internal-certificates) for details.
+  **Air-gapped or self-signed certificates:** If your custom provider uses HTTPS
+  with a self-signed or internal CA certificate, add `"insecure_skip_verify":
+  true` or `"ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END
+  CERTIFICATE-----"` to `network_config`. See [Custom Providers -
+  TLS](../../providers/custom-providers#tls-for-self-signed-or-internal-certificates)
+  for details.
 </Tip>
 
 ## Making Requests
@@ -179,6 +180,7 @@ export COHERE_API_KEY="your-cohere-api-key"
 ```
 
 **Environment Variable Handling:**
+
 - Use `"value": "env.VARIABLE_NAME"` to reference environment variables
 - Use `"value": "sk-proj-xxxxxxxxx"` to pass keys directly
 - All sensitive data is automatically redacted in GET requests and UI responses for security
@@ -218,7 +220,7 @@ curl --location 'http://localhost:8080/api/providers' \
         },
         {
             "name": "openai-key-2",
-            "value": "env.OPENAI_API_KEY_2", 
+            "value": "env.OPENAI_API_KEY_2",
             "models": ["*"],
             "weight": 0.3
         }
@@ -232,24 +234,24 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY_1",
-                    "models": ["*"],
-                    "weight": 0.7
-                },
-                {
-                    "name": "openai-key-2",
-                    "value": "env.OPENAI_API_KEY_2",
-                    "models": ["*"],
-                    "weight": 0.3
-                }
-            ]
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY_1",
+          "models": ["*"],
+          "weight": 0.7
+        },
+        {
+          "name": "openai-key-2",
+          "value": "env.OPENAI_API_KEY_2",
+          "models": ["*"],
+          "weight": 0.3
         }
+      ]
     }
+  }
 }
 ```
 
@@ -304,24 +306,24 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["gpt-4o", "gpt-4o-mini"],
-                    "weight": 1.0
-                },
-                {
-                    "name": "openai-key-2",
-                    "value": "env.OPENAI_API_KEY_PREMIUM",
-                    "models": ["o1-preview", "o1-mini"],
-                    "weight": 1.0
-                }
-            ]
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o", "gpt-4o-mini"],
+          "weight": 1.0
+        },
+        {
+          "name": "openai-key-2",
+          "value": "env.OPENAI_API_KEY_PREMIUM",
+          "models": ["o1-preview", "o1-mini"],
+          "weight": 1.0
         }
+      ]
     }
+  }
 }
 ```
 
@@ -336,7 +338,6 @@ Override the default API endpoint for a provider. This is useful for connecting 
 <Tabs group="base-url-config">
 
 <Tab title="Using Web UI">
-
 
 <Frame>
   <video autoPlay playsInline muted>
@@ -377,21 +378,21 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "network_config": {
-                "base_url": "http://localhost:8000/v1"
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "network_config": {
+        "base_url": "http://localhost:8000/v1"
+      }
     }
+  }
 }
 ```
 
@@ -400,12 +401,19 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tabs>
 
 <Note>
-For self-hosted providers like Ollama and SGL, `base_url` is required. For standard providers, it's optional and overrides the default endpoint.
+  For self-hosted providers like Ollama and SGL, `base_url` is required. For
+  standard providers, it's optional and overrides the default endpoint.
 </Note>
 
 ### Managing Retries
 
 Configure retry behavior for handling temporary failures and rate limits. This example sets up exponential backoff with up to 5 retries, starting with 1ms delay and capping at 10 seconds - ideal for handling transient network issues.
+
+<Info>
+  For a full explanation of how retries work, key rotation on rate limits, and
+  how retries connect with fallbacks, see [Retries &
+  Fallbacks](/features/retries-and-fallbacks).
+</Info>
 
 <Tabs group="retry-config">
 
@@ -438,8 +446,8 @@ curl --location 'http://localhost:8080/api/providers' \
     ],
     "network_config": {
         "max_retries": 5,
-        "retry_backoff_initial_ms": 1,
-        "retry_backoff_max_ms": 10000
+        "retry_backoff_initial": 1,
+        "retry_backoff_max": 10000
     }
 }'
 ```
@@ -450,23 +458,23 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "network_config": {
-                "max_retries": 5,
-                "retry_backoff_initial_ms": 1,
-                "retry_backoff_max_ms": 10000
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "network_config": {
+        "max_retries": 5,
+        "retry_backoff_initial": 1,
+        "retry_backoff_max": 10000
+      }
     }
+  }
 }
 ```
 
@@ -517,7 +525,7 @@ curl --location 'http://localhost:8080/api/providers' \
 curl --location 'http://localhost:8080/api/providers' \
 --header 'Content-Type: application/json' \
 --data '{
-    "provider": "anthropic", 
+    "provider": "anthropic",
     "keys": [
         {
             "name": "openai-key-1",
@@ -539,36 +547,36 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "concurrency_and_buffer_size": {
-                "concurrency": 100,
-                "buffer_size": 500
-            }
-        },
-        "anthropic": {
-            "keys": [
-                {
-                    "name": "anthropic-key-1",
-                    "value": "env.ANTHROPIC_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "concurrency_and_buffer_size": {
-                "concurrency": 25,
-                "buffer_size": 100
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 100,
+        "buffer_size": 500
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-key-1",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 25,
+        "buffer_size": 100
+      }
     }
+  }
 }
 ```
 
@@ -626,24 +634,24 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "network_config": {
-                "extra_headers": {
-                    "x-custom-org": "my-organization",
-                    "x-environment": "production"
-                }
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "network_config": {
+        "extra_headers": {
+          "x-custom-org": "my-organization",
+          "x-environment": "production"
+        }
+      }
     }
+  }
 }
 ```
 
@@ -671,6 +679,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 The `x-bf-eh-` prefix is stripped before forwarding, so `x-bf-eh-user-id` becomes `user-id` in the request to the provider.
 
 **Example use cases:**
+
 - User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
 - Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
 - Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
@@ -735,16 +744,16 @@ curl --location --request PUT 'http://localhost:8080/api/providers/vertex' \
 
 ```json
 {
-    "providers": {
-        "vertex": {
-            "network_config": {
-                "beta_header_overrides": {
-                    "redact-thinking-": true,
-                    "fast-mode-": false
-                }
-            }
+  "providers": {
+    "vertex": {
+      "network_config": {
+        "beta_header_overrides": {
+          "redact-thinking-": true,
+          "fast-mode-": false
         }
+      }
     }
+  }
 }
 ```
 
@@ -822,38 +831,38 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "proxy_config": {
-                "type": "http",
-                "url": "http://localhost:8000"
-            }
-        },
-        "anthropic": {
-            "keys": [
-                {
-                    "name": "anthropic-key-1",
-                    "value": "env.ANTHROPIC_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "proxy_config": {
-                "type": "socks5",
-                "url": "http://localhost:8000",
-                "username": "user",
-                "password": "password"
-            }
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "proxy_config": {
+        "type": "http",
+        "url": "http://localhost:8000"
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-key-1",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "proxy_config": {
+        "type": "socks5",
+        "url": "http://localhost:8000",
+        "username": "user",
+        "password": "password"
+      }
     }
+  }
 }
 ```
 
@@ -866,7 +875,10 @@ curl --location 'http://localhost:8080/api/providers' \
 Include the original provider response alongside Bifrost's standardized response format. Useful for debugging and accessing provider-specific metadata.
 
 <Note>
-You can override this per request using the `x-bf-send-back-raw-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#send-back-raw-response) for details.
+  You can override this per request using the `x-bf-send-back-raw-response`
+  header (`"true"` or `"false"`), regardless of the provider-level config. See
+  [Request Options](../../providers/request-options#send-back-raw-response) for
+  details.
 </Note>
 
 <Tabs group="raw-response">
@@ -906,19 +918,19 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "send_back_raw_response": true
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "send_back_raw_response": true
     }
+  }
 }
 ```
 
@@ -946,7 +958,10 @@ When enabled, the raw provider response appears in `extra_fields.raw_response`:
 Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
 
 <Note>
-You can override this per request using the `x-bf-send-back-raw-request` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#send-back-raw-request) for details.
+  You can override this per request using the `x-bf-send-back-raw-request`
+  header (`"true"` or `"false"`), regardless of the provider-level config. See
+  [Request Options](../../providers/request-options#send-back-raw-request) for
+  details.
 </Note>
 
 <Tabs group="raw-request">
@@ -986,19 +1001,19 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "send_back_raw_request": true
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "send_back_raw_request": true
     }
+  }
 }
 ```
 
@@ -1022,7 +1037,8 @@ When enabled, the raw provider request appears in `extra_fields.raw_request`:
 ```
 
 <Tip>
-You can enable both `send_back_raw_request` and `send_back_raw_response` together to see the complete request-response cycle for debugging purposes.
+  You can enable both `send_back_raw_request` and `send_back_raw_response`
+  together to see the complete request-response cycle for debugging purposes.
 </Tip>
 
 ### Store Raw Request/Response
@@ -1064,19 +1080,19 @@ curl --location 'http://localhost:8080/api/providers' \
 
 ```json
 {
-    "providers": {
-        "openai": {
-            "keys": [
-                {
-                    "name": "openai-key-1",
-                    "value": "env.OPENAI_API_KEY",
-                    "models": ["*"],
-                    "weight": 1.0
-                }
-            ],
-            "store_raw_request_response": true
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
         }
+      ],
+      "store_raw_request_response": true
     }
+  }
 }
 ```
 
@@ -1088,6 +1104,7 @@ curl --location 'http://localhost:8080/api/providers' \
 `store_raw_request_response` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
 
 You can override this per request using the `x-bf-store-raw-request-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#store-raw-requestresponse) for details.
+
 </Note>
 
 ### Passthrough Extra Parameters
@@ -1116,369 +1133,10 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 When enabled, the extra parameters are merged into the JSON request body sent to the provider. This allows you to pass provider-specific parameters that Bifrost doesn't natively support.
 
 <Note>
-- This feature only works for JSON requests, not multipart/form-data requests
-- Parameters already handled by Bifrost (like `addWatermark`, `enhancePrompt`) are not duplicated - they appear in their proper location
-- Nested parameters (e.g., `parameters.custom_field`) are merged recursively with existing nested structures
-- See [Supported Headers](../../providers/supported-headers) for a complete list of all Bifrost headers
-</Note>
-
-## Provider-Specific Authentication
-
-Enterprise cloud providers require additional configuration beyond API keys. Configure Azure, AWS Bedrock, and Google Vertex with platform-specific authentication details.
-
-### Azure
-
-Azure supports three authentication methods: **Managed Identity** (DefaultAzureCredential), **Entra ID** (Service Principal), and **Direct** (API Key).
-
-#### Managed Identity / DefaultAzureCredential
-
-Leave API key and Entra ID credentials empty. Bifrost uses `DefaultAzureCredential`, which auto-detects managed identity on Azure VMs, App Service, AKS, and similar environments. Provide only `endpoint` and optionally `api_version`.
-
-#### Azure Entra ID (Service Principal)
-
-<Tabs group="azure-entra-auth">
-
-<Tab title="Using Web UI">
-
-![Azure Configuration Interface](../../media/ui-azure-config.png)
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
-2. Leave **API Key** empty for Service Principal auth
-3. Set **Client ID**: Your Azure Entra ID client ID
-4. Set **Client Secret**: Your Azure Entra ID client secret
-5. Set **Tenant ID**: Your Azure Entra ID tenant ID
-6. Set **Endpoint**: Your Azure endpoint URL
-7. Configure **Aliases**: Map model names to deployment names
-8. Set **API Version**: e.g., `2024-08-01-preview`
-9. Save configuration
-
-</Tab>
-
-<Tab title="Using API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-    "provider": "azure",
-    "keys": [
-        {
-            "name": "azure-key-1",
-            "value": "",
-            "models": ["gpt-4o", "gpt-4o-mini"],
-            "weight": 1.0,
-            "aliases": {
-                "gpt-4o": "gpt-4o-deployment",
-                "gpt-4o-mini": "gpt-4o-mini-deployment"
-            },
-            "azure_key_config": {
-                "endpoint": "env.AZURE_ENDPOINT",
-                "client_id": "env.AZURE_CLIENT_ID",
-                "client_secret": "env.AZURE_CLIENT_SECRET",
-                "tenant_id": "env.AZURE_TENANT_ID",
-                "scopes": ["https://cognitiveservices.azure.com/.default"],
-                "api_version": "2024-08-01-preview"
-            }
-        }
-    ]
-}'
-```
-
-</Tab>
-
-<Tab title="Using config.json">
-
-```json
-{
-    "providers": {
-        "azure": {
-            "keys": [
-                {
-                    "name": "azure-key-1",
-                    "value": "",
-                    "models": ["gpt-4o", "gpt-4o-mini"],
-                    "weight": 1.0,
-                    "aliases": {
-                        "gpt-4o": "gpt-4o-deployment",
-                        "gpt-4o-mini": "gpt-4o-mini-deployment"
-                    },
-                    "azure_key_config": {
-                        "endpoint": "env.AZURE_ENDPOINT",
-                        "client_id": "env.AZURE_CLIENT_ID",
-                        "client_secret": "env.AZURE_CLIENT_SECRET",
-                        "tenant_id": "env.AZURE_TENANT_ID",
-                        "scopes": ["https://cognitiveservices.azure.com/.default"],
-                        "api_version": "2024-08-01-preview"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-#### Direct Authentication
-
-For simpler use cases, provide the authentication credential directly in the `value` field:
-
-<Tabs group="azure-direct-auth">
-
-<Tab title="Using Web UI">
-
-![Azure Configuration Interface](../../media/ui-azure-config.png)
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
-2. Set **API Key**: Your Azure API key
-3. Set **Endpoint**: Your Azure endpoint URL
-4. Configure **Aliases**: Map model names to deployment names
-5. Set **API Version**: e.g., `2024-08-01-preview`
-6. Save configuration
-
-</Tab>
-
-<Tab title="Using API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-    "provider": "azure",
-    "keys": [
-        {
-            "name": "azure-key-1",
-            "value": "env.AZURE_API_KEY",
-            "models": ["gpt-4o", "gpt-4o-mini"],
-            "weight": 1.0,
-            "aliases": {
-                "gpt-4o": "gpt-4o-deployment",
-                "gpt-4o-mini": "gpt-4o-mini-deployment"
-            },
-            "azure_key_config": {
-                "endpoint": "env.AZURE_ENDPOINT",
-                "api_version": "2024-08-01-preview"
-            }
-        }
-    ]
-}'
-```
-
-</Tab>
-
-<Tab title="Using config.json">
-
-```json
-{
-    "providers": {
-        "azure": {
-            "keys": [
-                {
-                    "name": "azure-key-1",
-                    "value": "env.AZURE_API_KEY",
-                    "models": ["gpt-4o", "gpt-4o-mini"],
-                    "weight": 1.0,
-                    "aliases": {
-                        "gpt-4o": "gpt-4o-deployment",
-                        "gpt-4o-mini": "gpt-4o-mini-deployment"
-                    },
-                    "azure_key_config": {
-                        "endpoint": "env.AZURE_ENDPOINT",
-                        "api_version": "2024-08-01-preview"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-<Note>
-Authentication precedence: (1) Entra ID if `client_id`, `client_secret`, and `tenant_id` are set; (2) API key if `value` is set; (3) DefaultAzureCredential (managed identity) if neither is provided.
-</Note>
-
-### AWS Bedrock
-
-AWS Bedrock supports both explicit credentials and IAM role authentication:
-
-<Tabs group="bedrock-auth">
-
-<Tab title="Using Web UI">
-
-![AWS Bedrock Configuration Interface](../../media/ui-bedrock-config.png)
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
-2. Set **API Key**: AWS API Key (or leave empty if using IAM role authentication)
-3. Set **Access Key**: AWS Access Key ID (or leave empty to use IAM in environment)
-4. Set **Secret Key**: AWS Secret Access Key (or leave empty to use IAM in environment)
-5. Set **Region**: e.g., `us-east-1`
-6. Configure **Aliases**: Map model names to inference profiles
-7. Set **ARN**: Required only when Bifrost must construct a full inference-profile ARN for an alias
-8. Save configuration
-
-</Tab>
-
-<Tab title="Using API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-    "provider": "bedrock",
-    "keys": [
-        {
-            "name": "bedrock-key-1",
-            "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1", "claude-3-sonnet"],
-            "weight": 1.0,
-            "aliases": {
-                "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
-            },
-            "bedrock_key_config": {
-                "access_key": "env.AWS_ACCESS_KEY_ID",
-                "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-                "session_token": "env.AWS_SESSION_TOKEN",
-                "region": "us-east-1",
-                "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
-            }
-        }
-    ]
-}'
-```
-
-</Tab>
-
-<Tab title="Using config.json">
-
-```json
-{
-    "providers": {
-        "bedrock": {
-            "keys": [
-                {
-                    "name": "bedrock-key-1",
-                    "models": ["anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1", "claude-3-sonnet"],
-                    "weight": 1.0,
-                    "aliases": {
-                        "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0"
-                    },
-                    "bedrock_key_config": {
-                        "access_key": "env.AWS_ACCESS_KEY_ID",
-                        "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-                        "session_token": "env.AWS_SESSION_TOKEN",
-                        "region": "us-east-1",
-                        "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-**Notes:**
-- If using API Key authentication, set `value` field to the API key, else leave it empty for IAM role authentication.
-- In IAM role authentication, if both `access_key` and `secret_key` are empty, Bifrost uses IAM role authentication from the environment.
-- `arn` is required when you want Bifrost to build a full inference-profile ARN from an alias target.
-- Aliases are still resolved before provider dispatch; without `arn`, the resolved alias value is sent as the Bedrock model/profile identifier directly.
-- **ARN vs aliases**: Put the ARN prefix in `arn` and the model/inference profile resource ID only in the key-level `aliases` map — never the full ARN in alias values. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
-
-### Google Vertex
-
-Google Vertex requires project configuration and authentication credentials:
-
-<Tabs group="vertex-auth">
-
-<Tab title="Using Web UI">
-
-![Google Vertex Configuration Interface](../../media/ui-vertex-config.png)
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
-2. Set **API Key**: Your Vertex API key
-3. Set **Project ID**: Your Google Cloud project ID
-4. Set **Region**: e.g., `us-central1`
-5. Set **Auth Credentials**: Service account credentials JSON
-6. Save configuration
-</Tab>
-
-<Tab title="Using API">
-
-```bash
-curl --location 'http://localhost:8080/api/providers' \
---header 'Content-Type: application/json' \
---data '{
-    "provider": "vertex",
-    "keys": [
-        {
-            "name": "vertex-key-1",
-            "value": "env.VERTEX_API_KEY",
-            "models": ["gemini-pro", "gemini-pro-vision", "123456789", "fine-tuned-gemini-2.5-pro"],
-            "weight": 1.0,
-            "aliases": {
-                "fine-tuned-gemini-2.5-pro": "123456789"
-            },
-            "vertex_key_config": {
-                "project_id": "env.VERTEX_PROJECT_ID",
-                "project_number": "env.VERTEX_PROJECT_NUMBER",
-                "region": "us-central1",
-                "auth_credentials": "env.VERTEX_CREDENTIALS"
-            }
-        }
-    ]
-}'
-```
-
-</Tab>
-
-<Tab title="Using config.json">
-
-```json
-{
-    "providers": {
-        "vertex": {
-            "keys": [
-                {
-                    "name": "vertex-key-1",
-                    "value": "env.VERTEX_API_KEY",
-                    "models": ["gemini-pro", "gemini-pro-vision", "123456789", "fine-tuned-gemini-2.5-pro"],
-                    "weight": 1.0,
-                    "aliases": {
-                        "fine-tuned-gemini-2.5-pro": "123456789"
-                    },
-                    "vertex_key_config": {
-                        "project_id": "env.VERTEX_PROJECT_ID",
-                        "project_number": "env.VERTEX_PROJECT_NUMBER",
-                        "region": "us-central1",
-                        "auth_credentials": "env.VERTEX_CREDENTIALS"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-**Notes:**
-- You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
-- You must set Project Number in Key config if using fine-tuned models.
-- API Key Authentication is only supported for Gemini and fine-tuned models.
-- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-alias>` if you have set the aliases on the key.
-
-<Note>
-Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.
+  - This feature only works for JSON requests, not multipart/form-data requests
+  - Parameters already handled by Bifrost (like `addWatermark`, `enhancePrompt`) are not duplicated - they appear in their proper location
+  - Nested parameters (e.g., `parameters.custom_field`) are merged recursively with existing nested structures
+  - See [Supported Headers](../../providers/supported-headers) for a complete list of all Bifrost headers
 </Note>
 
 ## Next Steps

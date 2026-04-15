@@ -188,7 +188,7 @@
             "icon": "bolt",
             "pages": [
               "features/drop-in-replacement",
-              "features/fallbacks",
+              "features/retries-and-fallbacks",
               "features/litellm-compat",
               "features/keys-management",
               "features/async-inference",
@@ -627,6 +627,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/fallbacks",
+      "destination": "/features/retries-and-fallbacks"
+    },
     {
       "source": "/quickstart/gateway/cli-agents",
       "destination": "/cli-agents/overview"
