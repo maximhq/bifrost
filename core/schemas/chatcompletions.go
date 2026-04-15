@@ -315,10 +315,22 @@ const (
 
 // ChatTool represents a tool definition.
 type ChatTool struct {
-	Type         ChatToolType      `json:"type"`
-	Function     *ChatToolFunction `json:"function,omitempty"`      // Function definition
-	Custom       *ChatToolCustom   `json:"custom,omitempty"`        // Custom tool definition
-	CacheControl *CacheControl     `json:"cache_control,omitempty"` // Cache control for the tool
+	Type         ChatToolType        `json:"type"`
+	Function     *ChatToolFunction   `json:"function,omitempty"`      // Function definition
+	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition
+	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
+	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
+}
+
+// MCPToolAnnotations carries optional MCP spec hints describing tool behavior.
+// These are forwarded as-is from the MCP server and help agents make reasoning decisions
+// (e.g. distinguishing read-only vs. mutating tools).
+type MCPToolAnnotations struct {
+	Title           string `json:"title,omitempty"`           // Human-readable title for the tool
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`    // If true, the tool does not modify its environment
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"` // If true, the tool may perform destructive updates
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`  // If true, repeated calls with same args have no additional effect
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`   // If true, the tool interacts with external entities
 }
 
 // ChatToolFunction represents a function definition.

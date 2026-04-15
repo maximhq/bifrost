@@ -1069,3 +1069,90 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		})
 	}
 }
+
+// TestSonic_ChatTool_AnnotationsNeverSerialized verifies that MCPToolAnnotations
+// (json:"-") are never included in the JSON payload sent to providers.
+func TestSonic_ChatTool_AnnotationsNeverSerialized(t *testing.T) {
+	readOnly := true
+	destructive := false
+
+	tool := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name:        "read_file",
+			Description: Ptr("Reads a file from the filesystem"),
+			Parameters: &ToolFunctionParameters{
+				Type:       "object",
+				Properties: NewOrderedMapFromPairs(KV("path", map[string]interface{}{"type": "string"})),
+				Required:   []string{"path"},
+			},
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:           "File Reader",
+			ReadOnlyHint:    &readOnly,
+			DestructiveHint: &destructive,
+			IdempotentHint:  Ptr(true),
+		},
+	}
+
+	output, err := Marshal(tool)
+	require.NoError(t, err)
+
+	s := string(output)
+
+	// Annotations must be absent — json:"-" must suppress the entire field
+	assert.NotContains(t, s, "annotations", "annotations field must not appear in provider payload")
+	assert.NotContains(t, s, "readOnlyHint", "readOnlyHint must not appear in provider payload")
+	assert.NotContains(t, s, "destructiveHint", "destructiveHint must not appear in provider payload")
+	assert.NotContains(t, s, "idempotentHint", "idempotentHint must not appear in provider payload")
+	assert.NotContains(t, s, "File Reader", "annotation title must not appear in provider payload")
+
+	// The function definition itself must still be present
+	assert.Contains(t, s, "read_file", "function name must be in payload")
+	assert.Contains(t, s, "path", "parameter must be in payload")
+}
+
+// TestSonic_ChatTool_DeepCopy_AnnotationsPreserved verifies that DeepCopyChatTool
+// correctly copies Annotations so they survive any clone-based flows.
+func TestSonic_ChatTool_DeepCopy_AnnotationsPreserved(t *testing.T) {
+	readOnly := true
+	idempotent := false
+
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "query_db",
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:          "DB Query",
+			ReadOnlyHint:   &readOnly,
+			IdempotentHint: &idempotent,
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Annotations)
+	assert.Equal(t, "DB Query", copied.Annotations.Title)
+	assert.Equal(t, true, *copied.Annotations.ReadOnlyHint)
+	assert.Equal(t, false, *copied.Annotations.IdempotentHint)
+	assert.Nil(t, copied.Annotations.DestructiveHint)
+	assert.Nil(t, copied.Annotations.OpenWorldHint)
+
+	// Verify it's a true deep copy — mutations don't bleed back
+	*original.Annotations.ReadOnlyHint = false
+	assert.True(t, *copied.Annotations.ReadOnlyHint, "copy must not share pointer with original")
+}
+
+// TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil verifies that a tool
+// without annotations deep-copies cleanly with Annotations remaining nil.
+func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
+	original := ChatTool{
+		Type:     ChatToolTypeFunction,
+		Function: &ChatToolFunction{Name: "plain_tool"},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
+}
