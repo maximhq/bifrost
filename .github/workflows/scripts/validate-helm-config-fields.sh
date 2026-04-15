@@ -897,10 +897,6 @@ assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
 assert_field 'scim_config.config' '.scim_config.config'
 assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
 assert_field 'scim_config.config.clientSecret' '.scim_config.config.clientSecret'
-assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
-assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
-assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
-
 # SCIM - Entra
 cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
@@ -923,6 +919,9 @@ VALS
 render_config "$TMPDIR/values-scim-entra.yaml"
 assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
 assert_field 'scim_config (entra) config' '.scim_config.config'
+assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
+assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
+assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'
