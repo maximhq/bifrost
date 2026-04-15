@@ -23,6 +23,16 @@ CYAN=\033[0;36m
 NC=\033[0m # No Color
 ECHO := printf '%b\n'
 
+# nvm requires bash-compatible shell semantics; /bin/sh is dash on some Linux distros.
+SHELL := /bin/bash
+
+# Ensures the Node version pinned in .nvmrc is active before any npm/node call.
+# nvm is a shell function, so each recipe that needs it must inline this snippet
+# via `$(USE_NODE); <your command>`.
+USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
+	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
+	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
+
 .PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
@@ -61,16 +71,16 @@ cleanup-enterprise: ## Clean up enterprise directories if present
 	@$(ECHO) "$(GREEN)Enterprise cleaned up$(NC)"
 
 install-ui: cleanup-enterprise
-	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
-	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@$(ECHO) "$(GREEN)Node.js and npm are installed$(NC)"
-	@if [ ! -d "ui/node_modules" ] || [ "ui/package.json" -nt "ui/node_modules/.package-lock.json" ] || [ "ui/package-lock.json" -nt "ui/node_modules/.package-lock.json" ]; then \
-		$(ECHO) "$(YELLOW)Dependencies changed, running npm ci...$(NC)"; \
-		cd ui && npm ci; \
-	else \
-		$(ECHO) "$(GREEN)UI dependencies up to date, skipping install$(NC)"; \
-	fi
-	@which next > /dev/null || ($(ECHO) "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
+	@$(USE_NODE); \
+	 which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1); \
+	 which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1); \
+	 $(ECHO) "$(GREEN)Node.js $$(node -v) and npm $$(npm -v) are installed$(NC)"; \
+	 if [ ! -d "ui/node_modules" ] || [ "ui/package.json" -nt "ui/node_modules/.package-lock.json" ] || [ "ui/package-lock.json" -nt "ui/node_modules/.package-lock.json" ]; then \
+	   $(ECHO) "$(YELLOW)Dependencies changed, running npm ci...$(NC)"; \
+	   cd ui && npm ci; \
+	 else \
+	   $(ECHO) "$(GREEN)UI dependencies up to date, skipping install$(NC)"; \
+	 fi
 	@$(ECHO) "$(GREEN)UI deps are in sync$(NC)"
 
 install-air: ## Install air for hot reloading (if not already installed)
@@ -91,6 +101,7 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 			$(ECHO) "$(GREEN)junit-viewer is already installed$(NC)"; \
 		else \
 			$(ECHO) "$(YELLOW)Installing junit-viewer for HTML reports...$(NC)"; \
+			$(USE_NODE); \
 			if npm install -g junit-viewer 2>&1; then \
 				$(ECHO) "$(GREEN)junit-viewer installed successfully$(NC)"; \
 			else \
@@ -119,7 +130,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	fi
 	@$(ECHO) ""
 	@$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"
-	@if [ -n "$(DISABLE_PROFILER)" ]; then \
+	@$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
 		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
 	else \
@@ -155,7 +166,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 build-ui: install-ui ## Build ui
 	@$(ECHO) "$(GREEN)Building ui...$(NC)"
 	@rm -rf ui/.next
-	@cd ui && npm run build && npm run copy-build
+	@$(USE_NODE); cd ui && npm run build && npm run copy-build
 
 build: build-ui ## Build bifrost-http binary
 	@if [ -n "$(LOCAL)" ]; then \
@@ -833,7 +844,8 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 
 setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScript)
 	@$(ECHO) "$(GREEN)Building MCP test servers...$(NC)"
-	@FAILED=0; \
+	@$(USE_NODE); \
+	FAILED=0; \
 	for mcp_dir in examples/mcps/*/; do \
 		if [ -d "$$mcp_dir" ]; then \
 			mcp_name=$$(basename $$mcp_dir); \
@@ -1205,6 +1217,7 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		done; \
 	fi; \
 	TEST_FAILED=0; \
+	$(USE_NODE); \
 	if ! which npm > /dev/null 2>&1; then \
 		$(ECHO) "$(RED)Error: npm not found$(NC)"; \
 		$(ECHO) "$(YELLOW)Install Node.js: https://nodejs.org/$(NC)"; \
@@ -1263,7 +1276,7 @@ install-playwright: ## Install Playwright test dependencies
 	@$(ECHO) "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@cd tests/e2e && npm ci
+	@$(USE_NODE); cd tests/e2e && npm ci
 	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
 		$(ECHO) "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
 	else \

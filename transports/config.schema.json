@@ -13,10 +13,7 @@
     "version": {
       "type": "integer",
       "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
-      "enum": [
-        1,
-        2
-      ],
+      "enum": [1, 2],
       "default": 2
     },
     "encryption_key": {
@@ -201,10 +198,7 @@
         },
         "mcp_code_mode_binding_level": {
           "type": "string",
-          "enum": [
-            "server",
-            "tool"
-          ],
+          "enum": ["server", "tool"],
           "description": "Code mode binding level for MCP tools"
         },
         "mcp_tool_sync_interval": {
@@ -353,11 +347,7 @@
                 "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               }
             },
-            "required": [
-              "id",
-              "max_limit",
-              "reset_duration"
-            ],
+            "required": ["id", "max_limit", "reset_duration"],
             "additionalProperties": false
           }
         },
@@ -408,9 +398,7 @@
                 "description": "Last time request counter was reset"
               }
             },
-            "required": [
-              "id"
-            ],
+            "required": ["id"],
             "additionalProperties": false
           }
         },
@@ -437,10 +425,7 @@
                 "description": "Associated rate limit ID"
               }
             },
-            "required": [
-              "id",
-              "name"
-            ],
+            "required": ["id", "name"],
             "additionalProperties": false
           }
         },
@@ -483,10 +468,7 @@
                 "description": "Team claims data"
               }
             },
-            "required": [
-              "id",
-              "name"
-            ],
+            "required": ["id", "name"],
             "additionalProperties": false
           }
         },
@@ -549,10 +531,7 @@
                 }
               }
             },
-            "required": [
-              "id",
-              "name"
-            ],
+            "required": ["id", "name"],
             "additionalProperties": false
           }
         },
@@ -600,10 +579,7 @@
                 "description": "Rate limit ID to associate with this model"
               }
             },
-            "required": [
-              "id",
-              "model_name"
-            ],
+            "required": ["id", "model_name"],
             "additionalProperties": false
           }
         },
@@ -661,9 +637,7 @@
                 "$ref": "#/$defs/openai_config"
               }
             },
-            "required": [
-              "name"
-            ]
+            "required": ["name"]
           }
         }
       },
@@ -700,12 +674,7 @@
         },
         "type": {
           "type": "string",
-          "enum": [
-            "weaviate",
-            "redis",
-            "qdrant",
-            "pinecone"
-          ],
+          "enum": ["weaviate", "redis", "qdrant", "pinecone"],
           "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
         },
         "config": {
@@ -773,10 +742,7 @@
         },
         "type": {
           "type": "string",
-          "enum": [
-            "sqlite",
-            "postgres"
-          ],
+          "enum": ["sqlite", "postgres"],
           "description": "Configuration store type"
         },
         "config": {
@@ -797,9 +763,7 @@
                     "description": "Database file path"
                   }
                 },
-                "required": [
-                  "path"
-                ],
+                "required": ["path"],
                 "additionalProperties": false
               }
             },
@@ -851,14 +815,7 @@
                     "default": 50
                   }
                 },
-                "required": [
-                  "host",
-                  "port",
-                  "user",
-                  "password",
-                  "db_name",
-                  "ssl_mode"
-                ],
+                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
                 "additionalProperties": false
               }
             }
@@ -877,10 +834,7 @@
         },
         "type": {
           "type": "string",
-          "enum": [
-            "sqlite",
-            "postgres"
-          ],
+          "enum": ["sqlite", "postgres"],
           "description": "Logs store type"
         },
         "config": {
@@ -901,9 +855,7 @@
                     "description": "Database file path"
                   }
                 },
-                "required": [
-                  "path"
-                ],
+                "required": ["path"],
                 "additionalProperties": false
               }
             },
@@ -954,14 +906,7 @@
                     "default": 50
                   }
                 },
-                "required": [
-                  "host",
-                  "port",
-                  "user",
-                  "password",
-                  "db_name",
-                  "ssl_mode"
-                ],
+                "required": ["host", "port", "user", "password", "db_name", "ssl_mode"],
                 "additionalProperties": false
               }
             }
@@ -973,10 +918,7 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": [
-                "s3",
-                "gcs"
-              ],
+              "enum": ["s3", "gcs"],
               "description": "Object storage backend type"
             },
             "bucket": {
@@ -995,10 +937,7 @@
               "default": false
             }
           },
-          "required": [
-            "type",
-            "bucket"
-          ],
+          "required": ["type", "bucket"],
           "if": {
             "properties": {
               "type": {
@@ -1043,16 +982,9 @@
               "compress": true
             },
             "dependentRequired": {
-              "access_key_id": [
-                "secret_access_key"
-              ],
-              "secret_access_key": [
-                "access_key_id"
-              ],
-              "session_token": [
-                "access_key_id",
-                "secret_access_key"
-              ]
+              "access_key_id": ["secret_access_key"],
+              "secret_access_key": ["access_key_id"],
+              "session_token": ["access_key_id", "secret_access_key"]
             },
             "additionalProperties": false
           },
@@ -1091,10 +1023,7 @@
       "description": "Plugins configuration",
       "items": {
         "type": "object",
-        "required": [
-          "enabled",
-          "name"
-        ],
+        "required": ["enabled", "name"],
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -1122,11 +1051,7 @@
           },
           "placement": {
             "type": "string",
-            "enum": [
-              "pre_builtin",
-              "post_builtin",
-              "builtin"
-            ],
+            "enum": ["pre_builtin", "post_builtin", "builtin"],
             "description": "Whether this plugin runs before, after, or as a built-in. Default: post_builtin",
             "optional": true,
             "default": "post_builtin"
@@ -1148,9 +1073,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1206,15 +1129,10 @@
                               "description": "Password for basic authentication"
                             }
                           },
-                          "required": [
-                            "username",
-                            "password"
-                          ]
+                          "required": ["username", "password"]
                         }
                       },
-                      "required": [
-                        "push_gateway_url"
-                      ]
+                      "required": ["push_gateway_url"]
                     }
                   },
                   "additionalProperties": false
@@ -1231,9 +1149,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1265,9 +1181,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1303,9 +1217,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1320,9 +1232,7 @@
                       "description": "Optional default ID for the Maxim logger instance"
                     }
                   },
-                  "required": [
-                    "api_key"
-                  ],
+                  "required": ["api_key"],
                   "additionalProperties": false
                 }
               }
@@ -1337,9 +1247,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1435,9 +1343,7 @@
                       "description": "Exclude system prompt in cache key (default: false)"
                     }
                   },
-                  "required": [
-                    "dimension"
-                  ],
+                  "required": ["dimension"],
                   "allOf": [
                     {
                       "if": {
@@ -1447,15 +1353,10 @@
                             "minLength": 1
                           }
                         },
-                        "required": [
-                          "provider"
-                        ]
+                        "required": ["provider"]
                       },
                       "then": {
-                        "required": [
-                          "provider",
-                          "embedding_model"
-                        ],
+                        "required": ["provider", "embedding_model"],
                         "properties": {
                           "dimension": {
                             "type": "integer",
@@ -1465,9 +1366,7 @@
                       },
                       "else": {
                         "not": {
-                          "required": [
-                            "embedding_model"
-                          ]
+                          "required": ["embedding_model"]
                         },
                         "properties": {
                           "dimension": {
@@ -1491,9 +1390,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1519,19 +1416,12 @@
                     "trace_type": {
                       "type": "string",
                       "description": "Type of trace to use for the OTEL collector",
-                      "enum": [
-                        "genai_extension",
-                        "vercel",
-                        "open_inference"
-                      ]
+                      "enum": ["genai_extension", "vercel", "open_inference"]
                     },
                     "protocol": {
                       "type": "string",
                       "description": "Protocol to use for the OTEL collector",
-                      "enum": [
-                        "http",
-                        "grpc"
-                      ]
+                      "enum": ["http", "grpc"]
                     },
                     "metrics_enabled": {
                       "type": "boolean",
@@ -1573,11 +1463,7 @@
                       "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
                     }
                   },
-                  "required": [
-                    "collector_url",
-                    "trace_type",
-                    "protocol"
-                  ],
+                  "required": ["collector_url", "trace_type", "protocol"],
                   "additionalProperties": false
                 }
               }
@@ -1592,9 +1478,7 @@
               }
             },
             "then": {
-              "required": [
-                "config"
-              ],
+              "required": ["config"],
               "properties": {
                 "config": {
                   "type": "object",
@@ -1643,6 +1527,21 @@
     "websocket": {
       "$ref": "#/$defs/websocket_config"
     },
+    "guardrails_config": {
+      "$ref": "#/$defs/guardrails_config"
+    },
+    "audit_logs": {
+      "$ref": "#/$defs/audit_logs_config"
+    },
+    "cluster_config": {
+      "$ref": "#/$defs/cluster_config"
+    },
+    "load_balancer_config": {
+      "$ref": "#/$defs/load_balancer_config"
+    },
+    "large_payload_optimization": {
+      "$ref": "#/$defs/large_payload_optimization"
+    },
     "scim_config": {
       "$ref": "#/$defs/scim_config"
     }
@@ -1675,9 +1574,7 @@
           "maximum": 1
         }
       },
-      "required": [
-        "weight"
-      ],
+      "required": ["weight"],
       "additionalProperties": false
     },
     "routing_rule": {
@@ -1729,12 +1626,7 @@
         },
         "scope": {
           "type": "string",
-          "enum": [
-            "global",
-            "team",
-            "customer",
-            "virtual_key"
-          ],
+          "enum": ["global", "team", "customer", "virtual_key"],
           "description": "Rule scope level",
           "default": "global"
         },
@@ -1753,30 +1645,18 @@
           "additionalProperties": true
         }
       },
-      "required": [
-        "id",
-        "name",
-        "targets"
-      ],
+      "required": ["id", "name", "targets"],
       "additionalProperties": false,
       "if": {
         "properties": {
           "scope": {
-            "enum": [
-              "team",
-              "customer",
-              "virtual_key"
-            ]
+            "enum": ["team", "customer", "virtual_key"]
           }
         },
-        "required": [
-          "scope"
-        ]
+        "required": ["scope"]
       },
       "then": {
-        "required": [
-          "scope_id"
-        ],
+        "required": ["scope_id"],
         "properties": {
           "scope_id": {
             "type": "string",
@@ -1802,10 +1682,7 @@
           "description": "Provider name"
         },
         "weight": {
-          "type": [
-            "number",
-            "null"
-          ],
+          "type": ["number", "null"],
           "description": "Weight for load balancing (null opts out of weighted routing)",
           "default": null
         },
@@ -1828,9 +1705,7 @@
           }
         }
       },
-      "required": [
-        "provider"
-      ],
+      "required": ["provider"],
       "additionalProperties": false
     },
     "virtual_key_mcp_config": {
@@ -2063,10 +1938,7 @@
           "description": "Buffer size for requests"
         }
       },
-      "required": [
-        "concurrency",
-        "buffer_size"
-      ],
+      "required": ["concurrency", "buffer_size"],
       "additionalProperties": false
     },
     "base_key": {
@@ -2109,10 +1981,7 @@
           "description": "Model alias mappings: maps a model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
         }
       },
-      "required": [
-        "name",
-        "weight"
-      ]
+      "required": ["name", "weight"]
     },
     "bedrock_key": {
       "allOf": [
@@ -2187,9 +2056,7 @@
                             "description": "Whether this is the default bucket for batch operations"
                           }
                         },
-                        "required": [
-                          "bucket_name"
-                        ],
+                        "required": ["bucket_name"],
                         "additionalProperties": false
                       }
                     }
@@ -2197,9 +2064,7 @@
                   "additionalProperties": false
                 }
               },
-              "required": [
-                "region"
-              ],
+              "required": ["region"],
               "additionalProperties": false
             }
           }
@@ -2228,16 +2093,11 @@
                   "description": "Exact model name served on this VLLM instance"
                 }
               },
-              "required": [
-                "url",
-                "model_name"
-              ],
+              "required": ["url", "model_name"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "vllm_key_config"
-          ]
+          "required": ["vllm_key_config"]
         }
       ]
     },
@@ -2280,15 +2140,11 @@
                   "description": "Ollama server base URL (can use env. prefix)"
                 }
               },
-              "required": [
-                "url"
-              ],
+              "required": ["url"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "ollama_key_config"
-          ]
+          "required": ["ollama_key_config"]
         }
       ]
     },
@@ -2309,15 +2165,11 @@
                   "description": "SGLang server base URL (can use env. prefix)"
                 }
               },
-              "required": [
-                "url"
-              ],
+              "required": ["url"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "sgl_key_config"
-          ]
+          "required": ["sgl_key_config"]
         }
       ]
     },
@@ -2341,16 +2193,11 @@
                   "description": "Azure API version"
                 }
               },
-              "required": [
-                "endpoint",
-                "api_version"
-              ],
+              "required": ["endpoint", "api_version"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "azure_key_config"
-          ]
+          "required": ["azure_key_config"]
         }
       ]
     },
@@ -2382,16 +2229,11 @@
                   "description": "Authentication credentials (can use env. prefix)"
                 }
               },
-              "required": [
-                "project_id",
-                "region"
-              ],
+              "required": ["project_id", "region"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "vertex_key_config"
-          ]
+          "required": ["vertex_key_config"]
         }
       ]
     },
@@ -2431,9 +2273,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_bedrock_config": {
@@ -2472,9 +2312,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_vllm_config": {
@@ -2513,9 +2351,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_replicate_config": {
@@ -2554,9 +2390,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_azure_config": {
@@ -2595,9 +2429,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_vertex_config": {
@@ -2636,9 +2468,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_ollama_config": {
@@ -2677,9 +2507,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "provider_with_sgl_config": {
@@ -2718,9 +2546,7 @@
           "$ref": "#/$defs/custom_provider_config"
         }
       },
-      "required": [
-        "keys"
-      ],
+      "required": ["keys"],
       "additionalProperties": false
     },
     "mcp_client_config": {
@@ -2740,12 +2566,7 @@
         },
         "connection_type": {
           "type": "string",
-          "enum": [
-            "stdio",
-            "http",
-            "sse",
-            "inprocess"
-          ],
+          "enum": ["stdio", "http", "sse", "inprocess"],
           "description": "Connection type for MCP client"
         },
         "connection_string": {
@@ -2754,12 +2575,7 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": [
-            "none",
-            "headers",
-            "oauth",
-            "per_user_oauth"
-          ],
+          "enum": ["none", "headers", "oauth", "per_user_oauth"],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
@@ -2795,9 +2611,7 @@
               "description": "Environment variables"
             }
           },
-          "required": [
-            "command"
-          ],
+          "required": ["command"],
           "additionalProperties": false
         },
         "tools_to_execute": {
@@ -2844,28 +2658,18 @@
           "default": false
         }
       },
-      "required": [
-        "name",
-        "connection_type"
-      ],
+      "required": ["name", "connection_type"],
       "additionalProperties": false,
       "if": {
         "properties": {
           "auth_type": {
-            "enum": [
-              "oauth",
-              "per_user_oauth"
-            ]
+            "enum": ["oauth", "per_user_oauth"]
           }
         },
-        "required": [
-          "auth_type"
-        ]
+        "required": ["auth_type"]
       },
       "then": {
-        "required": [
-          "oauth_config_id"
-        ]
+        "required": ["oauth_config_id"]
       },
       "oneOf": [
         {
@@ -2874,9 +2678,7 @@
               "const": "stdio"
             }
           },
-          "required": [
-            "stdio_config"
-          ]
+          "required": ["stdio_config"]
         },
         {
           "properties": {
@@ -2884,9 +2686,7 @@
               "const": "websocket"
             }
           },
-          "required": [
-            "websocket_config"
-          ]
+          "required": ["websocket_config"]
         },
         {
           "properties": {
@@ -2896,14 +2696,10 @@
           },
           "anyOf": [
             {
-              "required": [
-                "http_config"
-              ]
+              "required": ["http_config"]
             },
             {
-              "required": [
-                "connection_string"
-              ]
+              "required": ["connection_string"]
             }
           ]
         },
@@ -2913,9 +2709,7 @@
               "const": "sse"
             }
           },
-          "required": [
-            "connection_string"
-          ]
+          "required": ["connection_string"]
         }
       ]
     },
@@ -2936,10 +2730,7 @@
         },
         "code_mode_binding_level": {
           "type": "string",
-          "enum": [
-            "server",
-            "tool"
-          ],
+          "enum": ["server", "tool"],
           "description": "How tools are exposed in VFS for code execution"
         },
         "disable_auto_tool_inject": {
@@ -2999,10 +2790,7 @@
           "description": "Properties for Weaviate vector store"
         }
       },
-      "required": [
-        "scheme",
-        "host"
-      ],
+      "required": ["scheme", "host"],
       "additionalProperties": false
     },
     "redis_config": {
@@ -3092,9 +2880,7 @@
           "description": "Timeout for Redis operations (e.g., '10s')"
         }
       },
-      "required": [
-        "addr"
-      ],
+      "required": ["addr"],
       "additionalProperties": false
     },
     "qdrant_config": {
@@ -3120,9 +2906,7 @@
           "default": false
         }
       },
-      "required": [
-        "host"
-      ],
+      "required": ["host"],
       "additionalProperties": false
     },
     "pinecone_config": {
@@ -3138,10 +2922,7 @@
           "description": "Index host URL from Pinecone console - REQUIRED (e.g., your-index.svc.environment.pinecone.io)"
         }
       },
-      "required": [
-        "api_key",
-        "index_host"
-      ],
+      "required": ["api_key", "index_host"],
       "additionalProperties": false
     },
     "proxy_config": {
@@ -3150,12 +2931,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "none",
-            "http",
-            "socks5",
-            "environment"
-          ],
+          "enum": ["none", "http", "socks5", "environment"],
           "description": "Type of proxy to use"
         },
         "url": {
@@ -3176,9 +2952,7 @@
           "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies)"
         }
       },
-      "required": [
-        "type"
-      ],
+      "required": ["type"],
       "additionalProperties": false
     },
     "cluster_config": {
@@ -3231,18 +3005,11 @@
                   "description": "Number of failed probes before marking as failed"
                 }
               },
-              "required": [
-                "timeout_seconds",
-                "success_threshold",
-                "failure_threshold"
-              ],
+              "required": ["timeout_seconds", "success_threshold", "failure_threshold"],
               "additionalProperties": false
             }
           },
-          "required": [
-            "port",
-            "config"
-          ],
+          "required": ["port", "config"],
           "additionalProperties": false
         },
         "discovery": {
@@ -3255,14 +3022,7 @@
             },
             "type": {
               "type": "string",
-              "enum": [
-                "kubernetes",
-                "dns",
-                "udp",
-                "consul",
-                "etcd",
-                "mdns"
-              ],
+              "enum": ["kubernetes", "dns", "udp", "consul", "etcd", "mdns"],
               "description": "Discovery mechanism type"
             },
             "service_name": {
@@ -3276,9 +3036,8 @@
               "description": "Port to bind for cluster communication"
             },
             "dial_timeout": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Timeout for discovery dial operations in nanoseconds"
+              "type": "string",
+              "description": "Timeout for discovery dial operations as a Go duration string (e.g. '5s', '1m')"
             },
             "allowed_address_space": {
               "type": "array",
@@ -3324,15 +3083,11 @@
               "description": "mDNS service name for local network discovery"
             }
           },
-          "required": [
-            "type"
-          ],
+          "required": ["type"],
           "additionalProperties": false
         }
       },
-      "required": [
-        "enabled"
-      ],
+      "required": ["enabled"],
       "additionalProperties": false
     },
     "scim_config": {
@@ -3345,10 +3100,7 @@
         },
         "provider": {
           "type": "string",
-          "enum": [
-            "okta",
-            "entra"
-          ],
+          "enum": ["okta", "entra"],
           "description": "SCIM provider type"
         },
         "config": {
@@ -3356,9 +3108,7 @@
           "description": "Provider-specific configuration"
         }
       },
-      "required": [
-        "enabled"
-      ],
+      "required": ["enabled"],
       "additionalProperties": false,
       "allOf": [
         {
@@ -3436,12 +3186,7 @@
           "default": "roles"
         }
       },
-      "required": [
-        "issuerUrl",
-        "clientId",
-        "clientSecret",
-        "apiToken"
-      ],
+      "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
       "additionalProperties": false
     },
     "entra_config": {
@@ -3462,11 +3207,7 @@
         },
         "cloud": {
           "type": "string",
-          "enum": [
-            "commercial",
-            "gcc-high",
-            "dod"
-          ],
+          "enum": ["commercial", "gcc-high", "dod"],
           "default": "commercial",
           "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
@@ -3495,10 +3236,7 @@
           "default": "roles"
         }
       },
-      "required": [
-        "tenantId",
-        "clientId"
-      ],
+      "required": ["tenantId", "clientId"],
       "additionalProperties": false
     },
     "load_balancer_config": {
@@ -3532,9 +3270,7 @@
           }
         }
       },
-      "required": [
-        "enabled"
-      ],
+      "required": ["enabled"],
       "additionalProperties": false
     },
     "guardrails_config": {
@@ -3569,11 +3305,7 @@
               },
               "apply_to": {
                 "type": "string",
-                "enum": [
-                  "input",
-                  "output",
-                  "both"
-                ],
+                "enum": ["input", "output", "both"],
                 "description": "When to apply the guardrail (input, output, or both)"
               },
               "sampling_rate": {
@@ -3595,13 +3327,7 @@
                 "description": "IDs of provider configurations to use with this rule"
               }
             },
-            "required": [
-              "id",
-              "name",
-              "enabled",
-              "cel_expression",
-              "apply_to"
-            ],
+            "required": ["id", "name", "enabled", "cel_expression", "apply_to"],
             "additionalProperties": false
           }
         },
@@ -3637,12 +3363,7 @@
                 "description": "Provider-specific configuration"
               }
             },
-            "required": [
-              "id",
-              "provider_name",
-              "policy_name",
-              "enabled"
-            ],
+            "required": ["id", "provider_name", "policy_name", "enabled"],
             "additionalProperties": false
           }
         }
@@ -3801,10 +3522,7 @@
         "match_type": {
           "type": "string",
           "description": "How the pattern is matched against model names",
-          "enum": [
-            "exact",
-            "wildcard"
-          ]
+          "enum": ["exact", "wildcard"]
         },
         "pattern": {
           "type": "string",
@@ -3827,22 +3545,12 @@
           "description": "Internal hash for change detection (auto-managed)"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "scope_kind",
-        "match_type",
-        "pattern",
-        "request_types"
-      ],
+      "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"],
       "additionalProperties": false
     },
     "pricing_override_match_type": {
       "type": "string",
-      "enum": [
-        "exact",
-        "wildcard"
-      ]
+      "enum": ["exact", "wildcard"]
     },
     "pricing_override_request_type": {
       "type": "string",
@@ -4063,9 +3771,7 @@
           "additionalProperties": false
         }
       },
-      "required": [
-        "base_provider_type"
-      ],
+      "required": ["base_provider_type"],
       "additionalProperties": false
     }
   }
