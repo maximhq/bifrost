@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { ColumnConfigEntry } from "./hooks/useColumnConfig";
 import { Columns3, RotateCcw } from "lucide-react";
+import type { ColumnConfigEntry } from "./hooks/useColumnConfig";
 
 interface ColumnConfigDropdownProps {
 	entries: ColumnConfigEntry[];
@@ -22,7 +22,7 @@ export function ColumnConfigDropdown({ entries, labels = {}, onToggleVisibility,
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" className="h-7.5" data-testid="column-config-trigger" aria-label="Column configuration">
+				<Button variant="outline" size="sm" className="h-7.5 w-7.5" data-testid="column-config-trigger" aria-label="Column configuration">
 					<Columns3 className="h-4 w-4" />
 				</Button>
 			</PopoverTrigger>

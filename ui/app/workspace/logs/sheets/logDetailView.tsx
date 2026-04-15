@@ -33,8 +33,8 @@ import {
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
 import { Link } from "@tanstack/react-router";
-import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { addMilliseconds, format } from "date-fns";
+import { Clipboard, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";

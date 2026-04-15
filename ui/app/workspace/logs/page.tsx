@@ -2,6 +2,7 @@ import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
+import { LogsSidebar } from "@/app/workspace/logs/views/logsSidebar";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import FullPageLoader from "@/components/fullPageLoader";
@@ -224,12 +225,12 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-					try {
-						return JSON.parse(urlState.metadata_filters);
-					} catch {
-						return undefined;
-					}
-				})()
+						try {
+							return JSON.parse(urlState.metadata_filters);
+						} catch {
+							return undefined;
+						}
+					})()
 				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
@@ -294,7 +295,7 @@ export default function LogsPage() {
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
-				missing_cost_only: newFilters.missing_cost_only ?? filters.missing_cost_only ?? false,
+				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters: newFilters.metadata_filters ? JSON.stringify(newFilters.metadata_filters) : "",
 				offset: 0,
 			});
@@ -825,7 +826,8 @@ export default function LogsPage() {
 				title: "Success Rate",
 				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
 				icon: <CheckCircle className="size-4" />,
-				description: "Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
+				description:
+					"Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
 			},
 			{
 				title: "User Success Rate",
@@ -910,14 +912,18 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
 			{initialLoading ? (
 				<FullPageLoader />
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
-				<div className="mx-auto flex h-full w-full flex-col">
-					<div className="flex h-full flex-col gap-2 overflow-hidden">
+				<div className="bg-background flex h-full w-full grow gap-3">
+					{/* Sidebar Filters */}
+					<LogsSidebar filters={filters} onFiltersChange={setFilters} />
+
+					{/* Main Content */}
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
 						<div className="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
@@ -990,6 +996,7 @@ export default function LogsPage() {
 								isSocketConnected={isSocketConnected}
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
+								sidebarFilters
 							/>
 						</div>
 					</div>

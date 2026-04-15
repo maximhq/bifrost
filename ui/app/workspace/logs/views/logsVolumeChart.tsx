@@ -318,7 +318,7 @@ export function LogsVolumeChart({
 						</div>
 					</div>
 				</div>
-				<div className="" style={{ height: "131px", marginTop: 4 }}>
+				<div className="" style={{ height: "128px", marginTop: 8 }}>
 					<Skeleton className="h-full w-full" />
 				</div>
 			</Card>

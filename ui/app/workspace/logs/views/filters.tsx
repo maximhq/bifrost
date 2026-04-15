@@ -53,9 +53,19 @@ interface LogFiltersProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	/** When true, hide FilterPopover and DateTimePicker (they live in the sidebar instead) */
+	hidePopoverFilters?: boolean;
 }
 
-export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
+export function LogFilters({
+	filters,
+	onFiltersChange,
+	liveEnabled,
+	onLiveToggle,
+	fetchLogs,
+	fetchStats,
+	hidePopoverFilters,
+}: LogFiltersProps) {
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
@@ -147,7 +157,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	);
 
 	return (
-		<div className="flex items-center justify-between space-x-2">
+		<div className="flex grow items-center justify-between space-x-2">
 			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
@@ -172,43 +182,47 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 				/>
 			</div>
 
-			<DateTimePickerWithRange
-				triggerTestId="filter-date-range"
-				dateTime={{
-					from: startTime,
-					to: endTime,
-				}}
-				onDateTimeUpdate={(p) => {
-					setStartTime(p.from);
-					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
-				}}
-				preDefinedPeriods={LOG_TIME_PERIODS}
-				onPredefinedPeriodChange={(periodValue) => {
-					if (!periodValue) return;
-					const { from, to } = getRangeForPeriod(periodValue);
-					setStartTime(from);
-					setEndTime(to);
-					onFiltersChange({
-						...filters,
-						start_time: from.toISOString(),
-						end_time: to.toISOString(),
-					});
-				}}
-			/>
-			<FilterPopover
-				filters={filters}
-				onFilterChange={handleFilterChange}
-				onMetadataFilterChange={handleMetadataFilterChange}
-				showMissingCost
-			/>
+			{!hidePopoverFilters && (
+				<>
+					<DateTimePickerWithRange
+						triggerTestId="filter-date-range"
+						dateTime={{
+							from: startTime,
+							to: endTime,
+						}}
+						onDateTimeUpdate={(p) => {
+							setStartTime(p.from);
+							setEndTime(p.to);
+							onFiltersChange({
+								...filters,
+								start_time: p.from?.toISOString(),
+								end_time: p.to?.toISOString(),
+							});
+						}}
+						preDefinedPeriods={LOG_TIME_PERIODS}
+						onPredefinedPeriodChange={(periodValue) => {
+							if (!periodValue) return;
+							const { from, to } = getRangeForPeriod(periodValue);
+							setStartTime(from);
+							setEndTime(to);
+							onFiltersChange({
+								...filters,
+								start_time: from.toISOString(),
+								end_time: to.toISOString(),
+							});
+						}}
+					/>
+					<FilterPopover
+						filters={filters}
+						onFilterChange={handleFilterChange}
+						onMetadataFilterChange={handleMetadataFilterChange}
+						showMissingCost
+					/>
+				</>
+			)}
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5">
+					<Button variant="outline" size="sm" className="h-7.5 w-7.5">
 						<MoreVertical className="h-4 w-4" />
 					</Button>
 				</PopoverTrigger>
