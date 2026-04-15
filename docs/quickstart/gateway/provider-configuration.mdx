@@ -337,7 +337,12 @@ Override the default API endpoint for a provider. This is useful for connecting 
 
 <Tab title="Using Web UI">
 
-![Base URL Configuration Interface](../../media/ui-base-url.png)
+
+<Frame>
+  <video autoPlay playsInline muted>
+    <source src="/media/custom-base-url.mp4" type="video/mp4" />
+  </video>
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Set **Base URL**: `http://localhost:8000/v1`
@@ -860,6 +865,10 @@ curl --location 'http://localhost:8080/api/providers' \
 
 Include the original provider response alongside Bifrost's standardized response format. Useful for debugging and accessing provider-specific metadata.
 
+<Note>
+You can override this per request using the `x-bf-send-back-raw-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#send-back-raw-response) for details.
+</Note>
+
 <Tabs group="raw-response">
 
 <Tab title="Using Web UI">
@@ -936,6 +945,10 @@ When enabled, the raw provider response appears in `extra_fields.raw_response`:
 
 Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
 
+<Note>
+You can override this per request using the `x-bf-send-back-raw-request` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#send-back-raw-request) for details.
+</Note>
+
 <Tabs group="raw-request">
 
 <Tab title="Using Web UI">
@@ -1011,6 +1024,71 @@ When enabled, the raw provider request appears in `extra_fields.raw_request`:
 <Tip>
 You can enable both `send_back_raw_request` and `send_back_raw_response` together to see the complete request-response cycle for debugging purposes.
 </Tip>
+
+### Store Raw Request/Response
+
+Persist the raw provider request and response in the log record. This is orthogonal to `send_back_raw_request` and `send_back_raw_response` — enabling this does not affect whether raw data appears in the API response, and enabling send-back does not automatically store raw data in logs. Enable both to do both.
+
+<Tabs group="store-raw">
+
+<Tab title="Using Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
+2. Toggle **"Store Raw Request/Response"** to enabled
+3. Save configuration
+
+</Tab>
+
+<Tab title="Using API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "openai",
+    "keys": [
+        {
+            "name": "openai-key-1",
+            "value": "env.OPENAI_API_KEY",
+            "models": ["*"],
+            "weight": 1.0
+        }
+    ],
+    "store_raw_request_response": true
+}'
+```
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "env.OPENAI_API_KEY",
+                    "models": ["*"],
+                    "weight": 1.0
+                }
+            ],
+            "store_raw_request_response": true
+        }
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+`store_raw_request_response` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+
+You can override this per request using the `x-bf-store-raw-request-response` header (`"true"` or `"false"`), regardless of the provider-level config. See [Request Options](../../providers/request-options#store-raw-requestresponse) for details.
+</Note>
 
 ### Passthrough Extra Parameters
 

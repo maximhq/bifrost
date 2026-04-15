@@ -19,71 +19,33 @@ description: "v1.5.0-prerelease3 changelog - 2026-04-13"
 <Update label="Bifrost(HTTP)" description="1.5.0-prerelease3">
 ## ✨ Features
 
-- **Object Store Log Store** — Logging plugin's log store can now offload payloads to object storage (S3/GCS/etc.) instead of bloating the database
-- **Azure Passthrough** — Azure passthrough support added
-- **Mistral OCR** — End-to-end support for the `/v1/ocr` endpoint (Mistral OCR)
-- **OpenRouter Embeddings** — Embeddings support added to the OpenRouter provider
-- **Redis TLS & Cluster Mode** — TLS and cluster-mode support for Redis; valkey-search query fix
-- **Parallel Model Catalog Sync** — Model catalog restructured with parallel syncs for faster startup and refreshes
-- **Dashboard CSV & PDF Export** — Export dashboard views to CSV or PDF
-- **OpenAPI Security Schemes** — Security schemes added to the OpenAPI spec; virtual key examples updated; API playground now only shows supported auth methods per endpoint
-- **Configurable API Docs Base URL** — Base URL for the hosted API documentation is configurable
-- **v1.4.x Allow-List Compatibility Mode** — New version-1 compatibility mode preserves v1.4.x allow-list semantics for smoother upgrades
-- **OAuth MCP Hints** — OAuth MCP client creation response now includes next-step hints
-- **272k Token Tier Pricing** — Pricing support for the 272k token tier
-- **Flex & Priority Tier Pricing** — Flex and priority tier pricing (including override fields)
-- **UI: Create-Provider Shortcut** — Empty state now links directly to provider creation
+- **OAuth MCP** - add next-step hints to OAuth MCP client creation response
+- **Azure passthrough** - added azure passthrough support
+- **272k token tier** - add 272k token tier pricing support in pricing
+- **Flex and priority tier support** - added flex and priority tier support in pricing
 
 ## 🐞 Fixed
 
-- **Streaming Post-Hook Race** — Fix race where fasthttp RequestCtx could be recycled before transport post-hooks completed in streaming goroutines; snapshots are now captured eagerly before the handler returns
-- **Streaming Blocker** — Fix a streaming blocker in the transport layer
+- **Streaming Post-Hook Race** — Fix race condition where fasthttp RequestCtx could be recycled before transport post-hooks complete in streaming goroutines; eagerly captures request/response snapshots before handler returns
 - **Async User Values** — Propagate user values through all async inference handlers and job submissions
-- **Trace Completer Safety** — Trace completer accepts transport logs as a parameter instead of reading from a potentially recycled context
+- **Trace Completer Safety** — Refactor trace completer to accept transport logs as parameter instead of reading from potentially recycled context
 - **Async Log Store Exceptions** — Fix exception handling in async log store jobs
-- **Model Alias Tracking** — Split `ModelRequested` into `OriginalModelRequested` and `ResolvedModelUsed` for accurate alias resolution tracking
-- **MCP Tool Discovery** — Add discovered tools and tool-name mapping columns to MCP clients
-- **OAuth Transient Failures** — Don't mark OAuth configs expired on transient network failures
-- **OAuth Session Cleanup** — Clean up OAuth sessions on virtual key deletion; fixes an associated race condition
-- **Pricing Sync Config** — Correctly apply `pricing_sync_interval` and support env variables in `pricing_url`
-- **Key Validation Logging** — Improved key validation error handling and logging
-- **DB Deadlock Prevention** — Replace find-then-upsert with atomic `ON CONFLICT` to prevent deadlocks
-- **LiteLLM Compat** — LiteLLM compatibility fixes
-- **SQLite Migration Fix** — Additional SQLite migration fixes
-- **CVE Fixes** — Dependency updates addressing reported CVEs
+- **Model Alias Tracking** — Split ModelRequested into OriginalModelRequested and ResolvedModelUsed for accurate model alias resolution tracking
+- **MCP Tool Discovery** — Add discovered tools and tool name mapping columns to MCP clients
 
 </Update>
 <Update label="Core" description="1.5.2">
-- feat: Azure passthrough support
-- feat: add end-to-end support for `/v1/ocr` (Mistral OCR)
-- feat: add Embeddings in OpenRouter provider
-- feat: add 272k token and priority tiers support in pricing
-- feat: add flex tier pricing support with flat rate structure
-- refactor: split `ModelRequested` into `OriginalModelRequested` and `ResolvedModelUsed` for model alias tracking
-- refactor: restructure model catalog with parallel syncs
+- refactor: split ModelRequested into OriginalModelRequested and ResolvedModelUsed for model alias tracking
 - refactor: simplify Azure passthrough by removing redundant config nil checks
 - refactor: simplify Mistral error parsing signature
-- refactor: add response backfill methods
-- fix: carry `ProviderResponseHeaders` through text completion response conversion
-- fix: streaming blocker
-- fix: core test fixes
-- fix: CVE / package updates
+- fix: carry ProviderResponseHeaders through text completion response conversion
 
 </Update>
 <Update label="Framework" description="1.3.2">
 - feat: add MCP client discovered tools and tool name mapping migration
-- feat: object store support for log_store (avoid bloating DB)
-- feat: add version 1 compatibility mode for v1.4.x allow-list semantics
-- feat: add flex and 272k token tier pricing override fields
-- fix: don't mark OAuth config expired on transient network failures
-- fix: cleanup OAuth sessions on virtual key deletion and prevent race condition
-- fix: replace find-then-upsert with atomic `ON CONFLICT` to prevent deadlocks
-- fix: correctly apply `pricing_sync_interval` and support env variables in `pricing_url`
 - fix: exception handling in async log store jobs
-- fix: migration fix
-- refactor: improve key validation error handling and logging
-- refactor: model catalog Init API to use `SetShouldSyncGate` method
-- refactor: rename `DefaultPricingSyncInterval` to `DefaultSyncInterval`
+- refactor: model catalog Init API to use SetShouldSyncGate method
+- refactor: rename DefaultPricingSyncInterval to DefaultSyncInterval
 
 </Update>
 <Update label="compat" description="0.1.1">
@@ -99,12 +61,10 @@ description: "v1.5.0-prerelease3 changelog - 2026-04-13"
 
 </Update>
 <Update label="litellmcompat" description="0.1.2">
-- fix: litellm compat
 - chore: upgraded core to v1.5.2 and framework to v1.3.2
 
 </Update>
 <Update label="logging" description="1.5.2">
-- feat: object store support for log_store (avoid bloating DB)
 - chore: upgraded core to v1.5.2 and framework to v1.3.2
 
 </Update>
@@ -125,7 +85,6 @@ description: "v1.5.0-prerelease3 changelog - 2026-04-13"
 
 </Update>
 <Update label="semanticcache" description="1.5.2">
-- feat: Redis TLS + cluster mode support; valkey-search query fix
 - chore: upgraded core to v1.5.2 and framework to v1.3.2
 
 </Update>

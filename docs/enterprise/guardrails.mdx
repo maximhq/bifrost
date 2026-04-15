@@ -233,44 +233,42 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/rules/1
 
 ```json
 {
-  "enterprise": {
-    "guardrails": {
-      "guardrail_rules": [
-        {
-          "id": 1,
-          "name": "Block PII in Prompts",
-          "description": "Prevent PII from being sent to LLM providers",
-          "enabled": true,
-          "cel_expression": "request.messages.exists(m, m.role == \"user\")",
-          "apply_to": "input",
-          "sampling_rate": 100,
-          "timeout": 5000,
-          "provider_config_ids": [1, 2]
-        },
-        {
-          "id": 2,
-          "name": "Content Filter for Responses",
-          "description": "Filter harmful content from LLM responses",
-          "enabled": true,
-          "cel_expression": "true",
-          "apply_to": "output",
-          "sampling_rate": 100,
-          "timeout": 3000,
-          "provider_config_ids": [2]
-        },
-        {
-          "id": 3,
-          "name": "Prompt Injection Detection",
-          "description": "Detect and block prompt injection attempts",
-          "enabled": true,
-          "cel_expression": "request.messages.size() > 0",
-          "apply_to": "input",
-          "sampling_rate": 100,
-          "timeout": 2000,
-          "provider_config_ids": [1]
-        }
-      ]
-    }
+  "guardrails_config": {
+    "guardrail_rules": [
+      {
+        "id": 1,
+        "name": "Block PII in Prompts",
+        "description": "Prevent PII from being sent to LLM providers",
+        "enabled": true,
+        "cel_expression": "request.messages.exists(m, m.role == \"user\")",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 5000,
+        "provider_config_ids": [1, 2]
+      },
+      {
+        "id": 2,
+        "name": "Content Filter for Responses",
+        "description": "Filter harmful content from LLM responses",
+        "enabled": true,
+        "cel_expression": "true",
+        "apply_to": "output",
+        "sampling_rate": 100,
+        "timeout": 3000,
+        "provider_config_ids": [2]
+      },
+      {
+        "id": 3,
+        "name": "Prompt Injection Detection",
+        "description": "Detect and block prompt injection attempts",
+        "enabled": true,
+        "cel_expression": "request.messages.size() > 0",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 2000,
+        "provider_config_ids": [1]
+      }
+    ]
   }
 }
 ```
@@ -279,27 +277,26 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/rules/1
 <Tab title="Helm">
 
 ```yaml
-enterprise:
-  guardrails:
-    rules:
-      - id: 1
-        name: "Block PII in Prompts"
-        description: "Prevent PII from being sent to LLM providers"
-        enabled: true
-        cel_expression: "request.messages.exists(m, m.role == 'user')"
-        apply_to: "input"
-        sampling_rate: 100
-        timeout: 5000
-        provider_config_ids: [1, 2]
-      - id: 2
-        name: "Content Filter for Responses"
-        description: "Filter harmful content from LLM responses"
-        enabled: true
-        cel_expression: "true"
-        apply_to: "output"
-        sampling_rate: 100
-        timeout: 3000
-        provider_config_ids: [2]
+guardrails_config:
+  guardrail_rules:
+    - id: 1
+      name: "Block PII in Prompts"
+      description: "Prevent PII from being sent to LLM providers"
+      enabled: true
+      cel_expression: "request.messages.exists(m, m.role == 'user')"
+      apply_to: "input"
+      sampling_rate: 100
+      timeout: 5000
+      provider_config_ids: [1, 2]
+    - id: 2
+      name: "Content Filter for Responses"
+      description: "Filter harmful content from LLM responses"
+      enabled: true
+      cel_expression: "true"
+      apply_to: "output"
+      sampling_rate: 100
+      timeout: 3000
+      provider_config_ids: [2]
 ```
 
 </Tab>
@@ -464,9 +461,8 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
 
 ```json
 {
-  "enterprise": {
-    "guardrails": {
-      "guardrail_providers": [
+  "guardrails_config": {
+    "guardrail_providers": [
         {
           "id": 1,
           "provider_name": "bedrock",
@@ -508,61 +504,69 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
               "professional_tone": "Ensure responses maintain a professional tone"
             }
           }
+        },
+        {
+          "id": 4,
+          "provider_name": "patronus_ai",
+          "policy_name": "Hallucination Detection",
+          "enabled": true,
+          "config": {
+            "api_key": "${PATRONUS_API_KEY}",
+            "api_endpoint": "https://api.patronus.ai/v1"
+          }
         }
       ]
     }
   }
-}
 ```
 
 </Tab>
 <Tab title="Helm">
 
 ```yaml
-enterprise:
-  guardrails:
-    providers:
-      - id: 1
-        provider_name: "bedrock"
-        policy_name: "PII Detection Profile"
-        enabled: true
-        config:
-          guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
-          guardrail_version: "1"
-          region: "us-east-1"
-          # AWS Authentication (choose one method):
-          # Option 1: Explicit credentials
-          access_key: "${AWS_ACCESS_KEY_ID}"
-          secret_key: "${AWS_SECRET_ACCESS_KEY}"
-          # Option 2: IAM Role - omit access_key and secret_key
-          # (Bifrost will use IAM credentials from the environment)
-      - id: 2
-        provider_name: "azure"
-        policy_name: "Content Safety Profile"
-        enabled: true
-        config:
-          endpoint: "https://your-resource.cognitiveservices.azure.com/"
-          api_key: "${AZURE_CONTENT_SAFETY_API_KEY}"
-          analyze_enabled: true
-          analyze_severity_threshold: "medium"
-          jailbreak_shield_enabled: true
-      - id: 3
-        provider_name: "grayswan"
-        policy_name: "Custom Safety Rules"
-        enabled: true
-        config:
-          api_key: "${GRAYSWAN_API_KEY}"
-          violation_threshold: 0.5
-          reasoning_mode: "hybrid"
-          rules:
-            no_pii: "Do not allow personally identifiable information"
-            professional_tone: "Ensure responses maintain a professional tone"
-      - id: 4
-        provider_name: "patronus_ai"
-        policy_name: "Hallucination Detection"
-        enabled: true
-        config:
-          api_endpoint: "https://api.patronus.ai/v1"
+guardrails_config:
+  guardrail_providers:
+    - id: 1
+      provider_name: "bedrock"
+      policy_name: "PII Detection Profile"
+      enabled: true
+      config:
+        guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
+        guardrail_version: "1"
+        region: "us-east-1"
+        # AWS Authentication (choose one method):
+        # Option 1: Explicit credentials
+        access_key: "${AWS_ACCESS_KEY_ID}"
+        secret_key: "${AWS_SECRET_ACCESS_KEY}"
+        # Option 2: IAM Role - omit access_key and secret_key
+        # (Bifrost will use IAM credentials from the environment)
+    - id: 2
+      provider_name: "azure"
+      policy_name: "Content Safety Profile"
+      enabled: true
+      config:
+        endpoint: "https://your-resource.cognitiveservices.azure.com/"
+        api_key: "${AZURE_CONTENT_SAFETY_API_KEY}"
+        analyze_enabled: true
+        analyze_severity_threshold: "medium"
+        jailbreak_shield_enabled: true
+    - id: 3
+      provider_name: "grayswan"
+      policy_name: "Custom Safety Rules"
+      enabled: true
+      config:
+        api_key: "${GRAYSWAN_API_KEY}"
+        violation_threshold: 0.5
+        reasoning_mode: "hybrid"
+        rules:
+          no_pii: "Do not allow personally identifiable information"
+          professional_tone: "Ensure responses maintain a professional tone"
+    - id: 4
+      provider_name: "patronus_ai"
+      policy_name: "Hallucination Detection"
+      enabled: true
+      config:
+        api_endpoint: "https://api.patronus.ai/v1"
 ```
 
 </Tab>

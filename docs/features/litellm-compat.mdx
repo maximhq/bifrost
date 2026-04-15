@@ -11,7 +11,6 @@ The LiteLLM compatibility plugin provides two transformations:
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
 3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
-4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -95,15 +94,12 @@ F --> G
 <Tab title="Gateway UI">
 
 1. Open the Bifrost dashboard
-2. Navigate to **Settings** → **Compatibility**
-3. There you can enable the features you need:
+2. Navigate to **Settings** → **Client Configuration**
+3. Expand **LiteLLM Compat** and enable the features you need:
    - **Convert Text to Chat** — converts text completion requests to chat for models that only support chat
    - **Convert Chat to Responses** — converts chat completion requests to responses for models that only support responses
    - **Drop Unsupported Params** — drops unsupported parameters based on model catalog allowlist
-   - **Convert Unsupported Params Values** — converts unsupported parameters values to their supported equivalents. See the list of [supported parameters](#supported-parameters) below.
 4. Save your configuration
-
-![Compatibility Settings](../media/compatibility-settings.png)
 
 </Tab>
 
@@ -115,8 +111,7 @@ F --> G
     "compat": {
       "convert_text_to_chat": true,
       "convert_chat_to_responses": true,
-      "should_drop_params": true,
-      "should_convert_params": true
+      "should_drop_params": true
     }
   }
 }
@@ -125,14 +120,6 @@ F --> G
 </Tab>
 
 </Tabs>
-
-## Supported Parameters
-
-The following parameters are converted to their supported equivalents:
-
-| Parameter | Original Value | Transformed Value | Provider |
-|-----------|----------------|-------------------|----------|
-| messages.role | developer | system | Gemini, Vertex, Bedrock |
 
 ## Supported Providers
 
@@ -200,12 +187,6 @@ When errors occur on transformed requests:
 - `extra_fields.provider`: The provider that handled the request
 - `extra_fields.original_model_requested`: The originally requested model
 - `extra_fields.dropped_compat_plugin_params`: If any unsupported parameters were dropped, the keys are added here
-
-## Header Overrides
-
-To enable compat plugins per request, you can use `x-bf-compat` header:
-- When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`)
 
 ## What's Preserved
 

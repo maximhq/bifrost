@@ -105,12 +105,15 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 {
   "plugins": [
     {
-      "name": "prometheus",
+      "name": "telemetry",
       "enabled": true,
       "config": {
-        "push_gateway_url": "http://pushgateway:9091",
-        "job_name": "bifrost",
-        "push_interval": 15
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "http://pushgateway:9091",
+          "job_name": "bifrost",
+          "push_interval": 15
+        }
       }
     }
   ]
@@ -123,16 +126,19 @@ For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [P
 {
   "plugins": [
     {
-      "name": "prometheus",
+      "name": "telemetry",
       "enabled": true,
       "config": {
-        "push_gateway_url": "http://pushgateway:9091",
-        "job_name": "bifrost",
-        "push_interval": 15,
-        "instance_id": "bifrost-node-1",
-        "basic_auth": {
-          "username": "admin",
-          "password": "secret"
+        "push_gateway": {
+          "enabled": true,
+          "push_gateway_url": "http://pushgateway:9091",
+          "job_name": "bifrost",
+          "push_interval": 15,
+          "instance_id": "bifrost-node-1",
+          "basic_auth": {
+            "username": "admin",
+            "password": "secret"
+          }
         }
       }
     }

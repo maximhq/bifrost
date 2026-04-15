@@ -87,8 +87,8 @@ anthropic_llm = ChatAnthropic(
 
 # Google models via Langchain
 google_llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    base_url=base_url
+    model="gemini-1.5-flash",
+    google_api_base=base_url
 )
 
 # All work the same way
@@ -121,8 +121,8 @@ const anthropicLlm = new ChatAnthropic({
 
 // Google models via Langchain
 const googleLlm = new ChatGoogleGenerativeAI({
-  model: "gemini-2.5-flash",
-  baseUrl: baseURL
+  model: "gemini-1.5-flash",
+  baseURL
 });
 
 // All work the same way
@@ -193,7 +193,7 @@ from langchain_core.messages import HumanMessage
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
-    base_url="http://localhost:8080/langchain",
+    google_api_base="http://localhost:8080/langchain",
     additional_headers={
         "x-bf-vk": "your-virtual-key",  # Virtual key for governance
     }
@@ -326,7 +326,7 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
-  baseUrl: "http://localhost:8080/langchain",
+  baseURL: "http://localhost:8080/langchain",
   additionalHeaders: {
     "x-bf-vk": "your-virtual-key",  // Virtual key for governance
   }

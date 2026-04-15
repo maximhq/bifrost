@@ -331,6 +331,24 @@ ListVirtualKeysResponse:
     count:
       type: integer
 
+VirtualKeyQuotaResponse:
+  type: object
+  description: Virtual key quota response (self-service, no admin auth required)
+  properties:
+    virtual_key_name:
+      type: string
+      description: Name of the virtual key
+    is_active:
+      type: boolean
+      description: Whether the virtual key is active
+    budgets:
+      type: array
+      description: Budget quotas assigned to this virtual key
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+
 VirtualKeyResponse:
   type: object
   description: Virtual key operation response

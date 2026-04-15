@@ -4,6 +4,8 @@ description: "Learn how to enable basic authentication for the Bifrost dashboard
 icon: "lock"
 ---
 
+<Note>This feature is only available in OSS. For enterprise builds you can setup [SCIM](/enterprise/scim)</Note>
+
 ## Overview
 
 Bifrost provides built-in authentication to protect your dashboard and admin API endpoints. When enabled, users must log in with credentials before accessing the dashboard or making admin API calls. This feature helps secure your Bifrost instance, especially when deployed in production environments.
@@ -25,7 +27,8 @@ Bifrost provides built-in authentication to protect your dashboard and admin API
 3. Enter your **Password** in the admin password field
 
 <Note>
-The username and password fields are only enabled when the authentication toggle is turned on. Make sure to use a strong password for security.
+  The username and password fields are only enabled when the authentication toggle is turned on. Make sure to use a
+  strong password for security.
 </Note>
 
 ### Step 3: Configure Inference Call Authentication (Optional)
@@ -39,7 +42,8 @@ By default, when authentication is enabled, all API calls (including inference c
    - MCP tool execution calls will still require authentication
 
 <Note>
-This option is useful if you want to protect your dashboard and admin functions while allowing public access to inference endpoints.
+  This option is useful if you want to protect your dashboard and admin functions while allowing public access to
+  inference endpoints.
 </Note>
 
 ### Step 4: Configure Whitelisted Routes (Optional)
@@ -54,12 +58,15 @@ You can configure specific routes that bypass the authentication middleware enti
 **Wildcard support:** Routes ending with `*` are treated as prefix matches. For example, `/api/webhook*` will match `/api/webhook`, `/api/webhook/v1`, `/api/webhook/github`, etc.
 
 **Example values:**
+
 ```
 /api/custom-webhook, /api/public-endpoint, /api/webhook*
 ```
 
 <Note>
-System routes like `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback`, and `/api/info` are always whitelisted regardless of this setting. Whitelisted routes only apply to dashboard and admin API endpoints — inference endpoints have their own toggle (see Step 3).
+  System routes like `/health`, `/api/session/login`, `/api/session/is-auth-enabled`, `/api/oauth/callback`, and
+  `/api/info` are always whitelisted regardless of this setting. Whitelisted routes only apply to dashboard and admin
+  API endpoints — inference endpoints have their own toggle (see Step 3).
 </Note>
 
 ### Step 5: Save Changes
@@ -99,6 +106,7 @@ When authentication is enabled for inference calls (i.e., the "Disable authentic
 
 - **Basic Authentication**: Username and Password in Basic auth
 - **Bearer Token**: base64 string of username:password as bearer token
+
 ### Whitelisted Routes
 
 When a route is added to the whitelisted routes list in Security settings, requests to that path bypass authentication entirely — no Basic Auth or Bearer Token is required. This applies only to dashboard and admin API endpoints. Inference endpoints are controlled separately via the "Disable authentication on inference calls" toggle.

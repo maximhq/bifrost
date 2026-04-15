@@ -19,25 +19,36 @@ Bifrost integrates with **Azure AI Content Safety** to provide multi-modal conte
 
 ## Configuration Fields
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `endpoint` | string | Yes | - | Azure Content Safety endpoint URL |
-| `api_key` | string | Yes | - | Azure subscription key |
-| `analyze_enabled` | boolean | No | true | Enable content analysis for Hate, Sexual, Violence, SelfHarm |
-| `analyze_severity_threshold` | enum | No | "medium" | Severity level to trigger: `low`, `medium`, or `high` |
-| `jailbreak_shield_enabled` | boolean | No | false | Enable jailbreak detection (input only) |
-| `indirect_attack_shield_enabled` | boolean | No | false | Enable indirect prompt attack detection (input only) |
-| `copyright_enabled` | boolean | No | false | Enable copyrighted content detection (output only) |
-| `text_blocklist_enabled` | boolean | No | false | Enable custom blocklist filtering |
-| `blocklist_names` | array | No | - | List of Azure blocklist names to apply |
+| Field                            | Type    | Required | Default  | Description                                                  |
+| -------------------------------- | ------- | -------- | -------- | ------------------------------------------------------------ |
+| `endpoint`                       | string  | Yes      | -        | Azure Content Safety endpoint URL                            |
+| `api_key`                        | string  | Yes      | -        | Azure subscription key                                       |
+| `analyze_enabled`                | boolean | No       | true     | Enable content analysis for Hate, Sexual, Violence, SelfHarm |
+| `analyze_severity_threshold`     | enum    | No       | "medium" | Severity level to trigger: `low`, `medium`, or `high`        |
+| `jailbreak_shield_enabled`       | boolean | No       | false    | Enable jailbreak detection (input only)                      |
+| `indirect_attack_shield_enabled` | boolean | No       | false    | Enable indirect prompt attack detection (input only)         |
+| `copyright_enabled`              | boolean | No       | false    | Enable copyrighted content detection (output only)           |
+| `text_blocklist_enabled`         | boolean | No       | false    | Enable custom blocklist filtering                            |
+| `blocklist_names`                | array   | No       | -        | List of Azure blocklist names to apply                       |
+
+## Collecting your API key and URL
+
+Navigate to Azure foundry dashboard
+
+<Frame>
+  <img src="/media/guardrails/azure-api-key.png" alt="Azure foundry dashboard" />
+</Frame>
+
+- Copy API key to use it in the Azure content moderation config form
+- Copy project endpoint and use base URL as endpoint in the form. e.g. (`https://xxx-resource.services.ai.azure.com`)
 
 ## Severity Threshold Levels
 
-| Threshold | Numeric Value | Behavior |
-|-----------|---------------|----------|
-| `low` | 2 | Most strict - blocks severity 2 and above |
-| `medium` | 4 | Balanced - blocks severity 4 and above |
-| `high` | 6 | Least strict - blocks only severity 6 |
+| Threshold | Numeric Value | Behavior                                  |
+| --------- | ------------- | ----------------------------------------- |
+| `low`     | 2             | Most strict - blocks severity 2 and above |
+| `medium`  | 4             | Balanced - blocks severity 4 and above    |
+| `high`    | 6             | Least strict - blocks only severity 6     |
 
 ## Detection Categories
 
@@ -47,23 +58,23 @@ Bifrost integrates with **Azure AI Content Safety** to provide multi-modal conte
 - Self-harm
 
 <Note>
-**Input-only features:** Jailbreak Shield and Indirect Attack Shield only apply to input validation.
-**Output-only features:** Copyright detection only applies to output validation.
+  **Input-only features:** Jailbreak Shield and Indirect Attack Shield only apply to input validation. **Output-only
+  features:** Copyright detection only applies to output validation.
 </Note>
 
 ## Provider Capabilities Comparison
 
-| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
-|------------|-------------|---------------------|----------|-------------|
-| PII Detection | Yes | No | No | Yes |
-| Content Filtering | Yes | Yes | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes | Yes |
-| Hallucination Detection | No | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes | Yes |
-| Custom Natural Language Rules | No | No | Yes | No |
-| Image Support | Yes | No | No | No |
-| IPI Detection | No | Yes | Yes | No |
-| Mutation Detection | No | No | Yes | No |
+| Capability                    | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
+| ----------------------------- | ----------- | -------------------- | -------- | ----------- |
+| PII Detection                 | Yes         | No                   | No       | Yes         |
+| Content Filtering             | Yes         | Yes                  | Yes      | Yes         |
+| Prompt Injection              | Yes         | Yes                  | Yes      | Yes         |
+| Hallucination Detection       | No          | No                   | No       | Yes         |
+| Toxicity Screening            | Yes         | Yes                  | Yes      | Yes         |
+| Custom Policies               | Yes         | Yes                  | Yes      | Yes         |
+| Custom Natural Language Rules | No          | No                   | Yes      | No          |
+| Image Support                 | Yes         | No                   | No       | No          |
+| IPI Detection                 | No          | Yes                  | Yes      | No          |
+| Mutation Detection            | No          | No                   | Yes      | No          |
 
 For information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

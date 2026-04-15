@@ -328,13 +328,32 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 
 Include the original provider response alongside Bifrost's standardized response format. Useful for debugging and accessing provider-specific metadata.
 
+**Provider-level default** (applies to all requests for this provider):
+
 ```go
-func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
     return &schemas.ProviderConfig{
         NetworkConfig: schemas.DefaultNetworkConfig,
         ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-        SendBackRawResponse: true, // Include raw provider response
+        SendBackRawResponse: true,
     }, nil
+}
+```
+
+**Per-request override** (overrides the provider default for a single request):
+
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true) // or false to suppress
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+
+if response.ChatResponse != nil {
+    rawResp := response.ChatResponse.ExtraFields.RawResponse // original provider JSON
 }
 ```
 
@@ -368,13 +387,32 @@ type BifrostResponseExtraFields struct {
 
 Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
 
+**Provider-level default** (applies to all requests for this provider):
+
 ```go
-func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
     return &schemas.ProviderConfig{
         NetworkConfig: schemas.DefaultNetworkConfig,
         ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-        SendBackRawRequest: true, // Include raw provider request
+        SendBackRawRequest: true,
     }, nil
+}
+```
+
+**Per-request override** (overrides the provider default for a single request):
+
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true) // or false to suppress
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+
+if response.ChatResponse != nil {
+    rawReq := response.ChatResponse.ExtraFields.RawRequest // exact JSON sent to the provider
 }
 ```
 
@@ -388,9 +426,42 @@ type BifrostResponseExtraFields struct {
 }
 ```
 
-<Tip>
-You can enable both `SendBackRawRequest` and `SendBackRawResponse` together to see the complete request-response cycle for debugging purposes.
-</Tip>
+### Store Raw Request/Response
+
+Persist the raw provider request and response in the log record without necessarily returning them in the API response. This is orthogonal to the send-back flags — enabling this does not affect what the caller receives, and enabling send-back does not automatically store data in logs. Enable both to do both.
+
+**Provider-level default** (applies to all requests for this provider):
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        StoreRawRequestResponse: true,
+    }, nil
+}
+```
+
+**Per-request override** (overrides the provider default for a single request):
+
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyStoreRawRequestResponse, true) // or false to disable
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+// Raw data is persisted in the log record.
+// ExtraFields.RawRequest/RawResponse are nil unless send-back flags are also enabled.
+```
+
+<Note>
+`StoreRawRequestResponse` only has effect when the logging plugin is active — raw data is written to the log record by the logging plugin. Without it, enabling this flag captures the data but nothing persists it.
+
+`StoreRawRequestResponse`, `SendBackRawRequest`, and `SendBackRawResponse` are orthogonal controls — enabling any one does not imply the others. Enable any combination depending on whether you need raw data in logs, in the response, or both.
+</Note>
 
 ## Provider-Specific Authentication
 
