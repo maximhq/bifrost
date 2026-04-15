@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - v1.5.0
     paths:
       - "helm-charts/bifrost/**"
       - ".github/workflows/helm-release.yml"
