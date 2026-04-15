@@ -1,4 +1,3 @@
-import { FilterPopover } from "@/components/filters/filterPopover";
 import { Button } from "@/components/ui/button";
 import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
@@ -12,7 +11,6 @@ import { toast } from "sonner";
 
 export { dateToRfc3339Local } from "@/lib/utils/date";
 
-/** Predefined time periods for the logs date range picker (matches E2E test labels) */
 const LOG_TIME_PERIODS = [
 	{ label: "Last hour", value: "1h" },
 	{ label: "Last 6 hours", value: "6h" },
@@ -53,24 +51,22 @@ interface LogFiltersProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
-	/** When true, hide FilterPopover and DateTimePicker (they live in the sidebar instead) */
-	hidePopoverFilters?: boolean;
 }
 
-export function LogFilters({
-	filters,
-	onFiltersChange,
-	liveEnabled,
-	onLiveToggle,
-	fetchLogs,
-	fetchStats,
-	hidePopoverFilters,
-}: LogFiltersProps) {
+export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
 	const [recalculateCosts] = useRecalculateLogCostsMutation();
+
+	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
+	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
+
+	useEffect(() => {
+		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
+		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
+	}, [filters.start_time, filters.end_time]);
 
 	// Keep filtersRef in sync so debounced search always merges with latest filters (search within filtered results)
 	useEffect(() => {
@@ -81,16 +77,6 @@ export function LogFilters({
 	useEffect(() => {
 		setLocalSearch(filters.content_search || "");
 	}, [filters.content_search]);
-
-	// Convert ISO strings from filters to Date objects for the DateTimePicker
-	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
-	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
-
-	// Sync local date state when filters change from URL
-	useEffect(() => {
-		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
-		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
-	}, [filters.start_time, filters.end_time]);
 
 	// Cleanup timeout on unmount
 	useEffect(() => {
@@ -133,29 +119,6 @@ export function LogFilters({
 		[onFiltersChange],
 	);
 
-	const handleFilterChange = useCallback(
-		(key: keyof LogFiltersType, values: string[] | boolean | string) => {
-			onFiltersChange({ ...filters, [key]: values });
-		},
-		[filters, onFiltersChange],
-	);
-
-	const handleMetadataFilterChange = useCallback(
-		(metadataKey: string, value: string | undefined) => {
-			const current = { ...(filters.metadata_filters || {}) };
-			if (value === undefined) {
-				delete current[metadataKey];
-			} else {
-				current[metadataKey] = value;
-			}
-			onFiltersChange({
-				...filters,
-				metadata_filters: Object.keys(current).length > 0 ? current : undefined,
-			});
-		},
-		[filters, onFiltersChange],
-	);
-
 	return (
 		<div className="flex grow items-center justify-between space-x-2">
 			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
@@ -182,44 +145,31 @@ export function LogFilters({
 				/>
 			</div>
 
-			{!hidePopoverFilters && (
-				<>
-					<DateTimePickerWithRange
-						triggerTestId="filter-date-range"
-						dateTime={{
-							from: startTime,
-							to: endTime,
-						}}
-						onDateTimeUpdate={(p) => {
-							setStartTime(p.from);
-							setEndTime(p.to);
-							onFiltersChange({
-								...filters,
-								start_time: p.from?.toISOString(),
-								end_time: p.to?.toISOString(),
-							});
-						}}
-						preDefinedPeriods={LOG_TIME_PERIODS}
-						onPredefinedPeriodChange={(periodValue) => {
-							if (!periodValue) return;
-							const { from, to } = getRangeForPeriod(periodValue);
-							setStartTime(from);
-							setEndTime(to);
-							onFiltersChange({
-								...filters,
-								start_time: from.toISOString(),
-								end_time: to.toISOString(),
-							});
-						}}
-					/>
-					<FilterPopover
-						filters={filters}
-						onFilterChange={handleFilterChange}
-						onMetadataFilterChange={handleMetadataFilterChange}
-						showMissingCost
-					/>
-				</>
-			)}
+			<DateTimePickerWithRange
+				triggerTestId="filter-date-range"
+				dateTime={{ from: startTime, to: endTime }}
+				onDateTimeUpdate={(p) => {
+					setStartTime(p.from);
+					setEndTime(p.to);
+					onFiltersChange({
+						...filters,
+						start_time: p.from?.toISOString(),
+						end_time: p.to?.toISOString(),
+					});
+				}}
+				preDefinedPeriods={LOG_TIME_PERIODS}
+				onPredefinedPeriodChange={(periodValue) => {
+					if (!periodValue) return;
+					const { from, to } = getRangeForPeriod(periodValue);
+					setStartTime(from);
+					setEndTime(to);
+					onFiltersChange({
+						...filters,
+						start_time: from.toISOString(),
+						end_time: to.toISOString(),
+					});
+				}}
+			/>
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-7.5 w-7.5">

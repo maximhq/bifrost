@@ -44,8 +44,6 @@ interface DataTableProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
-	/** When true, filters are rendered in a sidebar — hide them from the table header */
-	sidebarFilters?: boolean;
 }
 
 export function LogsDataTable({
@@ -63,7 +61,6 @@ export function LogsDataTable({
 	onLiveToggle,
 	fetchLogs,
 	fetchStats,
-	sidebarFilters = false,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -168,30 +165,16 @@ export function LogsDataTable({
 	return (
 		<div className="flex h-full flex-col gap-2">
 			<div className="flex shrink-0 items-center gap-2">
-				{sidebarFilters ? (
-					<div className="flex flex-1 items-center gap-2">
-						<LogFiltersComponent
-							filters={filters}
-							onFiltersChange={onFiltersChange}
-							liveEnabled={liveEnabled}
-							onLiveToggle={onLiveToggle}
-							fetchLogs={fetchLogs}
-							fetchStats={fetchStats}
-							hidePopoverFilters
-						/>
-					</div>
-				) : (
-					<div className="flex-1">
-						<LogFiltersComponent
-							filters={filters}
-							onFiltersChange={onFiltersChange}
-							liveEnabled={liveEnabled}
-							onLiveToggle={onLiveToggle}
-							fetchLogs={fetchLogs}
-							fetchStats={fetchStats}
-						/>
-					</div>
-				)}
+				<div className="flex flex-1 items-center gap-2">
+					<LogFiltersComponent
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						liveEnabled={liveEnabled}
+						onLiveToggle={onLiveToggle}
+						fetchLogs={fetchLogs}
+						fetchStats={fetchStats}
+					/>
+				</div>
 				<ColumnConfigDropdown entries={entries} labels={columnLabels} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
 

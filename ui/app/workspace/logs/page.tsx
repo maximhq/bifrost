@@ -2,7 +2,7 @@ import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
-import { LogsSidebar } from "@/app/workspace/logs/views/logsSidebar";
+import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import FullPageLoader from "@/components/fullPageLoader";
@@ -920,7 +920,7 @@ export default function LogsPage() {
 			) : (
 				<div className="bg-background flex h-full w-full grow gap-3">
 					{/* Sidebar Filters */}
-					<LogsSidebar filters={filters} onFiltersChange={setFilters} />
+					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
@@ -996,7 +996,6 @@ export default function LogsPage() {
 								isSocketConnected={isSocketConnected}
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
-								sidebarFilters
 							/>
 						</div>
 					</div>

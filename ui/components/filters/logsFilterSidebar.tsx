@@ -20,7 +20,7 @@ interface LogsSidebarProps {
 	onFiltersChange: (filters: LogFilters) => void;
 }
 
-export function LogsSidebar({ filters, onFiltersChange }: LogsSidebarProps) {
+export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps) {
 	const activeFilterCount = useMemo(() => {
 		const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
