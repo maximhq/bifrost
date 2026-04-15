@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -96,6 +97,22 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 		},
 		StreamConfig: &StreamConfig{
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				// Passthrough: if we have raw response from Bedrock provider, use it directly
+				// This avoids conversion bugs and is more efficient for Bedrock → Bedrock routing
+				// Skip passthrough for synthetic Created/InProgress events to avoid duplicate messageStart events
+				if resp.ExtraFields.Provider == schemas.Bedrock && resp.ExtraFields.RawResponse != nil {
+					if resp.Type != schemas.ResponsesStreamResponseTypeCreated && resp.Type != schemas.ResponsesStreamResponseTypeInProgress {
+						if rawResp, ok := resp.ExtraFields.RawResponse.(string); ok {
+						// Parse raw response to BedrockStreamEvent struct for proper encoding
+						var bedrockEvent bedrock.BedrockStreamEvent
+						if err := sonic.Unmarshal([]byte(rawResp), &bedrockEvent); err != nil {
+							return "", nil, fmt.Errorf("failed to unmarshal raw Bedrock response: %w", err)
+						}
+						return "", &bedrockEvent, nil
+					}
+					}
+				}
+				// Fallback to conversion for cross-provider routing
 				bedrockEvent, err := bedrock.ToBedrockConverseStreamResponse(resp)
 				if err != nil {
 					return "", nil, err
@@ -166,6 +183,7 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 				return "", nil, nil
 			},
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				// Use conversion for all cases (Bedrock Converse format → Anthropic Messages API format)
 				return bedrock.ToBedrockInvokeMessagesStreamResponse(ctx, resp)
 			},
 		},
@@ -1198,6 +1216,13 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 		switch r := req.(type) {
 		case *bedrock.BedrockConverseRequest:
 			r.ModelID = fullModelID
+			// Enable raw response passthrough for streaming converse requests when routing to Bedrock
+			// This avoids conversion bugs and is more efficient for Bedrock → Bedrock routing
+			// Note: r.Stream is always false here (set in RequestConverter which runs after PreCallback)
+			// so we detect streaming via the request path instead
+			if strings.HasSuffix(string(ctx.Path()), "/converse-stream") && (provider == "" || provider == schemas.Bedrock) {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			}
 		case *bedrock.BedrockTextCompletionRequest:
 			r.ModelID = fullModelID
 		case *bedrock.BedrockCountTokensRequest:
@@ -1206,6 +1231,13 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			}
 		case *bedrock.BedrockInvokeRequest:
 			r.ModelID = fullModelID
+			// Enable raw response passthrough for streaming invoke requests when routing to Bedrock
+			// This avoids conversion bugs and is more efficient for Bedrock → Bedrock routing
+			// Note: r.Stream is always false here (set in RequestConverter which runs after PreCallback)
+			// so we detect streaming via the request path instead
+			if strings.HasSuffix(string(ctx.Path()), "/invoke-with-response-stream") && (provider == "" || provider == schemas.Bedrock) {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			}
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
 		}
