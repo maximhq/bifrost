@@ -142,6 +142,42 @@ spec:
                   name: {{ .Values.vectorStore.pinecone.external.existingSecret }}
                   key: {{ .Values.vectorStore.pinecone.external.apiKeyKey | default "api-key" }}
             {{- end }}
+            {{- /* Object storage credentials from existing secret */ -}}
+            {{- if and .Values.storage.logsStore.enabled .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled .Values.storage.logsStore.objectStorage.existingSecret }}
+            {{- if eq .Values.storage.logsStore.objectStorage.type "s3" }}
+            - name: BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.accessKeyIdKey | default "access-key-id" }}
+                  optional: true
+            - name: BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.secretAccessKeyKey | default "secret-access-key" }}
+                  optional: true
+            - name: BIFROST_OBJECT_STORAGE_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.sessionTokenKey | default "session-token" }}
+                  optional: true
+            - name: BIFROST_OBJECT_STORAGE_ROLE_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.roleArnKey | default "role-arn" }}
+                  optional: true
+            {{- end }}
+            {{- if eq .Values.storage.logsStore.objectStorage.type "gcs" }}
+            - name: BIFROST_OBJECT_STORAGE_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.credentialsJsonKey | default "credentials-json" }}
+            {{- end }}
+            {{- end }}
             {{- /* Maxim API key from existing secret */ -}}
             {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
             - name: BIFROST_MAXIM_API_KEY
@@ -149,6 +185,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.bifrost.plugins.maxim.secretRef.name }}
                   key: {{ .Values.bifrost.plugins.maxim.secretRef.key | default "api-key" }}
+            {{- end }}
+            {{- /* MCP client connection strings from existing secrets (one per client with secretRef.name set) */ -}}
+            {{- if .Values.bifrost.mcp.enabled }}
+            {{- range $idx, $client := .Values.bifrost.mcp.clientConfigs }}
+            {{- if and $client.secretRef $client.secretRef.name }}
+            - name: BIFROST_MCP_{{ regexReplaceAll "[^A-Z0-9]+" (upper $client.name) "_" }}_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $client.secretRef.name }}
+                  key: {{ $client.secretRef.connectionStringKey | default "connection-string" }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- /* Governance auth credentials from existing secret */ -}}
             {{- if and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret }}

@@ -10,6 +10,15 @@
       "description": "The schema version. This should be set to \"https://www.getbifrost.ai/schema\"",
       "const": "https://www.getbifrost.ai/schema"
     },
+    "version": {
+      "type": "integer",
+      "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
+      "enum": [
+        1,
+        2
+      ],
+      "default": 2
+    },
     "encryption_key": {
       "type": "string",
       "description": "You can set the value as env.<ENV_VAR_NAME> to use an environment variable. We also read encryption key from BIFROST_ENCRYPTION_KEY environment variable. Note: once set, the encryption key cannot be changed unless you clean up the database. Accepts any string; a secure 32-byte AES-256 key will be derived using Argon2id KDF. If not provided, data will be saved in plain text. Recommended: use a passphrase of at least 16 bytes for better security"
@@ -94,9 +103,29 @@
           "minimum": 1,
           "description": "Maximum request body size in MB"
         },
-        "enable_litellm_fallbacks": {
-          "type": "boolean",
-          "description": "Enable litellm-specific fallbacks for text completion for Groq"
+        "compat": {
+          "type": "object",
+          "description": "Compat plugin configuration for request type conversion, parameter dropping, and parameter value conversion",
+          "properties": {
+            "convert_text_to_chat": {
+              "type": "boolean",
+              "description": "Convert text completion requests to chat for models that only support chat"
+            },
+            "convert_chat_to_responses": {
+              "type": "boolean",
+              "description": "Convert chat completion requests to responses for models that only support responses"
+            },
+            "should_drop_params": {
+              "type": "boolean",
+              "description": "Drop unsupported parameters based on model catalog allowlist"
+            },
+            "should_convert_params": {
+              "type": "boolean",
+              "description": "Converts model parameter values that are not supported by the model.",
+              "default": false
+            }
+          },
+          "additionalProperties": false
         },
         "header_filter_config": {
           "type": "object",
@@ -172,13 +201,27 @@
         },
         "mcp_code_mode_binding_level": {
           "type": "string",
-          "enum": ["server", "tool"],
+          "enum": [
+            "server",
+            "tool"
+          ],
           "description": "Code mode binding level for MCP tools"
         },
         "mcp_tool_sync_interval": {
           "type": "integer",
           "minimum": 0,
           "description": "Global tool sync interval in minutes (0 = disabled)",
+          "default": 10
+        },
+        "mcp_disable_auto_tool_inject": {
+          "type": "boolean",
+          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "default": false
+        },
+        "routing_chain_max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
         }
       },
@@ -219,7 +262,7 @@
           "$ref": "#/$defs/provider"
         },
         "ollama": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_ollama_config"
         },
         "groq": {
           "$ref": "#/$defs/provider"
@@ -231,7 +274,7 @@
           "$ref": "#/$defs/provider"
         },
         "sgl": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_sgl_config"
         },
         "parasail": {
           "$ref": "#/$defs/provider"
@@ -240,7 +283,7 @@
           "$ref": "#/$defs/provider"
         },
         "replicate": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_replicate_config"
         },
         "elevenlabs": {
           "$ref": "#/$defs/provider"
@@ -255,6 +298,15 @@
           "$ref": "#/$defs/provider"
         },
         "fireworks": {
+          "$ref": "#/$defs/provider"
+        },
+        "nebius": {
+          "$ref": "#/$defs/provider"
+        },
+        "xai": {
+          "$ref": "#/$defs/provider"
+        },
+        "runway": {
           "$ref": "#/$defs/provider"
         }
       },
@@ -292,10 +344,13 @@
                 "format": "date-time",
                 "description": "Last time budget was reset"
               },
-              "calendar_aligned": {
-                "type": "boolean",
-                "description": "Snap resets to calendar boundaries (day/week/month/year start)",
-                "default": false
+              "virtual_key_id": {
+                "type": "string",
+                "description": "ID of the virtual key this budget belongs to (mutually exclusive with provider_config_id)"
+              },
+              "provider_config_id": {
+                "type": "integer",
+                "description": "ID of the provider config this budget belongs to (mutually exclusive with virtual_key_id)"
               }
             },
             "required": [
@@ -462,6 +517,11 @@
                 "description": "Whether the virtual key is active",
                 "default": true
               },
+              "calendar_aligned": {
+                "type": "boolean",
+                "description": "Snap all budget resets to calendar boundaries (day, week, month, year)",
+                "default": false
+              },
               "team_id": {
                 "type": "string",
                 "description": "Associated team ID (mutually exclusive with customer_id)"
@@ -470,24 +530,20 @@
                 "type": "string",
                 "description": "Associated customer ID (mutually exclusive with team_id)"
               },
-              "budget_id": {
-                "type": "string",
-                "description": "Associated budget ID"
-              },
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
               "provider_configs": {
                 "type": "array",
-                "description": "Provider configurations for this virtual key (empty means all providers allowed)",
+                "description": "Provider configurations for this virtual key (empty means no providers allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_provider_config"
                 }
               },
               "mcp_configs": {
                 "type": "array",
-                "description": "MCP configurations for this virtual key",
+                "description": "MCP configurations for this virtual key (empty array means no MCP tools allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_mcp_config"
                 }
@@ -505,6 +561,13 @@
           "description": "Routing rules for dynamic provider/model selection based on CEL expressions",
           "items": {
             "$ref": "#/$defs/routing_rule"
+          }
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "description": "Scoped pricing overrides applied at runtime by the model catalog",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
           }
         },
         "auth_config": {
@@ -550,9 +613,17 @@
           "items": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "description": "Provider row ID"
+              },
               "name": {
                 "type": "string",
                 "description": "Provider name"
+              },
+              "description": {
+                "type": "string",
+                "description": "Operator-facing provider description"
               },
               "budget_id": {
                 "type": "string",
@@ -573,9 +644,26 @@
               "store_raw_request_response": {
                 "type": "boolean",
                 "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+              },
+              "network_config": {
+                "$ref": "#/$defs/network_config"
+              },
+              "proxy_config": {
+                "$ref": "#/$defs/proxy_config"
+              },
+              "custom_provider_config": {
+                "$ref": "#/$defs/custom_provider_config"
+              },
+              "concurrency_and_buffer_size": {
+                "$ref": "#/$defs/concurrency_and_buffer_size"
+              },
+              "openai_config": {
+                "$ref": "#/$defs/openai_config"
               }
             },
-            "required": ["name"]
+            "required": [
+              "name"
+            ]
           }
         }
       },
@@ -878,21 +966,125 @@
               }
             }
           ]
+        },
+        "object_storage": {
+          "type": "object",
+          "description": "Optional object storage for offloading log payloads. When configured, large request/response payloads are stored in S3/GCS while the DB keeps only lightweight index data.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "s3",
+                "gcs"
+              ],
+              "description": "Object storage backend type"
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET)"
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Key prefix for stored objects (default: bifrost)",
+              "default": "bifrost"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Enable gzip compression for stored objects. Default: false",
+              "default": false
+            }
+          },
+          "required": [
+            "type",
+            "bucket"
+          ],
+          "if": {
+            "properties": {
+              "type": {
+                "const": "s3"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "region": {
+                "type": "string",
+                "description": "AWS region. Supports env var reference"
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Custom S3-compatible endpoint for MinIO/R2. Supports env var reference"
+              },
+              "access_key_id": {
+                "type": "string",
+                "description": "AWS access key ID. Omit to use default credential chain (instance role, env vars, etc.). Supports env var reference"
+              },
+              "secret_access_key": {
+                "type": "string",
+                "description": "AWS secret access key. Supports env var reference"
+              },
+              "session_token": {
+                "type": "string",
+                "description": "AWS session token for STS temporary credentials. Supports env var reference"
+              },
+              "role_arn": {
+                "type": "string",
+                "description": "AWS IAM role ARN for STS AssumeRole. Works with static creds or instance role. Supports env var reference"
+              },
+              "force_path_style": {
+                "type": "boolean",
+                "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
+                "default": false
+              },
+              "compress": true
+            },
+            "dependentRequired": {
+              "access_key_id": [
+                "secret_access_key"
+              ],
+              "secret_access_key": [
+                "access_key_id"
+              ],
+              "session_token": [
+                "access_key_id",
+                "secret_access_key"
+              ]
+            },
+            "additionalProperties": false
+          },
+          "else": {
+            "properties": {
+              "type": true,
+              "bucket": true,
+              "prefix": true,
+              "credentials_json": {
+                "type": "string",
+                "description": "GCP service account credentials JSON or file path. Omit to use Application Default Credentials. Supports env var reference"
+              },
+              "credentials": {
+                "type": "string",
+                "description": "Deprecated: use credentials_json. Kept for backwards compatibility."
+              },
+              "project_id": {
+                "type": "string",
+                "description": "GCP project ID override. Supports env var reference"
+              },
+              "compress": true
+            },
+            "additionalProperties": false
+          }
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days to retain log entries. 0 disables retention-based cleanup."
         }
       },
       "additionalProperties": false
-    },
-    "cluster_config": {
-      "$ref": "#/$defs/cluster_config"
-    },
-    "saml_config": {
-      "$ref": "#/$defs/saml_config"
-    },
-    "load_balancer_config": {
-      "$ref": "#/$defs/load_balancer_config"
-    },
-    "guardrails_config": {
-      "$ref": "#/$defs/guardrails_config"
     },
     "plugins": {
       "type": "array",
@@ -910,7 +1102,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -930,8 +1122,12 @@
           },
           "placement": {
             "type": "string",
-            "enum": ["pre_builtin", "post_builtin"],
-            "description": "Whether this plugin runs before or after built-in plugins. Default: post_builtin",
+            "enum": [
+              "pre_builtin",
+              "post_builtin",
+              "builtin"
+            ],
+            "description": "Whether this plugin runs before, after, or as a built-in. Default: post_builtin",
             "optional": true,
             "default": "post_builtin"
           },
@@ -1010,10 +1206,15 @@
                               "description": "Password for basic authentication"
                             }
                           },
-                          "required": ["username", "password"]
+                          "required": [
+                            "username",
+                            "password"
+                          ]
                         }
                       },
-                      "required": ["push_gateway_url"]
+                      "required": [
+                        "push_gateway_url"
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -1189,7 +1390,7 @@
                       "oneOf": [
                         {
                           "type": "string",
-                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
                         },
                         {
                           "type": "integer",
@@ -1319,7 +1520,9 @@
                       "type": "string",
                       "description": "Type of trace to use for the OTEL collector",
                       "enum": [
-                        "genai_extension"
+                        "genai_extension",
+                        "vercel",
+                        "open_inference"
                       ]
                     },
                     "protocol": {
@@ -1437,14 +1640,11 @@
         "additionalProperties": false
       }
     },
-    "audit_logs": {
-      "$ref": "#/$defs/audit_logs_config"
-    },
-    "large_payload_optimization": {
-      "$ref": "#/$defs/large_payload_optimization"
-    },
     "websocket": {
       "$ref": "#/$defs/websocket_config"
+    },
+    "scim_config": {
+      "$ref": "#/$defs/scim_config"
     }
   },
   "additionalProperties": false,
@@ -1475,7 +1675,9 @@
           "maximum": 1
         }
       },
-      "required": ["weight"],
+      "required": [
+        "weight"
+      ],
       "additionalProperties": false
     },
     "routing_rule": {
@@ -1503,6 +1705,11 @@
           "type": "string",
           "description": "CEL (Common Expression Language) expression for rule evaluation"
         },
+        "chain_rule": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, re-evaluates routing chain after this rule matches"
+        },
         "targets": {
           "type": "array",
           "minItems": 1,
@@ -1522,12 +1729,17 @@
         },
         "scope": {
           "type": "string",
-          "enum": ["global", "team", "customer", "virtual_key"],
+          "enum": [
+            "global",
+            "team",
+            "customer",
+            "virtual_key"
+          ],
           "description": "Rule scope level",
           "default": "global"
         },
         "scope_id": {
-          "type": ["string", "null"],
+          "type": "string",
           "description": "Entity ID for non-global scopes (required for non-global scope)"
         },
         "priority": {
@@ -1541,8 +1753,37 @@
           "additionalProperties": true
         }
       },
-      "required": ["id", "name", "targets"],
-      "additionalProperties": false
+      "required": [
+        "id",
+        "name",
+        "targets"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "scope": {
+            "enum": [
+              "team",
+              "customer",
+              "virtual_key"
+            ]
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "then": {
+        "required": [
+          "scope_id"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     },
     "virtual_key_provider_config": {
       "type": "object",
@@ -1561,270 +1802,29 @@
           "description": "Provider name"
         },
         "weight": {
-          "type": "number",
-          "description": "Weight for load balancing",
-          "default": 1.0
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Weight for load balancing (null opts out of weighted routing)",
+          "default": null
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
-        },
-        "budget_id": {
-          "type": "string",
-          "description": "Associated budget ID"
         },
         "rate_limit_id": {
           "type": "string",
           "description": "Associated rate limit ID"
         },
-        "keys": {
+        "key_ids": {
           "type": "array",
-          "description": "Provider keys for this config (empty means all keys allowed for this provider)",
+          "description": "Key identifiers allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In config.json, values are key names. Via the API, values are key UUIDs.",
           "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "integer",
-                "description": "Key database ID (auto-generated)"
-              },
-              "key_id": {
-                "type": "string",
-                "description": "Key UUID identifier"
-              },
-              "name": {
-                "type": "string",
-                "description": "Key name (must be unique)"
-              },
-              "value": {
-                "type": "string",
-                "description": "API key value (can use env. prefix)"
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Supported models for this key"
-              },
-              "weight": {
-                "type": "number",
-                "minimum": 0,
-                "default": 1.0,
-                "description": "Weight for load balancing"
-              },
-              "azure_key_config": {
-                "type": "object",
-                "properties": {
-                  "endpoint": {
-                    "type": "string",
-                    "description": "Azure endpoint (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
-                  "api_version": {
-                    "type": "string",
-                    "description": "Azure API version"
-                  }
-                },
-                "required": [
-                  "endpoint"
-                ],
-                "additionalProperties": false
-              },
-              "vertex_key_config": {
-                "type": "object",
-                "properties": {
-                  "project_id": {
-                    "type": "string",
-                    "description": "Google Cloud project ID (can use env. prefix)"
-                  },
-                  "project_number": {
-                    "type": "string",
-                    "description": "Google Cloud project number"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "Google Cloud region"
-                  },
-                  "auth_credentials": {
-                    "type": "string",
-                    "description": "Authentication credentials (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  }
-                },
-                "required": [
-                  "project_id",
-                  "region"
-                ],
-                "additionalProperties": false
-              },
-              "bedrock_key_config": {
-                "type": "object",
-                "properties": {
-                  "access_key": {
-                    "type": "string",
-                    "description": "AWS access key (can use env. prefix)"
-                  },
-                  "secret_key": {
-                    "type": "string",
-                    "description": "AWS secret key (can use env. prefix)"
-                  },
-                  "session_token": {
-                    "type": "string",
-                    "description": "AWS session token (can use env. prefix)"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "AWS region"
-                  },
-                  "arn": {
-                    "type": "string",
-                    "description": "AWS ARN"
-                  },
-                  "role_arn": {
-                    "type": "string",
-                    "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
-                  },
-                  "external_id": {
-                    "type": "string",
-                    "description": "External ID for AssumeRole (can use env. prefix)"
-                  },
-                  "session_name": {
-                    "type": "string",
-                    "description": "Role session name for AssumeRole (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
-                  "batch_s3_config": {
-                    "type": "object",
-                    "description": "S3 bucket configuration for Bedrock batch operations",
-                    "properties": {
-                      "buckets": {
-                        "type": "array",
-                        "description": "List of S3 bucket configurations",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "bucket_name": {
-                              "type": "string",
-                              "description": "S3 bucket name"
-                            },
-                            "prefix": {
-                              "type": "string",
-                              "description": "S3 key prefix for batch files"
-                            },
-                            "is_default": {
-                              "type": "boolean",
-                              "description": "Whether this is the default bucket for batch operations"
-                            }
-                          },
-                          "required": ["bucket_name"],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                },
-                "additionalProperties": false
-              },
-              "vllm_key_config": {
-                "type": "object",
-                "properties": {
-                  "url": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "VLLM server base URL (can use env. prefix)"
-                  },
-                  "model_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Exact model name served on this VLLM instance"
-                  }
-                },
-                "required": [
-                  "url",
-                  "model_name"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "oneOf": [
-              {
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["azure_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vertex_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["bedrock_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vllm_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
-                  ]
-                }
-              }
-            ],
-            "required": [
-              "key_id",
-              "name",
-              "value"
-            ]
+            "type": "string"
           }
         }
       },
@@ -1847,19 +1847,20 @@
         },
         "mcp_client_id": {
           "type": "integer",
-          "description": "Associated MCP client ID"
+          "description": "Associated MCP client ID (database format)"
+        },
+        "mcp_client_name": {
+          "type": "string",
+          "description": "MCP client name (config file format \u2014 resolved to mcp_client_id at startup)"
         },
         "tools_to_execute": {
           "type": "array",
-          "description": "Tools to execute for this MCP config",
+          "description": "Include-only list of tools this Virtual Key is permitted to execute from this MCP client. ['*'] means all tools allowed, [] means no tools allowed (deny-by-default).",
           "items": {
             "type": "string"
           }
         }
       },
-      "required": [
-        "mcp_client_id"
-      ],
       "additionalProperties": false
     },
     "auth_config": {
@@ -1904,161 +1905,6 @@
       },
       "additionalProperties": false
     },
-    "pricing_override_match_type": {
-      "type": "string",
-      "enum": [
-        "exact",
-        "wildcard",
-        "regex"
-      ]
-    },
-    "pricing_override_request_type": {
-      "type": "string",
-      "enum": [
-        "text_completion",
-        "text_completion_stream",
-        "chat_completion",
-        "chat_completion_stream",
-        "responses",
-        "responses_stream",
-        "embedding",
-        "rerank",
-        "ocr",
-        "speech",
-        "speech_stream",
-        "transcription",
-        "transcription_stream",
-        "image_generation",
-        "image_generation_stream"
-      ]
-    },
-    "provider_pricing_override": {
-      "type": "object",
-      "properties": {
-        "model_pattern": {
-          "type": "string",
-          "minLength": 1
-        },
-        "match_type": {
-          "$ref": "#/$defs/pricing_override_match_type"
-        },
-        "request_types": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/pricing_override_request_type"
-          }
-        },
-        "input_cost_per_token": { "type": "number", "minimum": 0 },
-        "output_cost_per_token": { "type": "number", "minimum": 0 },
-        "input_cost_per_video_per_second": { "type": "number", "minimum": 0 },
-        "input_cost_per_audio_per_second": { "type": "number", "minimum": 0 },
-        "input_cost_per_character": { "type": "number", "minimum": 0 },
-        "output_cost_per_character": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_image_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_video_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_audio_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_creation_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_read_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
-        "cache_read_input_token_cost": { "type": "number", "minimum": 0 },
-        "cache_creation_input_token_cost": { "type": "number", "minimum": 0 },
-        "input_cost_per_token_batches": { "type": "number", "minimum": 0 },
-        "output_cost_per_token_batches": { "type": "number", "minimum": 0 },
-        "input_cost_per_image_token": { "type": "number", "minimum": 0 },
-        "output_cost_per_image_token": { "type": "number", "minimum": 0 },
-        "input_cost_per_image": { "type": "number", "minimum": 0 },
-        "output_cost_per_image": { "type": "number", "minimum": 0 },
-        "cache_read_input_image_token_cost": { "type": "number", "minimum": 0 }
-      },
-      "required": [
-        "model_pattern",
-        "match_type"
-      ],
-      "additionalProperties": false
-    },
-    "custom_provider_config": {
-      "type": "object",
-      "description": "Custom provider configuration for extending or customizing provider behavior",
-      "properties": {
-        "is_key_less": {
-          "type": "boolean",
-          "description": "Whether the custom provider requires a key"
-        },
-        "base_provider_type": {
-          "type": "string",
-          "description": "Base provider type to extend"
-        },
-        "allowed_requests": {
-          "type": "object",
-          "description": "Allowed request types for the custom provider",
-          "properties": {
-            "list_models": { "type": "boolean" },
-            "text_completion": { "type": "boolean" },
-            "text_completion_stream": { "type": "boolean" },
-            "chat_completion": { "type": "boolean" },
-            "chat_completion_stream": { "type": "boolean" },
-            "responses": { "type": "boolean" },
-            "responses_stream": { "type": "boolean" },
-            "count_tokens": { "type": "boolean" },
-            "embedding": { "type": "boolean" },
-            "rerank": { "type": "boolean" },
-            "ocr": { "type": "boolean" },
-            "speech": { "type": "boolean" },
-            "speech_stream": { "type": "boolean" },
-            "transcription": { "type": "boolean" },
-            "transcription_stream": { "type": "boolean" },
-            "image_generation": { "type": "boolean" },
-            "image_generation_stream": { "type": "boolean" },
-            "image_edit": { "type": "boolean" },
-            "image_edit_stream": { "type": "boolean" },
-            "image_variation": { "type": "boolean" },
-            "video_generation": { "type": "boolean" },
-            "video_retrieve": { "type": "boolean" },
-            "video_download": { "type": "boolean" },
-            "video_delete": { "type": "boolean" },
-            "video_list": { "type": "boolean" },
-            "video_remix": { "type": "boolean" },
-            "batch_create": { "type": "boolean" },
-            "batch_list": { "type": "boolean" },
-            "batch_retrieve": { "type": "boolean" },
-            "batch_cancel": { "type": "boolean" },
-            "batch_delete": { "type": "boolean" },
-            "batch_results": { "type": "boolean" },
-            "file_upload": { "type": "boolean" },
-            "file_list": { "type": "boolean" },
-            "file_retrieve": { "type": "boolean" },
-            "file_delete": { "type": "boolean" },
-            "file_content": { "type": "boolean" },
-            "container_create": { "type": "boolean" },
-            "container_list": { "type": "boolean" },
-            "container_retrieve": { "type": "boolean" },
-            "container_delete": { "type": "boolean" },
-            "container_file_create": { "type": "boolean" },
-            "container_file_list": { "type": "boolean" },
-            "container_file_retrieve": { "type": "boolean" },
-            "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" },
-            "passthrough": { "type": "boolean" },
-            "passthrough_stream": { "type": "boolean" }
-          },
-          "additionalProperties": false
-        },
-        "request_path_overrides": {
-          "type": "object",
-          "description": "Mapping of request type to custom path overriding the default provider path",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      },
-      "required": ["base_provider_type"],
-      "additionalProperties": false
-    },
     "network_config": {
       "type": "object",
       "properties": {
@@ -2084,15 +1930,19 @@
           "minimum": 0,
           "description": "Maximum number of retries"
         },
-        "retry_backoff_initial_ms": {
+        "retry_backoff_initial": {
           "type": "integer",
           "minimum": 0,
           "description": "Initial retry backoff in milliseconds"
         },
-        "retry_backoff_max_ms": {
+        "retry_backoff_max": {
           "type": "integer",
           "minimum": 0,
           "description": "Maximum retry backoff in milliseconds"
+        },
+        "enforce_http2": {
+          "type": "boolean",
+          "description": "Force HTTP/2 on provider connections (relevant for Bedrock and other net/http-based providers)"
         },
         "insecure_skip_verify": {
           "type": "boolean",
@@ -2124,7 +1974,82 @@
       },
       "additionalProperties": false
     },
-    "concurrency_config": {
+    "network_config_without_base_url": {
+      "type": "object",
+      "properties": {
+        "extra_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Additional headers to send with requests"
+        },
+        "default_request_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default request timeout in seconds"
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of retries"
+        },
+        "retry_backoff_initial": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Initial retry backoff in milliseconds"
+        },
+        "retry_backoff_max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum retry backoff in milliseconds"
+        },
+        "enforce_http2": {
+          "type": "boolean",
+          "description": "Force HTTP/2 on provider connections (relevant for Bedrock and other net/http-based providers)"
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
+        },
+        "stream_idle_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600,
+          "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 60."
+        },
+        "max_conns_per_host": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "beta_header_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+        }
+      },
+      "additionalProperties": false
+    },
+    "openai_config": {
+      "type": "object",
+      "description": "OpenAI-specific provider settings",
+      "properties": {
+        "disable_store": {
+          "type": "boolean",
+          "description": "Disable OpenAI Responses API conversation storage."
+        }
+      },
+      "additionalProperties": false
+    },
+    "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
         "concurrency": {
@@ -2160,8 +2085,7 @@
           "items": {
             "type": "string"
           },
-          "default": [],
-          "description": "Supported models for this key"
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
         },
         "weight": {
           "type": "number",
@@ -2172,6 +2096,17 @@
           "type": "boolean",
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "description": "Model alias mappings: maps a model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
         }
       },
       "required": [
@@ -2252,7 +2187,9 @@
                             "description": "Whether this is the default bucket for batch operations"
                           }
                         },
-                        "required": ["bucket_name"],
+                        "required": [
+                          "bucket_name"
+                        ],
                         "additionalProperties": false
                       }
                     }
@@ -2265,10 +2202,7 @@
               ],
               "additionalProperties": false
             }
-          },
-          "required": [
-            "bedrock_key_config"
-          ]
+          }
         }
       ]
     },
@@ -2307,6 +2241,86 @@
         }
       ]
     },
+    "replicate_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "replicate_key_config": {
+              "type": "object",
+              "properties": {
+                "use_deployments_endpoint": {
+                  "type": "boolean",
+                  "description": "Whether to use the deployments endpoint instead of the models endpoint (default: false)"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "ollama_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ollama_key_config": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Ollama server base URL (can use env. prefix)"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "ollama_key_config"
+          ]
+        }
+      ]
+    },
+    "sgl_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sgl_key_config": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "SGLang server base URL (can use env. prefix)"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "sgl_key_config"
+          ]
+        }
+      ]
+    },
     "azure_key": {
       "allOf": [
         {
@@ -2321,13 +2335,6 @@
                 "endpoint": {
                   "type": "string",
                   "description": "Azure endpoint (can use env. prefix)"
-                },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
                 },
                 "api_version": {
                   "type": "string",
@@ -2373,13 +2380,6 @@
                 "auth_credentials": {
                   "type": "string",
                   "description": "Authentication credentials (can use env. prefix)"
-                },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
                 }
               },
               "required": [
@@ -2410,7 +2410,7 @@
           "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
-          "$ref": "#/$defs/concurrency_config"
+          "$ref": "#/$defs/concurrency_and_buffer_size"
         },
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
@@ -2429,13 +2429,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2458,7 +2451,7 @@
           "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
-          "$ref": "#/$defs/concurrency_config"
+          "$ref": "#/$defs/concurrency_and_buffer_size"
         },
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
@@ -2477,13 +2470,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2503,10 +2489,10 @@
           "description": "API keys for this provider"
         },
         "network_config": {
-          "$ref": "#/$defs/network_config"
+          "$ref": "#/$defs/network_config_without_base_url"
         },
         "concurrency_and_buffer_size": {
-          "$ref": "#/$defs/concurrency_config"
+          "$ref": "#/$defs/concurrency_and_buffer_size"
         },
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
@@ -2525,13 +2511,47 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_replicate_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/provider_pricing_override"
+            "$ref": "#/$defs/replicate_key"
           },
-          "description": "Provider-level pricing overrides matched by model pattern"
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         }
       },
       "required": [
@@ -2554,7 +2574,7 @@
           "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
-          "$ref": "#/$defs/concurrency_config"
+          "$ref": "#/$defs/concurrency_and_buffer_size"
         },
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
@@ -2573,13 +2593,6 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2602,7 +2615,7 @@
           "$ref": "#/$defs/network_config"
         },
         "concurrency_and_buffer_size": {
-          "$ref": "#/$defs/concurrency_config"
+          "$ref": "#/$defs/concurrency_and_buffer_size"
         },
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
@@ -2621,13 +2634,88 @@
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
-        },
-        "pricing_overrides": {
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_ollama_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/provider_pricing_override"
+            "$ref": "#/$defs/ollama_key"
           },
-          "description": "Provider-level pricing overrides matched by model pattern"
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config_without_base_url"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_sgl_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sgl_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config_without_base_url"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         }
       },
       "required": [
@@ -2654,9 +2742,9 @@
           "type": "string",
           "enum": [
             "stdio",
-            "websocket",
             "http",
-            "sse"
+            "sse",
+            "inprocess"
           ],
           "description": "Connection type for MCP client"
         },
@@ -2666,12 +2754,17 @@
         },
         "auth_type": {
           "type": "string",
-          "enum": ["none", "headers", "oauth"],
+          "enum": [
+            "none",
+            "headers",
+            "oauth",
+            "per_user_oauth"
+          ],
           "description": "Authentication type for MCP connection"
         },
         "oauth_config_id": {
           "type": "string",
-          "description": "OAuth config ID reference (for oauth auth type)"
+          "description": "OAuth config ID reference (required when auth_type is 'oauth' or 'per_user_oauth')"
         },
         "headers": {
           "type": "object",
@@ -2707,34 +2800,6 @@
           ],
           "additionalProperties": false
         },
-        "websocket_config": {
-          "type": "object",
-          "properties": {
-            "url": {
-              "type": "string",
-              "format": "uri",
-              "description": "WebSocket URL"
-            }
-          },
-          "required": [
-            "url"
-          ],
-          "additionalProperties": false
-        },
-        "http_config": {
-          "type": "object",
-          "properties": {
-            "url": {
-              "type": "string",
-              "format": "uri",
-              "description": "HTTP URL"
-            }
-          },
-          "required": [
-            "url"
-          ],
-          "additionalProperties": false
-        },
         "tools_to_execute": {
           "type": "array",
           "items": {
@@ -2753,6 +2818,13 @@
           "type": "string",
           "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
         },
+        "allowed_extra_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlist of request-level headers that callers may forward to this MCP server at execution time. Use ['*'] to allow all headers."
+        },
         "is_ping_available": {
           "type": "boolean",
           "description": "Whether the MCP server supports ping for health checks (default: true)",
@@ -2765,6 +2837,11 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "allow_on_all_virtual_keys": {
+          "type": "boolean",
+          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment. All tools are allowed by default. If a virtual key has an explicit MCP config for this server, that config takes precedence and overrides this behaviour.",
+          "default": false
         }
       },
       "required": [
@@ -2772,6 +2849,24 @@
         "connection_type"
       ],
       "additionalProperties": false,
+      "if": {
+        "properties": {
+          "auth_type": {
+            "enum": [
+              "oauth",
+              "per_user_oauth"
+            ]
+          }
+        },
+        "required": [
+          "auth_type"
+        ]
+      },
+      "then": {
+        "required": [
+          "oauth_config_id"
+        ]
+      },
       "oneOf": [
         {
           "properties": {
@@ -2800,8 +2895,16 @@
             }
           },
           "anyOf": [
-            { "required": ["http_config"] },
-            { "required": ["connection_string"] }
+            {
+              "required": [
+                "http_config"
+              ]
+            },
+            {
+              "required": [
+                "connection_string"
+              ]
+            }
           ]
         },
         {
@@ -2833,8 +2936,16 @@
         },
         "code_mode_binding_level": {
           "type": "string",
-          "enum": ["server", "tool"],
+          "enum": [
+            "server",
+            "tool"
+          ],
           "description": "How tools are exposed in VFS for code execution"
+        },
+        "disable_auto_tool_inject": {
+          "type": "boolean",
+          "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
+          "default": false
         }
       }
     },
@@ -2873,7 +2984,7 @@
         },
         "timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for Weaviate operations (e.g., '5s')"
         },
         "class_name": {
@@ -2952,32 +3063,32 @@
         },
         "conn_max_lifetime": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Connection maximum lifetime (e.g., '30m')"
         },
         "conn_max_idle_time": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Connection maximum idle time (e.g., '5m')"
         },
         "dial_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket connection (e.g., '5s')"
         },
         "read_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket reads (e.g., '3s')"
         },
         "write_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket writes (e.g., '3s')"
         },
         "context_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for Redis operations (e.g., '10s')"
         }
       },
@@ -3224,7 +3335,7 @@
       ],
       "additionalProperties": false
     },
-    "saml_config": {
+    "scim_config": {
       "type": "object",
       "description": "SAML/SCIM (System for Cross-domain Identity Management) configuration",
       "properties": {
@@ -3299,7 +3410,11 @@
         },
         "clientSecret": {
           "type": "string",
-          "description": "Okta client secret (optional, required for token revocation)"
+          "description": "Okta client secret"
+        },
+        "apiToken": {
+          "type": "string",
+          "description": "Okta API token for Admin API access"
         },
         "audience": {
           "type": "string",
@@ -3323,7 +3438,9 @@
       },
       "required": [
         "issuerUrl",
-        "clientId"
+        "clientId",
+        "clientSecret",
+        "apiToken"
       ],
       "additionalProperties": false
     },
@@ -3345,7 +3462,11 @@
         },
         "cloud": {
           "type": "string",
-          "enum": ["commercial", "gcc-high", "dod"],
+          "enum": [
+            "commercial",
+            "gcc-high",
+            "dod"
+          ],
           "default": "commercial",
           "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
@@ -3639,6 +3760,312 @@
           "additionalProperties": false
         }
       },
+      "additionalProperties": false
+    },
+    "provider_pricing_override": {
+      "type": "object",
+      "description": "Scoped pricing override applied at runtime by the model catalog",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique pricing override ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for this override"
+        },
+        "scope_kind": {
+          "type": "string",
+          "description": "Scope level for this override",
+          "enum": [
+            "global",
+            "provider",
+            "provider_key",
+            "virtual_key",
+            "virtual_key_provider",
+            "virtual_key_provider_key"
+          ]
+        },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "provider_id": {
+          "type": "string",
+          "description": "Provider ID (required for provider* scopes)"
+        },
+        "provider_key_id": {
+          "type": "string",
+          "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)"
+        },
+        "match_type": {
+          "type": "string",
+          "description": "How the pattern is matched against model names",
+          "enum": [
+            "exact",
+            "wildcard"
+          ]
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Model name pattern to match (exact name or wildcard prefix ending with *)"
+        },
+        "request_types": {
+          "type": "array",
+          "description": "Request types this override applies to. At least one value is required.",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "pricing_patch": {
+          "type": "string",
+          "description": "JSON-encoded pricing fields to override (e.g. '{\"input_cost_per_token\":0.000001}')"
+        },
+        "config_hash": {
+          "type": "string",
+          "description": "Internal hash for change detection (auto-managed)"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "scope_kind",
+        "match_type",
+        "pattern",
+        "request_types"
+      ],
+      "additionalProperties": false
+    },
+    "pricing_override_match_type": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "wildcard"
+      ]
+    },
+    "pricing_override_request_type": {
+      "type": "string",
+      "enum": [
+        "chat_completion",
+        "text_completion",
+        "responses",
+        "embedding",
+        "rerank",
+        "speech",
+        "transcription",
+        "image_generation",
+        "image_variation",
+        "image_edit",
+        "video_generation",
+        "video_remix"
+      ]
+    },
+    "custom_provider_config": {
+      "type": "object",
+      "description": "Custom provider configuration for extending or customizing provider behavior",
+      "properties": {
+        "is_key_less": {
+          "type": "boolean",
+          "description": "Whether the custom provider requires a key"
+        },
+        "base_provider_type": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "azure",
+            "anthropic",
+            "bedrock",
+            "cohere",
+            "vertex",
+            "mistral",
+            "ollama",
+            "groq",
+            "sgl",
+            "parasail",
+            "perplexity",
+            "cerebras",
+            "gemini",
+            "openrouter",
+            "elevenlabs",
+            "huggingface",
+            "nebius",
+            "xai",
+            "replicate",
+            "vllm",
+            "runway",
+            "fireworks"
+          ],
+          "description": "Base provider type to extend"
+        },
+        "request_path_overrides": {
+          "type": "object",
+          "description": "Mapping of request type to custom path overriding the default provider path",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "allowed_requests": {
+          "type": "object",
+          "description": "Allowed request types for the custom provider",
+          "properties": {
+            "list_models": {
+              "type": "boolean"
+            },
+            "text_completion": {
+              "type": "boolean"
+            },
+            "text_completion_stream": {
+              "type": "boolean"
+            },
+            "chat_completion": {
+              "type": "boolean"
+            },
+            "chat_completion_stream": {
+              "type": "boolean"
+            },
+            "responses": {
+              "type": "boolean"
+            },
+            "responses_stream": {
+              "type": "boolean"
+            },
+            "count_tokens": {
+              "type": "boolean"
+            },
+            "embedding": {
+              "type": "boolean"
+            },
+            "rerank": {
+              "type": "boolean"
+            },
+            "ocr": {
+              "type": "boolean"
+            },
+            "speech": {
+              "type": "boolean"
+            },
+            "speech_stream": {
+              "type": "boolean"
+            },
+            "transcription": {
+              "type": "boolean"
+            },
+            "transcription_stream": {
+              "type": "boolean"
+            },
+            "image_generation": {
+              "type": "boolean"
+            },
+            "image_generation_stream": {
+              "type": "boolean"
+            },
+            "image_edit": {
+              "type": "boolean"
+            },
+            "image_edit_stream": {
+              "type": "boolean"
+            },
+            "image_variation": {
+              "type": "boolean"
+            },
+            "video_generation": {
+              "type": "boolean"
+            },
+            "video_retrieve": {
+              "type": "boolean"
+            },
+            "video_download": {
+              "type": "boolean"
+            },
+            "video_delete": {
+              "type": "boolean"
+            },
+            "video_list": {
+              "type": "boolean"
+            },
+            "video_remix": {
+              "type": "boolean"
+            },
+            "batch_create": {
+              "type": "boolean"
+            },
+            "batch_list": {
+              "type": "boolean"
+            },
+            "batch_retrieve": {
+              "type": "boolean"
+            },
+            "batch_cancel": {
+              "type": "boolean"
+            },
+            "batch_delete": {
+              "type": "boolean"
+            },
+            "batch_results": {
+              "type": "boolean"
+            },
+            "file_upload": {
+              "type": "boolean"
+            },
+            "file_list": {
+              "type": "boolean"
+            },
+            "file_retrieve": {
+              "type": "boolean"
+            },
+            "file_delete": {
+              "type": "boolean"
+            },
+            "file_content": {
+              "type": "boolean"
+            },
+            "container_create": {
+              "type": "boolean"
+            },
+            "container_list": {
+              "type": "boolean"
+            },
+            "container_retrieve": {
+              "type": "boolean"
+            },
+            "container_delete": {
+              "type": "boolean"
+            },
+            "container_file_create": {
+              "type": "boolean"
+            },
+            "container_file_list": {
+              "type": "boolean"
+            },
+            "container_file_retrieve": {
+              "type": "boolean"
+            },
+            "container_file_content": {
+              "type": "boolean"
+            },
+            "container_file_delete": {
+              "type": "boolean"
+            },
+            "passthrough": {
+              "type": "boolean"
+            },
+            "passthrough_stream": {
+              "type": "boolean"
+            },
+            "websocket_responses": {
+              "type": "boolean"
+            },
+            "realtime": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "base_provider_type"
+      ],
       "additionalProperties": false
     }
   }

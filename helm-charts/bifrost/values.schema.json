@@ -240,6 +240,15 @@
           "type": "string",
           "description": "Encryption key for sensitive data"
         },
+        "encryptionKeySecret": {
+          "type": "object",
+          "description": "Reference to an existing Kubernetes secret holding the encryption key. Takes precedence over `encryptionKey` when `name` is set.",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string", "default": "encryption-key" }
+          },
+          "additionalProperties": false
+        },
         "authConfig": {
           "$ref": "#/$defs/authConfig"
         },
@@ -293,8 +302,15 @@
               "type": "integer",
               "minimum": 1
             },
-            "enableLitellmFallbacks": {
-              "type": "boolean"
+            "compat": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "convertTextToChat": { "type": "boolean" },
+                "convertChatToResponses": { "type": "boolean" },
+                "shouldDropParams": { "type": "boolean" },
+                "shouldConvertParams": { "type": "boolean" }
+              }
             },
             "prometheusLabels": {
               "type": "array",
@@ -383,6 +399,16 @@
             "hideDeletedVirtualKeysInFilters": {
               "type": "boolean",
               "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data"
+            },
+            "mcpDisableAutoToolInject": {
+              "type": "boolean",
+              "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers."
+            },
+            "routingChainMaxDepth": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum depth for routing rule chain evaluation",
+              "default": 10
             }
           },
           "additionalProperties": false
@@ -456,6 +482,11 @@
                   "type": "string",
                   "enum": ["server", "tool"],
                   "description": "How tools are exposed in VFS for code execution"
+                },
+                "disableAutoToolInject": {
+                  "type": "boolean",
+                  "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified.",
+                  "default": false
                 }
               }
             },
@@ -748,7 +779,9 @@
                     "trace_type": {
                       "type": "string",
                       "enum": [
-                        "otel"
+                        "genai_extension",
+                        "vercel",
+                        "open_inference"
                       ],
                       "description": "Type of trace to use for the OTEL collector"
                     },
@@ -876,7 +909,7 @@
                   },
                   "placement": {
                     "type": "string",
-                    "enum": ["pre_builtin", "post_builtin"],
+                    "enum": ["pre_builtin", "post_builtin", "builtin"],
                     "default": "post_builtin",
                     "description": "Plugin execution placement relative to built-in plugins"
                   },
@@ -1065,11 +1098,11 @@
                   "customer_id": {
                     "type": "string"
                   },
-                  "budget_id": {
-                    "type": "string"
-                  },
                   "rate_limit_id": {
                     "type": "string"
+                  },
+                  "calendar_aligned": {
+                    "type": "boolean"
                   },
                   "provider_configs": {
                     "type": "array",
@@ -1085,16 +1118,16 @@
                         "mcp_client_id": {
                           "type": "integer"
                         },
+                        "mcp_client_name": {
+                          "type": "string"
+                        },
                         "tools_to_execute": {
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         }
-                      },
-                      "required": [
-                        "mcp_client_id"
-                      ]
+                      }
                     }
                   }
                 },
@@ -1155,12 +1188,6 @@
                       "required": ["weight"]
                     }
                   },
-                  "provider": {
-                    "type": "string"
-                  },
-                  "model": {
-                    "type": "string"
-                  },
                   "fallbacks": {
                     "type": "array",
                     "items": {
@@ -1219,6 +1246,40 @@
                   "store_raw_request_response": { "type": "boolean" }
                 },
                 "required": ["name"]
+              }
+            },
+            "pricingOverrides": {
+              "type": "array",
+              "description": "Scoped pricing overrides applied at runtime by the model catalog",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "description": "Unique pricing override ID" },
+                  "name": { "type": "string", "description": "Human-readable name for this override" },
+                  "scope_kind": {
+                    "type": "string",
+                    "enum": ["global", "provider", "provider_key", "virtual_key", "virtual_key_provider", "virtual_key_provider_key"],
+                    "description": "Scope level for this override"
+                  },
+                  "virtual_key_id": { "type": "string", "description": "Virtual key ID (required for virtual_key* scopes)" },
+                  "provider_id": { "type": "string", "description": "Provider ID (required for provider* scopes)" },
+                  "provider_key_id": { "type": "string", "description": "Provider key ID (required for provider_key and virtual_key_provider_key scopes)" },
+                  "match_type": {
+                    "type": "string",
+                    "enum": ["exact", "wildcard"],
+                    "description": "How the pattern is matched against model names"
+                  },
+                  "pattern": { "type": "string", "description": "Model name pattern to match" },
+                  "request_types": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string" },
+                    "description": "Request types this override applies to"
+                  },
+                  "pricing_patch": { "type": "string", "description": "JSON-encoded pricing fields to override" },
+                  "config_hash": { "type": "string", "description": "Internal hash for change detection (auto-managed)" }
+                },
+                "required": ["id", "name", "scope_kind", "match_type", "pattern", "request_types"]
               }
             }
           },
@@ -1359,7 +1420,7 @@
             ]
           }
         },
-        "saml": {
+        "scim": {
           "type": "object",
           "properties": {
             "enabled": {
@@ -1372,7 +1433,7 @@
                 "okta",
                 "entra"
               ],
-              "description": "SAML provider type (empty when not configured)"
+              "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
               "type": "object"
@@ -1409,6 +1470,9 @@
                       "clientSecret": {
                         "type": "string"
                       },
+                      "apiToken": {
+                        "type": "string"
+                      },
                       "audience": {
                         "type": "string"
                       },
@@ -1424,7 +1488,9 @@
                     },
                     "required": [
                       "issuerUrl",
-                      "clientId"
+                      "clientId",
+                      "clientSecret",
+                      "apiToken"
                     ]
                   }
                 }
@@ -1606,6 +1672,89 @@
               "type": "string"
             }
           }
+        },
+        "largePayloadOptimization": {
+          "type": "object",
+          "description": "Large payload streaming optimization configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "requestThresholdBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10485760
+            },
+            "responseThresholdBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10485760
+            },
+            "prefetchSizeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 65536
+            },
+            "maxPayloadBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 524288000
+            },
+            "truncatedLogBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1048576
+            }
+          }
+        },
+        "websocket": {
+          "type": "object",
+          "description": "Optional tuning for the WebSocket gateway (Responses API WebSocket Mode, Realtime API)",
+          "properties": {
+            "maxConnectionsPerUser": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum concurrent WebSocket connections per user",
+              "default": 100
+            },
+            "transcriptBufferSize": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of transcript entries to buffer for Realtime API mid-session fallback",
+              "default": 100
+            },
+            "pool": {
+              "type": "object",
+              "description": "Upstream WebSocket connection pool configuration",
+              "properties": {
+                "maxIdlePerKey": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum idle connections per provider/key combination",
+                  "default": 50
+                },
+                "maxTotalConnections": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum total idle connections across all providers",
+                  "default": 1000
+                },
+                "idleTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Seconds before an idle connection is evicted",
+                  "default": 600
+                },
+                "maxConnectionLifetimeSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Maximum lifetime of a connection in seconds",
+                  "default": 7200
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -1689,6 +1838,81 @@
             "maxOpenConns": {
               "type": "integer",
               "minimum": 2
+            },
+            "objectStorage": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["s3", "gcs"]
+                },
+                "bucket": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "compress": {
+                  "type": "boolean"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "accessKeyId": {
+                  "type": "string"
+                },
+                "secretAccessKey": {
+                  "type": "string"
+                },
+                "sessionToken": {
+                  "type": "string"
+                },
+                "roleArn": {
+                  "type": "string"
+                },
+                "forcePathStyle": {
+                  "type": "boolean"
+                },
+                "projectId": {
+                  "type": "string"
+                },
+                "credentialsJson": {
+                  "type": "string"
+                },
+                "existingSecret": {
+                  "type": "string"
+                },
+                "accessKeyIdKey": {
+                  "type": "string"
+                },
+                "secretAccessKeyKey": {
+                  "type": "string"
+                },
+                "sessionTokenKey": {
+                  "type": "string"
+                },
+                "roleArnKey": {
+                  "type": "string"
+                },
+                "credentialsJsonKey": {
+                  "type": "string"
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": { "const": true }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["type", "bucket"]
+              }
             }
           }
         }
@@ -2581,6 +2805,11 @@
           "minimum": 1,
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
+        },
+        "beta_header_overrides": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes, values are true (supported) or false (unsupported)."
         }
       }
     },
@@ -2657,6 +2886,15 @@
         "connectionString": {
           "type": "string",
           "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "secretRef": {
+          "type": "object",
+          "description": "Reference to an existing Kubernetes secret holding the MCP connection_string. Chart injects BIFROST_MCP_<NAME>_CONNECTION_STRING and rewrites connection_string in config.json.",
+          "properties": {
+            "name": { "type": "string" },
+            "connectionStringKey": { "type": "string", "default": "connection-string" }
+          },
+          "additionalProperties": false
         },
         "authType": {
           "type": "string",
@@ -2744,6 +2982,16 @@
             "type": "number",
             "minimum": 0
           }
+        },
+        "allowedExtraHeaders": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Allowlist of request-level headers that callers may forward to this MCP server. Use ['*'] to allow all headers."
+        },
+        "allowOnAllVirtualKeys": {
+          "type": "boolean",
+          "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",
+          "default": false
         }
       },
       "required": [
@@ -2832,7 +3080,7 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
@@ -2872,7 +3120,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Supported models for this key"
+                "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
               },
               "weight": {
                 "type": "number",
@@ -2899,7 +3147,6 @@
                     "description": "Azure API version"
                   }
                 },
-                "required": ["endpoint"],
                 "additionalProperties": false
               },
               "vertex_key_config": {
@@ -2929,7 +3176,6 @@
                     "description": "Model to deployment mappings"
                   }
                 },
-                "required": ["project_id", "region"],
                 "additionalProperties": false
               },
               "bedrock_key_config": {
@@ -3009,10 +3255,6 @@
                     "description": "Exact model name served on this VLLM instance"
                   }
                 },
-                "required": [
-                  "url",
-                  "model_name"
-                ],
                 "additionalProperties": false
               }
             },
@@ -3067,8 +3309,7 @@
                   ]
                 }
               }
-            ],
-            "required": ["key_id", "name", "value"]
+            ]
           }
         }
       },

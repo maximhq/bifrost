@@ -56,7 +56,7 @@ podSecurityContext:
 securityContext:
   capabilities:
     drop:
-    - ALL
+      - ALL
   readOnlyRootFilesystem: false
   runAsNonRoot: true
   runAsUser: 1000
@@ -163,6 +163,14 @@ bifrost:
   # Can be set as a secret or environment variable
   encryptionKey: ""
 
+  # Use an existing Kubernetes secret for the encryption key.
+  # When `name` is set, takes precedence over `encryptionKey`: the chart
+  # injects BIFROST_ENCRYPTION_KEY into the pod via secretKeyRef and writes
+  # `encryption_key: "env.BIFROST_ENCRYPTION_KEY"` in the rendered config.json.
+  encryptionKeySecret:
+    name: ""
+    key: "encryption-key"
+
   # Authentication configuration (top-level)
   # This controls authentication for Bifrost API and dashboard
   authConfig:
@@ -188,7 +196,11 @@ bifrost:
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
-    enableLitellmFallbacks: false
+    compat:
+      convertTextToChat: false
+      convertChatToResponses: false
+      shouldDropParams: false
+      shouldConvertParams: false
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -204,6 +216,7 @@ bifrost:
     # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
+    # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
 
   # Framework configuration
   framework:
@@ -255,46 +268,46 @@ bifrost:
     #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
     #   send_back_raw_response: false   # Include raw response in BifrostResponse
   #   store_raw_request_response: false # Capture raw payloads for plugins only; not returned to client
-    #
-    # anthropic:
-    #   keys:
-    #     - name: "anthropic-key"
-    #       value: "sk-ant-..."
-    #       weight: 1
-    #
-    # # Azure OpenAI example (requires azure_key_config)
-    # azure:
-    #   keys:
-    #     - name: "azure-key"
-    #       value: "..."
-    #       weight: 1
-    #       azure_key_config:
-    #         endpoint: "https://your-resource.openai.azure.com"
-    #         api_version: "2024-02-15-preview"
-    #         deployments:
-    #           gpt-4o: "my-gpt4o-deployment"
-    #
-    # # Google Vertex AI example (requires vertex_key_config)
-    # vertex:
-    #   keys:
-    #     - name: "vertex-key"
-    #       value: ""
-    #       weight: 1
-    #       vertex_key_config:
-    #         project_id: "my-gcp-project"
-    #         region: "us-central1"
-    #         auth_credentials: "env.GOOGLE_CREDENTIALS"
-    #
-    # # AWS Bedrock example (requires bedrock_key_config)
-    # bedrock:
-    #   keys:
-    #     - name: "bedrock-key"
-    #       value: ""
-    #       weight: 1
-    #       bedrock_key_config:
-    #         region: "us-east-1"
-    #         access_key: "env.AWS_ACCESS_KEY_ID"
-    #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #
+  # anthropic:
+  #   keys:
+  #     - name: "anthropic-key"
+  #       value: "sk-ant-..."
+  #       weight: 1
+  #
+  # # Azure OpenAI example (requires azure_key_config)
+  # azure:
+  #   keys:
+  #     - name: "azure-key"
+  #       value: "..."
+  #       weight: 1
+  #       azure_key_config:
+  #         endpoint: "https://your-resource.openai.azure.com"
+  #         api_version: "2024-02-15-preview"
+  #         deployments:
+  #           gpt-4o: "my-gpt4o-deployment"
+  #
+  # # Google Vertex AI example (requires vertex_key_config)
+  # vertex:
+  #   keys:
+  #     - name: "vertex-key"
+  #       value: ""
+  #       weight: 1
+  #       vertex_key_config:
+  #         project_id: "my-gcp-project"
+  #         region: "us-central1"
+  #         auth_credentials: "env.GOOGLE_CREDENTIALS"
+  #
+  # # AWS Bedrock example (requires bedrock_key_config)
+  # bedrock:
+  #   keys:
+  #     - name: "bedrock-key"
+  #       value: ""
+  #       weight: 1
+  #       bedrock_key_config:
+  #         region: "us-east-1"
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -318,6 +331,13 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+      #   # Optional: source connection_string from a Kubernetes secret.
+      #   # When set, chart injects BIFROST_MCP_<NAME>_CONNECTION_STRING
+      #   # into the pod and rewrites connection_string in config.json
+      #   # to `env.BIFROST_MCP_<NAME>_CONNECTION_STRING`.
+      #   secretRef:
+      #     name: ""                               # k8s secret name
+      #     connectionStringKey: "connection-string"  # key within the secret
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration)
     # Tool manager configuration
     toolManagerConfig:
@@ -387,17 +407,17 @@ bifrost:
       config:
         service_name: "bifrost"
         collector_url: ""
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
-        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
-        metrics_push_interval: 15     # Push interval in seconds (1-300)
+        metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15 # Push interval in seconds (1-300)
         # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
         headers: {}
         # TLS configuration
-        tls_ca_cert: ""               # Path to TLS CA certificate file
-        insecure: false               # Skip TLS verification (ignored if tls_ca_cert is set)
+        tls_ca_cert: "" # Path to TLS CA certificate file
+        insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
 
     datadog:
       enabled: false
@@ -486,13 +506,15 @@ bifrost:
       #   name: "Route to Azure"
       #   description: "Route GPT requests to Azure"
       #   enabled: true
-      #   cel_expression: "request.model.startsWith('gpt-')"
-      #   provider: "azure"
-      #   model: ""                # Empty means use original model
+      #   cel_expression: "model.startsWith('gpt-')"
+      #   targets:
+      #     - provider: "azure"
+      #       model: ""              # Empty means use original model
+      #       weight: 1.0
       #   fallbacks: ["openai"]
-      #   scope: "global"          # Options: global, team, customer, virtual_key
-      #   scope_id: ""             # Required for non-global scopes
-      #   priority: 0              # Lower = evaluated first
+      #   scope: "global"           # Options: global, team, customer, virtual_key
+      #   scope_id: ""              # Required for non-global scopes
+      #   priority: 0               # Lower = evaluated first
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -535,8 +557,8 @@ bifrost:
       # mDNS discovery
       mdnsService: ""
 
-  # SAML/SCIM configuration for enterprise SSO
-  saml:
+  # SCIM/SSO configuration for enterprise SSO
+  scim:
     enabled: false
     # Provider: okta, entra
     provider: ""
@@ -545,6 +567,7 @@ bifrost:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
       # clientId: ""
       # clientSecret: ""
+      # apiToken: ""
       # audience: ""
       # userIdField: "sub"
       # teamIdsField: "groups"
@@ -590,11 +613,30 @@ bifrost:
     disabled: false
     hmacKey: ""
 
+  # Large payload optimization - streams large payloads without full materialization
+  # largePayloadOptimization:
+  #   enabled: false
+  #   requestThresholdBytes: 10485760      # 10MB
+  #   responseThresholdBytes: 10485760     # 10MB
+  #   prefetchSizeBytes: 65536             # 64KB
+  #   maxPayloadBytes: 524288000           # 500MB
+  #   truncatedLogBytes: 1048576           # 1MB
+
+  # WebSocket gateway configuration (Responses API, Realtime API)
+  # websocket:
+  #   maxConnectionsPerUser: 100
+  #   transcriptBufferSize: 100
+  #   pool:
+  #     maxIdlePerKey: 50
+  #     maxTotalConnections: 1000
+  #     idleTimeoutSeconds: 600
+  #     maxConnectionLifetimeSeconds: 7200
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
   # Used as fallback when per-store type is not specified
-  mode: sqlite  # Options: sqlite, postgres
+  mode: sqlite # Options: sqlite, postgres
 
   # Persistent volume for SQLite databases (when using sqlite for any store)
   persistence:
@@ -608,7 +650,7 @@ storage:
   configStore:
     enabled: true
     # Backend type for config store. Empty string uses storage.mode as default
-    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    type: "" # Options: sqlite, postgres, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
@@ -617,10 +659,33 @@ storage:
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
-    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    type: "" # Options: sqlite, postgres, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+
+    # Object storage for offloading large log payloads (optional)
+    # When enabled, request/response payloads are stored in S3/GCS
+    # while the DB keeps only lightweight index data for fast analytics.
+    objectStorage:
+      enabled: false
+      # type: s3        # Options: s3, gcs
+      # bucket: ""      # Bucket name
+      # prefix: bifrost # Key prefix for stored objects
+      # compress: false  # Enable gzip compression for stored objects
+
+      # S3 configuration (when type is s3)
+      # region: us-east-1
+      # endpoint: ""         # Custom endpoint for MinIO/R2
+      # accessKeyId: ""      # Leave empty to use default AWS credential chain
+      # secretAccessKey: ""  # (instance role, env vars, shared credentials, etc.)
+      # sessionToken: ""     # AWS STS session token (optional)
+      # roleArn: ""          # AWS IAM role ARN to assume via STS (works with static creds or instance role)
+      # forcePathStyle: false # Set true for MinIO
+
+      # GCS configuration (when type is gcs)
+      # projectId: ""
+      # credentialsJson: ""  # Service account JSON, omit for default credentials
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:
@@ -672,7 +737,7 @@ postgresql:
 vectorStore:
   # Enable vector store for semantic caching
   enabled: false
-  type: none  # Options: none, weaviate, redis, qdrant
+  type: none # Options: none, weaviate, redis, qdrant
 
   # Weaviate configuration
   weaviate:
@@ -733,10 +798,10 @@ vectorStore:
       username: ""
       password: ""
       database: 0
-      useTls: false                # Enable TLS for Redis connection
-      insecureSkipVerify: false    # Skip TLS certificate verification
-      caCertPem: ""                # PEM-encoded CA certificate to trust for Redis TLS
-      clusterMode: false           # Use Redis Cluster mode (required for AWS MemoryDB)
+      useTls: false # Enable TLS for Redis connection
+      insecureSkipVerify: false # Skip TLS certificate verification
+      caCertPem: "" # PEM-encoded CA certificate to trust for Redis TLS
+      clusterMode: false # Use Redis Cluster mode (required for AWS MemoryDB)
       # Connection pool tuning (optional)
       # poolSize: 10             # Maximum number of socket connections
       # maxActiveConns: 0        # Maximum number of active connections
@@ -819,7 +884,7 @@ vectorStore:
     external:
       enabled: false
       apiKey: ""
-      indexHost: ""            # Index host URL from Pinecone console (e.g., your-index.svc.environment.pinecone.io)
+      indexHost: "" # Index host URL from Pinecone console (e.g., your-index.svc.environment.pinecone.io)
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
@@ -835,7 +900,6 @@ envFrom: []
   #     name: my-secret
   # - configMapRef:
   #     name: my-configmap
-
 
 # Init containers to run before the main application container.
 # Provide a list of init containers using standard Kubernetes container spec.

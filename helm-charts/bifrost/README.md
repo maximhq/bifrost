@@ -4,17 +4,26 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.18
+**Latest Version:** 2.1.0-prerelease2
 
 ## Changelog
 
-### v2.0.18
+### v2.1.0-prerelease2 (prerelease)
 
-- Fixed MCP client config template to correctly map camelCase keys in Helm values:
-  - `toolsToExecute` → `tools_to_execute`
-  - `toolsToAutoExecute` → `tools_to_auto_execute`
-  - `authType` → `auth_type`
-  - `oauthConfigId` → `oauth_config_id`
+- Synced helm `values.schema.json` with transport `config.schema.json` — fixed virtual key and budget drift:
+  - Removed `required: [mcp_client_id]` constraint on `virtualKeys[].mcp_configs[]` items — canonical schema accepts either `mcp_client_id` (DB form) or `mcp_client_name` (config-file form, resolved to ID at startup)
+  - Added `mcp_client_name` as an allowed property on `virtualKeys[].mcp_configs[]` items
+  - Added `calendar_aligned` (boolean) on `virtualKeys[]` — field now lives on the virtual key, applies uniformly to all budgets under it
+  - Removed stale `budget_id` from `virtualKeys[]` — `TableVirtualKey` has no `BudgetID`; budgets link via foreign key from the budget table
+  - Removed stale `calendar_aligned` from `budgets[]` — moved to virtual key level
+
+### v2.0.17
+
+- Added object storage support (S3/GCS) for offloading log payloads from the database
+- Added `storage.logsStore.objectStorage` configuration with S3 and GCS backend support
+- Added object storage credential injection from Kubernetes secrets (`existingSecret`)
+- Added `object_storage` schema to `config.schema.json` under `logs_store`
+- Updated deployment and stateful templates with object storage secret env vars
 
 ### v2.0.16
 
@@ -22,8 +31,17 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### v2.0.15
 
-- Added `whitelistedRoutes` client config property for routes that bypass auth middleware
-- Added `whitelistedRoutes` to Helm schema, values, and template rendering
+- Synced helm schema with transport `config.schema.json` — added missing properties:
+  - `client.mcpDisableAutoToolInject` — disable automatic MCP tool injection
+  - `governance.budgets[].calendar_aligned` — snap budget resets to calendar boundaries
+  - `governance.pricingOverrides` — scoped pricing overrides for the model catalog
+  - `mcp.clientConfigs[].allowedExtraHeaders` — header allowlist per MCP client
+  - `mcp.clientConfigs[].allowOnAllVirtualKeys` — make MCP server accessible to all virtual keys
+  - `mcp.toolManagerConfig.disableAutoToolInject` — disable auto tool injection at manager level
+  - `networkConfig.beta_header_overrides` — override Anthropic beta header support per provider
+  - `websocket` — full WebSocket gateway tuning (connections, pool, transcript buffer)
+- Fixed SSE `connectionString` not being rendered in `_helpers.tpl` for MCP clients
+- Added template rendering for all new properties in `_helpers.tpl`
 
 ### v2.0.14
 
@@ -451,6 +469,43 @@ autoscaling:
   targetMemoryUtilizationPercentage: 80
 ```
 
+### Referencing Secrets in MCP Headers
+
+`bifrost.mcp.clientConfigs[].headers` is a free-form `map<string, string>`
+whose values can contain auth tokens. The chart does not wrap this map with
+a bespoke `secretRef` — a per-header dict would explode the values surface.
+Instead, use the standard pattern:
+
+1. Write `env.MY_HEADER_VAR` as the header value in `values.yaml`:
+   ```yaml
+   bifrost:
+     mcp:
+       clientConfigs:
+         - name: "my-mcp"
+           connectionType: "http"
+           headers:
+             Authorization: "env.MY_MCP_AUTH"
+   ```
+2. Inject the env var into the pod via the chart's top-level `envFrom:` or
+   `env:` pass-through — e.g., in `values.yaml`:
+   ```yaml
+   envFrom:
+     - secretRef:
+         name: my-mcp-auth-secret
+   # OR:
+   env:
+     - name: MY_MCP_AUTH
+       valueFrom:
+         secretKeyRef:
+           name: my-mcp-auth-secret
+           key: authorization
+   ```
+
+For `bifrost.mcp.clientConfigs[].connectionString` itself, prefer the
+chart-native `secretRef` (`name` + `connectionStringKey`) instead — the
+chart will inject `BIFROST_MCP_<NAME>_CONNECTION_STRING` and rewrite the
+config automatically.
+
 ## Example Configurations
 
 The chart includes pre-configured examples in `values-examples/`:
@@ -614,7 +669,7 @@ bifrost:
       config:
         service_name: "bifrost"
         collector_url: "http://otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
 ```
 
