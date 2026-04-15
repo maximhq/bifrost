@@ -1642,6 +1642,9 @@
     },
     "websocket": {
       "$ref": "#/$defs/websocket_config"
+    },
+    "scim_config": {
+      "$ref": "#/$defs/scim_config"
     }
   },
   "additionalProperties": false,

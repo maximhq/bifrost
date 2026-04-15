@@ -884,6 +884,7 @@ bifrost:
       issuerUrl: "https://dev-123.okta.com/oauth2/default"
       clientId: "okta-client-id"
       clientSecret: "okta-client-secret"
+      apiToken: "okta-api-token"
       audience: "api://default"
       userIdField: "sub"
       teamIdsField: "groups"
@@ -894,6 +895,7 @@ render_config "$TMPDIR/values-scim-okta.yaml"
 assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
 assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
 assert_field 'scim_config.config' '.scim_config.config'
+assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
 
 # SCIM - Entra
 cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
