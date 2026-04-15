@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.0-prerelease2
+**Latest Version:** 2.1.1
 
 ## Changelog
+
+### v2.1.1
+
+- Made `bifrost.governance.virtualKeys[].value` optional — template no longer fails when the field is omitted, allowing the backend to auto-generate the virtual key value
+- When `value` is absent, the rendered `config.json` omits the field entirely (consistent with other optional VK fields)
 
 ### v2.1.0-prerelease2 (prerelease)
 

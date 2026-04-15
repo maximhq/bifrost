@@ -468,7 +468,7 @@ bifrost:
       # - id: "vk-1"
       #   name: "Virtual Key 1"
       #   description: "Virtual key description"
-      #   value: "vk-..."
+      #   value: "vk-..."           # Optional - auto-generated if omitted
       #   is_active: true
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
