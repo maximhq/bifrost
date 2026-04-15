@@ -8,18 +8,18 @@ import (
 )
 
 const (
-	DefaultMaxRetries              = 0
-	DefaultRetryBackoffInitial     = 500 * time.Millisecond
-	DefaultRetryBackoffMax         = 5 * time.Second
+	DefaultMaxRetries                 = 0
+	DefaultRetryBackoffInitial        = 500 * time.Millisecond
+	DefaultRetryBackoffMax            = 5 * time.Second
 	DefaultRequestTimeoutInSeconds    = 30
-	DefaultMaxConnDurationInSeconds  = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
-	DefaultBufferSize                = 5000
-	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize              = 256
-	DefaultStreamIdleTimeoutInSeconds    = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
-	DefaultMaxConnsPerHost               = 5000
-	MaxConnsPerHostUpperBound            = 10000
-	DefaultMaxIdleConnsPerHost           = 40
+	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultBufferSize                 = 5000
+	DefaultConcurrency                = 1000
+	DefaultStreamBufferSize           = 256
+	DefaultStreamIdleTimeoutInSeconds = 60 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultMaxConnsPerHost            = 5000
+	MaxConnsPerHostUpperBound         = 10000
+	DefaultMaxIdleConnsPerHost        = 40
 )
 
 // Pre-defined errors for provider operations
@@ -52,18 +52,18 @@ const (
 //   - When marshaling to JSON: a time.Duration is converted to milliseconds
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
-	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`     // Disables TLS certificate verification for provider connections
-	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`              // PEM-encoded CA certificate to trust for provider endpoint connections
+	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
+	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
-	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`              // Max TCP connections per provider host (default: 5000)
-	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                   // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
-	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`           // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
+	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
+	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -178,8 +178,84 @@ var DefaultNetworkConfig = NetworkConfig{
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
-	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
-	BufferSize  int `json:"buffer_size"` // Size of the buffer
+	Concurrency        int           `json:"concurrency"`            // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
+	BufferSize         int           `json:"buffer_size"`            // Size of the buffer
+	DynamicScaling     bool          `json:"dynamic_worker_scaling"` //Whether the user wants dynamic scaling to happen
+	ScalingInterval    time.Duration `json:"scaling_interval"`       //After how much time will the go routine run and check the capacity of the queue and make the nesscary changes.
+	MinWorkers         int           `json:"min_workers"`            //No. of workers will never go below this value
+	MaxWorkers         int           `json:"max_workers"`            //No. of workers will never go above this value
+	ScaleUpThreshold   float64       `json:"scale_up_threshold"`     //If Queue capacity is above this threshold (eg 70%) then workers would be scaled up.
+	ScaleDownThreshold float64       `json:"scale_down_threshold"`   //If Queue capacity is below this threshold (eg 20%) then workers would be scaled down.
+}
+
+// UnmarshalJSON customizes JSON unmarshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is interpreted as milliseconds in JSON,
+// but stored as time.Duration (nanoseconds) internally.
+func (c *ConcurrencyAndBufferSize) UnmarshalJSON(data []byte) error {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	// Copy all fields
+	c.Concurrency = alias.Concurrency
+	c.BufferSize = alias.BufferSize
+	c.DynamicScaling = alias.DynamicScaling
+	c.MinWorkers = alias.MinWorkers
+	c.MaxWorkers = alias.MaxWorkers
+	c.ScaleUpThreshold = alias.ScaleUpThreshold
+	c.ScaleDownThreshold = alias.ScaleDownThreshold
+
+	// Convert milliseconds to time.Duration (nanoseconds)
+	c.ScalingInterval = 0
+	if alias.ScalingInterval > 0 {
+		c.ScalingInterval = time.Duration(alias.ScalingInterval) * time.Millisecond
+	}
+
+	return nil
+}
+
+// MarshalJSON customizes JSON marshaling for ConcurrencyAndBufferSize.
+// ScalingInterval is converted from time.Duration (nanoseconds)
+// to milliseconds (integers) in JSON.
+func (c ConcurrencyAndBufferSize) MarshalJSON() ([]byte, error) {
+	// Use an alias type to avoid infinite recursion
+	type Alias struct {
+		Concurrency        int     `json:"concurrency"`
+		BufferSize         int     `json:"buffer_size"`
+		DynamicScaling     bool    `json:"dynamic_worker_scaling"`
+		ScalingInterval    int64   `json:"scaling_interval"` // milliseconds in JSON
+		MinWorkers         int     `json:"min_workers"`
+		MaxWorkers         int     `json:"max_workers"`
+		ScaleUpThreshold   float64 `json:"scale_up_threshold"`
+		ScaleDownThreshold float64 `json:"scale_down_threshold"`
+	}
+
+	alias := Alias{
+		Concurrency:    c.Concurrency,
+		BufferSize:     c.BufferSize,
+		DynamicScaling: c.DynamicScaling,
+		// Convert time.Duration (nanoseconds) to milliseconds
+		ScalingInterval:    int64(c.ScalingInterval / time.Millisecond),
+		MinWorkers:         c.MinWorkers,
+		MaxWorkers:         c.MaxWorkers,
+		ScaleUpThreshold:   c.ScaleUpThreshold,
+		ScaleDownThreshold: c.ScaleDownThreshold,
+	}
+
+	return json.Marshal(alias)
 }
 
 // DefaultConcurrencyAndBufferSize is the default concurrency and buffer size for provider operations.
@@ -485,14 +561,14 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger               Logger                    `json:"-"`
-	ProxyConfig          *ProxyConfig              `json:"proxy_config,omitempty"` // Proxy configuration
-	SendBackRawRequest        bool                      `json:"send_back_raw_request"`         // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse       bool                      `json:"send_back_raw_response"`        // Send raw response back in the bifrost response (default: false)
-	StoreRawRequestResponse   bool                      `json:"store_raw_request_response"`    // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
-	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig         *OpenAIConfig             `json:"openai_config,omitempty"`
-	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	Logger                  Logger                    `json:"-"`
+	ProxyConfig             *ProxyConfig              `json:"proxy_config,omitempty"`     // Proxy configuration
+	SendBackRawRequest      bool                      `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse     bool                      `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
+	StoreRawRequestResponse bool                      `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	CustomProviderConfig    *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	OpenAIConfig            *OpenAIConfig             `json:"openai_config,omitempty"`
+	PricingOverrides        []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.

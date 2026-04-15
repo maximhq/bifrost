@@ -10,6 +10,8 @@ import (
 
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -973,6 +975,310 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 		}
 		if key.ID != "k2" {
 			t.Fatalf("expected k2, got %s", key.ID)
+		}
+	})
+}
+
+// Test DynamicWorkerScaling
+func NewDynamicAutoScalingAccount(DynamicScaling bool, BufferSize int, Concurrency int, MaxWorkers int, MinWorkers int, ScalingInterval time.Duration, ScaleUpThreshold float64, ScaleDownThreshold float64) *MockAccount {
+	providerConfig := &schemas.ProviderConfig{
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+			BufferSize:         BufferSize,
+			Concurrency:        Concurrency,
+			DynamicScaling:     DynamicScaling,
+			MaxWorkers:         MaxWorkers,
+			MinWorkers:         MinWorkers,
+			ScalingInterval:    ScalingInterval,
+			ScaleUpThreshold:   ScaleUpThreshold,
+			ScaleDownThreshold: ScaleDownThreshold,
+		},
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "",
+			DefaultRequestTimeoutInSeconds: 30,
+			MaxRetries:                     3,
+			RetryBackoffInitial:            500 * time.Millisecond,
+			RetryBackoffMax:                5 * time.Second,
+		},
+	}
+	ma := &MockAccount{
+		configs: make(map[schemas.ModelProvider]*schemas.ProviderConfig),
+		keys:    make(map[schemas.ModelProvider][]schemas.Key),
+	}
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.configs[schemas.OpenAI] = providerConfig
+	ma.keys[schemas.OpenAI] = []schemas.Key{
+		{
+			ID:     fmt.Sprintf("test-key-%s", schemas.OpenAI),
+			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", schemas.OpenAI)),
+			Weight: 100,
+		},
+	}
+	return ma
+}
+
+func TestDynamicWorkerScalingDown(t *testing.T) {
+	type TestDynamicScaling struct {
+		Name               string
+		ScaleUpThreshold   float64
+		ScaleDownThreshold float64
+		Concurrency        int
+		BufferSize         int
+		MaxWorkers         int
+		MinWorkers         int
+	}
+	tests := []TestDynamicScaling{
+		{
+			Name:               "Scale Down",
+			Concurrency:        10,
+			BufferSize:         100,
+			ScaleUpThreshold:   90,
+			ScaleDownThreshold: 20,
+			MaxWorkers:         15,
+			MinWorkers:         5,
+		},
+	}
+	t.Run("scale down test", func(t *testing.T) {
+		for _, test := range tests {
+			test := test
+			t.Run(test.Name, func(t *testing.T) {
+				account := NewDynamicAutoScalingAccount(
+					true, test.BufferSize, test.Concurrency,
+					test.MaxWorkers, test.MinWorkers, time.Millisecond*500,
+					test.ScaleUpThreshold, test.ScaleDownThreshold,
+				)
+				ctx := context.Background()
+
+				bifrost, err := Init(ctx, schemas.BifrostConfig{
+					Account: account,
+					Logger:  NewDefaultLogger(schemas.LogLevelError),
+				})
+				require.NoError(t, err)
+				pq, err := bifrost.getProviderQueue(schemas.OpenAI)
+				require.NoError(t, err)
+				assert.Eventually(t, func() bool {
+					return int(pq.ActiveWorkers.Load()) == test.MinWorkers
+				}, 3*time.Second, 250*time.Millisecond,
+					"test %q: workers failed to scale down to %d within timeout. Final count: %d",
+					test.Name, test.MinWorkers, pq.ActiveWorkers.Load())
+
+				bifrost.Shutdown()
+			})
+		}
+	})
+}
+
+func TestDynamicWorkerScalingUp(t *testing.T) {
+	type TestDynamicScaling struct {
+		Name               string
+		ScaleUpThreshold   float64
+		ScaleDownThreshold float64
+		NumRequests        int
+		Concurrency        int
+		BufferSize         int
+		MaxWorkers         int
+		MinWorkers         int
+		ExpectedIncrement  bool
+	}
+	tests := []TestDynamicScaling{
+		{
+			Name:               "Scale Up",
+			Concurrency:        2,
+			BufferSize:         10,
+			ScaleUpThreshold:   90,
+			ScaleDownThreshold: 20,
+			NumRequests:        50,
+			MaxWorkers:         15,
+			MinWorkers:         1,
+		},
+	}
+	t.Run("scale up test", func(t *testing.T) {
+		for _, test := range tests {
+			test := test
+			t.Run(test.Name, func(t *testing.T) {
+				account := NewDynamicAutoScalingAccount(
+					true, test.BufferSize, test.Concurrency,
+					test.MaxWorkers, test.MinWorkers, time.Millisecond*500,
+					test.ScaleUpThreshold, test.ScaleDownThreshold,
+				)
+				ctx := context.Background()
+
+				bifrost, err := Init(ctx, schemas.BifrostConfig{
+					Account: account,
+					Logger:  NewDefaultLogger(schemas.LogLevelError),
+				})
+				require.NoError(t, err)
+				pq, err := bifrost.getProviderQueue(schemas.OpenAI)
+				require.NoError(t, err)
+				testDone := make(chan struct{})
+				reqCtx, cancelReq := context.WithCancel(context.Background())
+
+				go func() {
+					dummyReq := &ChannelMessage{
+						Context:  schemas.NewBifrostContext(reqCtx, time.Time{}),
+						Err:      make(chan schemas.BifrostError, 1),
+						Response: make(chan *schemas.BifrostResponse, 1),
+					}
+					//Using the same dummyReq pauses other workers while they push their errors in the Err chan. This keeps the
+					//provider queue full and allows us to test our scale up feature. At the end we call cancel to cancel all the
+					//requests, free our workers and shutdown.
+					for i := 0; i < test.NumRequests; i++ {
+						select {
+						case <-testDone:
+							return
+						case pq.queue <- dummyReq:
+						}
+					}
+				}()
+				time.Sleep(100 * time.Millisecond)
+
+				assert.Eventually(t, func() bool {
+					return int(pq.ActiveWorkers.Load()) == test.MaxWorkers
+				}, 3*time.Second, 250*time.Millisecond,
+					"test %q: workers failed to scale up to %d within timeout. Final count: %d",
+					test.Name, test.MaxWorkers, pq.ActiveWorkers.Load())
+				close(testDone)
+				cancelReq()
+				bifrost.Shutdown()
+
+			})
+		}
+	})
+}
+func TestDynamicWorkerScalingConfig(t *testing.T) {
+	type TestConcurrencyAndBufferSize struct {
+		Name                string
+		DynamicScaling      bool
+		BufferSize          int
+		Concurrency         int
+		MaxWorkers          int
+		MinWorkers          int
+		ScalingInterval     time.Duration
+		ScaleUpThreshold    float64
+		ScaleDownThreshold  float64
+		ExpectedAutoScaling bool
+	}
+	tests := []TestConcurrencyAndBufferSize{
+		{
+			Name:                "Valid config",
+			DynamicScaling:      true,
+			BufferSize:          10,
+			Concurrency:         5,
+			MaxWorkers:          15,
+			MinWorkers:          3,
+			ScalingInterval:     5 * time.Second,
+			ScaleUpThreshold:    80,
+			ScaleDownThreshold:  20,
+			ExpectedAutoScaling: true,
+		},
+		{
+			Name:                "negative value for max workers.",
+			DynamicScaling:      true,
+			BufferSize:          10,
+			Concurrency:         5,
+			MaxWorkers:          -5, //negative value for max workers.
+			MinWorkers:          5,
+			ScalingInterval:     5 * time.Second,
+			ScaleUpThreshold:    80,
+			ScaleDownThreshold:  20,
+			ExpectedAutoScaling: false,
+		},
+		{
+			Name:                "Scaling interval 0",
+			DynamicScaling:      true,
+			BufferSize:          1,
+			Concurrency:         80,
+			MaxWorkers:          90,
+			MinWorkers:          50,
+			ScalingInterval:     0, //scaling interval 0
+			ScaleUpThreshold:    90,
+			ScaleDownThreshold:  30,
+			ExpectedAutoScaling: true,
+		},
+		{
+			Name:                "min workers is more than max.",
+			DynamicScaling:      true,
+			BufferSize:          500,
+			Concurrency:         25,
+			MaxWorkers:          100, //min workers > max workers
+			MinWorkers:          200,
+			ScalingInterval:     500 * time.Millisecond,
+			ScaleUpThreshold:    85,
+			ScaleDownThreshold:  40,
+			ExpectedAutoScaling: false,
+		},
+		{
+			Name:                "0 values for a couple of items.",
+			DynamicScaling:      true,
+			BufferSize:          1000, // edge case
+			Concurrency:         40,   // edge case
+			MaxWorkers:          10,
+			MinWorkers:          0,
+			ScalingInterval:     0, // edge case
+			ScaleUpThreshold:    0.0,
+			ScaleDownThreshold:  0.0,
+			ExpectedAutoScaling: false,
+		},
+		{
+			Name:                "max workers is less than concurrency.",
+			DynamicScaling:      true,
+			BufferSize:          100,
+			Concurrency:         50,
+			MaxWorkers:          40, // invalid: max < concurrency
+			MinWorkers:          10,
+			ScalingInterval:     3 * time.Second,
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  30,
+			ExpectedAutoScaling: false,
+		},
+		{
+			Name:                "min workers is more than concurrency.",
+			DynamicScaling:      true,
+			BufferSize:          100,
+			Concurrency:         50,
+			MaxWorkers:          90, // invalid: min > concurrency
+			MinWorkers:          60,
+			ScalingInterval:     3 * time.Second,
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  30,
+			ExpectedAutoScaling: false,
+		},
+		{
+			Name:                "scale down is more than scale up.",
+			DynamicScaling:      true,
+			BufferSize:          200,
+			Concurrency:         10,
+			MaxWorkers:          100,
+			MinWorkers:          50,
+			ScalingInterval:     5 * time.Second,
+			ScaleUpThreshold:    70,
+			ScaleDownThreshold:  80, //scale down threshold is more than scale up! invalid
+			ExpectedAutoScaling: false,
+		},
+	}
+
+	t.Run("valid config values", func(t *testing.T) {
+		for _, test := range tests {
+			test := test
+			t.Run(test.Name, func(t *testing.T) {
+				account := NewDynamicAutoScalingAccount(
+					test.DynamicScaling, test.BufferSize, test.Concurrency,
+					test.MaxWorkers, test.MinWorkers, test.ScalingInterval,
+					test.ScaleUpThreshold, test.ScaleDownThreshold,
+				)
+				logger := NewDefaultLogger(schemas.LogLevelError)
+
+				config, err := account.GetConfigForProvider(schemas.OpenAI)
+				require.NoError(t, err)
+				valid := ValidateDynamicScalingConfig(config, schemas.OpenAI, logger)
+
+				assert.Equal(t, test.ExpectedAutoScaling, valid,
+					"test %q: result: %t, expected %t",
+					test.Name, valid, test.ExpectedAutoScaling)
+				if test.ScalingInterval == 0 && test.ExpectedAutoScaling && config.ConcurrencyAndBufferSize.ScalingInterval != 5*time.Second {
+					t.Fatalf("expected ScalingInterval to default to 5s , got %v", config.ConcurrencyAndBufferSize.ScalingInterval)
+				}
+			})
 		}
 	})
 }
