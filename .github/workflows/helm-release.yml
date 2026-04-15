@@ -109,7 +109,7 @@ jobs:
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4.0.0
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v1.5.0'
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./helm-charts

@@ -4,11 +4,11 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.18-rc.1
+**Latest Version:** 2.1.0-prerelease1
 
 ## Changelog
 
-### v2.0.18-rc.1 (prerelease)
+### v2.1.0-prerelease1 (prerelease)
 
 - Synced helm `values.schema.json` with transport `config.schema.json` — fixed virtual key and budget drift:
   - Removed `required: [mcp_client_id]` constraint on `virtualKeys[].mcp_configs[]` items — canonical schema accepts either `mcp_client_id` (DB form) or `mcp_client_name` (config-file form, resolved to ID at startup)
