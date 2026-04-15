@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import {
 	buildPinStyle,
 	ColumnConfigDropdown,
@@ -9,6 +8,7 @@ import {
 	useHeaderCellRefs,
 	usePinOffsets,
 } from "@/components/table";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
@@ -143,145 +143,148 @@ export function MCPLogsDataTable({
 	};
 
 	return (
-		<div className="space-y-2">
+		<div className="flex grow flex-col gap-2 px-4 pb-2">
 			<div className="flex items-center gap-2">
 				<div className="flex-1">
 					<MCPLogFilters filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
 				</div>
 				<ColumnConfigDropdown entries={entries} labels={COLUMN_LABELS} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
-			<div className="max-h-[calc(100vh-16.5rem)] rounded-sm border">
-				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
-					<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a] px-2 [&_tr]:border-b")}>
-						{table.getHeaderGroups().map((headerGroup) => (
-							<tr
-								key={headerGroup.id}
-								className="hover:bg-muted/50 dark:hover:bg-muted/75 data-[state=selected]:bg-muted border-b transition-colors"
-							>
-								{headerGroup.headers.map((header) => (
-									<DraggableColumnHeader
-										key={header.id}
-										header={header}
-										isConfigurable={!fixedColumnIds.has(header.column.id)}
-										pinStyle={buildPinStyle(header.column, pinOffsets)}
-										pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
-										className={cn(
-											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
-											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-										)}
-										onHide={toggleVisibility}
-										onPin={togglePin}
-										onDrop={handleColumnDrop}
-										cellRef={setHeaderCellRef(header.column.id)}
-									/>
-								))}
-							</tr>
-						))}
-					</thead>
-					<TableBody>
-						{loading ? (
-							<TableRow>
-								<TableCell colSpan={columns.length} className="h-24 text-center">
-									<div className="flex items-center justify-center gap-2">
-										<RefreshCw className="h-4 w-4 animate-spin" />
-										Loading logs...
-									</div>
-								</TableCell>
-							</TableRow>
-						) : (
-							<>
-								<TableRow className="hover:bg-transparent">
+			<div className="flex grow flex-col gap-2">
+				<div className="grow rounded-sm border">
+					<Table containerClassName="h-full">
+						<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a] px-2 [&_tr]:border-b")}>
+							{table.getHeaderGroups().map((headerGroup) => (
+								<tr
+									key={headerGroup.id}
+									className="hover:bg-muted/50 dark:hover:bg-muted/75 data-[state=selected]:bg-muted border-b transition-colors"
+								>
+									{headerGroup.headers.map((header) => (
+										<DraggableColumnHeader
+											key={header.id}
+											header={header}
+											isConfigurable={!fixedColumnIds.has(header.column.id)}
+											pinStyle={buildPinStyle(header.column, pinOffsets)}
+											pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+											className={cn(
+												header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+												header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+											)}
+											onHide={toggleVisibility}
+											onPin={togglePin}
+											onDrop={handleColumnDrop}
+											cellRef={setHeaderCellRef(header.column.id)}
+										/>
+									))}
+								</tr>
+							))}
+						</thead>
+						<TableBody>
+							{loading ? (
+								<TableRow>
 									<TableCell colSpan={columns.length} className="h-12 text-center">
 										<div className="flex items-center justify-center gap-2">
-											{!isSocketConnected ? (
-												<>
-													<X className="h-4 w-4" />
-													Not connected to socket, please refresh the page.
-												</>
-											) : liveEnabled ? (
-												<>
-													<RefreshCw className="h-4 w-4 animate-spin" />
-													Listening for logs...
-												</>
-											) : (
-												<>
-													<Pause className="h-4 w-4" />
-													Live updates paused
-												</>
-											)}
+											<RefreshCw className="h-4 w-4 animate-spin" />
+											Loading logs...
 										</div>
 									</TableCell>
 								</TableRow>
-								{table.getRowModel().rows.length ? (
-									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
-											{row.getVisibleCells().map((cell) => {
-												const pinned = cell.column.getIsPinned();
-												return (
-													<TableCell
-														onClick={() => onRowClick?.(row.original, cell.column.id)}
-														key={cell.id}
-														style={buildPinStyle(cell.column, pinOffsets)}
-														className={cn(
-															pinned && "bg-card",
-															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
-															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
-															"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
-														)}
-													>
-														{flexRender(cell.column.columnDef.cell, cell.getContext())}
-													</TableCell>
-												);
-											})}
-										</TableRow>
-									))
-								) : (
-									<TableRow>
-										<TableCell colSpan={columns.length} className="h-24 text-center">
-											No results found. Try adjusting your filters and/or time range.
+							) : (
+								<>
+									<TableRow className="hover:bg-transparent">
+										<TableCell colSpan={columns.length} className="h-12 text-center">
+											<div className="flex items-center justify-center gap-2">
+												{!isSocketConnected ? (
+													<>
+														<X className="h-4 w-4" />
+														Not connected to socket, please refresh the page.
+													</>
+												) : liveEnabled ? (
+													<>
+														<RefreshCw className="h-4 w-4 animate-spin" />
+														Listening for logs...
+													</>
+												) : (
+													<>
+														<Pause className="h-4 w-4" />
+														Live updates paused
+													</>
+												)}
+											</div>
 										</TableCell>
 									</TableRow>
-								)}
-							</>
-						)}
-					</TableBody>
-				</Table>
-			</div>
-
-			{/* Pagination Footer */}
-			<div className="flex items-center justify-between text-xs" data-testid="pagination">
-				<div className="text-muted-foreground flex items-center gap-2">
-					{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} entries
+									{table.getRowModel().rows.length ? (
+										table.getRowModel().rows.map((row) => (
+											<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
+												{row.getVisibleCells().map((cell) => {
+													const pinned = cell.column.getIsPinned();
+													const size = cell.column.getSize();
+													return (
+														<TableCell
+															onClick={() => onRowClick?.(row.original, cell.column.id)}
+															key={cell.id}
+															style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
+															className={cn(
+																"overflow-hidden",
+																pinned && "bg-card",
+																cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+																cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+																"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+															)}
+														>
+															{flexRender(cell.column.columnDef.cell, cell.getContext())}
+														</TableCell>
+													);
+												})}
+											</TableRow>
+										))
+									) : (
+										<TableRow>
+											<TableCell colSpan={columns.length} className="h-24 text-center">
+												No results found. Try adjusting your filters and/or time range.
+											</TableCell>
+										</TableRow>
+									)}
+								</>
+							)}
+						</TableBody>
+					</Table>
 				</div>
-
-				<div className="flex items-center gap-2">
-					<Button
-						variant="ghost"
-						size="sm"
-						onClick={() => goToPage(currentPage - 1)}
-						disabled={currentPage <= 1}
-						data-testid="prev-page"
-						aria-label="Previous page"
-					>
-						<ChevronLeft className="size-3" />
-					</Button>
-
-					<div className="flex items-center gap-1">
-						<span>Page</span>
-						<span>{currentPage}</span>
-						<span>of {totalPages}</span>
+				{/* Pagination Footer */}
+				<div className="flex items-center justify-between text-xs" data-testid="pagination">
+					<div className="text-muted-foreground flex items-center gap-2">
+						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} entries
 					</div>
 
-					<Button
-						variant="ghost"
-						size="sm"
-						onClick={() => goToPage(currentPage + 1)}
-						disabled={totalPages === 0 || currentPage >= totalPages}
-						data-testid="next-page"
-						aria-label="Next page"
-					>
-						<ChevronRight className="size-3" />
-					</Button>
+					<div className="flex items-center gap-2">
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => goToPage(currentPage - 1)}
+							disabled={currentPage <= 1}
+							data-testid="prev-page"
+							aria-label="Previous page"
+						>
+							<ChevronLeft className="size-3" />
+						</Button>
+
+						<div className="flex items-center gap-1">
+							<span>Page</span>
+							<span>{currentPage}</span>
+							<span>of {totalPages}</span>
+						</div>
+
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => goToPage(currentPage + 1)}
+							disabled={totalPages === 0 || currentPage >= totalPages}
+							data-testid="next-page"
+							aria-label="Next page"
+						>
+							<ChevronRight className="size-3" />
+						</Button>
+					</div>
 				</div>
 			</div>
 		</div>

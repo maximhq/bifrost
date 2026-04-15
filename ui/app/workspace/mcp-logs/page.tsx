@@ -1,3 +1,4 @@
+import { MCPFilterSidebar } from "@/components/filters/mcpFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -516,29 +517,35 @@ export default function MCPLogsPage() {
 					}
 				/>
 			) : (
-				<div className="mx-auto w-full space-y-6">
-					<div className="space-y-6">
-						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-							{statCards.map((card) => (
-								<Card key={card.title} className="py-4 shadow-none">
-									<CardContent className="flex items-center justify-between px-4">
-										<div className="w-full min-w-0">
-											<div className="text-muted-foreground text-xs">{card.title}</div>
-											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
-										</div>
-									</CardContent>
-								</Card>
-							))}
-						</div>
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+					{/* Sidebar Filters */}
+					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
-						{/* Error Alert */}
-						{error && (
-							<Alert variant="destructive">
-								<AlertCircle className="h-4 w-4" />
-								<AlertDescription>{error}</AlertDescription>
-							</Alert>
-						)}
+					{/* Main Content */}
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+						{/* Quick Stats */}
+						<div className="px-4">
+							<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-4">
+								{statCards.map((card) => (
+									<Card key={card.title} className="py-4 shadow-none">
+										<CardContent className="flex items-center justify-between px-4">
+											<div className="w-full min-w-0">
+												<div className="text-muted-foreground text-xs">{card.title}</div>
+												<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											</div>
+										</CardContent>
+									</Card>
+								))}
+							</div>
+
+							{/* Error Alert */}
+							{error && (
+								<Alert variant="destructive" className="shrink-0">
+									<AlertCircle className="h-4 w-4" />
+									<AlertDescription>{error}</AlertDescription>
+								</Alert>
+							)}
+						</div>
 
 						<MCPLogsDataTable
 							columns={columns}

@@ -1,14 +1,42 @@
 import { Button } from "@/components/ui/button";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Statuses } from "@/lib/constants/logs";
-import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
-import { cn } from "@/lib/utils";
-import { Check, FilterIcon, Pause, Play, Search } from "lucide-react";
+import { Pause, Play, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+const LOG_TIME_PERIODS = [
+	{ label: "Last hour", value: "1h" },
+	{ label: "Last 6 hours", value: "6h" },
+	{ label: "Last 24 hours", value: "24h" },
+	{ label: "Last 7 days", value: "7d" },
+	{ label: "Last 30 days", value: "30d" },
+];
+
+function getRangeForPeriod(period: string): { from: Date; to: Date } {
+	const to = new Date();
+	const from = new Date(to.getTime());
+	switch (period) {
+		case "1h":
+			from.setHours(from.getHours() - 1);
+			break;
+		case "6h":
+			from.setHours(from.getHours() - 6);
+			break;
+		case "24h":
+			from.setHours(from.getHours() - 24);
+			break;
+		case "7d":
+			from.setDate(from.getDate() - 7);
+			break;
+		case "30d":
+			from.setDate(from.getDate() - 30);
+			break;
+		default:
+			from.setHours(from.getHours() - 24);
+	}
+	return { from, to };
+}
 
 interface MCPLogFiltersProps {
 	filters: MCPToolLogFilters;
@@ -18,24 +46,11 @@ interface MCPLogFiltersProps {
 }
 
 export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle }: MCPLogFiltersProps) {
-	const [openFiltersPopover, setOpenFiltersPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
-	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	const filtersRef = useRef<MCPToolLogFilters>(filters);
-
-	// Convert ISO strings from filters to Date objects for the DateTimePicker
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
 	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
-
-	// Use RTK Query to fetch available filter data
-	const { data: filterData, isLoading: filterDataLoading } = useGetMCPLogsFilterDataQuery();
-
-	const availableToolNames = filterData?.tool_names || [];
-	const availableServerLabels = filterData?.server_labels || [];
-	const availableVirtualKeys = filterData?.virtual_keys || [];
-
-	// Create mapping from name to ID for virtual keys
-	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
+	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const filtersRef = useRef<MCPToolLogFilters>(filters);
 
 	// Keep filtersRef in sync with filters prop
 	useEffect(() => {
@@ -47,7 +62,6 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 		setLocalSearch(filters.content_search || "");
 	}, [filters.content_search]);
 
-	// Sync local date state when filters change from URL
 	useEffect(() => {
 		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
@@ -66,90 +80,19 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 		(value: string) => {
 			setLocalSearch(value);
 
-			// Clear existing timeout
 			if (searchTimeoutRef.current) {
 				clearTimeout(searchTimeoutRef.current);
 			}
 
-			// Set new timeout - use filtersRef.current to avoid stale closure
 			searchTimeoutRef.current = setTimeout(() => {
 				onFiltersChange({ ...filtersRef.current, content_search: value });
-			}, 500); // 500ms debounce
+			}, 500);
 		},
 		[onFiltersChange],
 	);
 
-	const handleFilterSelect = (category: keyof typeof FILTER_OPTIONS, value: string) => {
-		const filterKeyMap: Record<keyof typeof FILTER_OPTIONS, keyof MCPToolLogFilters> = {
-			Status: "status",
-			"Tool Names": "tool_names",
-			Servers: "server_labels",
-			"Virtual Keys": "virtual_key_ids",
-		};
-
-		const filterKey = filterKeyMap[category];
-		let valueToStore = value;
-
-		// Convert name to ID for virtual keys
-		if (category === "Virtual Keys") {
-			valueToStore = virtualKeyNameToId.get(value) || value;
-		}
-
-		const currentValues = (filters[filterKey] as string[]) || [];
-		const newValues = currentValues.includes(valueToStore)
-			? currentValues.filter((v) => v !== valueToStore)
-			: [...currentValues, valueToStore];
-
-		onFiltersChange({
-			...filters,
-			[filterKey]: newValues,
-		});
-	};
-
-	const isSelected = (category: keyof typeof FILTER_OPTIONS, value: string) => {
-		const filterKeyMap: Record<keyof typeof FILTER_OPTIONS, keyof MCPToolLogFilters> = {
-			Status: "status",
-			"Tool Names": "tool_names",
-			Servers: "server_labels",
-			"Virtual Keys": "virtual_key_ids",
-		};
-
-		const filterKey = filterKeyMap[category];
-		const currentValues = filters[filterKey];
-
-		// For virtual keys, convert name to ID before checking
-		let valueToCheck = value;
-		if (category === "Virtual Keys") {
-			valueToCheck = virtualKeyNameToId.get(value) || value;
-		}
-
-		return Array.isArray(currentValues) && currentValues.includes(valueToCheck);
-	};
-
-	const getSelectedCount = () => {
-		// Exclude timestamp filters and content_search from the count
-		const excludedKeys = ["start_time", "end_time", "content_search"];
-
-		return Object.entries(filters).reduce((count, [key, value]) => {
-			if (excludedKeys.includes(key)) {
-				return count;
-			}
-			if (Array.isArray(value)) {
-				return count + value.length;
-			}
-			return count + (value ? 1 : 0);
-		}, 0);
-	};
-
-	const FILTER_OPTIONS = {
-		Status: Statuses,
-		"Tool Names": filterDataLoading ? ["Loading..."] : availableToolNames,
-		Servers: filterDataLoading ? ["Loading..."] : availableServerLabels,
-		"Virtual Keys": filterDataLoading ? ["Loading virtual keys..."] : availableVirtualKeys.map((key) => key.name),
-	} as const;
-
 	return (
-		<div className="flex items-center justify-between space-x-2">
+		<div className="flex grow items-center justify-between space-x-2">
 			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
@@ -173,12 +116,8 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 					onChange={(e) => handleSearchChange(e.target.value)}
 				/>
 			</div>
-
 			<DateTimePickerWithRange
-				dateTime={{
-					from: startTime,
-					to: endTime,
-				}}
+				dateTime={{ from: startTime, to: endTime }}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);
@@ -188,62 +127,19 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 						end_time: p.to?.toISOString(),
 					});
 				}}
+				preDefinedPeriods={LOG_TIME_PERIODS}
+				onPredefinedPeriodChange={(periodValue) => {
+					if (!periodValue) return;
+					const { from, to } = getRangeForPeriod(periodValue);
+					setStartTime(from);
+					setEndTime(to);
+					onFiltersChange({
+						...filters,
+						start_time: from.toISOString(),
+						end_time: to.toISOString(),
+					});
+				}}
 			/>
-			<Popover open={openFiltersPopover} onOpenChange={setOpenFiltersPopover}>
-				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-[120px]">
-						<FilterIcon className="h-4 w-4" />
-						Filters
-						{getSelectedCount() > 0 && (
-							<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
-								{getSelectedCount()}
-							</span>
-						)}
-					</Button>
-				</PopoverTrigger>
-				<PopoverContent className="w-[200px] p-0" align="end">
-					<Command>
-						<CommandInput placeholder="Search filters..." />
-						<CommandList>
-							<CommandEmpty>No filters found.</CommandEmpty>
-							{Object.entries(FILTER_OPTIONS)
-								.filter(([_, values]) => values.length > 0)
-								.map(([category, values]) => (
-									<CommandGroup key={category} heading={category}>
-										{values.map((value) => {
-											const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
-											const isLoading =
-												(category === "Tool Names" && filterDataLoading) ||
-												(category === "Servers" && filterDataLoading) ||
-												(category === "Virtual Keys" && filterDataLoading);
-											return (
-												<CommandItem
-													key={value}
-													onSelect={() => !isLoading && handleFilterSelect(category as keyof typeof FILTER_OPTIONS, value)}
-													disabled={isLoading}
-												>
-													<div
-														className={cn(
-															"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
-															selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
-														)}
-													>
-														{isLoading ? (
-															<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
-														) : (
-															<Check className="text-primary-foreground size-3" />
-														)}
-													</div>
-													<span className={cn("lowercase", isLoading && "text-muted-foreground")}>{value}</span>
-												</CommandItem>
-											);
-										})}
-									</CommandGroup>
-								))}
-						</CommandList>
-					</Command>
-				</PopoverContent>
-			</Popover>
 		</div>
 	);
 }
