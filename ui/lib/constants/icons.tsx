@@ -62,19 +62,8 @@ export const ProviderIcons = {
 		);
 	},
 
-	azure: ({ size = "md", className = "" }: IconProps) => {
-		const resolvedSize = resolveSize(size);
-		return (
-			<img
-				src="/images/azure.webp"
-				alt="azure"
-				width={resolvedSize}
-				height={resolvedSize}
-				loading="lazy"
-				decoding="async"
-				className={className}
-			/>
-		);
+	azure: ({ className = "" }: IconProps) => {
+		return <img src="/images/azure.webp" alt="azure" width={14} height={14} loading="lazy" decoding="async" className={className} />;
 	},
 	bedrock: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -377,19 +366,8 @@ export const ProviderIcons = {
 		);
 	},
 
-	sgl: ({ size = "md", className = "" }: IconProps) => {
-		const resolvedSize = resolveSize(size);
-		return (
-			<img
-				src="/images/sgl.webp"
-				alt="sgl"
-				width={resolvedSize}
-				height={resolvedSize}
-				loading="lazy"
-				decoding="async"
-				className={className}
-			/>
-		);
+	sgl: ({ className = "" }: IconProps) => {
+		return <img src="/images/sgl.webp" alt="sgl" width={14} height={14} loading="lazy" decoding="async" className={className} />;
 	},
 	openai: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -584,19 +562,8 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
-	nebius: ({ size = "md", className = "" }: IconProps) => {
-		const resolvedSize = resolveSize(size);
-		return (
-			<img
-				src="/images/nebius.webp"
-				alt="nebius"
-				width={resolvedSize}
-				height={resolvedSize}
-				loading="lazy"
-				decoding="async"
-				className={className}
-			/>
-		);
+	nebius: ({ className = "" }: IconProps) => {
+		return <img src="/images/nebius.webp" alt="nebius" width={14} height={14} loading="lazy" decoding="async" className={className} />;
 	},
 	xai: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
