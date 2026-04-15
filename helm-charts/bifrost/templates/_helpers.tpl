@@ -488,16 +488,17 @@ false
 {{- end }}
 {{- $_ := set $config "cluster_config" $cluster }}
 {{- end }}
-{{- /* SAML Config */ -}}
-{{- if and .Values.bifrost.saml .Values.bifrost.saml.enabled }}
-{{- $saml := dict "enabled" true }}
-{{- if .Values.bifrost.saml.provider }}
-{{- $_ := set $saml "provider" .Values.bifrost.saml.provider }}
+{{- /* SCIM Config */ -}}
+{{- $scimValues := .Values.bifrost.scim }}
+{{- if and $scimValues $scimValues.enabled }}
+{{- $scim := dict "enabled" true }}
+{{- if $scimValues.provider }}
+{{- $_ := set $scim "provider" $scimValues.provider }}
 {{- end }}
-{{- if .Values.bifrost.saml.config }}
-{{- $_ := set $saml "config" .Values.bifrost.saml.config }}
+{{- if $scimValues.config }}
+{{- $_ := set $scim "config" $scimValues.config }}
 {{- end }}
-{{- $_ := set $config "saml_config" $saml }}
+{{- $_ := set $config "scim_config" $scim }}
 {{- end }}
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
@@ -1109,22 +1110,29 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 
-{{/* Validate SAML/Okta config when enabled */}}
-{{- if and .Values.bifrost.saml .Values.bifrost.saml.enabled }}
-{{- if eq .Values.bifrost.saml.provider "okta" }}
-{{- if not .Values.bifrost.saml.config.issuerUrl }}
-{{- fail "ERROR: bifrost.saml.config.issuerUrl is required when SAML provider is Okta. Example: https://your-domain.okta.com/oauth2/default" }}
+{{/* Validate SCIM/SSO config when enabled */}}
+{{- $scimValidation := .Values.bifrost.scim }}
+{{- if and $scimValidation $scimValidation.enabled }}
+{{- if eq $scimValidation.provider "okta" }}
+{{- if not $scimValidation.config.issuerUrl }}
+{{- fail "ERROR: bifrost.scim.config.issuerUrl is required when SCIM provider is Okta. Example: https://your-domain.okta.com/oauth2/default" }}
 {{- end }}
-{{- if not .Values.bifrost.saml.config.clientId }}
-{{- fail "ERROR: bifrost.saml.config.clientId is required when SAML provider is Okta." }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Okta." }}
+{{- end }}
+{{- if not $scimValidation.config.clientSecret }}
+{{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
+{{- end }}
+{{- if not $scimValidation.config.apiToken }}
+{{- fail "ERROR: bifrost.scim.config.apiToken is required when SCIM provider is Okta." }}
 {{- end }}
 {{- end }}
-{{- if eq .Values.bifrost.saml.provider "entra" }}
-{{- if not .Values.bifrost.saml.config.tenantId }}
-{{- fail "ERROR: bifrost.saml.config.tenantId is required when SAML provider is Entra (Azure AD)." }}
+{{- if eq $scimValidation.provider "entra" }}
+{{- if not $scimValidation.config.tenantId }}
+{{- fail "ERROR: bifrost.scim.config.tenantId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
-{{- if not .Values.bifrost.saml.config.clientId }}
-{{- fail "ERROR: bifrost.saml.config.clientId is required when SAML provider is Entra (Azure AD)." }}
+{{- if not $scimValidation.config.clientId }}
+{{- fail "ERROR: bifrost.scim.config.clientId is required when SCIM provider is Entra (Azure AD)." }}
 {{- end }}
 {{- end }}
 {{- end }}

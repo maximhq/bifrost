@@ -101,8 +101,8 @@ variable "cluster_config" {
   default     = null
 }
 
-variable "saml_config" {
-  description = "SAML/SSO configuration (enabled, provider: okta/entra, config)."
+variable "scim_config" {
+  description = "SCIM/SSO configuration (enabled, provider: okta/entra, config). For Okta, config should include issuerUrl, clientId, clientSecret, and apiToken."
   type        = any
   default     = null
 }

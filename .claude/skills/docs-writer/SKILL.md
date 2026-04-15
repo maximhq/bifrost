@@ -222,7 +222,7 @@ print(json.dumps(defn, indent=2))
 - `config_store` - Config store backend (file, postgres)
 - `logs_store` - Log store backend (file, postgres)
 - `cluster_config` - Cluster/multinode configuration
-- `saml_config` - SAML/SSO configuration
+- `scim_config` - SCIM/SSO configuration
 - `load_balancer_config` - Adaptive load balancer
 - `guardrails_config` - Guardrails configuration
 - `plugins` - Plugin configurations
@@ -237,7 +237,7 @@ print(json.dumps(defn, indent=2))
 - `mcp_client_config` / `mcp_tool_manager_config` - MCP configs
 - `weaviate_config` / `redis_config` / `qdrant_config` / `pinecone_config` - Vector store configs
 - `proxy_config` - Proxy configuration
-- `cluster_config` / `saml_config` / `load_balancer_config` / `guardrails_config` - Enterprise configs
+- `cluster_config` / `scim_config` / `load_balancer_config` / `guardrails_config` - Enterprise configs
 - `pricing_config` / `network_config` / `concurrency_config` - Client sub-configs
 - `audit_logs_config` - Audit logs config
 

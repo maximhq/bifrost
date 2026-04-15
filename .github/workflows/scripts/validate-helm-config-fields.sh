@@ -825,10 +825,10 @@ assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].
 assert_field_value 'mcp tool_manager_config.code_mode_binding_level' '.mcp.tool_manager_config.code_mode_binding_level' '"server"'
 
 ###############################################################################
-# 8. Cluster, SAML, Load Balancer, Guardrails, Audit Logs
+# 8. Cluster, SCIM, Load Balancer, Guardrails, Audit Logs
 ###############################################################################
 echo ""
-echo -e "${CYAN}🌐 8/10 - Cluster, SAML, LB, Guardrails, Audit Logs${NC}"
+echo -e "${CYAN}🌐 8/10 - Cluster, SCIM, LB, Guardrails, Audit Logs${NC}"
 echo "-----------------------------------------------------"
 
 cat > "$TMPDIR/values-cluster.yaml" << 'VALS'
@@ -872,12 +872,12 @@ assert_field_value 'cluster_config.discovery.k8s_label_selector' '.cluster_confi
 # Gap 7: Cluster region
 assert_field_value 'cluster_config.region' '.cluster_config.region' '"us-east-1"'
 
-# SAML - Okta
-cat > "$TMPDIR/values-saml-okta.yaml" << 'VALS'
+# SCIM - Okta
+cat > "$TMPDIR/values-scim-okta.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "okta"
     config:
@@ -890,17 +890,17 @@ bifrost:
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-okta.yaml"
-assert_field_value 'saml_config.enabled' '.saml_config.enabled' 'true'
-assert_field_value 'saml_config.provider' '.saml_config.provider' '"okta"'
-assert_field 'saml_config.config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-okta.yaml"
+assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
+assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
+assert_field 'scim_config.config' '.scim_config.config'
 
-# SAML - Entra
-cat > "$TMPDIR/values-saml-entra.yaml" << 'VALS'
+# SCIM - Entra
+cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "entra"
     config:
@@ -914,9 +914,9 @@ bifrost:
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-entra.yaml"
-assert_field_value 'saml_config (entra) provider' '.saml_config.provider' '"entra"'
-assert_field 'saml_config (entra) config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-entra.yaml"
+assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
+assert_field 'scim_config (entra) config' '.scim_config.config'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'

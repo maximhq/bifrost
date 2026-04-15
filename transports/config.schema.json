@@ -3332,7 +3332,7 @@
       ],
       "additionalProperties": false
     },
-    "saml_config": {
+    "scim_config": {
       "type": "object",
       "description": "SAML/SCIM (System for Cross-domain Identity Management) configuration",
       "properties": {
@@ -3407,7 +3407,11 @@
         },
         "clientSecret": {
           "type": "string",
-          "description": "Okta client secret (optional, required for token revocation)"
+          "description": "Okta client secret"
+        },
+        "apiToken": {
+          "type": "string",
+          "description": "Okta API token for Admin API access"
         },
         "audience": {
           "type": "string",
@@ -3431,7 +3435,9 @@
       },
       "required": [
         "issuerUrl",
-        "clientId"
+        "clientId",
+        "clientSecret",
+        "apiToken"
       ],
       "additionalProperties": false
     },

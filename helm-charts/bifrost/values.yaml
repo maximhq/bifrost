@@ -557,8 +557,8 @@ bifrost:
       # mDNS discovery
       mdnsService: ""
 
-  # SAML/SCIM configuration for enterprise SSO
-  saml:
+  # SCIM/SSO configuration for enterprise SSO
+  scim:
     enabled: false
     # Provider: okta, entra
     provider: ""
@@ -567,6 +567,7 @@ bifrost:
       # issuerUrl: "https://your-domain.okta.com/oauth2/default"
       # clientId: ""
       # clientSecret: ""
+      # apiToken: ""
       # audience: ""
       # userIdField: "sub"
       # teamIdsField: "groups"

@@ -1420,7 +1420,7 @@
             ]
           }
         },
-        "saml": {
+        "scim": {
           "type": "object",
           "properties": {
             "enabled": {
@@ -1433,7 +1433,7 @@
                 "okta",
                 "entra"
               ],
-              "description": "SAML provider type (empty when not configured)"
+              "description": "SCIM/SSO provider type (empty when not configured)"
             },
             "config": {
               "type": "object"
@@ -1470,6 +1470,9 @@
                       "clientSecret": {
                         "type": "string"
                       },
+                      "apiToken": {
+                        "type": "string"
+                      },
                       "audience": {
                         "type": "string"
                       },
@@ -1485,7 +1488,9 @@
                     },
                     "required": [
                       "issuerUrl",
-                      "clientId"
+                      "clientId",
+                      "clientSecret",
+                      "apiToken"
                     ]
                   }
                 }
