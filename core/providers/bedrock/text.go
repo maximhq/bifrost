@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -126,6 +127,7 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 				FinishReason: &response.StopReason,
 			},
 		},
+		Created: time.Now().Unix(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.TextCompletionRequest,
 			Provider:    schemas.Bedrock,
@@ -153,6 +155,7 @@ func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *s
 	return &schemas.BifrostTextCompletionResponse{
 		Object:  "text_completion",
 		Choices: choices,
+		Created: time.Now().Unix(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.TextCompletionRequest,
 			Provider:    schemas.Bedrock,

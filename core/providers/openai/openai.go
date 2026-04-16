@@ -568,6 +568,7 @@ func HandleOpenAITextCompletionStreaming(
 
 		var finishReason *string
 		var messageID string
+		var created int64
 		startTime := time.Now()
 		lastChunkTime := startTime
 
@@ -678,6 +679,11 @@ func HandleOpenAITextCompletionStreaming(
 				response.Usage = nil
 			}
 
+			// Track created timestamp from any chunk so final aggregated chunk is always populated.
+			if response.Created > 0 {
+				created = response.Created
+			}
+
 			// Skip empty responses or responses without choices
 			if len(response.Choices) == 0 {
 				continue
@@ -719,7 +725,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, created, schemas.TextCompletionStreamRequest, providerName, request.Model)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {

@@ -73,6 +73,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,
 			Model:             cr.Model,
+			Created:           int64(cr.Created),
 			Object:            "text_completion",
 			SystemFingerprint: cr.SystemFingerprint,
 			Usage:             cr.Usage,
@@ -96,6 +97,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,
 			Model:             cr.Model,
+			Created:           int64(cr.Created),
 			Object:            "text_completion",
 			SystemFingerprint: cr.SystemFingerprint,
 			Choices: []BifrostResponseChoice{
@@ -132,6 +134,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,
 			Model:             cr.Model,
+			Created:           int64(cr.Created),
 			Object:            "text_completion",
 			SystemFingerprint: cr.SystemFingerprint,
 			Choices: []BifrostResponseChoice{
@@ -162,6 +165,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 	return &BifrostTextCompletionResponse{
 		ID:                cr.ID,
 		Model:             cr.Model,
+		Created:           int64(cr.Created),
 		Object:            "text_completion",
 		SystemFingerprint: cr.SystemFingerprint,
 		Usage:             cr.Usage,
