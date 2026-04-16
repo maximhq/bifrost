@@ -352,14 +352,19 @@ export function LogDetailView({
 								className="w-full"
 								label="User"
 								value={
-									<Link
-										to="/workspace/logs"
-										search={{ user_ids: [log.user_id] }}
-										className="text-blue-600 hover:underline dark:text-blue-400"
-										data-testid="logdetails-user-link"
-									>
-										{log.user_id}
-									</Link>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<Link
+												to="/workspace/logs"
+												search={{ user_ids: [log.user_id] }}
+												className={`text-primary hover:text-primary/80 block min-w-0 cursor-pointer text-sm font-normal break-all underline-offset-2 hover:underline${log.user_name ? "" : " font-mono"}`}
+												data-testid="logdetails-user-link"
+											>
+												{log.user_name || log.user_id}
+											</Link>
+										</TooltipTrigger>
+										<TooltipContent sideOffset={6}>{log.user_name ? log.user_id : "Filter by user"}</TooltipContent>
+									</Tooltip>
 								}
 							/>
 						)}

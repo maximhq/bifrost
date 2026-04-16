@@ -470,6 +470,7 @@ export interface LogEntry {
   business_unit_id?: string;
   business_unit_name?: string;
   user_id?: string;
+  user_name?: string;
   virtual_key_id?: string;
   routing_engines_used?: string[];
   routing_rule_id?: string;

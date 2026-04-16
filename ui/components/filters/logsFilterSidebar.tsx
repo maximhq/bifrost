@@ -115,6 +115,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
@@ -663,6 +664,27 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					placeholder="Parent request ID"
 					className="h-8 text-sm"
 					data-testid="session-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// UserFilter
+// ---------------------------------------------------------------------------
+
+function UserFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.user_ids?.length;
+	return (
+		<FilterSection title="User" defaultOpen={defaultOpen || hasActive} testId="user-filter-toggle">
+			<div className="px-3 py-2.5">
+				<Input
+					value={filters.user_ids?.[0] || ""}
+					onChange={(e) => onFiltersChange({ ...filters, user_ids: e.target.value ? [e.target.value] : [] })}
+					placeholder="User ID"
+					className="h-8 text-sm"
+					data-testid="user-id-filter-input"
 				/>
 			</div>
 		</FilterSection>
