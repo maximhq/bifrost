@@ -1267,9 +1267,6 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not $vk.name }}
 {{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].name is required for virtual key '%s'." $idx $vk.id) }}
 {{- end }}
-{{- if not $vk.value }}
-{{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].value is required for virtual key '%s'." $idx $vk.id) }}
-{{- end }}
 {{- end }}
 {{- end }}
 
