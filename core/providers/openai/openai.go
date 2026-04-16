@@ -88,8 +88,21 @@ func (provider *OpenAIProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.OpenAI, provider.customProviderConfig)
 }
 
+// effectiveExtraHeaders returns the network config's ExtraHeaders, merged with
+// ChatGPT OAuth headers (chatgpt-account-id, OpenAI-Beta) when chatgpt_oauth is enabled.
+// This is the canonical way for every upstream request to get its headers so that
+// ChatGPT OAuth-specific headers are automatically injected across all routes.
+func (provider *OpenAIProvider) effectiveExtraHeaders(key schemas.Key) map[string]string {
+	return chatGPTOAuthMergeHeaders(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, provider.logger)
+}
+
 // buildRequestURL constructs the full request URL using the provider's configuration.
+// When chatgpt_oauth is enabled, the /v1 prefix is stripped from paths so requests
+// route correctly to chatgpt.com/backend-api/codex/<route> instead of /codex/v1/<route>.
 func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	if provider.chatgptOAuth {
+		defaultPath = chatGPTOAuthPath(defaultPath)
+	}
 	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
@@ -103,6 +116,14 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	}
 	providerName := provider.GetProviderKey()
 
+	// Pick a representative key for ChatGPT OAuth header extraction.
+	// All keys for a ChatGPT OAuth-enabled provider share the same account,
+	// so the first key's JWT is sufficient for the chatgpt-account-id header.
+	var headerKey schemas.Key
+	if len(keys) > 0 {
+		headerKey = keys[0]
+	}
+
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(providerName, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 			return ListModelsByKey(
@@ -111,7 +132,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 				provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
 				schemas.Key{},
 				request.Unfiltered,
-				provider.networkConfig.ExtraHeaders,
+				provider.effectiveExtraHeaders(headerKey),
 				providerName,
 				providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 				providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -124,7 +145,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		request,
 		provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
 		keys,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(headerKey),
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -246,7 +267,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		provider.buildRequestURL(ctx, "/v1/completions", schemas.TextCompletionRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -410,7 +431,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		provider.buildRequestURL(ctx, "/v1/completions", schemas.TextCompletionStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -768,7 +789,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -941,7 +962,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1393,12 +1414,12 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, responsesPath, bodyTransformer := chatGPTOAuthApply(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, "/v1/responses", provider.logger)
+	extraHeaders, bodyTransformer := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
 
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, responsesPath, schemas.ResponsesRequest),
+		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
 		request,
 		key,
 		extraHeaders,
@@ -1578,13 +1599,13 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, responsesPath, streamBodyTransformer := chatGPTOAuthApply(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, "/v1/responses", provider.logger)
+	extraHeaders, streamBodyTransformer := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
 
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, responsesPath, schemas.ResponsesStreamRequest),
+		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
 		request,
 		authHeader,
 		extraHeaders,
@@ -1922,7 +1943,7 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		provider.buildRequestURL(ctx, "/v1/embeddings", schemas.EmbeddingRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -2081,7 +2102,7 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -2226,7 +2247,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -2487,7 +2508,7 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 		provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
@@ -2671,7 +2692,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		false,
 		provider.GetProviderKey(),
@@ -2951,7 +2972,7 @@ func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
 		req,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3115,7 +3136,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -3533,7 +3554,7 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		provider.buildRequestURL(ctx, "/v1/videos", schemas.VideoGenerationRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3559,7 +3580,7 @@ func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoRetrieveRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		nil, // OpenAI uses Bearer from key
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -3589,7 +3610,7 @@ func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 	// Build URL: /v1/videos/{video_id}/content
 	requestURL := provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/content", schemas.VideoDownloadRequest)
@@ -3669,7 +3690,7 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoDeleteRequest),
 		videoID,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -3689,7 +3710,7 @@ func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schem
 		provider.buildRequestURL(ctx, "/v1/videos", schemas.VideoListRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -4106,7 +4127,7 @@ func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		provider.buildRequestURL(ctx, "/v1/responses/input_tokens", schemas.CountTokensRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4249,7 +4270,7 @@ func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		provider.buildRequestURL(ctx, "/v1/images/edits", schemas.ImageEditRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4391,7 +4412,7 @@ func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 		provider.buildRequestURL(ctx, "/v1/images/edits", schemas.ImageEditStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4783,7 +4804,7 @@ func (provider *OpenAIProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 		provider.buildRequestURL(ctx, "/v1/images/variations", schemas.ImageVariationRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		provider.effectiveExtraHeaders(key),
 		false,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -4963,7 +4984,7 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/files", schemas.FileUploadRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
@@ -5064,7 +5085,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	}
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
@@ -5159,7 +5180,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
@@ -5235,7 +5256,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
@@ -5327,7 +5348,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
@@ -5425,7 +5446,7 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/remix", schemas.VideoRemixRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -5533,7 +5554,7 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/batches", schemas.BatchCreateRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -5645,7 +5666,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	}
 
 	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
@@ -5728,7 +5749,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
@@ -5804,7 +5825,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID + "/cancel")
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
@@ -5925,7 +5946,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		resp := fasthttp.AcquireResponse()
 
 		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
@@ -6053,7 +6074,7 @@ func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers", schemas.ContainerCreateRequest))
 	req.Header.SetMethod(http.MethodPost)
@@ -6191,7 +6212,7 @@ func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
@@ -6294,7 +6315,7 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+request.ContainerID, schemas.ContainerRetrieveRequest))
 		req.Header.SetMethod(http.MethodGet)
@@ -6405,7 +6426,7 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 		req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/containers/"+request.ContainerID, schemas.ContainerDeleteRequest))
 		req.Header.SetMethod(http.MethodDelete)
@@ -6502,7 +6523,7 @@ func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext,
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 	endpoint := fmt.Sprintf("/v1/containers/%s/files", request.ContainerID)
 	req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileCreateRequest))
@@ -6671,7 +6692,7 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
@@ -6779,7 +6800,7 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileRetrieveRequest))
@@ -6897,7 +6918,7 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s/content", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileContentRequest))
@@ -7000,7 +7021,7 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
 
 		endpoint := fmt.Sprintf("/v1/containers/%s/files/%s", request.ContainerID, request.FileID)
 		req.SetRequestURI(provider.buildRequestURL(ctx, endpoint, schemas.ContainerFileDeleteRequest))
@@ -7105,7 +7126,7 @@ func (provider *OpenAIProvider) Passthrough(
 	fasthttpReq.Header.SetMethod(req.Method)
 	fasthttpReq.SetRequestURI(url)
 
-	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.effectiveExtraHeaders(key), nil)
 
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)
@@ -7182,7 +7203,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	fasthttpReq.Header.SetMethod(req.Method)
 	fasthttpReq.SetRequestURI(url)
 
-	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.effectiveExtraHeaders(key), nil)
 
 	for k, v := range req.SafeHeaders {
 		fasthttpReq.Header.Set(k, v)

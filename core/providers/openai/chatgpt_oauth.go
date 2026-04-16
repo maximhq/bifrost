@@ -199,22 +199,42 @@ func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string
 	return merged, chatGPTOAuthPath(standardPath), nil
 }
 
-// chatGPTOAuthApply is a convenience wrapper that applies ChatGPT OAuth transformations
-// for the Responses request path. If enabled is false, it returns the inputs unchanged
-// and nil bodyTransformer. If enabled is true, it returns the merged headers, the mapped
-// path, and the body transformer. Any error during preparation is logged and the
-// unchanged inputs are returned, with bodyTransformer still set so stream=true is forced.
-func chatGPTOAuthApply(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, standardPath string, logger schemas.Logger) (headers map[string]string, path string, bodyTransformer func([]byte) ([]byte, error)) {
+// chatGPTOAuthMergeHeaders merges ChatGPT OAuth headers (chatgpt-account-id, OpenAI-Beta)
+// into the existing extraHeaders. Safe to call unconditionally — returns existingExtraHeaders
+// unchanged when enabled=false or when JWT extraction fails (logged).
+// Use for request types that don't need body transformation (ListModels, ChatCompletion, etc).
+func chatGPTOAuthMergeHeaders(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) map[string]string {
 	if !enabled {
-		return existingExtraHeaders, standardPath, nil
+		return existingExtraHeaders
 	}
-	bodyTransformer = transformChatGPTResponsesBody
-	mergedHeaders, mappedPath, err := chatGPTOAuthPrepare(key, existingExtraHeaders, standardPath, logger)
+	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
 	if err != nil {
 		if logger != nil {
-			logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
+			logger.Warn("chatgpt_oauth: failed to extract account ID: %v", err)
 		}
-		return existingExtraHeaders, standardPath, bodyTransformer
+		return existingExtraHeaders
 	}
-	return mergedHeaders, mappedPath, bodyTransformer
+	oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
+	merged := make(map[string]string, len(existingExtraHeaders)+len(oauthHeaders))
+	for k, v := range existingExtraHeaders {
+		merged[k] = v
+	}
+	for k, v := range oauthHeaders {
+		merged[k] = v
+	}
+	return merged
+}
+
+// chatGPTOAuthApplyRequest is a convenience wrapper that applies ChatGPT OAuth
+// transformations for the Responses request: merged headers + body transformer.
+// Path mapping is handled separately by buildRequestURL, which auto-strips /v1
+// when chatgpt_oauth is enabled.
+// If enabled is false, returns the inputs unchanged and nil bodyTransformer.
+// If enabled is true and JWT extraction fails, logs and returns unchanged headers
+// but still returns the bodyTransformer so stream=true is forced.
+func chatGPTOAuthApplyRequest(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) (headers map[string]string, bodyTransformer func([]byte) ([]byte, error)) {
+	if !enabled {
+		return existingExtraHeaders, nil
+	}
+	return chatGPTOAuthMergeHeaders(enabled, key, existingExtraHeaders, logger), transformChatGPTResponsesBody
 }
