@@ -8,8 +8,10 @@ import { Statuses } from "@/lib/constants/logs";
 import { useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, RotateCcw } from "lucide-react";
+import { ChevronDown, PanelLeftClose, PanelLeftOpen, RotateCcw } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+const COLLAPSE_STORAGE_KEY = "mcp-filter-sidebar-collapsed";
 
 // ---------------------------------------------------------------------------
 // MCPFilterSidebar – orchestrator
@@ -21,6 +23,25 @@ interface MCPFilterSidebarProps {
 }
 
 export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarProps) {
+	const [collapsed, setCollapsed] = useState(false);
+
+	// Load persisted collapsed state on mount
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
+		if (stored === "true") setCollapsed(true);
+	}, []);
+
+	const toggleCollapsed = useCallback(() => {
+		setCollapsed((prev) => {
+			const next = !prev;
+			if (typeof window !== "undefined") {
+				window.localStorage.setItem(COLLAPSE_STORAGE_KEY, String(next));
+			}
+			return next;
+		});
+	}, []);
+
 	const activeFilterCount = useMemo(() => {
 		const excludedKeys = ["start_time", "end_time", "content_search"];
 		let count = Object.entries(filters).reduce((c, [key, value]) => {
@@ -38,17 +59,43 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 		});
 	}, [filters.start_time, filters.end_time, onFiltersChange]);
 
+	// Collapsed: thin rail with vertical "Filters" label — whole rail is clickable to expand
+	if (collapsed) {
+		return (
+			<button
+				type="button"
+				onClick={toggleCollapsed}
+				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-3 text-sm font-medium"
+				title="Show filters"
+				aria-label="Show filters"
+			>
+				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
+				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				{activeFilterCount > 0 && (
+					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
+						{activeFilterCount}
+					</span>
+				)}
+			</button>
+		);
+	}
+
 	return (
 		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
 			{/* Header */}
-			<div className="flex h-11 items-center justify-between border-b pr-3 pl-5">
+			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
-				{activeFilterCount > 0 && (
-					<Button variant="outline" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={handleReset}>
-						<RotateCcw className="size-3" />
-						Reset
+				<div className="flex items-center gap-1">
+					{activeFilterCount > 0 && (
+						<Button variant="outline" size="sm" className="text-muted-foreground h-7 px-2 text-xs" onClick={handleReset}>
+							<RotateCcw className="size-3" />
+							Reset
+						</Button>
+					)}
+					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters">
+						<PanelLeftClose className="size-4" />
 					</Button>
-				)}
+				</div>
 			</div>
 
 			{/* Scrollable filter sections */}

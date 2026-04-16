@@ -1,49 +1,38 @@
 import { Button } from "@/components/ui/button";
 import {
 	buildPinStyle,
-	ColumnConfigDropdown,
+	type ColumnConfigEntry,
 	DraggableColumnHeader,
 	PIN_SHADOW_LEFT,
 	PIN_SHADOW_RIGHT,
-	useColumnConfig,
 	useHeaderCellRefs,
 	usePinOffsets,
 } from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
-import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
+import type { LogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
-import { LogFilters as LogFiltersComponent } from "./filters";
-
-const COLUMN_LABELS: Record<string, string> = {
-	timestamp: "Time",
-	request_type: "Type",
-	input: "Message",
-	provider: "Provider",
-	model: "Model",
-	latency: "Latency",
-	tokens: "Tokens",
-	cost: "Cost",
-};
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
 	data: LogEntry[];
 	totalItems: number;
 	loading?: boolean;
-	filters: LogFilters;
 	pagination: Pagination;
-	onFiltersChange: (filters: LogFilters) => void;
 	onPaginationChange: (pagination: Pagination) => void;
 	onRowClick?: (log: LogEntry, columnId: string) => void;
 	isSocketConnected: boolean;
 	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
-	fetchLogs: () => Promise<void>;
-	fetchStats: () => Promise<void>;
+	/** Column config — computed by the parent via useColumnConfig */
+	columnEntries: ColumnConfigEntry[];
+	columnOrder: ColumnOrderState;
+	columnVisibility: VisibilityState;
+	columnPinning: ColumnPinningState;
+	onToggleColumnVisibility: (id: string) => void;
+	onTogglePin: (id: string, side: "left" | "right") => void;
+	onReorderColumns: (entries: ColumnConfigEntry[]) => void;
 }
 
 export function LogsDataTable({
@@ -51,33 +40,24 @@ export function LogsDataTable({
 	data,
 	totalItems,
 	loading = false,
-	filters,
 	pagination,
-	onFiltersChange,
 	onPaginationChange,
 	onRowClick,
 	isSocketConnected,
 	liveEnabled,
-	onLiveToggle,
-	fetchLogs,
-	fetchStats,
+	columnEntries,
+	columnOrder,
+	columnVisibility,
+	columnPinning,
+	onToggleColumnVisibility,
+	onTogglePin,
+	onReorderColumns,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
 
-	const columnIds = useMemo(
-		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
-		[columns],
-	);
-
 	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
-
-	// Column config: order, visibility, pinning — persisted in URL
-	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
-		columnIds,
-		paramName: "cols",
-	});
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -87,20 +67,18 @@ export function LogsDataTable({
 	const lastLeftPinId = columnPinning.left?.at(-1);
 	const firstRightPinId = columnPinning.right?.at(0);
 
-	const columnLabels = useMemo(() => ({ ...COLUMN_LABELS }), []);
-
 	// Handle native drag-and-drop reorder
 	const handleColumnDrop = useCallback(
 		(draggedId: string, targetId: string) => {
-			const newEntries = [...entries];
+			const newEntries = [...columnEntries];
 			const draggedIdx = newEntries.findIndex((e) => e.id === draggedId);
 			const targetIdx = newEntries.findIndex((e) => e.id === targetId);
 			if (draggedIdx === -1 || targetIdx === -1) return;
 			const [moved] = newEntries.splice(draggedIdx, 1);
 			newEntries.splice(targetIdx, 0, moved);
-			reorder(newEntries);
+			onReorderColumns(newEntries);
 		},
-		[entries, reorder],
+		[columnEntries, onReorderColumns],
 	);
 
 	// Refs to avoid stale closures in the page size effect
@@ -164,20 +142,6 @@ export function LogsDataTable({
 
 	return (
 		<div className="flex h-full flex-col gap-2">
-			<div className="flex shrink-0 items-center gap-2">
-				<div className="flex flex-1 items-center gap-2">
-					<LogFiltersComponent
-						filters={filters}
-						onFiltersChange={onFiltersChange}
-						liveEnabled={liveEnabled}
-						onLiveToggle={onLiveToggle}
-						fetchLogs={fetchLogs}
-						fetchStats={fetchStats}
-					/>
-				</div>
-				<ColumnConfigDropdown entries={entries} labels={columnLabels} onToggleVisibility={toggleVisibility} onReset={reset} />
-			</div>
-
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
@@ -197,8 +161,8 @@ export function LogsDataTable({
 											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
 										)}
-										onHide={toggleVisibility}
-										onPin={togglePin}
+										onHide={onToggleColumnVisibility}
+										onPin={onTogglePin}
 										onDrop={handleColumnDrop}
 										cellRef={setHeaderCellRef(header.column.id)}
 									/>

@@ -1,4 +1,5 @@
 import { MCPFilterSidebar } from "@/components/filters/mcpFilterSidebar";
+import { useColumnConfig } from "@/components/table";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,6 +14,7 @@ import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQuery
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createMCPColumns } from "./views/columns";
 import { MCPEmptyState } from "./views/emptyState";
+import { McpHeaderView } from "./views/mcpHeaderView";
 import { MCPLogDetailSheet } from "./views/mcpLogDetailsSheet";
 import { MCPLogsDataTable } from "./views/mcpLogsTable";
 
@@ -447,6 +449,33 @@ export default function MCPLogsPage() {
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const MCP_COLUMN_LABELS: Record<string, string> = useMemo(
+		() => ({
+			timestamp: "Time",
+			tool_name: "Tool Name",
+			server_label: "Server",
+			latency: "Latency",
+			cost: "Cost",
+		}),
+		[],
+	);
+
+	const {
+		entries: columnEntries,
+		columnOrder,
+		columnVisibility,
+		columnPinning,
+		toggleVisibility: toggleColumnVisibility,
+		togglePin: toggleColumnPin,
+		reorder: reorderColumns,
+		reset: resetColumns,
+	} = useColumnConfig({ columnIds, paramName: "mcp_cols", fixedColumns: { left: [], right: [] } });
+
 	// Navigation for log detail sheet
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
@@ -523,6 +552,18 @@ export default function MCPLogsPage() {
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+						<div className="p-4 pb-0">
+							<McpHeaderView
+								filters={filters}
+								onFiltersChange={setFilters}
+								liveEnabled={liveEnabled}
+								onLiveToggle={handleLiveToggle}
+								columnEntries={columnEntries}
+								columnLabels={MCP_COLUMN_LABELS}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onResetColumns={resetColumns}
+							/>
+						</div>
 						{/* Quick Stats */}
 						<div className="px-4">
 							<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-4">
@@ -552,9 +593,7 @@ export default function MCPLogsPage() {
 							data={logs}
 							totalItems={totalItems}
 							loading={fetchingLogs}
-							filters={filters}
 							pagination={pagination}
-							onFiltersChange={setFilters}
 							onPaginationChange={setPagination}
 							onRowClick={(row, columnId) => {
 								if (columnId === "actions") return;
@@ -562,9 +601,13 @@ export default function MCPLogsPage() {
 							}}
 							isSocketConnected={isSocketConnected}
 							liveEnabled={liveEnabled}
-							onLiveToggle={handleLiveToggle}
-							fetchLogs={fetchLogs}
-							fetchStats={fetchStats}
+							columnEntries={columnEntries}
+							columnOrder={columnOrder}
+							columnVisibility={columnVisibility}
+							columnPinning={columnPinning}
+							onToggleColumnVisibility={toggleColumnVisibility}
+							onTogglePin={toggleColumnPin}
+							onReorderColumns={reorderColumns}
 						/>
 					</div>
 
