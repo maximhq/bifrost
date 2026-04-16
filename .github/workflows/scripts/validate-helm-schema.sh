@@ -196,8 +196,8 @@ else
   echo "✅ VLLM key config required fields match: [$HELM_VLLM_REQUIRED]"
 fi
 
-# Check concurrency_config required fields
-CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+# Check concurrency_config required fields (config calls this def concurrency_and_buffer_size)
+CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_and_buffer_size.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrencyConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_CONCURRENCY_REQUIRED" != "$HELM_CONCURRENCY_REQUIRED" ]; then
@@ -433,38 +433,15 @@ else
   echo "✅ MCP stdio config required fields match: [$CONFIG_MCP_STDIO_REQUIRED]"
 fi
 
-# Check MCP websocket_config required fields
-CONFIG_MCP_WS_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.websocket_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_MCP_WS_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.websocketConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
-
-if [ "$CONFIG_MCP_WS_REQUIRED" != "$HELM_MCP_WS_REQUIRED" ]; then
-  echo "❌ MCP websocket config required fields mismatch:"
-  echo "   Config: [$CONFIG_MCP_WS_REQUIRED]"
-  echo "   Helm:   [$HELM_MCP_WS_REQUIRED]"
-  ERRORS=$((ERRORS + 1))
-else
-  echo "✅ MCP websocket config required fields match: [$CONFIG_MCP_WS_REQUIRED]"
-fi
-
-# Check MCP http_config required fields
-CONFIG_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.http_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.httpConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
-
-if [ "$CONFIG_MCP_HTTP_REQUIRED" != "$HELM_MCP_HTTP_REQUIRED" ]; then
-  echo "❌ MCP http config required fields mismatch:"
-  echo "   Config: [$CONFIG_MCP_HTTP_REQUIRED]"
-  echo "   Helm:   [$HELM_MCP_HTTP_REQUIRED]"
-  ERRORS=$((ERRORS + 1))
-else
-  echo "✅ MCP http config required fields match: [$CONFIG_MCP_HTTP_REQUIRED]"
-fi
+# MCP websocket_config / http_config are Helm-only sub-structures; config.schema.json uses
+# a flat connection_type + connection_string instead, so there is nothing to compare here.
 
 echo ""
 echo "🔍 Checking required fields in SAML/SCIM config..."
 
 # Check okta_config required fields
 CONFIG_OKTA_REQUIRED=$(jq -r '."$defs".okta_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_OKTA_REQUIRED" != "$HELM_OKTA_REQUIRED" ]; then
   echo "❌ Okta config required fields mismatch:"
@@ -477,7 +454,7 @@ fi
 
 # Check entra_config required fields
 CONFIG_ENTRA_REQUIRED=$(jq -r '."$defs".entra_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_ENTRA_REQUIRED" != "$HELM_ENTRA_REQUIRED" ]; then
   echo "❌ Entra config required fields mismatch:"

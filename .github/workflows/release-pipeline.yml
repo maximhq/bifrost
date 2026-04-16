@@ -20,10 +20,11 @@ jobs:
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >+
 
       - name: Check if pipeline should be skipped
         id: check
@@ -54,10 +55,21 @@ jobs:
       framework-version: ${{ steps.detect.outputs.framework-version }}
       transport-version: ${{ steps.detect.outputs.transport-version }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            azure.archive.ubuntu.com:80
+            dl.google.com:443
+            esm.ubuntu.com:443
+            github.com:443
+            packages.microsoft.com:443
+            registry.hub.docker.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -82,10 +94,39 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.elevenlabs.io:443
+            api.fireworks.ai:443
+            api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.openai.com:443
+            api.parasail.io:443
+            api.perplexity.ai:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
+            bedrock.us-east-1.amazonaws.com:443
+            bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            fal.media:443
+            generativelanguage.googleapis.com:443
+            github.com:443
+            huggingface.co:443
+            login.microsoftonline.com:443
+            maxim-o1.openai.azure.com:443
+            nodejs.org:443
+            openrouter.ai:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            router.huggingface.co:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -157,10 +198,11 @@ jobs:
     outputs:
       approved: ${{ steps.approve.outputs.approved }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >+
 
       - name: Display failed test info
         run: |
@@ -178,10 +220,30 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            _grpc_config.cluster.qdrant.io:443
+            _grpc_config.localhost:443
+            api.github.com:443
+            auth.docker.io:443
+            cluster.qdrant.io:443
+            cluster.weaviate.network:443
+            codecov.io:443
+            dl-cdn.alpinelinux.org:443
+            ghcr.io:443
+            github.com:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            uploader.codecov.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -249,10 +311,36 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            _grpc_config.localhost:443
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            api.github.com:443
+            api.openai.com:443
+            auth.docker.io:443
+            azure.archive.ubuntu.com:80
+            codecov.io:443
+            dl-cdn.alpinelinux.org:443
+            esm.ubuntu.com:443
+            getbifrost.ai:443
+            ghcr.io:443
+            github.com:443
+            packages.microsoft.com:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            uploader.codecov.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -325,10 +413,35 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            172.38.0.12:8080
+            172.38.0.12:8301
+            172.38.0.2:5432
+            api.github.com:443
+            auth.docker.io:443
+            codecov.io:443
+            cr.weaviate.io:443
+            example.com:443
+            file.example.com:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            getbifrost.ai:443
+            github.com:443
+            nodejs.org:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            uploader.codecov.io:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -375,10 +488,27 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            172.38.0.2:5432
+            api.anthropic.com:443
+            api.github.com:443
+            api.openai.com:443
+            auth.docker.io:443
+            downloads.getmaxim.ai:443
+            getbifrost.ai:443
+            github.com:443
+            nodejs.org:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -422,10 +552,46 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            172.38.0.12:8301
+            172.38.0.2:5432
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            api.github.com:443
+            api.openai.com:443
+            auth.docker.io:443
+            azure.archive.ubuntu.com:80
+            cdn.jsdelivr.net:443
+            cdn.playwright.dev:443
+            cr.weaviate.io:443
+            d3gk2c5xim1je2.cloudfront.net:443
+            d4tuoctqmanu0.cloudfront.net:443
+            docs.getbifrost.ai:443
+            esm.ubuntu.com:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            getbifrost.ai:443
+            github.com:443
+            mintcdn.com:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            playwright.download.prss.microsoft.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            static.cloudflareinsights.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            ts-mcp-sse-proxy.fly.dev:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -479,10 +645,44 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.elevenlabs.io:443
+            api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.openai.com:443
+            api.parasail.io:443
+            api.replicate.com:443
+            auth.docker.io:443
+            bedrock.us-east-1.amazonaws.com:443
+            dl-cdn.alpinelinux.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            generativelanguage.googleapis.com:443
+            getbifrost.ai:443
+            ghcr.io:443
+            github.com:443
+            huggingface.co:443
+            maxim-o1.openai.azure.com:443
+            nodejs.org:443
+            openrouter.ai:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -554,10 +754,44 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.elevenlabs.io:443
+            api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.openai.com:443
+            api.parasail.io:443
+            api.replicate.com:443
+            auth.docker.io:443
+            bedrock.us-east-1.amazonaws.com:443
+            dl-cdn.alpinelinux.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            generativelanguage.googleapis.com:443
+            getbifrost.ai:443
+            ghcr.io:443
+            github.com:443
+            huggingface.co:443
+            maxim-o1.openai.azure.com:443
+            nodejs.org:443
+            openrouter.ai:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            telemetry.qdrant.io:443
+            www.getbifrost.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -643,10 +877,15 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.core-version }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            release-assets.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -734,10 +973,17 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.framework-version }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -833,10 +1079,25 @@ jobs:
     outputs:
       success: ${{ steps.release.outputs.success }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            api.github.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            github.com:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -944,10 +1205,21 @@ jobs:
     outputs:
       success: ${{ steps.prep.outputs.success }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            nodejs.org:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -985,10 +1257,30 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            api.github.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            nodejs.org:443
+            packages.microsoft.com:443
+            proxy.golang.org:443
+            pypi.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1041,10 +1333,23 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            api.github.com:443
+            files.pythonhosted.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            nodejs.org:443
+            proxy.golang.org:443
+            pypi.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1097,10 +1402,16 @@ jobs:
       success: ${{ steps.release.outputs.success }}
       version: ${{ needs.detect-changes.outputs.transport-version }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            pypi.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1155,10 +1466,21 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            auth.docker.io:443
+            dl-cdn.alpinelinux.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            storage.googleapis.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1231,10 +1553,21 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            auth.docker.io:443
+            dl-cdn.alpinelinux.org:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            registry.npmjs.org:443
+            storage.googleapis.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1289,10 +1622,15 @@ jobs:
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            auth.docker.io:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1331,10 +1669,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1369,10 +1709,20 @@ jobs:
     if: "always() && needs.check-skip.outputs.should-skip != 'true'"
     runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.esm.ubuntu.com:443
+            _https._tcp.motd.ubuntu.com:443
+            _https._tcp.packages.microsoft.com:443
+            azure.archive.ubuntu.com:80
+            discord.com:443
+            dl.google.com:443
+            esm.ubuntu.com:443
+            packages.microsoft.com:443
 
       - name: Install jq
         run: |
