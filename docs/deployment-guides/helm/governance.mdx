@@ -1,0 +1,422 @@
+---
+title: "Governance"
+description: "Configure Bifrost governance in Helm — budgets, rate limits, virtual keys, routing rules, and admin authentication"
+icon: "shield"
+---
+
+Governance lets you control who can call which providers, how much they can spend, how fast they can go, and how traffic is routed. Everything is declared under `bifrost.governance` in your values file and seeded into the database at startup.
+
+<Note>
+The governance **plugin** must also be enabled for enforcement to take effect:
+
+```yaml
+bifrost:
+  plugins:
+    governance:
+      enabled: true
+```
+
+See the [Plugins](/deployment-guides/helm/plugins) page for plugin configuration details.
+</Note>
+
+---
+
+## Admin Authentication
+
+Protect the Bifrost dashboard and management API with username/password auth.
+
+```bash
+kubectl create secret generic bifrost-admin-credentials \
+  --from-literal=username='admin' \
+  --from-literal=password='your-secure-admin-password'
+```
+
+```yaml
+bifrost:
+  governance:
+    authConfig:
+      isEnabled: true
+      disableAuthOnInference: false   # keep auth on inference routes
+      existingSecret: "bifrost-admin-credentials"
+      usernameKey: "username"
+      passwordKey: "password"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f governance-auth-values.yaml
+```
+
+---
+
+## Budgets
+
+Spending caps that reset on a configurable period. Budgets are referenced by ID from virtual keys, teams, customers, or providers.
+
+| Reset duration | Syntax |
+|----------------|--------|
+| 30 seconds | `"30s"` |
+| 5 minutes | `"5m"` |
+| 1 hour | `"1h"` |
+| 1 day | `"1d"` |
+| 1 week | `"1w"` |
+| 1 month | `"1M"` |
+| 1 year | `"1Y"` |
+
+```yaml
+bifrost:
+  governance:
+    budgets:
+      - id: "budget-dev"
+        max_limit: 50          # $50 per month
+        reset_duration: "1M"
+
+      - id: "budget-production"
+        max_limit: 500         # $500 per month
+        reset_duration: "1M"
+
+      - id: "budget-testing"
+        max_limit: 10          # $10 per day
+        reset_duration: "1d"
+
+      - id: "budget-enterprise"
+        max_limit: 5000        # $5000 per month
+        reset_duration: "1M"
+```
+
+---
+
+## Rate Limits
+
+Token and request-count caps per time window. Referenced by ID from virtual keys, teams, customers, or providers.
+
+```yaml
+bifrost:
+  governance:
+    rateLimits:
+      - id: "rate-limit-standard"
+        token_max_limit: 100000       # 100K tokens per hour
+        token_reset_duration: "1h"
+        request_max_limit: 1000       # 1000 requests per hour
+        request_reset_duration: "1h"
+
+      - id: "rate-limit-high"
+        token_max_limit: 500000       # 500K tokens per hour
+        token_reset_duration: "1h"
+        request_max_limit: 5000
+        request_reset_duration: "1h"
+
+      - id: "rate-limit-burst"
+        token_max_limit: 50000        # 50K tokens per minute (burst)
+        token_reset_duration: "1m"
+        request_max_limit: 500
+        request_reset_duration: "1m"
+
+      - id: "rate-limit-testing"
+        token_max_limit: 10000
+        token_reset_duration: "1h"
+        request_max_limit: 100
+        request_reset_duration: "1h"
+```
+
+---
+
+## Customers & Teams
+
+Optional organizational hierarchy. Virtual keys can be assigned to customers or teams, inheriting their budgets and rate limits.
+
+```yaml
+bifrost:
+  governance:
+    customers:
+      - id: "customer-acme"
+        name: "Acme Corp"
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+
+      - id: "customer-startup"
+        name: "Startup Inc"
+        budget_id: "budget-dev"
+        rate_limit_id: "rate-limit-standard"
+
+    teams:
+      - id: "team-platform"
+        name: "Platform Team"
+        customer_id: "customer-acme"
+        budget_id: "budget-enterprise"
+        rate_limit_id: "rate-limit-high"
+
+      - id: "team-ml"
+        name: "ML Team"
+        customer_id: "customer-acme"
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-standard"
+```
+
+---
+
+## Virtual Keys
+
+Virtual keys are the primary access tokens issued to callers. They scope which providers, models, and underlying API keys are accessible.
+
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      # 1. Unrestricted dev key — access to every provider
+      - id: "vk-dev-all"
+        name: "Dev: all providers"
+        value: "vk-dev-all-secret-token"
+        is_active: true
+        budget_id: "budget-dev"
+        rate_limit_id: "rate-limit-standard"
+        # No provider_configs → all providers allowed
+
+      # 2. OpenAI only — restricted to two models
+      - id: "vk-openai-prod"
+        name: "OpenAI Production"
+        value: "vk-openai-prod-secret-token"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["gpt-4o", "gpt-4o-mini"]
+            # No keys[] → all configured OpenAI keys allowed
+
+      # 3. Multi-provider with weighted routing
+      - id: "vk-multi"
+        name: "Multi-provider weighted"
+        value: "vk-multi-secret-token"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "openai"
+            weight: 2         # 50%
+            allowed_models: ["*"]
+          - provider: "anthropic"
+            weight: 1         # 25%
+            allowed_models: ["*"]
+          - provider: "groq"
+            weight: 1         # 25%
+            allowed_models: ["*"]
+
+      # 4. Team-scoped key
+      - id: "vk-platform-team"
+        name: "Platform Team Key"
+        value: "vk-platform-team-token"
+        is_active: true
+        team_id: "team-platform"       # inherits team budget/rate-limit
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["*"]
+            keys:
+              - name: "openai-primary"  # pin to specific configured key
+
+      # 5. Restricted testing key
+      - id: "vk-testing"
+        name: "Testing (gpt-4o-mini only)"
+        value: "vk-testing-token"
+        is_active: true
+        budget_id: "budget-testing"
+        rate_limit_id: "rate-limit-testing"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["gpt-4o-mini"]
+
+      # 6. Batch API key
+      - id: "vk-batch"
+        name: "Batch API workloads"
+        value: "vk-batch-token"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-burst"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["*"]
+            keys:
+              - name: "openai-batch"    # only the batch-flagged key
+```
+
+**Use a virtual key in API calls:**
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-openai-prod-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
+## Model Configs
+
+Apply budgets and rate limits at the model level, independent of virtual keys:
+
+```yaml
+bifrost:
+  governance:
+    modelConfigs:
+      - id: "model-gpt4o"
+        model_name: "gpt-4o"
+        provider: "openai"
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+
+      - id: "model-claude"
+        model_name: "claude-3-5-sonnet-20241022"
+        provider: "anthropic"
+        rate_limit_id: "rate-limit-standard"
+```
+
+---
+
+## Provider Governance
+
+Apply budgets and rate limits at the provider level:
+
+```yaml
+bifrost:
+  governance:
+    providers:
+      - name: "openai"
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+        send_back_raw_request: false
+        send_back_raw_response: false
+
+      - name: "anthropic"
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-standard"
+```
+
+---
+
+## Routing Rules
+
+CEL-expression-based routing rules redirect requests to different providers or models based on request attributes.
+
+| Field | Description |
+|-------|-------------|
+| `cel_expression` | CEL expression evaluated against the request; if `true`, rule fires |
+| `targets` | Provider/model targets with weights |
+| `fallbacks` | Providers to try if all targets fail |
+| `scope` | `global`, `team`, `customer`, or `virtual_key` |
+| `scope_id` | Required for non-global scopes |
+| `priority` | Lower number = evaluated first |
+
+```yaml
+bifrost:
+  governance:
+    routingRules:
+      # Route all GPT requests to Azure
+      - id: "route-gpt-to-azure"
+        name: "GPT → Azure"
+        description: "Route all GPT model requests to Azure OpenAI"
+        enabled: true
+        cel_expression: "model.startsWith('gpt-')"
+        targets:
+          - provider: "azure"
+            model: ""        # empty = use original model name
+            weight: 1.0
+        fallbacks: ["openai"]
+        scope: "global"
+        priority: 0
+
+      # Route heavy models to a slower but cheaper provider
+      - id: "route-heavy-to-groq"
+        name: "Large context → Groq"
+        enabled: true
+        cel_expression: "model == 'gpt-4o' && request_body.max_tokens > 4000"
+        targets:
+          - provider: "groq"
+            model: "llama-3.3-70b-versatile"
+            weight: 1.0
+        fallbacks: ["openai"]
+        scope: "global"
+        priority: 1
+
+      # Team-scoped rule
+      - id: "route-ml-team-bedrock"
+        name: "ML Team → Bedrock"
+        enabled: true
+        cel_expression: "true"    # match all requests for this scope
+        targets:
+          - provider: "bedrock"
+            model: ""
+            weight: 1.0
+        fallbacks: ["openai"]
+        scope: "team"
+        scope_id: "team-ml"
+        priority: 0
+```
+
+---
+
+## Full Example
+
+```yaml
+# governance-full-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  plugins:
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: true
+
+  governance:
+    authConfig:
+      isEnabled: true
+      existingSecret: "bifrost-admin-credentials"
+      usernameKey: "username"
+      passwordKey: "password"
+
+    budgets:
+      - id: "budget-production"
+        max_limit: 500
+        reset_duration: "1M"
+      - id: "budget-dev"
+        max_limit: 50
+        reset_duration: "1M"
+
+    rateLimits:
+      - id: "rate-limit-standard"
+        token_max_limit: 100000
+        token_reset_duration: "1h"
+        request_max_limit: 1000
+        request_reset_duration: "1h"
+
+    virtualKeys:
+      - id: "vk-production"
+        name: "Production"
+        value: "vk-prod-secret-token"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-standard"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models: ["gpt-4o", "gpt-4o-mini"]
+```
+
+```bash
+kubectl create secret generic bifrost-encryption \
+  --from-literal=encryption-key='your-32-byte-key'
+
+kubectl create secret generic bifrost-admin-credentials \
+  --from-literal=username='admin' \
+  --from-literal=password='secure-admin-password'
+
+helm install bifrost bifrost/bifrost -f governance-full-values.yaml
+```

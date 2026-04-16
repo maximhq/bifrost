@@ -1,0 +1,316 @@
+---
+title: "Client Configuration"
+description: "Configure the Bifrost client: connection pool, logging, CORS, header filtering, compat shims, and MCP settings"
+icon: "gear"
+---
+
+The `bifrost.client` block controls how Bifrost manages its internal worker pool, request logging, authentication enforcement, header policies, SDK compatibility shims, and MCP agent behaviour. All settings map directly to the `client` section of the rendered `config.json`.
+
+---
+
+## Connection Pool
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.initialPoolSize` | Pre-allocated worker goroutines per provider queue | `300` |
+| `bifrost.client.dropExcessRequests` | Drop requests when queue is full instead of waiting | `false` |
+
+A larger pool reduces latency spikes under burst load at the cost of higher baseline memory. For production workloads with multiple providers, `1000` is a common starting point.
+
+```yaml
+# client-pool.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  client:
+    initialPoolSize: 1000
+    dropExcessRequests: true   # Return 429 instead of queuing indefinitely
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f client-pool.yaml
+
+# Or set inline
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set bifrost.client.initialPoolSize=1000 \
+  --set bifrost.client.dropExcessRequests=true
+```
+
+---
+
+## Request & Response Logging
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.enableLogging` | Log all LLM requests and responses | `true` |
+| `bifrost.client.disableContentLogging` | Strip message content from logs (keeps metadata) | `false` |
+| `bifrost.client.logRetentionDays` | Days to retain log entries in the store | `365` |
+| `bifrost.client.loggingHeaders` | HTTP request headers to capture in log metadata | `[]` |
+
+Set `disableContentLogging: true` for HIPAA / PCI compliance workloads where message content must not be persisted.
+
+```yaml
+bifrost:
+  client:
+    enableLogging: true
+    disableContentLogging: true    # PII / compliance: store metadata only
+    logRetentionDays: 90
+    loggingHeaders:
+      - "x-request-id"
+      - "x-user-id"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set bifrost.client.disableContentLogging=true \
+  --set bifrost.client.logRetentionDays=90
+```
+
+---
+
+## Security & CORS
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.allowedOrigins` | CORS allowed origins | `["*"]` |
+| `bifrost.client.allowDirectKeys` | Allow callers to pass provider keys directly in requests | `false` |
+| `bifrost.client.enforceGovernanceHeader` | Require `x-bf-vk` virtual-key header on every request | `false` |
+| `bifrost.client.maxRequestBodySizeMb` | Maximum allowed request body size | `100` |
+| `bifrost.client.whitelistedRoutes` | Routes that bypass auth middleware | `[]` |
+
+```yaml
+bifrost:
+  client:
+    allowedOrigins:
+      - "https://app.yourdomain.com"
+      - "https://admin.yourdomain.com"
+    allowDirectKeys: false         # Prevent callers from supplying raw provider keys
+    enforceGovernanceHeader: true  # Every request must carry a virtual key
+    maxRequestBodySizeMb: 50
+    whitelistedRoutes:
+      - "/health"
+      - "/metrics"
+```
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.4.11 \
+  --set bifrost.client.enforceGovernanceHeader=true \
+  --set bifrost.client.allowDirectKeys=false
+```
+
+---
+
+## Header Filtering
+
+Controls which `x-bf-eh-*` headers are forwarded to upstream LLM providers.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.headerFilterConfig.allowlist` | Only these headers are forwarded (whitelist mode) | `[]` |
+| `bifrost.client.headerFilterConfig.denylist` | These headers are always blocked | `[]` |
+| `bifrost.client.requiredHeaders` | Headers that must be present on every request | `[]` |
+| `bifrost.client.allowedHeaders` | Additional headers permitted for CORS and WebSocket | `[]` |
+
+When both lists are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode — only listed headers are forwarded.
+
+```yaml
+bifrost:
+  client:
+    headerFilterConfig:
+      allowlist:
+        - "x-bf-eh-anthropic-version"
+        - "x-bf-eh-openai-beta"
+      denylist: []
+    requiredHeaders:
+      - "x-request-id"
+```
+
+---
+
+## Authentication
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.authConfig.isEnabled` | Enable username/password auth for the API and dashboard | `false` |
+| `bifrost.authConfig.adminUsername` | Admin username (plain text, prefer secret) | `""` |
+| `bifrost.authConfig.adminPassword` | Admin password (plain text, prefer secret) | `""` |
+| `bifrost.authConfig.existingSecret` | Kubernetes Secret name for credentials | `""` |
+| `bifrost.authConfig.usernameKey` | Key within the secret for username | `"username"` |
+| `bifrost.authConfig.passwordKey` | Key within the secret for password | `"password"` |
+| `bifrost.authConfig.disableAuthOnInference` | Skip auth check on `/v1/*` inference routes | `false` |
+
+```bash
+# Create secret first
+kubectl create secret generic bifrost-admin \
+  --from-literal=username='admin' \
+  --from-literal=password='your-secure-password'
+```
+
+```yaml
+bifrost:
+  authConfig:
+    isEnabled: true
+    disableAuthOnInference: false
+    existingSecret: "bifrost-admin"
+    usernameKey: "username"
+    passwordKey: "password"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  -f auth-values.yaml
+```
+
+---
+
+## Encryption
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.encryptionKey` | 32-byte encryption key (plain text — use secret in production) | `""` |
+| `bifrost.encryptionKeySecret.name` | Kubernetes Secret name containing the key | `""` |
+| `bifrost.encryptionKeySecret.key` | Key within the secret | `"encryption-key"` |
+
+Always use a Kubernetes Secret in production:
+
+```bash
+kubectl create secret generic bifrost-encryption \
+  --from-literal=encryption-key='your-32-byte-encryption-key-here'
+```
+
+```yaml
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+```
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.4.11 \
+  -f encryption-values.yaml
+```
+
+---
+
+## Async Jobs & Database Pings
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.disableDbPingsInHealth` | Exclude DB connectivity from `/health` checks | `false` |
+| `bifrost.client.asyncJobResultTTL` | TTL (seconds) for async job results | `3600` |
+
+---
+
+## Compat Shims
+
+Compatibility flags that let Bifrost silently adapt request/response shapes for SDK integrations:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.compat.convertTextToChat` | Wrap legacy text completions as chat messages | `false` |
+| `bifrost.client.compat.convertChatToResponses` | Translate chat completions to Responses API format | `false` |
+| `bifrost.client.compat.shouldDropParams` | Silently drop unsupported parameters instead of erroring | `false` |
+| `bifrost.client.compat.shouldConvertParams` | Auto-convert parameter names across provider schemas | `false` |
+
+```yaml
+bifrost:
+  client:
+    compat:
+      shouldDropParams: true     # Useful when proxying mixed SDK traffic
+      convertTextToChat: true    # For clients using the legacy /v1/completions endpoint
+```
+
+---
+
+## Prometheus Labels
+
+Add custom labels to every Prometheus metric emitted by Bifrost:
+
+```yaml
+bifrost:
+  client:
+    prometheusLabels:
+      - name: "environment"
+        value: "production"
+      - name: "region"
+        value: "us-east-1"
+```
+
+---
+
+## MCP Agent Settings
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.mcpAgentDepth` | Maximum tool-call recursion depth for MCP agent mode | `10` |
+| `bifrost.client.mcpToolExecutionTimeout` | Timeout per tool execution in seconds | `30` |
+| `bifrost.client.mcpCodeModeBindingLevel` | Code mode binding level (`server` or `tool`) | `""` |
+| `bifrost.client.mcpToolSyncInterval` | Global tool sync interval in minutes (`0` = disabled) | `0` |
+
+```yaml
+bifrost:
+  client:
+    mcpAgentDepth: 15
+    mcpToolExecutionTimeout: 60
+```
+
+---
+
+## Full Example
+
+```yaml
+# client-full.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  authConfig:
+    isEnabled: true
+    disableAuthOnInference: false
+    existingSecret: "bifrost-admin"
+    usernameKey: "username"
+    passwordKey: "password"
+
+  client:
+    initialPoolSize: 1000
+    dropExcessRequests: true
+    allowedOrigins:
+      - "https://app.yourdomain.com"
+    enableLogging: true
+    disableContentLogging: false
+    logRetentionDays: 90
+    enforceGovernanceHeader: true
+    allowDirectKeys: false
+    maxRequestBodySizeMb: 100
+    headerFilterConfig:
+      allowlist: []
+      denylist: []
+    prometheusLabels:
+      - name: "environment"
+        value: "production"
+    mcpAgentDepth: 10
+    mcpToolExecutionTimeout: 30
+```
+
+```bash
+# Create prerequisites
+kubectl create secret generic bifrost-encryption \
+  --from-literal=encryption-key='your-32-byte-encryption-key-here'
+
+kubectl create secret generic bifrost-admin \
+  --from-literal=username='admin' \
+  --from-literal=password='your-secure-password'
+
+# Install
+helm install bifrost bifrost/bifrost -f client-full.yaml
+```

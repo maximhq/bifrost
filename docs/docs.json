@@ -363,8 +363,28 @@
             "pages": [
               "deployment-guides/k8s",
               "deployment-guides/ecs",
-              "deployment-guides/helm",
               "deployment-guides/fly"
+            ]
+          },
+          {
+            "group": "Config as Code",
+            "icon": "code",
+            "pages": [
+              {
+                "group": "Helm",
+                "icon": "helicopter-symbol",
+                "pages": [
+                  "deployment-guides/helm",
+                  "deployment-guides/helm/values",
+                  "deployment-guides/helm/client",
+                  "deployment-guides/helm/providers",
+                  "deployment-guides/helm/storage",
+                  "deployment-guides/helm/plugins",
+                  "deployment-guides/helm/governance",
+                  "deployment-guides/helm/cluster",
+                  "deployment-guides/helm/troubleshooting"
+                ]
+              }
             ]
           },
           {

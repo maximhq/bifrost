@@ -1,0 +1,401 @@
+---
+title: "Troubleshooting"
+description: "Diagnose and fix common issues with Bifrost Helm deployments — pods, database, ingress, secrets, PVCs, and performance"
+icon: "wrench"
+---
+
+This page covers the most common problems encountered when deploying Bifrost with Helm, along with diagnostic commands and fixes.
+
+---
+
+## Pod Not Starting
+
+### Quick diagnostics
+
+```bash
+# Show pod status
+kubectl get pods -l app.kubernetes.io/name=bifrost
+
+# Show pod events (most useful first step)
+kubectl describe pod -l app.kubernetes.io/name=bifrost
+
+# Show pod logs (use --previous if the pod has already crashed)
+kubectl logs -l app.kubernetes.io/name=bifrost
+kubectl logs -l app.kubernetes.io/name=bifrost --previous
+```
+
+### Image pull errors (`ErrImagePull` / `ImagePullBackOff`)
+
+```bash
+# Check which image is being pulled
+kubectl describe pod -l app.kubernetes.io/name=bifrost | grep "Image:"
+
+# Verify imagePullSecrets are attached
+kubectl get pod -l app.kubernetes.io/name=bifrost -o jsonpath='{.items[0].spec.imagePullSecrets}'
+
+# Test secret manually
+kubectl get secret <pull-secret-name> -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq .
+```
+
+Common causes:
+- `image.tag` not set — the chart requires it; the pod will not start without it
+- Pull secret missing or expired (ECR tokens expire after 12 hours)
+- Incorrect `image.repository` for enterprise registry
+
+```bash
+# Fix: set the correct tag
+helm upgrade bifrost bifrost/bifrost --reuse-values --set image.tag=v1.4.11
+```
+
+### PVC not binding (`Pending`)
+
+```bash
+# Check PVC status
+kubectl get pvc -l app.kubernetes.io/instance=bifrost
+
+# Show binding events
+kubectl describe pvc -l app.kubernetes.io/instance=bifrost
+```
+
+Common causes:
+- No Persistent Volume provisioner in the cluster
+- `storageClass` set to a class that doesn't exist
+- `ReadWriteOnce` access mode with multiple replicas (SQLite PVCs are single-node)
+
+```bash
+# List available storage classes
+kubectl get storageclass
+
+# Fix: pin to a valid storage class
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set storage.persistence.storageClass=standard
+```
+
+### ConfigMap / Secret errors
+
+```bash
+# View the generated ConfigMap (contains rendered config.json)
+kubectl get configmap bifrost-config -o yaml
+
+# View secrets the pod depends on
+kubectl get secret -l app.kubernetes.io/instance=bifrost
+
+# Decode a specific secret value
+kubectl get secret bifrost-encryption -o jsonpath='{.data.key}' | base64 -d
+```
+
+### CrashLoopBackOff
+
+```bash
+# Get last log lines before the crash
+kubectl logs -l app.kubernetes.io/name=bifrost --previous --tail=50
+
+# Common causes shown in logs:
+# "encryption key is required" → bifrost.encryptionKey or encryptionKeySecret not set
+# "failed to connect to database" → see Database section below
+# "image.tag is required" → set image.tag in values
+```
+
+---
+
+## Database Connection Issues
+
+### Embedded PostgreSQL
+
+```bash
+# Check if the PostgreSQL pod is running
+kubectl get pods -l app.kubernetes.io/name=bifrost-postgresql
+
+# Connect directly to inspect the database
+kubectl exec -it deployment/bifrost-postgresql -- psql -U bifrost -d bifrost
+
+# Test connectivity from the Bifrost pod
+kubectl exec -it deployment/bifrost -- nc -zv bifrost-postgresql 5432
+
+# Check PostgreSQL logs
+kubectl logs deployment/bifrost-postgresql --tail=50
+```
+
+### External PostgreSQL
+
+```bash
+# Test connectivity from within the cluster
+kubectl run pg-test --image=postgres:16-alpine --rm -it --restart=Never -- \
+  psql "host=your-db-host dbname=bifrost user=bifrost sslmode=require"
+
+# Verify the secret value is correct
+kubectl get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d
+
+# Check that the external host/port is reachable
+kubectl exec -it deployment/bifrost -- nc -zv your-db-host 5432
+```
+
+Common causes:
+- `sslMode: disable` when the database requires SSL — set `sslMode: require`
+- Password in secret doesn't match the database user
+- Network policy blocking pod → database traffic
+- Database not UTF8 encoded (see [PostgreSQL UTF8 Requirement](/quickstart/gateway/setting-up#postgresql-utf8-requirement))
+
+```bash
+# Fix: update the secret and restart
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='correct-password' \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl rollout restart deployment/bifrost
+```
+
+---
+
+## Ingress Not Working
+
+```bash
+# Check ingress resource status
+kubectl describe ingress bifrost
+
+# Check if the ingress controller is running
+kubectl get pods -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+
+# View ingress controller logs for routing errors
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=50
+
+# Verify DNS resolves to the correct load balancer IP
+nslookup bifrost.yourdomain.com
+kubectl get ingress bifrost -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+
+# Test without TLS first
+curl -v http://bifrost.yourdomain.com/health
+```
+
+Common causes:
+- `ingress.className` not set or set to a class not installed in the cluster
+- TLS certificate not issued yet (cert-manager can take up to 60 seconds)
+- Service port mismatch — Bifrost listens on `8080` by default
+
+```bash
+# Check cert-manager certificate status
+kubectl get certificate -l app.kubernetes.io/instance=bifrost
+kubectl describe certificate bifrost-tls
+```
+
+---
+
+## Secret and Credential Issues
+
+### Provider API key not resolving
+
+If Bifrost logs show `env.OPENAI_API_KEY: not set` or similar:
+
+```bash
+# Check the env var is present in the running pod
+kubectl exec -it deployment/bifrost -- env | grep OPENAI
+
+# Verify the providerSecrets secret exists with the right key
+kubectl get secret provider-api-keys -o yaml
+
+# Check the providerSecrets configuration rendered correctly
+kubectl get configmap bifrost-config -o yaml | grep -A5 providers
+```
+
+### Encryption key issues
+
+```bash
+# Verify the secret exists and contains the right key name
+kubectl get secret bifrost-encryption -o yaml
+
+# Check the exact key name matches encryptionKeySecret.key in values
+# Default key name is "encryption-key" — if you used "key", set:
+#   bifrost.encryptionKeySecret.key: "key"
+```
+
+---
+
+## High Memory Usage
+
+```bash
+# Check current resource usage
+kubectl top pods -l app.kubernetes.io/name=bifrost
+
+# Check if OOM kills are happening
+kubectl describe pod -l app.kubernetes.io/name=bifrost | grep -A3 "OOMKilled\|Limits"
+
+# View resource requests/limits on running pods
+kubectl get pod -l app.kubernetes.io/name=bifrost \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].resources}{"\n"}{end}'
+```
+
+**Increase resource limits:**
+
+```bash
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set resources.limits.memory=4Gi \
+  --set resources.requests.memory=1Gi
+```
+
+**Tune Go runtime** (see [Docker Tuning](/deployment-guides/docker-tuning)):
+
+```yaml
+env:
+  - name: GOGC
+    value: "200"          # run GC less often
+  - name: GOMEMLIMIT
+    value: "3500MiB"      # hard memory ceiling slightly below the container limit
+```
+
+---
+
+## High CPU Usage / Latency
+
+```bash
+# Check CPU usage
+kubectl top pods -l app.kubernetes.io/name=bifrost
+
+# Check if HPA is scaling correctly
+kubectl get hpa bifrost
+kubectl describe hpa bifrost
+```
+
+Common causes:
+- `initialPoolSize` too small — goroutines queuing up; increase to `500`–`1000`
+- `dropExcessRequests: false` with a small pool — queue depth growing unboundedly
+
+```bash
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set bifrost.client.initialPoolSize=1000 \
+  --set bifrost.client.dropExcessRequests=true
+```
+
+---
+
+## Autoscaling Issues
+
+### HPA not scaling
+
+```bash
+# Check HPA status and current metrics
+kubectl describe hpa bifrost
+
+# Verify metrics server is installed
+kubectl top nodes
+kubectl top pods
+
+# Common fix: metrics server not installed
+# Install with:
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+### Pods scaling down too aggressively (drops active SSE streams)
+
+The default `scaleDown.stabilizationWindowSeconds: 300` and `preStop` sleep of 15 seconds should prevent this. If streams are still being cut:
+
+```yaml
+terminationGracePeriodSeconds: 120   # increase if streams run longer than 105s
+
+autoscaling:
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # wait 10 min before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300           # remove at most 1 pod per 5 min
+
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 30"]  # give load balancer more time to drain
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f graceful-shutdown-values.yaml
+```
+
+---
+
+## SQLite / PVC Issues
+
+### StatefulSet migration (upgrading from chart < v2.0.0)
+
+Older chart versions used a Deployment + manual PVC. v2.0.0 moved SQLite to a StatefulSet. If upgrading:
+
+```bash
+# 1. Scale down the old deployment
+kubectl scale deployment bifrost --replicas=0
+
+# 2. Note the existing PVC name
+kubectl get pvc
+
+# 3. Upgrade, pointing at the existing claim
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set storage.persistence.existingClaim=<your-old-pvc-name> \
+  --set image.tag=v1.4.11
+```
+
+### Data lost after upgrade
+
+```bash
+# Check if PVCs still exist (they persist after helm uninstall)
+kubectl get pvc -l app.kubernetes.io/instance=bifrost
+
+# Re-attach by setting existingClaim
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set storage.persistence.existingClaim=<pvc-name>
+```
+
+---
+
+## Cluster Mode Issues
+
+### Peers not discovering each other
+
+```bash
+# Check gossip port is reachable between pods
+kubectl exec -it bifrost-0 -- nc -zv bifrost-1.bifrost-headless 7946
+
+# View gossip-related log lines
+kubectl logs -l app.kubernetes.io/name=bifrost --tail=100 | grep -i gossip
+
+# Check the headless service exists
+kubectl get svc bifrost-headless
+```
+
+For Kubernetes-based discovery, verify the service account has pod list permissions:
+
+```bash
+kubectl auth can-i list pods --as=system:serviceaccount:default:bifrost
+```
+
+---
+
+## Useful Diagnostic Commands
+
+```bash
+# Full state dump for a support ticket
+kubectl get all -l app.kubernetes.io/instance=bifrost
+kubectl describe pod -l app.kubernetes.io/name=bifrost > pod-describe.txt
+kubectl logs -l app.kubernetes.io/name=bifrost --tail=200 > pod-logs.txt
+
+# View the full rendered config.json
+kubectl get configmap bifrost-config -o jsonpath='{.data.config\.json}' | jq .
+
+# Check current Helm values (shows all overrides)
+helm get values bifrost
+
+# Check Helm release status
+helm status bifrost
+
+# View Helm release history
+helm history bifrost
+```
+
+---
+
+## Still Stuck?
+
+- [GitHub Issues](https://github.com/maximhq/bifrost/issues) — search existing issues or open a new one
+- [Enterprise Support](mailto:support@getmaxim.ai) — for enterprise customers with SLA
