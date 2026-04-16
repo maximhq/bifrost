@@ -155,6 +155,9 @@ TeamObject:
     member_count:
       type: integer
       description: Number of members in the team
+    virtual_key_count:
+      type: integer
+      description: Number of virtual keys assigned to the team
     created_at:
       type: string
       format: date-time

@@ -28815,6 +28815,10 @@
                             "type": "integer",
                             "description": "Number of members in the team"
                           },
+                          "virtual_key_count": {
+                            "type": "integer",
+                            "description": "Number of virtual keys assigned to the team"
+                          },
                           "created_at": {
                             "type": "string",
                             "format": "date-time"
@@ -28976,6 +28980,10 @@
                     "member_count": {
                       "type": "integer",
                       "description": "Number of members in the team"
+                    },
+                    "virtual_key_count": {
+                      "type": "integer",
+                      "description": "Number of virtual keys assigned to the team"
                     },
                     "created_at": {
                       "type": "string",
@@ -41525,6 +41533,12 @@
         "in": "header",
         "name": "x-api-key",
         "description": "API key authentication via the `x-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
+      },
+      "GoogleApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-goog-api-key",
+        "description": "Google API key authentication via the `x-goog-api-key` header.\nVirtual keys (prefixed with `sk-bf-`) can also be passed here.\n"
       }
     },
     "parameters": {
@@ -53765,6 +53779,8 @@
           },
           "virtual_keys": {
             "type": "array",
+            "nullable": true,
+            "description": "Virtual keys assigned to this team. This field may be omitted or returned as null in some responses (for example, when a team is embedded inside a virtual-key response) to avoid nested `virtual_keys` recursion.\n",
             "items": {
               "$ref": "#/components/schemas/VirtualKey"
             }

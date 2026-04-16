@@ -376,6 +376,11 @@ Team:
       $ref: '#/Budget'
     virtual_keys:
       type: array
+      nullable: true
+      description: >
+        Virtual keys assigned to this team. This field may be omitted or returned as null in some
+        responses (for example, when a team is embedded inside a virtual-key response) to avoid
+        nested `virtual_keys` recursion.
       items:
         $ref: '#/VirtualKey'
     profile:

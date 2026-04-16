@@ -2519,10 +2519,14 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 	return txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "id = ?", id).Error
 }
 
+const teamSelectWithVKCount = "governance_teams.*, (SELECT COUNT(*) FROM governance_virtual_keys WHERE team_id = governance_teams.id) AS virtual_key_count"
+
 // GetTeams retrieves all teams from the database.
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	// Preload relationships for complete information
-	query := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").Preload("RateLimit")
+	query := s.db.WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budget").Preload("RateLimit")
 	// Optional filtering by customer
 	if customerID != "" {
 		query = query.Where("customer_id = ?", customerID)
@@ -2564,6 +2568,7 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 
 	var teams []tables.TableTeam
 	if err := baseQuery.
+		Select(teamSelectWithVKCount).
 		Preload("Customer").Preload("Budget").Preload("RateLimit").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
@@ -2577,7 +2582,10 @@ func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQuer
 // GetTeam retrieves a specific team from the database.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -3425,7 +3433,9 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
-	if err := s.db.WithContext(ctx).Find(&teams).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Select(teamSelectWithVKCount).
+		Find(&teams).Error; err != nil {
 		return nil, err
 	}
 	if err := s.db.WithContext(ctx).Find(&customers).Error; err != nil {
