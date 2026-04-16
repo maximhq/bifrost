@@ -894,6 +894,10 @@ env: []
   # - name: CUSTOM_ENV_VAR
   #   value: "value"
 
+# Additional environment variables appended after env
+extraEnv: {}
+  # ANOTHER_ENV_VAR: "value"
+
 # Environment variables from secrets/configmaps
 envFrom: []
   # - secretRef:

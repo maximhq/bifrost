@@ -9,7 +9,7 @@
 #   - Cloud-native providers with nested config (azure, vertex, bedrock)
 #
 # Secrets are referenced via env.VAR_NAME (see ENVIRONMENT VARIABLES block
-# below). Provide them via extraEnv, externalSecrets, or a Kubernetes Secret
+# below). Provide them via extraEnv (map), env, envFrom, or a Kubernetes Secret
 # mounted on the pod — see values-examples/secrets-from-k8s.yaml for patterns.
 #
 # Field names follow transports/config.schema.json (the Bifrost runtime config
@@ -20,7 +20,7 @@
 # ENVIRONMENT VARIABLES REFERENCED
 # ==========================================================================
 # This file uses env.VAR_NAME for all secret values. Supply them via extraEnv
-# or an external secret store. Full list:
+# (map), env, envFrom, or an external secret store. Full list:
 #
 #   Provider API keys:
 #     OPENAI_API_KEY_1, OPENAI_API_KEY_2, OPENAI_API_KEY_3

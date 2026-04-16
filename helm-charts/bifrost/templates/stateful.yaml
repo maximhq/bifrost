@@ -237,6 +237,12 @@ spec:
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- range $name := keys . | sortAlpha }}
+            - name: {{ $name }}
+              value: {{ index $.Values.extraEnv $name | quote }}
+            {{- end }}
+            {{- end }}
           {{- with .Values.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
