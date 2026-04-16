@@ -1,45 +1,39 @@
 import {
 	buildPinStyle,
-	ColumnConfigDropdown,
+	type ColumnConfigEntry,
 	DraggableColumnHeader,
 	PIN_SHADOW_LEFT,
 	PIN_SHADOW_RIGHT,
-	useColumnConfig,
 	useHeaderCellRefs,
 	usePinOffsets,
 } from "@/components/table";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
-import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
+import type { MCPToolLogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
-import { MCPLogFilters } from "./filters";
-
-const COLUMN_LABELS: Record<string, string> = {
-	timestamp: "Time",
-	tool_name: "Tool Name",
-	server_label: "Server",
-	latency: "Latency",
-	cost: "Cost",
-};
 
 interface DataTableProps {
 	columns: ColumnDef<MCPToolLogEntry>[];
 	data: MCPToolLogEntry[];
 	totalItems: number;
 	loading?: boolean;
-	filters: MCPToolLogFilters;
 	pagination: Pagination;
-	onFiltersChange: (filters: MCPToolLogFilters) => void;
 	onPaginationChange: (pagination: Pagination) => void;
 	onRowClick?: (log: MCPToolLogEntry, columnId: string) => void;
 	isSocketConnected: boolean;
 	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
-	fetchLogs: () => Promise<void>;
-	fetchStats: () => Promise<void>;
+	/** Column config — computed by the parent via useColumnConfig */
+	columnEntries: ColumnConfigEntry[];
+	columnOrder: ColumnOrderState;
+	columnVisibility: VisibilityState;
+	columnPinning: ColumnPinningState;
+	onToggleColumnVisibility: (id: string) => void;
+	onTogglePin: (id: string, side: "left" | "right") => void;
+	onReorderColumns: (entries: ColumnConfigEntry[]) => void;
 }
 
 export function MCPLogsDataTable({
@@ -47,31 +41,22 @@ export function MCPLogsDataTable({
 	data,
 	totalItems,
 	loading = false,
-	filters,
 	pagination,
-	onFiltersChange,
 	onPaginationChange,
 	onRowClick,
 	isSocketConnected,
 	liveEnabled,
-	onLiveToggle,
+	columnEntries,
+	columnOrder,
+	columnVisibility,
+	columnPinning,
+	onToggleColumnVisibility,
+	onTogglePin,
+	onReorderColumns,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 
-	// Derive all column IDs from column definitions
-	const columnIds = useMemo(
-		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
-		[columns],
-	);
-
 	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
-
-	// Column config: order, visibility, pinning — persisted in URL
-	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
-		columnIds,
-		paramName: "mcp_cols",
-		fixedColumns: { left: [], right: [] },
-	});
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -84,15 +69,15 @@ export function MCPLogsDataTable({
 	// Handle native drag-and-drop reorder
 	const handleColumnDrop = useCallback(
 		(draggedId: string, targetId: string) => {
-			const newEntries = [...entries];
+			const newEntries = [...columnEntries];
 			const draggedIdx = newEntries.findIndex((e) => e.id === draggedId);
 			const targetIdx = newEntries.findIndex((e) => e.id === targetId);
 			if (draggedIdx === -1 || targetIdx === -1) return;
 			const [moved] = newEntries.splice(draggedIdx, 1);
 			newEntries.splice(targetIdx, 0, moved);
-			reorder(newEntries);
+			onReorderColumns(newEntries);
 		},
-		[entries, reorder],
+		[columnEntries, onReorderColumns],
 	);
 
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
@@ -143,15 +128,9 @@ export function MCPLogsDataTable({
 	};
 
 	return (
-		<div className="flex grow flex-col gap-2 px-4 pb-2">
-			<div className="flex items-center gap-2">
-				<div className="flex-1">
-					<MCPLogFilters filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
-				</div>
-				<ColumnConfigDropdown entries={entries} labels={COLUMN_LABELS} onToggleVisibility={toggleVisibility} onReset={reset} />
-			</div>
-			<div className="flex grow flex-col gap-2">
-				<div className="grow rounded-sm border">
+		<div className="flex grow flex-col gap-2 overflow-y-auto px-4 pb-2">
+			<div className="flex h-full grow flex-col gap-2">
+				<div className="grow overflow-y-auto rounded-sm border">
 					<Table containerClassName="h-full">
 						<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a] px-2 [&_tr]:border-b")}>
 							{table.getHeaderGroups().map((headerGroup) => (
@@ -170,8 +149,8 @@ export function MCPLogsDataTable({
 												header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 												header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
 											)}
-											onHide={toggleVisibility}
-											onPin={togglePin}
+											onHide={onToggleColumnVisibility}
+											onPin={onTogglePin}
 											onDrop={handleColumnDrop}
 											cellRef={setHeaderCellRef(header.column.id)}
 										/>

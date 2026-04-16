@@ -2,10 +2,12 @@ import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { SessionDetailsSheet } from "@/app/workspace/logs/sheets/sessionDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
-import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
+import { LogsHeaderView } from "@/app/workspace/logs/views/logsHeaderView";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
+import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
+import { useColumnConfig } from "@/components/table";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -856,6 +858,36 @@ export default function LogsPage() {
 
 	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const COLUMN_LABELS: Record<string, string> = useMemo(
+		() => ({
+			timestamp: "Time",
+			request_type: "Type",
+			input: "Message",
+			provider: "Provider",
+			model: "Model",
+			latency: "Latency",
+			tokens: "Tokens",
+			cost: "Cost",
+		}),
+		[],
+	);
+
+	const {
+		entries: columnEntries,
+		columnOrder,
+		columnVisibility,
+		columnPinning,
+		toggleVisibility: toggleColumnVisibility,
+		togglePin: toggleColumnPin,
+		reorder: reorderColumns,
+		reset: resetColumns,
+	} = useColumnConfig({ columnIds, paramName: "cols" });
+
 	// Navigation for log detail sheet
 	const selectedLogIndex = useMemo(() => (selectedLogId ? logs.findIndex((l) => l.id === selectedLogId) : -1), [selectedLogId, logs]);
 
@@ -924,6 +956,20 @@ export default function LogsPage() {
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+						<div className="shrink-0">
+							<LogsHeaderView
+								filters={filters}
+								onFiltersChange={setFilters}
+								liveEnabled={liveEnabled}
+								onLiveToggle={handleLiveToggle}
+								fetchLogs={fetchLogs}
+								fetchStats={fetchStats}
+								columnEntries={columnEntries}
+								columnLabels={COLUMN_LABELS}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onResetColumns={resetColumns}
+							/>
+						</div>
 						<div className="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
@@ -981,9 +1027,7 @@ export default function LogsPage() {
 								data={logs}
 								totalItems={totalItems}
 								loading={fetchingLogs}
-								filters={filters}
 								pagination={pagination}
-								onFiltersChange={setFilters}
 								onPaginationChange={setPagination}
 								onRowClick={(row, columnId) => {
 									if (columnId === "actions") return;
@@ -992,10 +1036,14 @@ export default function LogsPage() {
 									setSessionHighlightedLogId(null);
 								}}
 								liveEnabled={liveEnabled}
-								onLiveToggle={handleLiveToggle}
 								isSocketConnected={isSocketConnected}
-								fetchLogs={fetchLogs}
-								fetchStats={fetchStats}
+								columnEntries={columnEntries}
+								columnOrder={columnOrder}
+								columnVisibility={columnVisibility}
+								columnPinning={columnPinning}
+								onToggleColumnVisibility={toggleColumnVisibility}
+								onTogglePin={toggleColumnPin}
+								onReorderColumns={reorderColumns}
 							/>
 						</div>
 					</div>

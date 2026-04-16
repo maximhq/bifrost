@@ -1,15 +1,10 @@
+import { ColumnConfigDropdown, type ColumnConfigEntry } from "@/components/table";
 import { Button } from "@/components/ui/button";
-import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
-import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
-import { Calculator, MoreVertical, Pause, Play, Search } from "lucide-react";
+import type { MCPToolLogFilters } from "@/lib/types/logs";
+import { Pause, Play, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
-
-export { dateToRfc3339Local } from "@/lib/utils/date";
 
 const LOG_TIME_PERIODS = [
 	{ label: "Last hour", value: "1h" },
@@ -44,39 +39,48 @@ function getRangeForPeriod(period: string): { from: Date; to: Date } {
 	return { from, to };
 }
 
-interface LogFiltersProps {
-	filters: LogFiltersType;
-	onFiltersChange: (filters: LogFiltersType) => void;
+interface McpHeaderViewProps {
+	filters: MCPToolLogFilters;
+	onFiltersChange: (filters: MCPToolLogFilters) => void;
 	liveEnabled: boolean;
 	onLiveToggle: (enabled: boolean) => void;
-	fetchLogs: () => Promise<void>;
-	fetchStats: () => Promise<void>;
+	/** Column config for the ColumnConfigDropdown */
+	columnEntries: ColumnConfigEntry[];
+	columnLabels: Record<string, string>;
+	onToggleColumnVisibility: (id: string) => void;
+	onResetColumns: () => void;
 }
 
-export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
-	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
+export function McpHeaderView({
+	filters,
+	onFiltersChange,
+	liveEnabled,
+	onLiveToggle,
+	columnEntries,
+	columnLabels,
+	onToggleColumnVisibility,
+	onResetColumns,
+}: McpHeaderViewProps) {
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
-	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
-	const filtersRef = useRef<LogFiltersType>(filters);
-	const [recalculateCosts] = useRecalculateLogCostsMutation();
-
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
 	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
+	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const filtersRef = useRef<MCPToolLogFilters>(filters);
+
+	// Keep filtersRef in sync with filters prop
+	useEffect(() => {
+		filtersRef.current = filters;
+	}, [filters]);
+
+	// Sync localSearch when filters.content_search changes externally
+	useEffect(() => {
+		setLocalSearch(filters.content_search || "");
+	}, [filters.content_search]);
 
 	useEffect(() => {
 		setStartTime(filters.start_time ? new Date(filters.start_time) : undefined);
 		setEndTime(filters.end_time ? new Date(filters.end_time) : undefined);
 	}, [filters.start_time, filters.end_time]);
-
-	// Keep filtersRef in sync so debounced search always merges with latest filters (search within filtered results)
-	useEffect(() => {
-		filtersRef.current = filters;
-	}, [filters]);
-
-	// Sync localSearch when filters.content_search changes externally (e.g. URL restore)
-	useEffect(() => {
-		setLocalSearch(filters.content_search || "");
-	}, [filters.content_search]);
 
 	// Cleanup timeout on unmount
 	useEffect(() => {
@@ -87,34 +91,17 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 		};
 	}, []);
 
-	const handleRecalculateCosts = useCallback(async () => {
-		try {
-			const response = await recalculateCosts({ filters }).unwrap();
-			await fetchLogs();
-			await fetchStats();
-			setOpenMoreActionsPopover(false);
-			toast.success(`Recalculated costs for ${response.updated} logs`, {
-				description: `${response.updated} logs updated, ${response.skipped} logs skipped, ${response.remaining} logs remaining`,
-				duration: 5000,
-			});
-		} catch (err) {
-			toast.error(getErrorMessage(err));
-		}
-	}, [filters, recalculateCosts, fetchLogs, fetchStats]);
-
 	const handleSearchChange = useCallback(
 		(value: string) => {
 			setLocalSearch(value);
 
-			// Clear existing timeout
 			if (searchTimeoutRef.current) {
 				clearTimeout(searchTimeoutRef.current);
 			}
 
-			// Use filtersRef.current so search is applied on top of current filters (search within filtered results)
 			searchTimeoutRef.current = setTimeout(() => {
 				onFiltersChange({ ...filtersRef.current, content_search: value });
-			}, 500); // 500ms debounce
+			}, 500);
 		},
 		[onFiltersChange],
 	);
@@ -138,15 +125,13 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
-					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs"
+					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
+					placeholder="Search MCP logs"
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}
 				/>
 			</div>
-
 			<DateTimePickerWithRange
-				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
@@ -170,26 +155,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					});
 				}}
 			/>
-			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
-				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-7.5">
-						<MoreVertical className="h-4 w-4" />
-					</Button>
-				</PopoverTrigger>
-				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
-					<Command>
-						<CommandList>
-							<CommandItem className="hover:bg-accent/50 cursor-pointer" onSelect={handleRecalculateCosts}>
-								<Calculator className="text-muted-foreground size-4" />
-								<div className="flex flex-col">
-									<span className="text-sm">Recalculate costs</span>
-									<span className="text-muted-foreground text-xs">For all logs that don't have a cost</span>
-								</div>
-							</CommandItem>
-						</CommandList>
-					</Command>
-				</PopoverContent>
-			</Popover>
+			<ColumnConfigDropdown entries={columnEntries} labels={columnLabels} onToggleVisibility={onToggleColumnVisibility} onReset={onResetColumns} />
 		</div>
 	);
 }

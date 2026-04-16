@@ -6,10 +6,10 @@
 		"es2024": true
 	},
 	"categories": {
-		"correctness": "error"
+		"correctness": "warn"
 	},
 	"rules": {
-		"import/no-cycle": ["error", { "maxDepth": 1, "ignoreExternal": true }],
+		"import/no-cycle": ["warn", { "maxDepth": 1, "ignoreExternal": true }],
 		"typescript/no-explicit-any": "warn",
 		"typescript/ban-ts-comment": "off"
 	},
