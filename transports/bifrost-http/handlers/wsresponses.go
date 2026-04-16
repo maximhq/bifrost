@@ -164,7 +164,10 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	// Store override: default to store=true (Codex sends false by default but expects true).
 	// If DisableStore is set in provider config, force store=false.
 	// If client explicitly sets store, respect that value unless DisableStore overrides it.
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	// Default to OpenAI provider since /v1/responses is an OpenAI-format endpoint.
+	// Allows callers (e.g. Codex) to send the bare model name like "gpt-5.3-codex"
+	// without a provider prefix.
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		writeWSError(session, 400, "invalid_request_error", "failed to parse model string")
 		return
