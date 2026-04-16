@@ -3,6 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
+import { formatCompactNumber as formatNumber } from "@/lib/utils/governance";
 import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -20,14 +21,6 @@ interface ModelRankingsTabProps {
 	loadingModels: boolean;
 	startTime: number;
 	endTime: number;
-}
-
-function formatNumber(value: number): string {
-	if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}T`;
-	if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
-	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-	return value.toLocaleString();
 }
 
 function formatCost(value: number): string {

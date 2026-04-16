@@ -14,13 +14,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteVirtualKeyMutation, useLazyGetVirtualKeysQuery } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
+import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import {
 	ArrowUpDown,
 	ChevronLeft,
@@ -77,6 +80,128 @@ function downloadCSV(content: string) {
 	link.download = `virtual-keys-${new Date().toISOString().split("T")[0]}.csv`;
 	link.click();
 	URL.revokeObjectURL(url);
+}
+
+function VKBudgetCell({ vk }: { vk: VirtualKey }) {
+	const { displayBudgets } = useVirtualKeyUsage(vk);
+
+	if (!displayBudgets || displayBudgets.length === 0) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+
+	return (
+		<div className="flex flex-col gap-0.5">
+			{displayBudgets.map((b, idx) => (
+				<div key={idx} className="flex flex-col">
+					<span className={cn("font-mono text-sm", b.current_usage >= b.max_limit && "text-red-400")}>
+						{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+					</span>
+					<span className="text-muted-foreground text-xs">
+						Resets {formatResetDuration(b.reset_duration)}
+						{vk.calendar_aligned && " (calendar)"}
+					</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function VKRateLimitCell({ vk }: { vk: VirtualKey }) {
+	const { displayRateLimit } = useVirtualKeyUsage(vk);
+	return <RateLimitDisplay rateLimits={displayRateLimit} />;
+}
+
+// Status badge derives exhaustion from the same AP-backed source as the budget/rate-limit cells
+// so managed keys don't show "Active" next to an exhausted-looking bar.
+function VKStatusBadge({ vk }: { vk: VirtualKey }) {
+	const { isExhausted } = useVirtualKeyUsage(vk);
+	return (
+		<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
+			{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
+		</Badge>
+	);
+}
+
+// Per-row delete button. Calls useVirtualKeyUsage (same cached query as the budget/
+// rate-limit cells — RTK dedupes) to detect managed-by-AP VKs and swap the normal
+// delete AlertDialog for a disabled button + tooltip so users aren't lured into a
+// confirm-then-403 loop.
+function VKDeleteButton({
+	vk,
+	hasDeleteAccess,
+	isDeleting,
+	onDelete,
+}: {
+	vk: VirtualKey;
+	hasDeleteAccess: boolean;
+	isDeleting: boolean;
+	onDelete: (vkId: string) => void;
+}) {
+	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+
+	if (isManagedByProfile) {
+		return (
+			<TooltipProvider>
+				<Tooltip delayDuration={300}>
+					<TooltipTrigger asChild>
+						<span className="inline-block cursor-not-allowed">
+							<Button
+								variant="ghost"
+								size="sm"
+								className="text-destructive border-destructive/30"
+								disabled
+								data-testid={`vk-delete-btn-${vk.name}`}
+							>
+								<Trash2 className="h-4 w-4" />
+							</Button>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="top" className="max-w-[260px]">
+						<p className="text-xs">
+							This virtual key is managed by an access profile and can&apos;t be deleted here. Detach the profile from the user or delete it
+							from the access profile settings.
+						</p>
+					</TooltipContent>
+				</Tooltip>
+			</TooltipProvider>
+		);
+	}
+
+	return (
+		<AlertDialog>
+			<AlertDialogTrigger asChild>
+				<Button
+					variant="ghost"
+					size="sm"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+					onClick={(e) => e.stopPropagation()}
+					disabled={!hasDeleteAccess}
+					data-testid={`vk-delete-btn-${vk.name}`}
+				>
+					<Trash2 className="h-4 w-4" />
+				</Button>
+			</AlertDialogTrigger>
+			<AlertDialogContent>
+				<AlertDialogHeader>
+					<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
+					<AlertDialogDescription>
+						Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}&quot;? This action cannot be undone.
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
+					<AlertDialogAction
+						onClick={() => onDelete(vk.id)}
+						disabled={isDeleting}
+						className="bg-destructive hover:bg-destructive/90"
+						data-testid={`vk-delete-confirm-${vk.name}`}
+					>
+						{isDeleting ? "Deleting..." : "Delete"}
+					</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
 }
 
 interface VirtualKeysTableProps {
@@ -452,6 +577,7 @@ export default function VirtualKeysTable({
 								<TableHead>
 									<SortableHeader column="budget_spent" label="Budget" />
 								</TableHead>
+								<TableHead>Rate Limits</TableHead>
 								<TableHead>
 									<SortableHeader column="status" label="Status" />
 								</TableHead>
@@ -461,21 +587,13 @@ export default function VirtualKeysTable({
 						<TableBody>
 							{virtualKeys.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={6} className="h-24 text-center">
+									<TableCell colSpan={7} className="h-24 text-center">
 										<span className="text-muted-foreground text-sm">No matching virtual keys found.</span>
 									</TableCell>
 								</TableRow>
 							) : (
 								virtualKeys.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
-									const isExhausted =
-										vk.budgets?.some((b) => b.current_usage >= b.max_limit) ||
-										(vk.rate_limit?.token_current_usage &&
-											vk.rate_limit?.token_max_limit &&
-											vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
-										(vk.rate_limit?.request_current_usage &&
-											vk.rate_limit?.request_max_limit &&
-											vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
 
 									return (
 										<TableRow
@@ -520,28 +638,13 @@ export default function VirtualKeysTable({
 												</div>
 											</TableCell>
 											<TableCell>
-												{vk.budgets && vk.budgets.length > 0 ? (
-													<div className="flex flex-col gap-0.5">
-														{vk.budgets.map((b, idx) => (
-															<div key={idx} className="flex flex-col">
-																<span className={cn("font-mono text-sm", b.current_usage >= b.max_limit && "text-red-400")}>
-																	{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
-																</span>
-																<span className="text-muted-foreground text-xs">
-																	Resets {formatResetDuration(b.reset_duration)}
-																	{b.calendar_aligned && " (calendar)"}
-																</span>
-															</div>
-														))}
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
+												<VKBudgetCell vk={vk} />
 											</TableCell>
 											<TableCell>
-												<Badge variant={vk.is_active ? (isExhausted ? "destructive" : "default") : "secondary"}>
-													{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
-												</Badge>
+												<VKRateLimitCell vk={vk} />
+											</TableCell>
+											<TableCell>
+												<VKStatusBadge vk={vk} />
 											</TableCell>
 											<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center justify-end gap-2">
@@ -554,39 +657,7 @@ export default function VirtualKeysTable({
 													>
 														<Edit className="h-4 w-4" />
 													</Button>
-													<AlertDialog>
-														<AlertDialogTrigger asChild>
-															<Button
-																variant="ghost"
-																size="sm"
-																className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
-																onClick={(e) => e.stopPropagation()}
-																disabled={!hasDeleteAccess}
-																data-testid={`vk-delete-btn-${vk.name}`}
-															>
-																<Trash2 className="h-4 w-4" />
-															</Button>
-														</AlertDialogTrigger>
-														<AlertDialogContent>
-															<AlertDialogHeader>
-																<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
-																<AlertDialogDescription>
-																	Are you sure you want to delete &quot;{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}
-																	&quot;? This action cannot be undone.
-																</AlertDialogDescription>
-															</AlertDialogHeader>
-															<AlertDialogFooter>
-																<AlertDialogCancel>Cancel</AlertDialogCancel>
-																<AlertDialogAction
-																	onClick={() => handleDelete(vk.id)}
-																	disabled={isDeleting}
-																	className="bg-destructive hover:bg-destructive/90"
-																>
-																	{isDeleting ? "Deleting..." : "Delete"}
-																</AlertDialogAction>
-															</AlertDialogFooter>
-														</AlertDialogContent>
-													</AlertDialog>
+													<VKDeleteButton vk={vk} hasDeleteAccess={hasDeleteAccess} isDeleting={isDeleting} onDelete={handleDelete} />
 												</div>
 											</TableCell>
 										</TableRow>

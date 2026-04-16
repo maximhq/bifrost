@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -43,9 +44,10 @@ import {
 import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
-import { Building, Info, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { Building, Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -156,6 +158,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
+
+	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
+	// of assignees — directly-attached users don't imply an access-profile relation.
+	const { assignedUsers, isManagedByProfile: isManagedByProfileHook } = useVirtualKeyUsage(virtualKey);
+	const isManagedByProfile = isEditing && isManagedByProfileHook;
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -399,6 +406,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			return;
 		}
 		try {
+			// Managed VKs only allow name + description updates; all other fields are owned by the access profile.
+			if (isManagedByProfile && virtualKey) {
+				await updateVirtualKey({
+					vkId: virtualKey.id,
+					data: {
+						name: data.name,
+						description: data.description,
+					},
+				}).unwrap();
+				toast.success("Virtual key updated");
+				onSave();
+				return;
+			}
+
 			// Normalize provider configs to ensure weights are numbers and handle budget/rate limits
 			const normalizedProviderConfigs = data.providerConfigs
 				? normalizeProviderConfigs(data.providerConfigs, virtualKey?.provider_configs)
@@ -406,8 +427,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
 				const updateData: UpdateVirtualKeyRequest = {
-					name: data.name || undefined,
-					description: data.description || undefined,
+					name: data.name,
+					description: data.description,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
@@ -509,6 +530,27 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6 px-4">
 						<div className="space-y-4">
+							{isManagedByProfile && (
+								<Alert variant="info">
+									<Lock className="h-4 w-4" />
+									<AlertDescription>
+										This virtual key is managed by an access profile. Only the name and description can be modified — providers, budgets, rate limits, and
+										MCP access are controlled by the profile.
+									</AlertDescription>
+								</Alert>
+							)}
+
+							{/* Assigned User */}
+							{assignedUsers.length > 0 && (
+								<div className="space-y-1">
+									<Label className="text-sm font-medium">Assigned To</Label>
+									<div className="flex items-center gap-2">
+										<Users className="text-muted-foreground h-4 w-4" />
+										<span className="text-sm">{assignedUsers.map((u) => u.name || u.email).join(", ")}</span>
+									</div>
+								</div>
+							)}
+
 							{/* Basic Information */}
 							<div className="space-y-4">
 								<FormField
@@ -539,6 +581,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									)}
 								/>
 
+							</div>
+							<fieldset disabled={isManagedByProfile} className={isManagedByProfile ? "space-y-4 opacity-50" : "space-y-4"}>
+							<div className="space-y-4">
 								<FormField
 									control={form.control}
 									name="isActive"
@@ -1403,6 +1448,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									</div>
 								</>
 							)}
+						</fieldset>
 						</div>
 						{isEditing && virtualKey?.config_hash && <ConfigSyncAlert className="mt-2" />}
 						{/* Form Footer */}
