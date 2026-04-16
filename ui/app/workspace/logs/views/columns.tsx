@@ -5,8 +5,8 @@ import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarCo
 import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ColumnDef } from "@tanstack/react-table";
-import { ArrowUpDown, Trash2 } from "lucide-react";
 import { format } from "date-fns";
+import { ArrowUpDown, Trash2 } from "lucide-react";
 
 function getAssistantToolCallSummary(log?: LogEntry): string {
 	const toolCalls = log?.output_message?.tool_calls || [];
@@ -157,7 +157,11 @@ export function LogMessageCell({ log, maxWidth = "max-w-[400px]" }: { log: LogEn
 	);
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => {
+export const createColumns = (
+	onDelete: (log: LogEntry) => void,
+	hasDeleteAccess = true,
+	metadataKeys: string[] = [],
+): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
 		{
 			accessorKey: "status",
@@ -291,6 +295,16 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	];
 
+	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
+		id: `metadata_${key}`,
+		header: key.charAt(0).toUpperCase() + key.slice(1),
+		size: 126,
+		cell: ({ row }) => {
+			const value = row.original.metadata?.[key];
+			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+		},
+	}));
+
 	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
 		size: 72,
@@ -311,5 +325,5 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	};
 
-	return [...baseColumns, actionsColumn];
+	return [...baseColumns, ...metadataColumns, actionsColumn];
 };

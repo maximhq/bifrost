@@ -16,6 +16,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
+	useGetAvailableFilterDataQuery,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
@@ -859,7 +860,18 @@ export default function LogsPage() {
 		[stats],
 	);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
+	const { data: filterData } = useGetAvailableFilterDataQuery();
+
+	// Get metadata keys from filterdata API so columns always show even with no data on current page
+	const metadataKeys = useMemo(() => {
+		if (!filterData?.metadata_keys) return [];
+		return Object.keys(filterData.metadata_keys).sort();
+	}, [filterData?.metadata_keys]);
+
+	const columns = useMemo(
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys),
+		[handleDelete, hasDeleteAccess, metadataKeys],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
