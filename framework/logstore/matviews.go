@@ -297,12 +297,13 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	// as a fast approximation. Accurate chain-level computation runs in the raw-table path.
 
 	return &SearchStats{
-		TotalRequests:         result.TotalCount,
-		SuccessRate:           successRate,
-		UserFacingSuccessRate: successRate,
-		AverageLatency:        result.AvgLatency,
-		TotalTokens:           result.TotalTokens,
-		TotalCost:             result.TotalCost,
+		TotalRequests:           result.TotalCount,
+		SuccessRate:             successRate,
+		UserFacingSuccessRate:   successRate,
+		UserFacingTotalRequests: result.TotalCount, // matview approximation; no per-chain data available
+		AverageLatency:          result.AvgLatency,
+		TotalTokens:             result.TotalTokens,
+		TotalCost:               result.TotalCost,
 	}, nil
 }
 

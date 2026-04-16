@@ -7,6 +7,7 @@ icon: "microsoft"
 ## Overview
 
 Azure is a cloud provider offering access to OpenAI and Anthropic models through the Azure OpenAI Service. Bifrost performs conversions including:
+
 - **Deployment mapping** - Model identifiers mapped to Azure deployment IDs with version handling
 - **Authentication modes** - API key, Entra ID (Service Principal), or Managed Identity (DefaultAzureCredential) with
   automatic environment detection
@@ -18,42 +19,63 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 
 ### Supported Operations
 
-| Operation | Non-Streaming | Streaming | Endpoint |
-|-----------|---------------|-----------|----------|
-| Chat Completions | ✅ | ✅ | `/openai/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/openai/v1/responses` |
-| Embeddings | ✅ | - | `/openai/v1/embeddings` |
-| Files | ✅ | - | `/openai/v1/files` |
-| List Models | ✅ | - | `/openai/v1/models` |
-| Image Generation | ✅ | ✅ | `/openai/v1/images/generations` |
-| Image Edit | ✅ | ✅ | `/openai/v1/images/edits` |
-| Video Generation | ✅ | - | `/openai/v1/videos` |
-| Image Variation | ❌ | ❌ | - |
-| Batch | ❌ | ❌ | - |
-| Text Completions | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
+| Operation        | Non-Streaming | Streaming | Endpoint                        |
+| ---------------- | ------------- | --------- | ------------------------------- |
+| Chat Completions | ✅            | ✅        | `/openai/v1/chat/completions`   |
+| Responses API    | ✅            | ✅        | `/openai/v1/responses`          |
+| Embeddings       | ✅            | -         | `/openai/v1/embeddings`         |
+| Files            | ✅            | -         | `/openai/v1/files`              |
+| List Models      | ✅            | -         | `/openai/v1/models`             |
+| Image Generation | ✅            | ✅        | `/openai/v1/images/generations` |
+| Image Edit       | ✅            | ✅        | `/openai/v1/images/edits`       |
+| Video Generation | ✅            | -         | `/openai/v1/videos`             |
+| Image Variation  | ❌            | ❌        | -                               |
+| Batch            | ❌            | ❌        | -                               |
+| Text Completions | ❌            | ❌        | -                               |
+| Speech (TTS)     | ❌            | ❌        | -                               |
 
 <Note>
-**Azure-specific**: Batch operations and Text Completions are not supported by Azure OpenAI Service. Responses API uses preview API version and is available for both OpenAI and Anthropic models.
+  **Azure-specific**: Batch operations and Text Completions are not supported by
+  Azure OpenAI Service. Responses API uses preview API version and is available
+  for both OpenAI and Anthropic models.
 </Note>
 
 ---
 
 ## Setup & Configuration
 
-Azure requires an endpoint URL, deployment mappings, and authentication configuration. Four authentication methods are supported.
+Azure requires an endpoint URL, deployment mappings, and authentication configuration. Three authentication methods are supported.
 
 <Note>
-The `aliases` field (mapping model names to Azure deployment IDs) requires **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside `azure_key_config` instead — see the [v1.5.0 Migration Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases) for details.
+  The `aliases` field (mapping model names to Azure deployment IDs) requires
+  **v1.5.0-prerelease2 or later**. On v1.4.x, use `deployments` inside
+  `azure_key_config` instead — see the [v1.5.0 Migration
+  Guide](/migration-guides/v1.5.0#breaking-change-9-provider-deployments-removed-migrate-to-aliases)
+  for details.
 </Note>
 
-### 1. Managed Identity
+### 1. Default Credential (System Identity)
 
-Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaultAzureCredential(nil)`, which auto-detects the system-assigned or user-assigned managed identity on Azure VMs, App Service, AKS, and Azure Container Instances. No credentials need to be stored or rotated.
+Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaultAzureCredential(nil)`, which tries credential sources in this order:
+
+1. Environment variables (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID`, or certificate/username variants)
+2. Workload Identity (AKS with Workload Identity Federation)
+3. Managed Identity (Azure VMs, App Service, AKS, Container Instances)
+4. Azure CLI (`az login`)
+5. Azure Developer CLI (`azd auth login`)
+
+This covers managed identity on Azure infrastructure, workload identity in AKS, and local development via `az login`. No credentials need to be stored or rotated.
 
 <Tabs>
 
 <Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-azure-default-auth-setup.png"
+    alt="Azure Default Credential authentication setup in the Bifrost Web UI showing Endpoint and API Version fields with no credential inputs"
+  />
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Click **"Add Key"** (or edit an existing key)
@@ -63,7 +85,7 @@ Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaul
 6. Configure **Aliases**: Map model names to deployment IDs (e.g., `gpt-4o` → `my-gpt4o-deployment`)
 7. Save
 
-Ensure a managed identity with Cognitive Services permissions is attached to the Azure resource running Bifrost.
+Ensure the appropriate credential source is available — a managed identity attached to the Azure resource, `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`/`AZURE_TENANT_ID` env vars, or `az login` for local development.
 
 </Tab>
 
@@ -75,11 +97,11 @@ curl -X POST http://localhost:8080/api/providers \
   -H "Content-Type: application/json" \
   -d '{"provider": "azure"}'
 
-# Step 2: Create a key (Managed Identity — leave value empty)
+# Step 2: Create a key (Default Credential — leave value empty)
 curl -X POST http://localhost:8080/api/providers/azure/keys \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "azure-managed-identity",
+    "name": "azure-default-credential",
     "value": "",
     "models": ["*"],
     "weight": 1.0,
@@ -119,7 +141,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
     "azure": {
       "keys": [
         {
-          "name": "azure-managed-identity",
+          "name": "azure-default-credential",
           "value": "",
           "models": ["*"],
           "weight": 1.0,
@@ -139,7 +161,8 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```
 
 <Note>
-On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+  On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the
+  top-level `aliases` field.
 </Note>
 
 </Tab>
@@ -152,7 +175,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Azure:
         return []schemas.Key{
             {
-                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses the managed identity
+                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses DefaultAzureCredential
                 Models: []string{"*"},
                 Weight: 1.0,
                 Aliases: schemas.KeyAliases{
@@ -174,134 +197,20 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 </Tabs>
 
-### 2. Default Credential Chain (DefaultAzureCredential)
-
-Leave `value` and all Entra ID fields empty. Bifrost calls `azidentity.NewDefaultAzureCredential(nil)` — the same function as the Managed Identity section — which tries credential sources in this order:
-
-1. Environment variables (`AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` + `AZURE_TENANT_ID`, or certificate/username variants)
-2. Workload Identity (AKS with Workload Identity Federation)
-3. Managed Identity (Azure VMs, App Service, AKS, Container Instances)
-4. Azure CLI (`az login`)
-5. Azure Developer CLI (`azd auth login`)
-
-<Tabs>
-
-<Tab title="Web UI">
-
-1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
-2. Click **"Add Key"** (or edit an existing key)
-3. Under **Authentication Method**, select **"Default Credential"**
-4. Set **Endpoint**: Your Azure OpenAI resource URL (e.g., `https://your-org.openai.azure.com`)
-5. Set **API Version** (Optional): e.g., `2024-10-21`
-6. Configure **Aliases**: Map model names to deployment IDs
-7. Save
-
-Ensure the appropriate credentials are available in the environment where Bifrost runs — set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` env vars, or run `az login`.
-
-</Tab>
-
-<Tab title="API">
-
-```bash
-# Step 1: Create the provider
-curl -X POST http://localhost:8080/api/providers \
-  -H "Content-Type: application/json" \
-  -d '{"provider": "azure"}'
-
-# Step 2: Create a key (Default Credential Chain — leave value empty)
-curl -X POST http://localhost:8080/api/providers/azure/keys \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "azure-default-chain",
-    "value": "",
-    "models": ["*"],
-    "weight": 1.0,
-    "aliases": {
-      "gpt-4o": "my-gpt4o-deployment"
-    },
-    "azure_key_config": {
-      "endpoint": "env.AZURE_ENDPOINT",
-      "api_version": "2024-10-21"
-    }
-  }'
-```
-
-<Note>
-**On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-- Replace the top-level `aliases` with `"deployments"` inside `azure_key_config`.
-</Note>
-
-</Tab>
-
-<Tab title="config.json">
-
-```json
-{
-  "providers": {
-    "azure": {
-      "keys": [
-        {
-          "name": "azure-default-chain",
-          "value": "",
-          "models": ["*"],
-          "weight": 1.0,
-          "aliases": {
-            "gpt-4o": "my-gpt4o-deployment"
-          },
-          "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "2024-10-21"
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-<Note>
-On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
-</Note>
-
-</Tab>
-
-<Tab title="Go SDK">
-
-```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
-    switch provider {
-    case schemas.Azure:
-        return []schemas.Key{
-            {
-                Value:  schemas.EnvVar{}, // Leave empty — Bifrost uses DefaultAzureCredential
-                Models: []string{"*"},
-                Weight: 1.0,
-                Aliases: schemas.KeyAliases{
-                    "gpt-4o": "my-gpt4o-deployment",
-                },
-                AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint:   *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
-                    APIVersion: schemas.NewEnvVar("2024-10-21"),
-                },
-            },
-        }, nil
-    }
-    return nil, fmt.Errorf("provider %s not supported", provider)
-}
-```
-
-</Tab>
-
-</Tabs>
-
-### 3. Azure Entra ID (Service Principal)
+### 2. Azure Entra ID (Service Principal)
 
 Set `client_id`, `client_secret`, and `tenant_id` to authenticate with a Service Principal. This takes priority over API key and managed identity.
 
 <Tabs>
 
 <Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-azure-entra-id-auth-setup.png"
+    alt="Azure Entra ID (Service Principal) authentication setup in the Bifrost Web UI showing Client ID, Client Secret, Tenant ID, and Endpoint fields"
+  />
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Click **"Add Key"** (or edit an existing key)
@@ -311,8 +220,9 @@ Set `client_id`, `client_secret`, and `tenant_id` to authenticate with a Service
 6. Set **Tenant ID**: Your Azure Entra ID tenant ID
 7. Set **Endpoint**: Your Azure OpenAI resource URL
 8. Set **API Version** (Optional): e.g., `2024-08-01-preview`
-9. Configure **Aliases**: Map model names to deployment IDs
-10. Save
+9. Set **Scopes** (Optional): Override the default OAuth scope (`https://cognitiveservices.azure.com/.default`). Any configured scopes **replace** the default entirely — if you customize this field, you must include all required scopes (the default is not automatically added)
+10. Configure **Aliases**: Map model names to deployment IDs
+11. Save
 
 </Tab>
 
@@ -349,9 +259,10 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```
 
 <Note>
-**On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-- Move the model mappings from `aliases` into `azure_key_config.deployments`.
+  **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
+  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  endpoint. - Move the model mappings from `aliases` into
+  `azure_key_config.deployments`.
 </Note>
 
 </Tab>
@@ -389,7 +300,8 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```
 
 <Note>
-On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+  On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the
+  top-level `aliases` field.
 </Note>
 
 </Tab>
@@ -430,16 +342,24 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 </Tabs>
 
 **Required Azure roles:**
+
 - OpenAI models: `Cognitive Services OpenAI User`
 - Anthropic models: `Cognitive Services AI Services User`
 
-### 4. Direct Authentication (API Key)
+### 3. Direct Authentication (API Key)
 
 Provide the Azure API key in the `value` field. Use this for simple setups without managed identity or Service Principal.
 
 <Tabs>
 
 <Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-azure-api-key-auth-setup.png"
+    alt="Azure API Key authentication setup in the Bifrost Web UI showing API Key, Endpoint, and API Version fields"
+  />
+</Frame>
 
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Click **"Add Key"** (or edit an existing key)
@@ -480,9 +400,10 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```
 
 <Note>
-**On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-- Move the model mappings from `aliases` into `azure_key_config.deployments`.
+  **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
+  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  endpoint. - Move the model mappings from `aliases` into
+  `azure_key_config.deployments`.
 </Note>
 
 </Tab>
@@ -515,7 +436,8 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 ```
 
 <Note>
-On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the top-level `aliases` field.
+  On **v1.4.x**, use `deployments` inside `azure_key_config` instead of the
+  top-level `aliases` field.
 </Note>
 
 </Tab>
@@ -551,27 +473,29 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 </Tabs>
 
 <Note>
-**Authentication precedence:** (1) Entra ID if `client_id`, `client_secret`, and `tenant_id` are all set; (2) API key if `value` is non-empty; (3) DefaultAzureCredential (managed identity) if neither is provided.
+  **Authentication precedence:** (1) Entra ID if `client_id`, `client_secret`,
+  and `tenant_id` are all set; (2) API key if `value` is non-empty; (3)
+  DefaultAzureCredential (managed identity) if neither is provided.
 </Note>
 
 **`azure_key_config` fields:**
 
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `endpoint` | Yes | — | Azure OpenAI resource endpoint URL |
-| `api_version` | No | `2024-10-21` | Azure API version |
-| `client_id` | No | — | Entra ID client ID (Service Principal auth) |
-| `client_secret` | No | — | Entra ID client secret (Service Principal auth) |
-| `tenant_id` | No | — | Entra ID tenant ID (Service Principal auth) |
-| `scopes` | No | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests |
+| Field           | Required | Default                                            | Description                                     |
+| --------------- | -------- | -------------------------------------------------- | ----------------------------------------------- |
+| `endpoint`      | Yes      | —                                                  | Azure OpenAI resource endpoint URL              |
+| `api_version`   | No       | `2024-10-21`                                       | Azure API version                               |
+| `client_id`     | No       | —                                                  | Entra ID client ID (Service Principal auth)     |
+| `client_secret` | No       | —                                                  | Entra ID client secret (Service Principal auth) |
+| `tenant_id`     | No       | —                                                  | Entra ID tenant ID (Service Principal auth)     |
+| `scopes`        | No       | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests                 |
 
 **Key-level fields:**
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `aliases` | No | Map model names to Azure deployment IDs (v1.5.0-prerelease2+) |
-| `value` | No | Azure API key (leave empty for Entra ID or managed identity) |
-| `models` | Yes | Models this key can serve; use `["*"]` to allow all |
+| Field     | Required | Description                                                   |
+| --------- | -------- | ------------------------------------------------------------- |
+| `aliases` | No       | Map model names to Azure deployment IDs (v1.5.0-prerelease2+) |
+| `value`   | No       | Azure API key (leave empty for Entra ID or managed identity)  |
+| `models`  | Yes      | Models this key can serve; use `["*"]` to allow all           |
 
 ---
 
@@ -586,7 +510,10 @@ For Anthropic models on Azure, Bifrost validates `anthropic-beta` headers and dr
 You can override these defaults per provider via the **Beta Headers** tab in provider configuration or via [`beta_header_overrides`](/quickstart/gateway/provider-configuration#beta-header-overrides). See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
 
 <Frame>
-  <img src="/media/azure-setting-anthropic-beta-headers.png" alt="Azure Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options" />
+  <img
+    src="/media/azure-setting-anthropic-beta-headers.png"
+    alt="Azure Beta Headers configuration tab showing supported and unsupported Anthropic beta features with override options"
+  />
 </Frame>
 
 ---
@@ -597,12 +524,12 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 
 ### Core Parameter Mapping
 
-| Parameter | Azure Handling | Notes |
-|-----------|---|-------|
-| `model` | Mapped to `deployment_id` | Supports version matching and base model matching |
-| `max_completion_tokens` | Direct pass-through | OpenAI models only |
-| `temperature`, `top_p` | Direct pass-through | Same across all models |
-| All other params | Model-specific conversion | Converted per underlying provider (OpenAI/Anthropic) |
+| Parameter               | Azure Handling            | Notes                                                |
+| ----------------------- | ------------------------- | ---------------------------------------------------- |
+| `model`                 | Mapped to `deployment_id` | Supports version matching and base model matching    |
+| `max_completion_tokens` | Direct pass-through       | OpenAI models only                                   |
+| `temperature`, `top_p`  | Direct pass-through       | Same across all models                               |
+| All other params        | Model-specific conversion | Converted per underlying provider (OpenAI/Anthropic) |
 
 ### Authentication Configuration
 
@@ -687,6 +614,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 ```
 
 **Required Azure Roles**:
+
 - For OpenAI models: `Cognitive Services OpenAI User`
 - For Anthropic models: `Cognitive Services AI Services User`
 
@@ -708,6 +636,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 ```
 
 **Configuration Details**:
+
 - `endpoint` - Azure OpenAI resource endpoint (required)
 - `client_id` - Azure Entra ID client ID (optional, for Service Principal auth)
 - `client_secret` - Azure Entra ID client secret (optional, for Service Principal auth)
@@ -722,13 +651,15 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 Deployments can be specified at three levels (in order of precedence):
 
 1. **Per-request** (highest priority)
+
    ```json
-   {"deployment": "custom-deployment"}
+   { "deployment": "custom-deployment" }
    ```
 
 2. **Key configuration**
+
    ```json
-   {"aliases": {"gpt-4": "my-gpt4-deployment"}}
+   { "aliases": { "gpt-4": "my-gpt4-deployment" } }
    ```
 
 3. **Model name** (lowest priority, if no deployment specified)
@@ -788,12 +719,12 @@ The Responses API is available for both OpenAI and Anthropic models on Azure and
 
 ### Core Parameter Mapping
 
-| Parameter | Azure Handling | Notes |
-|-----------|---|-------|
-| `instructions` | Becomes system message | Model-specific conversion |
-| `input` | Converted to user message(s) | String or array support |
-| `max_output_tokens` | Model-specific field mapping | OpenAI vs Anthropic conversion |
-| All other params | Model-specific conversion | Converted per underlying provider |
+| Parameter           | Azure Handling               | Notes                             |
+| ------------------- | ---------------------------- | --------------------------------- |
+| `instructions`      | Becomes system message       | Model-specific conversion         |
+| `input`             | Converted to user message(s) | String or array support           |
+| `max_output_tokens` | Model-specific field mapping | OpenAI vs Anthropic conversion    |
+| All other params    | Model-specific conversion    | Converted per underlying provider |
 
 ### OpenAI Models
 
@@ -802,6 +733,7 @@ For OpenAI models (GPT-4, etc.), conversion follows OpenAI's Responses API forma
 ### Anthropic Models
 
 For Anthropic models (Claude, etc.), conversion follows Anthropic's message format:
+
 - `instructions` becomes system message
 - `reasoning` mapped to `thinking` structure
 
@@ -860,10 +792,10 @@ Embeddings are supported for OpenAI models only (not available for Anthropic mod
 
 ## Request Parameters
 
-| Parameter | Azure Handling |
-|-----------|---|
-| `input` | Direct pass-through |
-| `model` | Mapped to deployment |
+| Parameter    | Azure Handling                       |
+| ------------ | ------------------------------------ |
+| `input`      | Direct pass-through                  |
+| `model`      | Mapped to deployment                 |
 | `dimensions` | Direct pass-through (when supported) |
 
 <Tabs>
@@ -925,13 +857,13 @@ Files operations are supported for OpenAI models only.
 
 ## Supported Operations
 
-| Operation | Support |
-|-----------|---------|
-| Upload | ✅ |
-| List | ✅ |
-| Retrieve | ✅ |
-| Delete | ✅ |
-| Get Content | ✅ |
+| Operation   | Support |
+| ----------- | ------- |
+| Upload      | ✅      |
+| List        | ✅      |
+| Retrieve    | ✅      |
+| Delete      | ✅      |
+| Get Content | ✅      |
 
 Files are stored in Azure and can be used with batch operations.
 
@@ -945,11 +877,11 @@ Image Generation is supported for OpenAI models on Azure and uses the OpenAI-com
 
 ### Core Parameter Mapping
 
-| Parameter | Azure Handling | Notes |
-|-----------|---|-------|
-| `model` | Mapped to `deployment_id` | Deployment ID must be configured |
-| `prompt` | Direct pass-through | Prompt text for image generation |
-| All other params | Direct pass-through | Uses OpenAI format |
+| Parameter        | Azure Handling            | Notes                            |
+| ---------------- | ------------------------- | -------------------------------- |
+| `model`          | Mapped to `deployment_id` | Deployment ID must be configured |
+| `prompt`         | Direct pass-through       | Prompt text for image generation |
+| All other params | Direct pass-through       | Uses OpenAI format               |
 
 Azure uses the same conversion as OpenAI (see [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation)):
 
@@ -1007,9 +939,7 @@ Image generation streaming is supported and uses OpenAI's streaming format with 
 
 # 6. Image Edit
 
-<Warning>
-Requests use **multipart/form-data**, not JSON.
-</Warning>
+<Warning>Requests use **multipart/form-data**, not JSON.</Warning>
 
 Image Edit is supported for OpenAI models on Azure and uses the OpenAI-compatible format.
 
@@ -1059,31 +989,30 @@ Lists available models/deployments configured in the Azure key. Response include
 ## Caveats
 
 <Accordion title="Deployment ID Required">
-**Severity**: High
-**Behavior**: Model names must map to Azure deployment IDs
-**Impact**: Request fails without valid deployment mapping
-**Code**: `azure.go:145-200`
+  **Severity**: High **Behavior**: Model names must map to Azure deployment IDs
+  **Impact**: Request fails without valid deployment mapping **Code**:
+  `azure.go:145-200`
 </Accordion>
 
 <Accordion title="Model Provider Detection">
-**Severity**: Medium
-**Behavior**: Automatic detection of OpenAI vs Anthropic based on model name
-**Impact**: Different conversion logic applied transparently
-**Code**: `azure.go:92-114`
+  **Severity**: Medium **Behavior**: Automatic detection of OpenAI vs Anthropic
+  based on model name **Impact**: Different conversion logic applied
+  transparently **Code**: `azure.go:92-114`
 </Accordion>
 
 <Accordion title="Responses API Preview Version (including Anthropic)">
-**Severity**: Medium
-**Behavior**: Responses API automatically uses preview API version, which differs from Chat Completions API version. For Anthropic models, Responses API specifically uses `preview` API version.
-**Impact**: Different API version for Responses vs Chat Completions. Automatic version override for Responses requests.
-**Code**: `azure.go:92-114`, `azure.go:109-113`, `azure.go:694`
+  **Severity**: Medium **Behavior**: Responses API automatically uses preview
+  API version, which differs from Chat Completions API version. For Anthropic
+  models, Responses API specifically uses `preview` API version. **Impact**:
+  Different API version for Responses vs Chat Completions. Automatic version
+  override for Responses requests. **Code**: `azure.go:92-114`,
+  `azure.go:109-113`, `azure.go:694`
 </Accordion>
 
 <Accordion title="Version Matching for Deployments">
-**Severity**: Low
-**Behavior**: Model version differences ignored when matching to deployments
-**Impact**: `gpt-4` and `gpt-4-turbo` can map to same deployment
-**Code**: `models.go:13-58`
+  **Severity**: Low **Behavior**: Model version differences ignored when
+  matching to deployments **Impact**: `gpt-4` and `gpt-4-turbo` can map to same
+  deployment **Code**: `models.go:13-58`
 </Accordion>
 
 ---
@@ -1094,14 +1023,14 @@ Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compa
 
 **Supported Operations**
 
-| Operation | Supported | Notes |
-|-----------|-----------|-------|
-| Generate | ✅ | `POST /v1/videos` |
-| Retrieve | ✅ | `GET /v1/videos/{id}` |
-| Download | ✅ | `GET /v1/videos/{id}/content` |
-| Delete | ✅ | `DELETE /v1/videos/{id}` |
-| List | ✅ | `GET /v1/videos` |
-| Remix | ❌ | Not supported |
+| Operation | Supported | Notes                         |
+| --------- | --------- | ----------------------------- |
+| Generate  | ✅        | `POST /v1/videos`             |
+| Retrieve  | ✅        | `GET /v1/videos/{id}`         |
+| Download  | ✅        | `GET /v1/videos/{id}/content` |
+| Delete    | ✅        | `DELETE /v1/videos/{id}`      |
+| List      | ✅        | `GET /v1/videos`              |
+| Remix     | ❌        | Not supported                 |
 
 ---
 

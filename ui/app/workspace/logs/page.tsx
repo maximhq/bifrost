@@ -487,15 +487,26 @@ export default function LogsPage() {
             const newStats = { ...prevStats };
             newStats.total_requests += 1;
 
-            // Update success rate
             const successCount = (prevStats.success_rate / 100) * prevStats.total_requests;
+
             const newSuccessCount = log.status === "success" ? successCount + 1 : successCount;
             newStats.success_rate = (newSuccessCount / newStats.total_requests) * 100;
 
-            // Update user-facing success rate (same approximation as success_rate)
-            const userSuccessCount = ((prevStats.user_facing_success_rate ?? 0) / 100) * prevStats.total_requests;
-            const newUserSuccessCount = log.status === "success" ? userSuccessCount + 1 : userSuccessCount;
-            newStats.user_facing_success_rate = (newUserSuccessCount / newStats.total_requests) * 100;
+            // Update user-facing success rate using only root requests as denominator,
+            // matching the server-side metric which counts fallback_index = 0 rows only.
+            if (log.fallback_index === 0) {
+              const userFacingTotal = prevStats.user_facing_total_requests + 1;
+              const userSuccessCount =
+                (prevStats.user_facing_success_rate / 100) *
+                prevStats.user_facing_total_requests;
+              const newUserSuccessCount =
+                log.status === "success"
+                  ? userSuccessCount + 1
+                  : userSuccessCount;
+              newStats.user_facing_total_requests = userFacingTotal;
+              newStats.user_facing_success_rate =
+                (newUserSuccessCount / userFacingTotal) * 100;
+            }
 
             // Update average latency
             if (log.latency) {
@@ -765,7 +776,9 @@ export default function LogsPage() {
     if (filters.objects?.length && !filters.objects.includes(log.object)) {
       return false;
     }
-    if (filters.selected_key_ids?.length && log.selected_key_id && !filters.selected_key_ids.includes(log.selected_key_id)) {
+    if (filters.selected_key_ids?.length &&
+      (!log.selected_key_id ||
+        !filters.selected_key_ids.includes(log.selected_key_id))) {
       return false;
     }
     if (filters.virtual_key_ids?.length) {

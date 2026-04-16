@@ -93,12 +93,13 @@ type SessionSummaryResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests         int64   `json:"total_requests"`
-	SuccessRate           float64 `json:"success_rate"`             // Percentage of individual attempts that succeeded
-	UserFacingSuccessRate float64 `json:"user_facing_success_rate"` // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
-	AverageLatency        float64 `json:"average_latency"`          // Average latency in milliseconds
-	TotalTokens           int64   `json:"total_tokens"`             // Total tokens used
-	TotalCost             float64 `json:"total_cost"`               // Total cost in dollars
+	TotalRequests              int64   `json:"total_requests"`
+	SuccessRate                float64 `json:"success_rate"`                          // Percentage of individual attempts that succeeded
+	UserFacingSuccessRate      float64 `json:"user_facing_success_rate"`              // Percentage of user requests that ultimately succeeded (fallback chains counted as one request)
+	UserFacingTotalRequests    int64   `json:"user_facing_total_requests"`            // Count of root requests (fallback_index = 0) used as denominator for UserFacingSuccessRate
+	AverageLatency             float64 `json:"average_latency"`                       // Average latency in milliseconds
+	TotalTokens                int64   `json:"total_tokens"`                          // Total tokens used
+	TotalCost                  float64 `json:"total_cost"`                            // Total cost in dollars
 }
 
 // Log represents a complete log entry for a request/response cycle

@@ -63,14 +63,22 @@ Provide a credential JSON string in `auth_credentials`. The JSON must contain a 
 
 <Tab title="Web UI">
 
+<Frame>
+  <img
+    src="/media/ui-vertex-service-account-auth-setup.png"
+    alt="Google Vertex AI Service Account (JSON) authentication setup in the Bifrost Web UI showing Project ID, Region, and Auth Credentials fields"
+  />
+</Frame>
+
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"Service Account (JSON)"**
 4. Set **Project ID**: Your Google Cloud project ID
-5. Set **Region**: e.g., `us-central1`
-6. Set **Auth Credentials**: Paste your service account JSON or reference an env var (e.g., `env.VERTEX_CREDENTIALS`)
-7. Configure **Aliases**: Map model names to fine-tuned model IDs (if using fine-tuned models)
-8. Save
+5. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+6. Set **Region**: e.g., `us-central1`
+7. Set **Auth Credentials**: Paste your service account JSON or reference an env var (e.g., `env.VERTEX_CREDENTIALS`)
+8. Configure **Aliases**: Map model names to fine-tuned model IDs (if using fine-tuned models)
+9. Save
 
 </Tab>
 
@@ -99,9 +107,10 @@ curl -X POST http://localhost:8080/api/providers/vertex/keys \
 ```
 
 <Note>
-**On v1.4.x**, two differences apply:
-- Pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
-- Use `deployments` inside `vertex_key_config` instead of the top-level `aliases` field for fine-tuned model mappings.
+  **On v1.4.x**, two differences apply: - Pass `keys` directly in the `POST
+  /api/providers` body — there is no separate `/api/providers/{provider}/keys`
+  endpoint. - Use `deployments` inside `vertex_key_config` instead of the
+  top-level `aliases` field for fine-tuned model mappings.
 </Note>
 
 </Tab>
@@ -176,13 +185,21 @@ Leave `auth_credentials` empty. Bifrost calls `google.FindDefaultCredentials()` 
 
 <Tab title="Web UI">
 
+<Frame>
+  <img
+    src="/media/ui-vertex-default-service-account-auth-setup.png"
+    alt="Google Vertex AI Application Default Credentials setup in the Bifrost Web UI showing Project ID and Region fields with no credential inputs"
+  />
+</Frame>
+
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"Service Account (Attached)"**
 4. Set **Project ID**: Your Google Cloud project ID
-5. Set **Region**: e.g., `us-central1`
-6. Configure **Aliases** if needed
-7. Save
+5. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+6. Set **Region**: e.g., `us-central1`
+7. Configure **Aliases** if needed
+8. Save
 
 Ensure `GOOGLE_APPLICATION_CREDENTIALS` is set in your environment, or that Workload Identity / gcloud is configured.
 
@@ -213,7 +230,8 @@ curl -X POST http://localhost:8080/api/providers/vertex/keys \
 ```
 
 <Note>
-**On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there is no separate `/api/providers/{provider}/keys` endpoint.
+  **On v1.4.x**, pass `keys` directly in the `POST /api/providers` body — there
+  is no separate `/api/providers/{provider}/keys` endpoint.
 </Note>
 
 </Tab>
@@ -279,13 +297,20 @@ Set `value` to your Vertex API key. API key authentication is supported only for
 
 <Tab title="Web UI">
 
+<Frame>
+  <img
+    src="/media/ui-vertex-api-key-auth-setup.png"
+    alt="Google Vertex AI API Key authentication setup in the Bifrost Web UI showing API Key, Project ID, Region, and Project Number fields"
+  />
+</Frame>
+
 1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"API Key"**
 4. Set **API Key**: Your Vertex AI API key
 5. Set **Project ID**: Your Google Cloud project ID
-6. Set **Region**: e.g., `us-central1`
-7. Set **Project Number** (Optional): Required only when using fine-tuned models
+6. Set **Project Number** (Required only for fine-tuned models): Your GCP project number; leave blank for standard models
+7. Set **Region**: e.g., `us-central1`
 8. Configure **Aliases**: Map short names to fine-tuned model IDs (e.g., `my-model` → `123456789`)
 9. Save
 

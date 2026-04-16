@@ -2141,6 +2141,11 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_parent_request_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
 	},
+	{
+		table: "logs",
+		name:  "idx_logs_status_parent_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status_parent_request_id ON logs(status, parent_request_id) WHERE parent_request_id IS NOT NULL",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
