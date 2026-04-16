@@ -381,6 +381,7 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/cluster",
                   "deployment-guides/helm/troubleshooting"
                 ]
