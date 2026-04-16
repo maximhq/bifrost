@@ -55,6 +55,41 @@ func chatGPTOAuthPath(standardPath string) string {
 	return standardPath
 }
 
+// chatGPTOAuthWebSocketURL builds the upstream WebSocket URL for the ChatGPT backend,
+// stripping the /v1 prefix and converting http(s):// to ws(s)://.
+func chatGPTOAuthWebSocketURL(baseURL, standardPath string) string {
+	url := strings.Replace(baseURL, "https://", "wss://", 1)
+	url = strings.Replace(url, "http://", "ws://", 1)
+	return url + chatGPTOAuthPath(standardPath)
+}
+
+// chatGPTOAuthWebSocketHeaders builds the headers required for the ChatGPT OAuth
+// upstream WebSocket connection: Authorization (from key) + chatgpt-account-id
+// (extracted from JWT) + OpenAI-Beta, merged with any existing extra headers.
+// Extra headers with case-insensitive Authorization are skipped.
+func chatGPTOAuthWebSocketHeaders(key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) map[string]string {
+	headers := map[string]string{
+		"Authorization": "Bearer " + key.Value.GetValue(),
+	}
+	for k, v := range existingExtraHeaders {
+		if strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		headers[k] = v
+	}
+	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
+	if err != nil {
+		if logger != nil {
+			logger.Warn("chatgpt_oauth: failed to extract account ID for WebSocket: %v", err)
+		}
+		return headers
+	}
+	for k, v := range chatGPTOAuthExtraHeaders(accountID) {
+		headers[k] = v
+	}
+	return headers
+}
+
 // extractChatGPTAccountID decodes the JWT access token payload and extracts
 // the chatgpt_account_id from the "https://api.openai.com/auth" claim.
 // No signature verification is performed — we only need the claim value.
@@ -162,4 +197,24 @@ func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string
 	}
 
 	return merged, chatGPTOAuthPath(standardPath), nil
+}
+
+// chatGPTOAuthApply is a convenience wrapper that applies ChatGPT OAuth transformations
+// for the Responses request path. If enabled is false, it returns the inputs unchanged
+// and nil bodyTransformer. If enabled is true, it returns the merged headers, the mapped
+// path, and the body transformer. Any error during preparation is logged and the
+// unchanged inputs are returned, with bodyTransformer still set so stream=true is forced.
+func chatGPTOAuthApply(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, standardPath string, logger schemas.Logger) (headers map[string]string, path string, bodyTransformer func([]byte) ([]byte, error)) {
+	if !enabled {
+		return existingExtraHeaders, standardPath, nil
+	}
+	bodyTransformer = transformChatGPTResponsesBody
+	mergedHeaders, mappedPath, err := chatGPTOAuthPrepare(key, existingExtraHeaders, standardPath, logger)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
+		}
+		return existingExtraHeaders, standardPath, bodyTransformer
+	}
+	return mergedHeaders, mappedPath, bodyTransformer
 }

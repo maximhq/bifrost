@@ -1393,20 +1393,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	responsesPath := "/v1/responses"
-	extraHeaders := provider.networkConfig.ExtraHeaders
-	var bodyTransformer func([]byte) ([]byte, error)
-
-	if provider.chatgptOAuth {
-		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, responsesPath, provider.logger)
-		if err != nil {
-			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
-		} else {
-			extraHeaders = mergedHeaders
-			responsesPath = path
-		}
-		bodyTransformer = transformChatGPTResponsesBody
-	}
+	extraHeaders, responsesPath, bodyTransformer := chatGPTOAuthApply(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, "/v1/responses", provider.logger)
 
 	return HandleOpenAIResponsesRequest(
 		ctx,
@@ -1591,20 +1578,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	responsesPath := "/v1/responses"
-	extraHeaders := provider.networkConfig.ExtraHeaders
-
-	var streamBodyTransformer func([]byte) ([]byte, error)
-	if provider.chatgptOAuth {
-		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, responsesPath, provider.logger)
-		if err != nil {
-			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
-		} else {
-			extraHeaders = mergedHeaders
-			responsesPath = path
-		}
-		streamBodyTransformer = transformChatGPTResponsesBody
-	}
+	extraHeaders, responsesPath, streamBodyTransformer := chatGPTOAuthApply(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, "/v1/responses", provider.logger)
 
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
