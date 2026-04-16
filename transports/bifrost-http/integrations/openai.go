@@ -1311,6 +1311,11 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
+					// /openai/v1/models is OpenAI-scoped — default Provider to OpenAI so
+					// the request doesn't fan out to every configured provider.
+					if listModelsReq.Provider == "" {
+						listModelsReq.Provider = schemas.OpenAI
+					}
 					return &schemas.BifrostRequest{
 						ListModelsRequest: listModelsReq,
 					}, nil
