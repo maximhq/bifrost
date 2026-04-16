@@ -10,7 +10,50 @@ import (
 )
 
 // ChatGPTOAuthDefaultBaseURL is the default base URL for ChatGPT's backend API.
+// When chatgpt_oauth is enabled and no custom base URL is set, this is used.
 const ChatGPTOAuthDefaultBaseURL = "https://chatgpt.com/backend-api/codex"
+
+// ChatGPT OAuth Route Map
+//
+// The ChatGPT backend API (chatgpt.com/backend-api/codex) uses different paths
+// from the standard OpenAI API (api.openai.com/v1). When chatgpt_oauth is enabled,
+// the /v1 prefix is stripped. Routes supported by the ChatGPT backend:
+//
+//   Standard OpenAI Path         → ChatGPT Backend Path          Method     Notes
+//   ─────────────────────────────────────────────────────────────────────────────────
+//   /v1/responses                → /responses                    POST(SSE)  Primary inference
+//   /v1/responses (WS upgrade)   → /responses (WS upgrade)       WebSocket  Preferred transport, falls back to SSE
+//   /v1/responses/compact        → /responses/compact             POST       Context compaction (OpenAI+Azure only)
+//   /v1/responses/input_tokens   → /responses/input_tokens        POST       Token counting
+//   /v1/models                   → /models?client_version=<ver>   GET        Returns {models:[{slug}]} format
+//   /v1/realtime/calls           → /realtime/calls                POST       Voice/realtime (creates WebRTC call)
+//   /v1/realtime                 → /realtime                      WebSocket  Voice/realtime session
+//   N/A                          → /memories/trace_summarize      POST       Memory summarization
+//   N/A                          → /files                         POST       File upload (note: NOT under /codex/)
+//   N/A                          → /files/{id}/uploaded           POST       File upload completion
+//
+// Required headers on every request:
+//   - Authorization: Bearer <access_token>       (handled by direct key passthrough)
+//   - chatgpt-account-id: <account_id>           (extracted from JWT, added here)
+//   - OpenAI-Beta: responses=experimental        (added here)
+//
+// Required body mutations for /responses:
+//   - instructions: must exist (default "")
+//   - store: must be false
+//   - max_output_tokens: must be deleted
+//   - stream: must be true (backend only accepts streaming)
+
+// chatGPTOAuthPath maps a standard OpenAI /v1/... path to the ChatGPT backend path.
+// Strips the /v1 prefix. Returns the path unchanged if it doesn't start with /v1.
+func chatGPTOAuthPath(standardPath string) string {
+	if standardPath == "/v1" {
+		return "/"
+	}
+	if strings.HasPrefix(standardPath, "/v1/") {
+		return standardPath[3:] // strip "/v1" prefix, keep the "/"
+	}
+	return standardPath
+}
 
 // extractChatGPTAccountID decodes the JWT access token payload and extracts
 // the chatgpt_account_id from the "https://api.openai.com/auth" claim.
@@ -94,9 +137,10 @@ func chatGPTOAuthExtraHeaders(accountID string) map[string]string {
 
 // chatGPTOAuthPrepare extracts the account ID from the bearer token, builds the
 // merged extra headers (OAuth-specific headers merged with any existing headers),
-// and returns the responses path. This is the single entry point for all
-// ChatGPT OAuth header/path logic — openai.go calls this instead of duplicating the logic.
-func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) (extraHeaders map[string]string, responsesPath string, err error) {
+// and maps the standard OpenAI path to the ChatGPT backend path.
+// This is the single entry point for all ChatGPT OAuth header/path logic —
+// openai.go calls this instead of duplicating the logic.
+func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string, standardPath string, logger schemas.Logger) (extraHeaders map[string]string, path string, err error) {
 	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
 	if err != nil {
 		return nil, "", err
@@ -111,5 +155,5 @@ func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string
 		merged[k] = v
 	}
 
-	return merged, "/responses", nil
+	return merged, chatGPTOAuthPath(standardPath), nil
 }

@@ -150,6 +150,28 @@ func TestChatGPTOAuthDefaultBaseURL(t *testing.T) {
 	assert.Equal(t, "https://chatgpt.com/backend-api/codex", ChatGPTOAuthDefaultBaseURL)
 }
 
+func TestChatGPTOAuthPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"/v1/responses", "/responses"},
+		{"/v1/responses/compact", "/responses/compact"},
+		{"/v1/responses/input_tokens", "/responses/input_tokens"},
+		{"/v1/models", "/models"},
+		{"/v1/realtime/calls", "/realtime/calls"},
+		{"/v1/realtime", "/realtime"},
+		{"/v1", "/"},
+		{"/responses", "/responses"},     // already stripped — pass through
+		{"/custom/path", "/custom/path"}, // non-v1 path — pass through
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expected, chatGPTOAuthPath(tt.input))
+		})
+	}
+}
+
 func TestTransformChatGPTResponsesBody_ForcesStreamTrue(t *testing.T) {
 	t.Run("sets stream true when not present", func(t *testing.T) {
 		input := []byte(`{"model":"gpt-5.4","input":"hello"}`)
@@ -196,7 +218,7 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 		key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
 		existing := map[string]string{"X-Custom": "value"}
 
-		headers, path, err := chatGPTOAuthPrepare(key, existing, nil)
+		headers, path, err := chatGPTOAuthPrepare(key, existing, "/v1/responses", nil)
 
 		require.NoError(t, err)
 		assert.Equal(t, "/responses", path)
@@ -205,10 +227,22 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 		assert.Equal(t, "value", headers["X-Custom"])
 	})
 
+	t.Run("maps any /v1/ path", func(t *testing.T) {
+		key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
+
+		_, path, err := chatGPTOAuthPrepare(key, nil, "/v1/models", nil)
+		require.NoError(t, err)
+		assert.Equal(t, "/models", path)
+
+		_, path, err = chatGPTOAuthPrepare(key, nil, "/v1/responses/compact", nil)
+		require.NoError(t, err)
+		assert.Equal(t, "/responses/compact", path)
+	})
+
 	t.Run("nil existing headers does not panic", func(t *testing.T) {
 		key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
 
-		headers, path, err := chatGPTOAuthPrepare(key, nil, nil)
+		headers, path, err := chatGPTOAuthPrepare(key, nil, "/v1/responses", nil)
 
 		require.NoError(t, err)
 		assert.Equal(t, "/responses", path)
@@ -218,7 +252,7 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 	t.Run("returns error on invalid token", func(t *testing.T) {
 		key := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
 
-		_, _, err := chatGPTOAuthPrepare(key, nil, nil)
+		_, _, err := chatGPTOAuthPrepare(key, nil, "/v1/responses", nil)
 
 		assert.Error(t, err)
 	})

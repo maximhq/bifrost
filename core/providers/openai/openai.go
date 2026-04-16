@@ -1398,7 +1398,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	var bodyTransformer func([]byte) ([]byte, error)
 
 	if provider.chatgptOAuth {
-		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, provider.logger)
+		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, responsesPath, provider.logger)
 		if err != nil {
 			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
 		} else {
@@ -1596,7 +1596,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 	var streamBodyTransformer func([]byte) ([]byte, error)
 	if provider.chatgptOAuth {
-		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, provider.logger)
+		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, responsesPath, provider.logger)
 		if err != nil {
 			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
 		} else {
