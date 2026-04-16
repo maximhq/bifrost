@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -119,9 +120,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 							if !ok {
 								return "", nil, fmt.Errorf("expected RawResponse string, got %T", resp.ExtraFields.RawResponse)
 							}
-							var rawResponseJSON anthropic.AnthropicStreamEvent
-							if err := sonic.Unmarshal([]byte(raw), &rawResponseJSON); err == nil {
-								return string(rawResponseJSON.Type), raw, nil
+							if t := gjson.Get(raw, "type"); t.Exists() {
+								return t.String(), raw, nil
 							}
 						}
 						// Fallback: if RawResponse is not available, use bifrost-to-anthropic conversion
