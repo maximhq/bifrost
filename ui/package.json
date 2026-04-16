@@ -19,6 +19,7 @@
 		"@dnd-kit/react": "0.3.2",
 		"@hookform/resolvers": "5.2.1",
 		"@monaco-editor/react": "4.7.0",
+		"@number-flow/react": "0.6.0",
 		"@phosphor-icons/react": "2.1.9",
 		"@radix-ui/react-accordion": "1.2.12",
 		"@radix-ui/react-alert-dialog": "1.1.15",

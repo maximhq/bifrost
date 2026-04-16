@@ -297,34 +297,6 @@ export function LogsVolumeChart({
 		[data, onTimeRangeChange],
 	);
 
-	if (loading) {
-		return (
-			<Card className="gap-0 rounded-sm px-2 py-2 shadow-none">
-				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-2">
-						<ChevronDown className="text-muted-foreground h-4 w-4" />
-						<span className="text-muted-foreground text-sm font-medium">Request Volume</span>
-					</div>
-					<div className="mr-2 flex items-center gap-4">
-						<div className="flex items-center gap-3 text-xs">
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-emerald-500" />
-								<span className="text-muted-foreground">Success</span>
-							</span>
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full bg-red-500" />
-								<span className="text-muted-foreground">Error</span>
-							</span>
-						</div>
-					</div>
-				</div>
-				<div className="" style={{ height: "128px", marginTop: 8 }}>
-					<Skeleton className="h-full w-full" />
-				</div>
-			</Card>
-		);
-	}
-
 	// Check if we have valid data for the chart
 	const hasValidData = data && startTime && endTime && chartData.length >= 2;
 
@@ -362,7 +334,9 @@ export function LogsVolumeChart({
 				</div>
 				<CollapsibleContent className="data-[state=closed]:animate-collapse-up data-[state=open]:animate-collapse-down overflow-hidden">
 					<div className="mt-2 h-32 select-none">
-						{hasValidData ? (
+						{loading ? (
+							<Skeleton className="h-full w-full" />
+						) : hasValidData ? (
 							<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
 								<ResponsiveContainer width="100%" height="100%">
 									<BarChart
