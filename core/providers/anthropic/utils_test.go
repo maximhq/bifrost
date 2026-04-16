@@ -1474,6 +1474,39 @@ func TestAnthropicToolUnmarshalJSON_MCPToolset(t *testing.T) {
 	})
 }
 
+func TestGetRequestBodyForResponses_RawBodyStripsFallbacks(t *testing.T) {
+	rawBody := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],"fallbacks":["claude-haiku-4-5"],"temperature":0.7}`)
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+	request := &schemas.BifrostResponsesRequest{
+		Provider:       schemas.Anthropic,
+		Model:          "claude-sonnet-4-5",
+		RawRequestBody: rawBody,
+	}
+
+	result, bifrostErr := getRequestBodyForResponses(ctx, request, schemas.Anthropic, false, nil)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+
+	if providerUtils.GetJSONField(result, "fallbacks").Exists() {
+		t.Error("expected 'fallbacks' to be absent from raw-body output")
+	}
+
+	// Other fields must survive the round-trip
+	if !providerUtils.GetJSONField(result, "model").Exists() {
+		t.Error("expected 'model' to be present")
+	}
+	if !providerUtils.GetJSONField(result, "max_tokens").Exists() {
+		t.Error("expected 'max_tokens' to be present")
+	}
+	if !providerUtils.GetJSONField(result, "temperature").Exists() {
+		t.Error("expected 'temperature' to be present")
+	}
+}
+
 func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
 	t.Run("allowlist pattern merges correctly", func(t *testing.T) {
 		bifrostTool := &schemas.ResponsesTool{
