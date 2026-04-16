@@ -21,7 +21,7 @@ interface OtelFormFragmentProps {
 		service_name?: string;
 		collector_url?: string;
 		headers?: Record<string, string>;
-		trace_type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
+		trace_type?: "genai_extension" | "vercel" | "open_inference";
 		protocol?: "http" | "grpc";
 		// TLS configuration
 		tls_ca_cert?: string;
@@ -37,7 +37,13 @@ interface OtelFormFragmentProps {
 	isLoading?: boolean;
 }
 
-export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: OtelFormFragmentProps) {
+export function OtelFormFragment({
+	currentConfig: initialConfig,
+	onSave,
+	onDelete,
+	isDeleting = false,
+	isLoading = false,
+}: OtelFormFragmentProps) {
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({
@@ -50,7 +56,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url ?? "",
 				headers: initialConfig?.headers ?? {},
-				trace_type: initialConfig?.trace_type ?? "otel",
+				trace_type: initialConfig?.trace_type ?? "genai_extension",
 				protocol: initialConfig?.protocol ?? "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
@@ -94,7 +100,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url || "",
 				headers: initialConfig?.headers || {},
-				trace_type: initialConfig?.trace_type || "otel",
+				trace_type: initialConfig?.trace_type || "genai_extension",
 				protocol: initialConfig?.protocol || "http",
 				tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 				insecure: initialConfig?.insecure ?? true,
@@ -106,7 +112,9 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 	}, [form, initialConfig]);
 
 	const traceTypeOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
-		{ value: "otel", label: "OTEL - GenAI Extension" },
+		{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+		{ value: "vercel", label: "Vercel AI SDK", disabled: true, disabledReason: "Coming soon" },
+		{ value: "open_inference", label: "Arize OpenInference", disabled: true, disabledReason: "Coming soon" },
 	];
 	const protocolOptions: { value: string; label: string; disabled?: boolean; disabledReason?: string }[] = [
 		{ value: "http", label: "HTTP" },
@@ -406,7 +414,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 										service_name: initialConfig?.service_name ?? "bifrost",
 										collector_url: initialConfig?.collector_url ?? "",
 										headers: initialConfig?.headers ?? {},
-										trace_type: initialConfig?.trace_type ?? "otel",
+										trace_type: initialConfig?.trace_type ?? "genai_extension",
 										protocol: initialConfig?.protocol ?? "http",
 										tls_ca_cert: initialConfig?.tls_ca_cert ?? "",
 										insecure: initialConfig?.insecure ?? true,

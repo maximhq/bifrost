@@ -357,16 +357,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	var payload = struct {
-		Keys                     []schemas.Key                     `json:"keys"`                             // API keys for the provider
-		NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                   // Network-related settings
-		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`      // Concurrency settings
-		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`           // Proxy configuration
-		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
-		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
+		Keys                     []schemas.Key                     `json:"keys"`                                 // API keys for the provider
+		NetworkConfig            schemas.NetworkConfig             `json:"network_config"`                       // Network-related settings
+		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize  `json:"concurrency_and_buffer_size"`          // Concurrency settings
+		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`               // Proxy configuration
+		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`      // Include raw request in BifrostResponse
+		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`     // Include raw response in BifrostResponse
 		StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"` // Capture raw request/response for internal logging only
-		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"` // Custom provider configuration
-		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`          // OpenAI-specific configuration
-		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`      // Provider-level pricing overrides
+		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`     // Custom provider configuration
+		OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`              // OpenAI-specific configuration
+		PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`          // Provider-level pricing overrides
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -891,19 +891,19 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 }
 
 // keyAllowsModelForList reports whether a provider key permits model for catalog listing.
-func keyAllowsModelForList(provider schemas.ModelProvider, model string, key schemas.Key, modelCatalog *modelcatalog.ModelCatalog) bool {
-	if len(key.BlacklistedModels) > 0 && keyModelListAllowsModel(provider, model, key.BlacklistedModels, modelCatalog) {
+func keyAllowsModelForList(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, key schemas.Key, modelCatalog *modelcatalog.ModelCatalog) bool {
+	if len(key.BlacklistedModels) > 0 && keyModelListAllowsModel(provider, model, providerConfig, key.BlacklistedModels, modelCatalog) {
 		return false
 	}
 	if len(key.Models) > 0 {
-		return keyModelListAllowsModel(provider, model, key.Models, modelCatalog)
+		return keyModelListAllowsModel(provider, model, providerConfig, key.Models, modelCatalog)
 	}
 	return true
 }
 
 // keyModelListAllowsModel reports whether model matches a key allow/deny list entry,
 // using catalog-aware alias matching when model metadata is available.
-func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
+func keyModelListAllowsModel(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels []string, modelCatalog *modelcatalog.ModelCatalog) bool {
 	if len(allowedModels) == 0 {
 		return false
 	}
@@ -912,7 +912,7 @@ func keyModelListAllowsModel(provider schemas.ModelProvider, model string, allow
 		return slices.Contains(allowedModels, model)
 	}
 
-	if modelCatalog.IsModelAllowedForProvider(provider, model, allowedModels) {
+	if modelCatalog.IsModelAllowedForProvider(provider, model, providerConfig, allowedModels) {
 		return true
 	}
 
@@ -1010,7 +1010,7 @@ func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provide
 	for _, model := range models {
 		grantedBy := make([]string, 0, len(matchedKeys))
 		for _, matched := range matchedKeys {
-			if keyAllowsModelForList(provider, model, matched.key, modelCatalog) {
+			if keyAllowsModelForList(provider, model, config, matched.key, modelCatalog) {
 				grantedBy = append(grantedBy, matched.id)
 			}
 		}
@@ -1391,8 +1391,8 @@ func validatePricingOverrideNonNegativeFields(index int, override schemas.Provid
 		"input_cost_per_token_above_200k_tokens":            override.InputCostPerTokenAbove200kTokens,
 		"output_cost_per_token_above_200k_tokens":           override.OutputCostPerTokenAbove200kTokens,
 		"cache_creation_input_token_cost_above_200k_tokens": override.CacheCreationInputTokenCostAbove200kTokens,
-		"cache_read_input_token_cost_above_200k_tokens": override.CacheReadInputTokenCostAbove200kTokens,
-		"cache_read_input_token_cost":                   override.CacheReadInputTokenCost,
+		"cache_read_input_token_cost_above_200k_tokens":     override.CacheReadInputTokenCostAbove200kTokens,
+		"cache_read_input_token_cost":                       override.CacheReadInputTokenCost,
 		"cache_creation_input_token_cost":                   override.CacheCreationInputTokenCost,
 		"input_cost_per_token_batches":                      override.InputCostPerTokenBatches,
 		"output_cost_per_token_batches":                     override.OutputCostPerTokenBatches,

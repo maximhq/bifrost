@@ -164,7 +164,10 @@ bifrost:
     enforceGovernanceHeader: true
     allowDirectKeys: true
     maxRequestBodySizeMb: 50
-    enableLitellmFallbacks: true
+    compat:
+      convertTextToChat: true
+      convertChatToResponses: true
+      shouldDropParams: true
     prometheusLabels:
       - "team"
       - "env"
@@ -200,7 +203,9 @@ assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
 assert_field_value 'client.allow_direct_keys' '.client.allow_direct_keys' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
-assert_field_value 'client.enable_litellm_fallbacks' '.client.enable_litellm_fallbacks' 'true'
+assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
+assert_field_value 'client.compat.convert_chat_to_responses' '.client.compat.convert_chat_to_responses' 'true'
+assert_field_value 'client.compat.should_drop_params' '.client.compat.should_drop_params' 'true'
 assert_field 'client.prometheus_labels' '.client.prometheus_labels'
 assert_field 'client.header_filter_config.allowlist' '.client.header_filter_config.allowlist'
 assert_field 'client.header_filter_config.denylist' '.client.header_filter_config.denylist'
@@ -638,7 +643,7 @@ bifrost:
       config:
         service_name: "bifrost-test"
         collector_url: "otel-collector:4317"
-        trace_type: "otel"
+        trace_type: "genai_extension"
         protocol: "grpc"
         metrics_enabled: true
         metrics_endpoint: "otel-collector:4317"
@@ -711,7 +716,7 @@ assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4
 assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'
 assert_field_value 'plugins: otel service_name' '.plugins.[5].config.service_name' '"bifrost-test"'
 assert_field_value 'plugins: otel collector_url' '.plugins.[5].config.collector_url' '"otel-collector:4317"'
-assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"otel"'
+assert_field_value 'plugins: otel trace_type' '.plugins.[5].config.trace_type' '"genai_extension"'
 assert_field_value 'plugins: otel protocol' '.plugins.[5].config.protocol' '"grpc"'
 assert_field_value 'plugins: otel metrics_enabled' '.plugins.[5].config.metrics_enabled' 'true'
 assert_field_value 'plugins: otel metrics_endpoint' '.plugins.[5].config.metrics_endpoint' '"otel-collector:4317"'
@@ -865,35 +870,36 @@ assert_field_value 'cluster_config.discovery.k8s_label_selector' '.cluster_confi
 # Gap 7: Cluster region
 assert_field_value 'cluster_config.region' '.cluster_config.region' '"us-east-1"'
 
-# SAML - Okta
-cat > "$TMPDIR/values-saml-okta.yaml" << 'VALS'
+# SCIM - Okta
+cat > "$TMPDIR/values-scim-okta.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "okta"
     config:
       issuerUrl: "https://dev-123.okta.com/oauth2/default"
       clientId: "okta-client-id"
       clientSecret: "okta-client-secret"
+      apiToken: "okta-api-token"
       audience: "api://default"
       userIdField: "sub"
       teamIdsField: "groups"
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-okta.yaml"
-assert_field_value 'saml_config.enabled' '.saml_config.enabled' 'true'
-assert_field_value 'saml_config.provider' '.saml_config.provider' '"okta"'
-assert_field 'saml_config.config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-okta.yaml"
+assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
+assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
+assert_field 'scim_config.config' '.scim_config.config'
 
-# SAML - Entra
-cat > "$TMPDIR/values-saml-entra.yaml" << 'VALS'
+# SCIM - Entra
+cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
   tag: v1.0.0
 bifrost:
-  saml:
+  scim:
     enabled: true
     provider: "entra"
     config:
@@ -907,9 +913,9 @@ bifrost:
       rolesField: "roles"
 VALS
 
-render_config "$TMPDIR/values-saml-entra.yaml"
-assert_field_value 'saml_config (entra) provider' '.saml_config.provider' '"entra"'
-assert_field 'saml_config (entra) config' '.saml_config.config'
+render_config "$TMPDIR/values-scim-entra.yaml"
+assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
+assert_field 'scim_config (entra) config' '.scim_config.config'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'

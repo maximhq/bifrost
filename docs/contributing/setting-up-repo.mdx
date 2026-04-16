@@ -84,7 +84,7 @@ This command will:
 1. Install UI dependencies automatically
 2. Install Air for hot reloading
 3. Set up the Go workspace with local modules
-4. Start the Next.js development server (port 3000)
+4. Start the Vite development server (port 3000)
 5. Start the API server with UI proxy (port 8080)
 
 **Access the application at:** http://localhost:8080
@@ -350,7 +350,7 @@ make setup-workspace
 **UI dependency issues:**
 ```bash
 # Clean and reinstall UI dependencies
-rm -rf ui/node_modules ui/.next
+rm -rf ui/node_modules
 make install-ui
 ```
 

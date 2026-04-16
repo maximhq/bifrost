@@ -48,6 +48,39 @@ virtual-keys:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+virtual-keys-quota:
+  get:
+    operationId: getVirtualKeyQuota
+    summary: Get virtual key quota
+    description: |
+      Returns the budget and rate limit quota for the authenticated virtual key.
+      This is a self-service endpoint — no admin authentication required.
+      The virtual key value itself (provided via header) is the credential.
+    tags:
+      - Governance
+    security:
+      - VirtualKeyAuth: []
+      - BearerAuth: []
+      - ApiKeyAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
+      '401':
+        description: Missing or invalid virtual key
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 virtual-keys-by-id:
   get:
     operationId: getVirtualKey

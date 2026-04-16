@@ -156,10 +156,10 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 
 				// Check if we have raw response (which holds the chunk payload)
 				if rawResp, ok := resp.ExtraFields.RawResponse.(string); ok {
-					// Create BedrockStreamEvent with InvokeModelRawChunk
+					// Create BedrockStreamEvent with InvokeModelRawChunks
 					// The payload bytes are the raw JSON string
 					bedrockEvent := &bedrock.BedrockStreamEvent{
-						InvokeModelRawChunk: []byte(rawResp),
+						InvokeModelRawChunks: [][]byte{[]byte(rawResp)},
 					}
 					return "", bedrockEvent, nil
 				}

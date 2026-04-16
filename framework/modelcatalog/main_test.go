@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 )
@@ -154,5 +155,56 @@ func TestIsModelAllowedForProvider_PrefixedAllowedModelInCatalog(t *testing.T) {
 		nil,
 	)
 
-	assert.True(t, mc.IsModelAllowedForProvider(schemas.OpenRouter, "gpt-4o", []string{"openai/gpt-4o"}))
+	providerConfig := configstore.ProviderConfig{}
+
+	assert.True(t, mc.IsModelAllowedForProvider(schemas.OpenRouter, "gpt-4o", &providerConfig, []string{"openai/gpt-4o"}))
+}
+
+func TestIsModelAllowedForProvider_CustomProviderListModelsDisabled(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+
+	// Custom provider with list-models disabled + ["*"] → should return true
+	providerConfig := configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				ListModels: false,
+			},
+		},
+	}
+	assert.True(t, mc.IsModelAllowedForProvider("custom-provider", "any-model", &providerConfig, []string{"*"}))
+}
+
+func TestIsModelAllowedForProvider_CustomProviderListModelsEnabled(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			"custom-provider": {"model-a"},
+		},
+		nil,
+	)
+
+	// Custom provider with list-models enabled + ["*"] → should go through catalog
+	providerConfig := configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				ListModels: true,
+			},
+		},
+	}
+	// model-a is in catalog → allowed
+	assert.True(t, mc.IsModelAllowedForProvider("custom-provider", "model-a", &providerConfig, []string{"*"}))
+	// model-b is NOT in catalog → denied
+	assert.False(t, mc.IsModelAllowedForProvider("custom-provider", "model-b", &providerConfig, []string{"*"}))
+}
+
+func TestIsModelAllowedForProvider_NilProviderConfig(t *testing.T) {
+	mc := newTestCatalog(
+		map[schemas.ModelProvider][]string{
+			"some-provider": {"model-x"},
+		},
+		nil,
+	)
+
+	// nil providerConfig + ["*"] → should go through catalog (not bypass)
+	assert.True(t, mc.IsModelAllowedForProvider("some-provider", "model-x", nil, []string{"*"}))
+	assert.False(t, mc.IsModelAllowedForProvider("some-provider", "model-y", nil, []string{"*"}))
 }

@@ -51,7 +51,11 @@ You can add an app icon to make the application easily recognizable. The Bifrost
 
 ---
 
-## Step 2: Create App Roles
+## Step 2: Create App Roles (Optional)
+
+<Note>
+  This step is optional. You can create custom roles if thats the preferred way. Or you can map any attribute to role/team/business unit. Role mapping is required step.
+</Note>
 
 Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer, Viewer).
 
@@ -92,10 +96,6 @@ Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer,
 | **Value** | `admin` |
 | **Description** | Admin role on Bifrost |
 | **State** | Enabled |
-
-<Note>
-The role **Value** must be lowercase (`admin`, `developer`, `viewer`) to match Bifrost's role resolution logic. Users with multiple roles will be assigned the highest privilege role.
-</Note>
 
 ---
 
@@ -168,6 +168,10 @@ Ensure your application has the necessary permissions.
 
 ## Step 6: Configure Token Claims (Optional)
 
+<Note>
+  Groups and other attributes are required in the claim when you configure their mapping in Bifrost.
+</Note>
+
 By default, Entra includes the `roles` claim when app roles are assigned. To include group memberships for team synchronization:
 
 1. Go to **Token configuration**
@@ -176,10 +180,6 @@ By default, Entra includes the `roles` claim when app roles are assigned. To inc
    - **Security groups** or **Groups assigned to the application**
    - For token type, enable **ID** and **Access**
 4. Click **Add**
-
-<Note>
-Group IDs from Entra will be used as team IDs in Bifrost. You may want to create groups in Entra that correspond to your teams.
-</Note>
 
 ---
 
@@ -203,11 +203,44 @@ You can assign roles to groups for easier management. All users in a group will 
 
 ---
 
-## Step 8: Configure Bifrost
+## Step 8: Configure App Manifest 
+
+<Frame>
+<img src="/media/user-provisioning/entra-app-manifest.png" alt="Microsoft entra app manifest"/>
+</Frame>
+
+You will need to make 2 changes in the app manifest
+
+```json
+"requestedAccessTokenVersion": 2
+```
+
+and 
+
+```json
+"optionalClaims": {                                                                                                                                                                                                                             
+  "idToken": [                                                                                                                                                                                                                                  
+    {                                                                                                                                                                                                                                           
+      "name": "roles",                                                                                                                                                                                                                       
+      "source": null,                                                                                                                                                                                                                           
+      "essential": false,                                                                                                                                                                                                                       
+      "additionalProperties": []                                                                                                                                                                                                                
+    }                                                                                                                                                                                                                                           
+  ],                                                                                                                                                                                                                                            
+  "accessToken": [],                                                                                                                                                                                                                            
+  "saml2Token": []                                                                                                                                                                                                                              
+}
+```
+
+## Step 9: Configure Bifrost
 
 Now configure Bifrost to use Microsoft Entra as the identity provider.
 
 ### Using the Bifrost UI
+
+<Frame>
+  <img src="/media/user-provisioning/entra-form.png" alt="Create token dialog in Okta" />
+</Frame>
 
 1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
 2. Select **Microsoft Entra** as the SCIM Provider
@@ -221,8 +254,9 @@ Now configure Bifrost to use Microsoft Entra as the identity provider.
 | **Audience** | Your Client ID (optional, defaults to Client ID) |
 | **App ID URI** | `api://{client-id}` (optional, for v1.0 tokens) |
 
-4. Toggle **Enabled** to activate the provider
-5. Click **Save Configuration**
+5. **Verify** configuration and see if you get any errors. Make sure you get no errors/warnings.
+6. Toggle **Enabled** to activate the provider
+7. Click **Save Configuration**
 
 <Warning>
 After saving, you'll need to restart your Bifrost server for the changes to take effect.
@@ -236,33 +270,72 @@ After saving, you'll need to restart your Bifrost server for the changes to take
 | `clientId` | Yes | Application (client) ID |
 | `clientSecret` | Yes | Client secret for OAuth authentication |
 | `audience` | No | JWT audience for validation (defaults to clientId) |
-| `appIdUri` | No | App ID URI for v1.0 tokens (e.g., `api://{clientId}`) |
-| `userIdField` | No | JWT claim for user ID (default: `oid`) |
-| `rolesField` | No | JWT claim for roles (default: `roles`) |
-| `teamIdsField` | No | JWT claim for group/team IDs (default: `groups`) |
+| `attributeRoleMappings`         | Yes       | Ordered list of attribute→role mappings. First match wins.                           |
+| `attributeTeamMappings`         | No       | Attribute→team mappings (all matches apply).                                        |
+| `attributeBusinessUnitMappings` | No       | Attribute→business-unit mappings (all matches apply).                               |
 
 ---
 
-## Role Mapping
+### Attribute Mappings
 
-Bifrost automatically maps Entra app roles to its internal role hierarchy:
+Attribute mappings let you translate Okta claim values into Bifrost roles, teams, or business units without restructuring your Okta claims. Bifrost supports three mapping types:
 
-| Entra Role Value | Bifrost Role | Privilege Level |
-|------------------|--------------|-----------------|
-| `admin` | Admin | Highest |
-| `developer` | Developer | Medium |
-| `viewer` | Viewer | Lowest |
+- **`attributeRoleMappings`**:  map a claim value to a Bifrost role (Admin, Developer, Viewer, or a custom role)
+- **`attributeTeamMappings`**: map a claim value to a Bifrost team
+- **`attributeBusinessUnitMappings`**: map a claim value to a Bifrost business unit
 
-**Multiple Roles:** If a user has multiple roles assigned, Bifrost automatically selects the highest privilege role. For example, a user with both `viewer` and `developer` roles will be assigned the Developer role in Bifrost.
+These mappings work with any Okta claim — the `groups` claim from Step 5, the custom `role` claim from Step 4, or any other claim your authorization server includes in the token (e.g., `department`, `organization`).
 
-**Default Role:** Users without any assigned role will default to the Viewer role.
+To configure attribute mappings:
+
+1. In the User Provisioning configuration, scroll down to **Attribute Mappings**
+2. Click **Add Mapping** under the relevant mapping type (Role, Team, or Business Unit)
+3. Enter the **Attribute** (the claim name from the token), the **Value** to match, and the target **Role**, **Team**, or **Business Unit**
+4. Repeat for each rule you need
+
+<Frame>
+  <img
+    src="/media/user-provisioning/attribute-to-entity-mapping.png"
+    alt="Attribute Mappings configuration in Bifrost"
+  />
+</Frame>
+
+<Note>
+  When you mark value as "*" - the claim value is mapped as is to the entity name. Values comparisons are case-insensitive. 
+</Note>
+
+### Custom attribute mapping
+
+You can also map any custom attributes to any entity (role, team or business unit). Make sure these are configured to send back to Bifrost in token configuration.
+
+<Frame>
+  <img
+    src="/media/user-provisioning/custom-attribute-mapping.png"
+    alt="Attribute Mappings configuration in Bifrost"
+  />
+</Frame>
+
+
+#### Evaluation rules
+
+- **Role mappings**: Ordered, first match wins. If no rule matches, users are not allowed to login into the system.
+- **Team and business unit mappings**: All matching rules apply — users can be placed on multiple teams and business units simultaneously.
+- **Claim values**: Can be strings, arrays, or nested objects. Bifrost resolves dotted paths (e.g., `realm_access.roles`).
+
+<Note>
+  If a user matches multiple role mapping rules, the highest privilege role is assigned. If no
+  mapping matches, the first user to sign in receives the **Admin** role, and subsequent users receive the **Viewer**
+  role.
+</Note>
+
+5. Click **Save Configuration**
 
 ---
 
 ## Testing the Integration
 
 1. Open your Bifrost dashboard in a new browser or incognito window
-2. You should be redirected to Microsoft login
+2. You should be redirected to Entra for authentication
 3. Log in with an assigned user
 4. After successful authentication, you'll be redirected back to Bifrost
 5. Verify the user appears in the Bifrost users list with the correct role
@@ -288,23 +361,6 @@ Bifrost automatically maps Entra app roles to its internal role hierarchy:
 - Ensure you're using the secret **Value**, not the secret ID
 - Check for any leading/trailing whitespace when copying
 
-### Roles not appearing in token
-
-- Ensure users are assigned to the Enterprise Application with a role
-- Verify app roles are created with the correct lowercase values
-- Check that "Assignment required" is enabled
-
-### "AADSTS70011: The provided request includes an invalid scope"
-
-- This usually happens when mixing `.default` scope with other scopes
-- Bifrost handles this automatically - ensure you're using the latest version
-
-### Groups not syncing as teams
-
-- Verify the groups claim is configured in Token configuration
-- Ensure users are members of the groups
-- Check that groups are created and assigned in Entra
-
 ### Token validation errors
 
 - Ensure the Tenant ID matches your Azure directory
@@ -315,6 +371,7 @@ Bifrost automatically maps Entra app roles to its internal role hierarchy:
 
 ## Next Steps
 
+- **[User Provisioning (SCIM)](./user-provisioning)** - Overview of SCIM in Bifrost and alternative identity providers
 - **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
 - **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
 - **[Audit Logs](./audit-logs)** - Monitor user authentication and activity

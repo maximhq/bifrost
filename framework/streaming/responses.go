@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -898,6 +899,22 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+		if bifrostErr.ExtraFields.RawResponse != nil {
+			if rawBytes, marshalErr := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); marshalErr == nil {
+				chunk.RawResponse = bifrost.Ptr(string(rawBytes))
+			}
+		}
+		// Assign a stable trailing index; reuse on duplicate plugin calls so dedup fires correctly.
+		accumulator := a.getOrCreateStreamAccumulator(requestID)
+		accumulator.mu.Lock()
+		if accumulator.TerminalErrorChunkIndex >= 0 {
+			chunk.ChunkIndex = accumulator.TerminalErrorChunkIndex
+		} else {
+			accumulator.MaxResponsesChunkIndex++
+			chunk.ChunkIndex = accumulator.MaxResponsesChunkIndex
+			accumulator.TerminalErrorChunkIndex = chunk.ChunkIndex
+		}
+		accumulator.mu.Unlock()
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ResponsesStreamResponse.ExtraFields.RawResponse))

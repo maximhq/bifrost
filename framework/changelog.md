@@ -1,0 +1,1 @@
+- fix: preserve context values in async requests

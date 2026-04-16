@@ -235,6 +235,13 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 			}
 		}
 	}
+
+	// delete fallbacks field
+	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+	}
+
 	return jsonBody, nil
 }
 

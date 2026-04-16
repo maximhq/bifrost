@@ -60,9 +60,7 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": [
-              "overview"
-            ]
+            "pages": ["overview"]
           },
           {
             "group": "Quick Start",
@@ -102,16 +100,12 @@
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v1.5.0"
-            ]
+            "pages": ["migration-guides/v1.5.0"]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration"
-            ]
+            "pages": ["integrations/what-is-an-integration"]
           },
           {
             "group": "Providers & Guides",
@@ -184,10 +178,7 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": [
-                  "plugins/writing-go-plugin",
-                  "plugins/writing-wasm-plugin"
-                ]
+                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
               },
               "plugins/migration-guide"
             ]
@@ -217,18 +208,12 @@
               {
                 "group": "Prompt Repository",
                 "icon": "folder",
-                "pages": [
-                  "features/prompt-repository/playground",
-                  "features/prompt-repository/prompts-plugin"
-                ]
+                "pages": ["features/prompt-repository/playground", "features/prompt-repository/prompts-plugin"]
               },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": [
-                  "features/plugins/mocker",
-                  "features/plugins/jsonparser"
-                ]
+                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
               }
             ]
           },
@@ -239,16 +224,13 @@
               "enterprise/guardrails",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/user-provisioning",
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
-                "pages": [
-                  "enterprise/advanced-governance",
-                  "enterprise/rbac"
-                ]
+                "pages": ["enterprise/advanced-governance", "enterprise/rbac"]
               },
               "enterprise/mcp-with-fa",
-              "enterprise/vault-support",
               "enterprise/invpc-deployments",
               "enterprise/custom-plugins",
               "enterprise/audit-logs",
@@ -286,33 +268,22 @@
               {
                 "group": "OpenAI SDK",
                 "icon": "openai",
-                "pages": [
-                  "integrations/openai-sdk/overview",
-                  "integrations/openai-sdk/files-and-batch"
-                ]
+                "pages": ["integrations/openai-sdk/overview", "integrations/openai-sdk/files-and-batch"]
               },
               {
                 "group": "Anthropic SDK",
                 "icon": "asterisk",
-                "pages": [
-                  "integrations/anthropic-sdk/overview",
-                  "integrations/anthropic-sdk/files-and-batch"
-                ]
+                "pages": ["integrations/anthropic-sdk/overview", "integrations/anthropic-sdk/files-and-batch"]
               },
               {
                 "group": "Bedrock SDK",
                 "icon": "aws",
-                "pages": [
-                  "integrations/bedrock-sdk/overview",
-                  "integrations/bedrock-sdk/files-and-batch"
-                ]
+                "pages": ["integrations/bedrock-sdk/overview", "integrations/bedrock-sdk/files-and-batch"]
               },
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
+                "pages": ["integrations/genai-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -325,7 +296,9 @@
             "icon": "id-card",
             "pages": [
               "enterprise/setting-up-okta",
-              "enterprise/setting-up-entra"
+              "enterprise/setting-up-entra",
+              "enterprise/setting-up-zitadel",
+              "enterprise/setting-up-google-workspace"
             ]
           },
           {
@@ -336,16 +309,6 @@
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai"
-            ]
-          },
-          {
-            "group": "Secret Management (Vaults)",
-            "icon": "vault",
-            "pages": [
-              "integrations/vaults/hashicorp-vault",
-              "integrations/vaults/aws-secrets-manager",
-              "integrations/vaults/google-secret-manager",
-              "integrations/vaults/azure-key-vault"
             ]
           },
           {
@@ -467,9 +430,7 @@
       {
         "tab": "Security",
         "icon": "shield",
-        "pages": [
-          "security"
-        ]
+        "pages": ["security"]
       },
       {
         "tab": "Benchmarks",
@@ -629,10 +590,7 @@
               },
               {
                 "group": "September 2025",
-                "pages": [
-                  "changelogs/v1.2.22",
-                  "changelogs/v1.2.21"
-                ]
+                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
               }
             ]
           },
@@ -747,7 +705,7 @@
     },
     {
       "source": "/features/enterprise/scim",
-      "destination": "/enterprise/setting-up-okta"
+      "destination": "/enterprise/user-provisioning"
     },
     {
       "source": "/enterprise/intelligent-load-balancing",

@@ -14,7 +14,7 @@ Role-Based Access Control (RBAC) in Bifrost Enterprise provides fine-grained acc
 - **Audit-Ready** - Track who has access to what for compliance requirements
 - **Flexible Role Design** - Use system roles or create custom roles for your organization
 
-RBAC integrates seamlessly with [Identity Provider authentication](./advanced-governance#identity-provider-integration), automatically assigning roles based on your IdP groups and claims.
+RBAC integrates seamlessly with [User Provisioning (SCIM)](./user-provisioning), automatically assigning roles based on your IdP groups and claims.
 
 ---
 
@@ -169,7 +169,7 @@ Custom "Ops" role with:
 
 ## Integration with Identity Providers
 
-When using [Okta](./setting-up-okta) or [Microsoft Entra](./setting-up-entra) for authentication, roles can be automatically assigned based on:
+When using [User Provisioning (SCIM)](./user-provisioning) with Okta, Entra, Zitadel, Keycloak, or Google Workspace, roles can be automatically assigned based on:
 
 - **IdP Groups** - Map identity provider groups to Bifrost roles
 - **App Roles** - Sync application roles from your IdP

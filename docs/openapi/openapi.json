@@ -33438,6 +33438,85 @@
         }
       }
     },
+    "/api/governance/virtual-keys/quota": {
+      "get": {
+        "operationId": "getVirtualKeyQuota",
+        "summary": "Get virtual key quota",
+        "description": "Returns the budget and rate limit quota for the authenticated virtual key.\nThis is a self-service endpoint — no admin authentication required.\nThe virtual key value itself (provided via header) is the credential.\n",
+        "tags": [
+          "Governance"
+        ],
+        "security": [
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Virtual key quota response (self-service, no admin auth required)",
+                  "properties": {
+                    "virtual_key_name": {
+                      "type": "string",
+                      "description": "Name of the virtual key"
+                    },
+                    "is_active": {
+                      "type": "boolean",
+                      "description": "Whether the virtual key is active"
+                    },
+                    "budgets": {
+                      "type": "array",
+                      "description": "Budget quotas assigned to this virtual key",
+                      "items": {
+                        "$ref": "#/components/schemas/Budget"
+                      }
+                    },
+                    "rate_limit": {
+                      "$ref": "#/components/schemas/RateLimit"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid virtual key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/virtual-keys/{vk_id}": {
       "get": {
         "operationId": "getVirtualKey",
