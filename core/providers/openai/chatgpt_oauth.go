@@ -43,16 +43,25 @@ const ChatGPTOAuthDefaultBaseURL = "https://chatgpt.com/backend-api/codex"
 //   - max_output_tokens: must be deleted
 //   - stream: must be true (backend only accepts streaming)
 
+// ChatGPTOAuthClientVersion is the default Codex client_version appended to requests
+// that require it (e.g. /models). Matches the openai-oauth proxy fallback.
+const ChatGPTOAuthClientVersion = "0.111.0"
+
 // chatGPTOAuthPath maps a standard OpenAI /v1/... path to the ChatGPT backend path.
-// Strips the /v1 prefix. Returns the path unchanged if it doesn't start with /v1.
+// Strips the /v1 prefix and appends required query parameters for routes that need them
+// (e.g. /models requires ?client_version). Returns the path unchanged if it doesn't start with /v1.
 func chatGPTOAuthPath(standardPath string) string {
+	mapped := standardPath
 	if standardPath == "/v1" {
-		return "/"
+		mapped = "/"
+	} else if strings.HasPrefix(standardPath, "/v1/") {
+		mapped = standardPath[3:] // strip "/v1" prefix, keep the "/"
 	}
-	if strings.HasPrefix(standardPath, "/v1/") {
-		return standardPath[3:] // strip "/v1" prefix, keep the "/"
+	// /models requires a client_version query parameter on the ChatGPT backend
+	if mapped == "/models" {
+		return mapped + "?client_version=" + ChatGPTOAuthClientVersion
 	}
-	return standardPath
+	return mapped
 }
 
 // chatGPTOAuthWebSocketURL builds the upstream WebSocket URL for the ChatGPT backend,

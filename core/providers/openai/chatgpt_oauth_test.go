@@ -350,8 +350,8 @@ func TestChatGPTOAuthPath(t *testing.T) {
 		{"responses compact", "/v1/responses/compact", "/responses/compact"},
 		{"responses input_tokens", "/v1/responses/input_tokens", "/responses/input_tokens"},
 
-		// Models
-		{"models listing", "/v1/models", "/models"},
+		// Models — appends required client_version query param
+		{"models listing", "/v1/models", "/models?client_version=" + ChatGPTOAuthClientVersion},
 
 		// Realtime/voice
 		{"realtime calls", "/v1/realtime/calls", "/realtime/calls"},
@@ -406,12 +406,12 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 		assert.Equal(t, "value", headers["X-Custom"], "existing headers must be preserved")
 	})
 
-	t.Run("maps /v1/models", func(t *testing.T) {
+	t.Run("maps /v1/models with client_version", func(t *testing.T) {
 		key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
 
 		_, path, err := chatGPTOAuthPrepare(key, nil, "/v1/models", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/models", path)
+		assert.Equal(t, "/models?client_version="+ChatGPTOAuthClientVersion, path)
 	})
 
 	t.Run("maps /v1/responses/compact", func(t *testing.T) {
