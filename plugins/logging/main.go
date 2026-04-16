@@ -638,11 +638,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// here means the error is completely lost.
 		if bifrostErr != nil {
 			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
+			status := "error"
+			if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled {
+				status = "cancelled"
+			}
 			entry := &logstore.Log{
 				ID:        requestID,
 				Provider:  string(bifrostErr.ExtraFields.Provider),
 				Model:     bifrostErr.ExtraFields.ModelRequested,
-				Status:    "error",
+				Status:    status,
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
@@ -677,6 +681,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
 		entry.Status = "error"
+		if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled {
+			entry.Status = "cancelled"
+		}
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true
 		}
@@ -735,6 +742,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 		if bifrostErr != nil {
 			entry.Status = "error"
+			if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled {
+				entry.Status = "cancelled"
+			}
 			entry.Stream = true
 			if data, err := sonic.Marshal(bifrostErr); err == nil {
 				entry.ErrorDetails = string(data)
@@ -754,8 +764,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 				params.StatusCode = result.PassthroughResponse.StatusCode
 			}
-			// Flip status for passthrough error responses (4xx/5xx from provider)
-			if isPassthroughErrorResponse(result) {
+			// Flip status for passthrough error responses (4xx/5xx from provider),
+			// but preserve "cancelled" which takes precedence.
+			if isPassthroughErrorResponse(result) && entry.Status != "cancelled" {
 				entry.Status = "error"
 			}
 		}
@@ -773,6 +784,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path C: Non-streaming response
 	if bifrostErr != nil {
 		entry.Status = "error"
+		if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled {
+			entry.Status = "cancelled"
+		}
 		// Serialize error details immediately since bifrostErr may be released
 		// back to the pool before the async batch writer processes this entry.
 		// Also set ErrorDetailsParsed for UI callback (JSON serialization uses this field).

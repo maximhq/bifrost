@@ -120,7 +120,7 @@ type Log struct {
 	Latency                *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage             string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
 	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", "error", or "cancelled"
 	ErrorDetails           string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream                 bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
 	ContentSummary         string    `gorm:"type:text" json:"-"`

@@ -895,6 +895,11 @@ type BifrostError struct {
 	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
+// IsRequestCancelled returns true if this error represents a client-cancelled request.
+func (e *BifrostError) IsRequestCancelled() bool {
+	return e != nil && e.Error != nil && e.Error.Type != nil && *e.Error.Type == RequestCancelled
+}
+
 // StreamControl represents stream control options.
 type StreamControl struct {
 	LogError   *bool `json:"log_error,omitempty"`   // Optional: Controls logging of error

@@ -78,6 +78,7 @@ type PrometheusPlugin struct {
 	UpstreamLatencySeconds         *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
 	ErrorRequestsTotal             *prometheus.CounterVec
+	CancelledRequestsTotal         *prometheus.CounterVec
 	InputTokensTotal               *prometheus.CounterVec
 	OutputTokensTotal              *prometheus.CounterVec
 	CacheHitsTotal                 *prometheus.CounterVec
@@ -240,6 +241,14 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
 	)
 
+	bifrostCancelledRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_cancelled_requests_total",
+			Help: "Total number of cancelled requests (client disconnected or request cancelled).",
+		},
+		append(append(defaultBifrostLabels, "status_code"), filteredCustomLabels...),
+	)
+
 	bifrostInputTokensTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_input_tokens_total",
@@ -302,6 +311,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
 		ErrorRequestsTotal:             bifrostErrorRequestsTotal,
+		CancelledRequestsTotal:         bifrostCancelledRequestsTotal,
 		InputTokensTotal:               bifrostInputTokensTotal,
 		OutputTokensTotal:              bifrostOutputTokensTotal,
 		CacheHitsTotal:                 bifrostCacheHitsTotal,
@@ -465,7 +475,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			p.CostTotal.WithLabelValues(promLabelValues...).Add(cost)
 		}
 
-		// Record error and success counts
+		// Record error, cancelled, and success counts
 		if bifrostErr != nil {
 			// Add status_code to label values (create new slice to avoid modifying original)
 			statusCode := "unknown"
@@ -477,7 +487,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			errorPromLabelValues = append(errorPromLabelValues, statusCode)                                       // status_code
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
-			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
+			if bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled {
+				p.CancelledRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
+			} else {
+				p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
+			}
 		} else {
 			p.SuccessRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 		}

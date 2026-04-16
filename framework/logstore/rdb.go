@@ -23,6 +23,15 @@ import (
 // validMetadataKeyRegex allows alphanumeric, hyphens, underscores, and dots in metadata keys.
 var validMetadataKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
+// completedStatuses lists all terminal log statuses (excludes "processing").
+// Used in queries that need only finished requests.
+var completedStatuses = []string{"success", "error", "cancelled"}
+
+// analyticsStatuses lists statuses used for success/error analytics.
+// Excludes "cancelled" so that totals equal success + error and success
+// rate is not diluted by client cancellations.
+var analyticsStatuses = []string{"success", "error"}
+
 // isValidMetadataKey validates a metadata key to prevent SQL injection.
 func isValidMetadataKey(key string) bool {
 	return key != "" && len(key) <= 256 && validMetadataKeyRegex.MatchString(key)
@@ -510,7 +519,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 
 		statsQuery := s.db.WithContext(ctx).Model(&Log{})
 		statsQuery = s.applyFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", analyticsStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
@@ -555,7 +564,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	// Build query with filters
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	// Query for histogram buckets - use int64 for bucket timestamp to avoid parsing issues
 	var results []struct {
@@ -680,7 +689,7 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	// Only count completed requests for token stats
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	var results []struct {
 		BucketTimestamp  int64 `gorm:"column:bucket_timestamp"`
@@ -806,7 +815,7 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
 	// Only count completed requests with cost
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	// Query grouped by bucket and model
@@ -927,7 +936,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	// Query grouped by bucket and model with status counts
 	var results []struct {
@@ -1082,7 +1091,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	switch dialect {
@@ -1301,7 +1310,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	// Query current period
 	currentQuery := s.db.WithContext(ctx).Model(&Log{})
 	currentQuery = s.applyFilters(currentQuery, filters)
-	currentQuery = currentQuery.Where("status IN ?", []string{"success", "error"})
+	currentQuery = currentQuery.Where("status IN ?", analyticsStatuses)
 	currentQuery = currentQuery.Where("model IS NOT NULL AND model != ''")
 
 	var currentResults []struct {
@@ -1340,7 +1349,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		prevQuery := s.db.WithContext(ctx).Model(&Log{})
 		prevQuery = s.applyFilters(prevQuery, prevFilters)
-		prevQuery = prevQuery.Where("status IN ?", []string{"success", "error"})
+		prevQuery = prevQuery.Where("status IN ?", analyticsStatuses)
 		prevQuery = prevQuery.Where("model IS NOT NULL AND model != ''")
 
 		// Only fetch previous-period data for (model, provider) pairs that
@@ -1444,7 +1453,7 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	var results []struct {
@@ -1555,7 +1564,7 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	var results []struct {
 		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
@@ -1682,7 +1691,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 
 	baseQuery := s.db.WithContext(ctx).Model(&Log{})
 	baseQuery = s.applyFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	switch dialect {
@@ -2473,7 +2482,7 @@ func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLog
 
 		statsQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
 		statsQuery = s.applyMCPFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", analyticsStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
@@ -2587,7 +2596,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 
 	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	var results []struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
@@ -2684,7 +2693,7 @@ func (s *RDBLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLo
 
 	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
@@ -2759,7 +2768,7 @@ func (s *RDBLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogSear
 
 	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", analyticsStatuses)
 
 	var results []struct {
 		ToolName string  `gorm:"column:tool_name"`

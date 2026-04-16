@@ -43,7 +43,7 @@ SELECT
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost
 FROM logs
-WHERE status IN ('success', 'error')
+WHERE status IN ('success', 'error', 'cancelled')
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
 `
 
