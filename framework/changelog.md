@@ -1,1 +1,5 @@
+- chore: upgraded core to v1.4.20
 - fix: preserve context values in async requests
+- fix: capture responses streaming API errors
+- fix: otel plugin fixes
+- fix: allow custom providers without a list models endpoint to register any model

@@ -1,6 +1,9 @@
-- fix: Gemini provider - handle content block tool outputs in Responses API path
+- fix: Gemini provider - handle content block tool outputs in Responses API path (thanks [@tom-diacono](https://github.com/tom-diacono)!)
 - fix: case-insensitive `anthropic-beta` merge in `MergeBetaHeaders`
-- fix: Bedrock provider - emit message_stop event for Anthropic invoke stream [@tefimov](https://github.com/tefimov)
+- fix: Bedrock provider - emit message_stop event for Anthropic invoke stream (thanks [@tefimov](https://github.com/tefimov)!)
+- fix: Bedrock provider - preserve image content in tool results for Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
 - fix: gemini preserves thinkingLevel parameters during round-trip and finish reason mapping
 - fix: WebSearch tool argument handling for all clients by removing the Claude Code user agent restriction
+- fix: capture responses streaming API errors
+- fix: delete fallbacks from outgoing Anthropic requests
 - feat: claude-opus-4-7 compatibility

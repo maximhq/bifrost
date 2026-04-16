@@ -1,0 +1,2 @@
+- chore: upgraded core to v1.4.20 and framework to v1.2.39
+- fix: allow custom providers without a list models endpoint to pass in any model rather than restrict it on vk
