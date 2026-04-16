@@ -31,6 +31,7 @@ type OpenAIProvider struct {
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 	disableStore         bool                          // Whether to force store=false on outgoing requests
+	chatgptOAuth         bool                          // Whether to route requests through ChatGPT's backend API for subscription-based access
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -60,8 +61,13 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	client = providerUtils.ConfigureDialer(client)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Set default BaseURL if not provided
+	chatgptOAuth := config.OpenAIConfig != nil && config.OpenAIConfig.ChatGPTOAuth
 	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.openai.com"
+		if chatgptOAuth {
+			config.NetworkConfig.BaseURL = ChatGPTOAuthDefaultBaseURL
+		} else {
+			config.NetworkConfig.BaseURL = "https://api.openai.com"
+		}
 	}
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
@@ -73,6 +79,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		chatgptOAuth:         chatgptOAuth,
 	}
 }
 
@@ -1379,20 +1386,53 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	if provider.disableStore {
+	if provider.disableStore || provider.chatgptOAuth {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
+	// ChatGPT OAuth: use /responses path (not /v1/responses) and inject extra headers
+	responsesPath := "/v1/responses"
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if provider.chatgptOAuth {
+		responsesPath = "/responses"
+		// Extract account ID from the Bearer token for the chatgpt-account-id header
+		accountID, err := extractChatGPTAccountID(key.Value.GetValue())
+		if err != nil {
+			provider.logger.Warn("chatgpt_oauth: failed to extract account ID from token: %v", err)
+		} else {
+			oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
+			// Merge with existing extra headers
+			merged := make(map[string]string)
+			for k, v := range extraHeaders {
+				merged[k] = v
+			}
+			for k, v := range oauthHeaders {
+				merged[k] = v
+			}
+			extraHeaders = merged
+		}
+
+		// Ensure instructions field exists on the request
+		if request.Params == nil {
+			request.Params = &schemas.ResponsesParameters{}
+		}
+		if request.Params.Instructions == nil {
+			request.Params.Instructions = schemas.Ptr("")
+		}
+		// ChatGPT backend API does not accept max_output_tokens
+		request.Params.MaxOutputTokens = nil
+	}
+
 	return HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesRequest),
+		provider.buildRequestURL(ctx, responsesPath, schemas.ResponsesRequest),
 		request,
 		key,
-		provider.networkConfig.ExtraHeaders,
+		extraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -1549,21 +1589,49 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
-	if provider.disableStore {
+	if provider.disableStore || provider.chatgptOAuth {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
+	// ChatGPT OAuth: use /responses path and inject extra headers
+	responsesPath := "/v1/responses"
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if provider.chatgptOAuth {
+		responsesPath = "/responses"
+		accountID, err := extractChatGPTAccountID(key.Value.GetValue())
+		if err != nil {
+			provider.logger.Warn("chatgpt_oauth: failed to extract account ID from token: %v", err)
+		} else {
+			oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
+			merged := make(map[string]string)
+			for k, v := range extraHeaders {
+				merged[k] = v
+			}
+			for k, v := range oauthHeaders {
+				merged[k] = v
+			}
+			extraHeaders = merged
+		}
+		if request.Params == nil {
+			request.Params = &schemas.ResponsesParameters{}
+		}
+		if request.Params.Instructions == nil {
+			request.Params.Instructions = schemas.Ptr("")
+		}
+		request.Params.MaxOutputTokens = nil
+	}
+
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.client,
-		provider.buildRequestURL(ctx, "/v1/responses", schemas.ResponsesStreamRequest),
+		provider.buildRequestURL(ctx, responsesPath, schemas.ResponsesStreamRequest),
 		request,
 		authHeader,
-		provider.networkConfig.ExtraHeaders,
+		extraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),

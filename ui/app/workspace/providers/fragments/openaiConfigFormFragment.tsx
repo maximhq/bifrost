@@ -27,6 +27,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		reValidateMode: "onChange",
 		defaultValues: {
 			disable_store: provider.openai_config?.disable_store ?? false,
+			chatgpt_oauth: provider.openai_config?.chatgpt_oauth ?? false,
 		},
 	});
 
@@ -37,14 +38,16 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 	useEffect(() => {
 		form.reset({
 			disable_store: provider.openai_config?.disable_store ?? false,
+			chatgpt_oauth: provider.openai_config?.chatgpt_oauth ?? false,
 		});
-	}, [form, provider.name, provider.openai_config?.disable_store]);
+	}, [form, provider.name, provider.openai_config?.disable_store, provider.openai_config?.chatgpt_oauth]);
 
 	const onSubmit = (data: OpenAIConfigFormSchema) => {
 		const updatedProvider: ModelProvider = {
 			...provider,
 			openai_config: {
 				disable_store: data.disable_store,
+				chatgpt_oauth: data.chatgpt_oauth,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -87,6 +90,37 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("disable_store");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={form.control}
+						name="chatgpt_oauth"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<FormLabel>ChatGPT OAuth Passthrough</FormLabel>
+										<p className="text-muted-foreground text-xs">
+											Route requests through ChatGPT&apos;s backend API for subscription-based (seat/plan) access. When enabled, Bifrost forwards
+											requests to chatgpt.com/backend-api/codex with the required headers and body transformations. Requires &quot;Allow Direct API
+											Keys&quot; to be enabled in Security settings so the OAuth token from the request is forwarded.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-openai-chatgpt-oauth-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("chatgpt_oauth");
 											}}
 										/>
 									</FormControl>

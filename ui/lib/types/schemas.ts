@@ -701,6 +701,7 @@ export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),
+	chatgpt_oauth: z.boolean(),
 });
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;

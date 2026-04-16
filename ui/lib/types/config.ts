@@ -308,6 +308,7 @@ export interface ProviderPricingOverride {
 // OpenAIConfig holds OpenAI-specific provider configuration.
 export interface OpenAIConfig {
 	disable_store?: boolean;
+	chatgpt_oauth?: boolean;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig
