@@ -85,7 +85,7 @@ func effortToThinkingLevel(effort string, model string) string {
 			return "high" // Pro models don't support medium, use high
 		}
 		return "medium"
-	case "high":
+	case "high", "xhigh", "max":
 		return "high"
 	default:
 		if isPro {

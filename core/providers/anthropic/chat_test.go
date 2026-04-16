@@ -511,3 +511,163 @@ func TestToAnthropicChatRequest_NormalFlowUnchanged(t *testing.T) {
 		t.Errorf("block 1: expected text %q, got %v", responseText, blocks[1].Text)
 	}
 }
+
+func TestToAnthropicChatRequest_Opus47_StripsTemperatureTopPTopK(t *testing.T) {
+	temp := 0.7
+	topP := 0.9
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+			TopP:        &topP,
+			ExtraParams: map[string]interface{}{"top_k": 40},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature != nil {
+		t.Errorf("expected Temperature to be nil for Opus 4.7, got %v", result.Temperature)
+	}
+	if result.TopP != nil {
+		t.Errorf("expected TopP to be nil for Opus 4.7, got %v", result.TopP)
+	}
+	if result.TopK != nil {
+		t.Errorf("expected TopK to be nil for Opus 4.7, got %v", result.TopK)
+	}
+}
+
+func TestToAnthropicChatRequest_NonOpus47_PreservesTemperature(t *testing.T) {
+	temp := 0.7
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-6-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature: &temp,
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Temperature == nil || *result.Temperature != temp {
+		t.Errorf("expected Temperature %v, got %v", temp, result.Temperature)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_ReasoningMaxTokens_AdaptiveOnly(t *testing.T) {
+	maxTok := 2048
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(8192),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "adaptive" {
+		t.Errorf("expected thinking type 'adaptive' for Opus 4.7, got %q", result.Thinking.Type)
+	}
+	if result.Thinking.BudgetTokens != nil {
+		t.Errorf("expected BudgetTokens to be nil for Opus 4.7, got %v", result.Thinking.BudgetTokens)
+	}
+}
+
+func TestToAnthropicChatRequest_NonOpus47_ReasoningMaxTokens_EnabledWithBudget(t *testing.T) {
+	maxTok := 2048
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-6-20250514",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(8192),
+			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "enabled" {
+		t.Errorf("expected thinking type 'enabled' for Opus 4.6, got %q", result.Thinking.Type)
+	}
+	if result.Thinking.BudgetTokens == nil || *result.Thinking.BudgetTokens != maxTok {
+		t.Errorf("expected BudgetTokens %d, got %v", maxTok, result.Thinking.BudgetTokens)
+	}
+}
+
+func TestToAnthropicChatRequest_Opus47_ReasoningEffort_AdaptiveWithEffort(t *testing.T) {
+	effort := "high"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-7-20260401",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("think")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Thinking == nil {
+		t.Fatal("expected Thinking to be set")
+	}
+	if result.Thinking.Type != "adaptive" {
+		t.Errorf("expected thinking type 'adaptive' for Opus 4.7 effort-based, got %q", result.Thinking.Type)
+	}
+	if result.OutputConfig == nil || result.OutputConfig.Effort == nil {
+		t.Error("expected OutputConfig.Effort to be set for Opus 4.7 effort-based reasoning")
+	}
+}

@@ -2,3 +2,4 @@
 - fix: Bedrock integration - update to use InvokeModelRawChunks for multi-event support [@tefimov](https://github.com/tefimov)
 - fix: gemini preserves thinkingLevel parameters during round-trip and finish reason mapping
 - fix: WebSearch tool argument handling for all clients by removing the Claude Code user agent restriction
+- feat: claude-opus-4-7 compatibility

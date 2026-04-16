@@ -30,18 +30,24 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		// Anthropic doesn't allow both temperature and top_p to be specified
-		// If both are present, prefer temperature (more commonly used)
-		if bifrostReq.Params.Temperature != nil {
-			anthropicReq.Temperature = bifrostReq.Params.Temperature
-		} else if bifrostReq.Params.TopP != nil {
-			anthropicReq.TopP = bifrostReq.Params.TopP
+		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
+		if !IsOpus47(bifrostReq.Model) {
+			// Anthropic doesn't allow both temperature and top_p to be specified.
+			// If both are present, prefer temperature (more commonly used).
+			if bifrostReq.Params.Temperature != nil {
+				anthropicReq.Temperature = bifrostReq.Params.Temperature
+			} else if bifrostReq.Params.TopP != nil {
+				anthropicReq.TopP = bifrostReq.Params.TopP
+			}
 		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			anthropicReq.TopK = topK
+			// Opus 4.7+ rejects top_k with a 400 error.
+			if !IsOpus47(bifrostReq.Model) {
+				anthropicReq.TopK = topK
+			}
 		}
 		if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 			delete(anthropicReq.ExtraParams, "speed")
@@ -189,23 +195,28 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
-				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
-					// anthropic does not support dynamic reasoning budget like gemini
-					// setting it to default max tokens
-					budgetTokens = MinimumReasoningMaxTokens
-				}
-				if budgetTokens < MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
-				}
-				anthropicReq.Thinking = &AnthropicThinking{
-					Type:         "enabled",
-					BudgetTokens: schemas.Ptr(budgetTokens),
+				if IsOpus47(bifrostReq.Model) {
+					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+				} else {
+					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
+					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+						// anthropic does not support dynamic reasoning budget like gemini
+						// setting it to default max tokens
+						budgetTokens = MinimumReasoningMaxTokens
+					}
+					if budgetTokens < MinimumReasoningMaxTokens {
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+					}
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type:         "enabled",
+						BudgetTokens: schemas.Ptr(budgetTokens),
+					}
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-				if SupportsAdaptiveThinking(bifrostReq.Model) {
-					// Opus 4.6+: adaptive thinking + native effort
+				if SupportsAdaptiveThinking(bifrostReq.Model) || IsOpus47(bifrostReq.Model) {
+					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
 				} else if SupportsNativeEffort(bifrostReq.Model) {

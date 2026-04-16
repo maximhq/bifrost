@@ -1574,3 +1574,109 @@ func TestApplyMCPToolsetConfigToBifrostTool(t *testing.T) {
 		applyMCPToolsetConfigToBifrostTool(&schemas.ResponsesTool{}, nil)
 	})
 }
+
+func TestSupportsAdaptiveThinking(t *testing.T) {
+	tests := []struct {
+		model    string
+		expected bool
+	}{
+		{"claude-opus-4-7-20260401", true},
+		{"claude-opus-4.7-20260401", true},
+		{"claude-opus-4-6-20250514", true},
+		{"claude-opus-4.6-20250514", true},
+		{"claude-sonnet-4-6-20250514", true},
+		{"claude-sonnet-4.6-20250514", true},
+		{"claude-opus-4-5-20241022", false},
+		{"claude-sonnet-4-5-20241022", false},
+		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
+		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsAdaptiveThinking(tt.model)
+			if got != tt.expected {
+				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
+	tests := []struct {
+		name            string
+		provider        schemas.ModelProvider
+		req             *AnthropicMessageRequest
+		expectHeaders   []string
+		unexpectHeaders []string
+	}{
+		{
+			name:     "Anthropic gets task-budgets header when task_budget set",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{
+					TaskBudget: &AnthropicTaskBudget{Type: "tokens", Total: 50000},
+				},
+			},
+			expectHeaders: []string{AnthropicTaskBudgetsBetaHeader},
+		},
+		{
+			name:     "Vertex does not get task-budgets header when task_budget set",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{
+					TaskBudget: &AnthropicTaskBudget{Type: "tokens", Total: 50000},
+				},
+			},
+			unexpectHeaders: []string{AnthropicTaskBudgetsBetaHeader},
+		},
+		{
+			name:     "no task-budgets header when task_budget is nil",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{},
+			},
+			unexpectHeaders: []string{AnthropicTaskBudgetsBetaHeader},
+		},
+		{
+			name:            "no task-budgets header when output_config is nil",
+			provider:        schemas.Anthropic,
+			req:             &AnthropicMessageRequest{},
+			unexpectHeaders: []string{AnthropicTaskBudgetsBetaHeader},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			AddMissingBetaHeadersToContext(ctx, tt.req, tt.provider)
+
+			var headers []string
+			if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+				headers = extraHeaders[AnthropicBetaHeader]
+			}
+
+			for _, expected := range tt.expectHeaders {
+				found := false
+				for _, h := range headers {
+					if h == expected {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected header %q not found in %v", expected, headers)
+				}
+			}
+
+			for _, unexpected := range tt.unexpectHeaders {
+				for _, h := range headers {
+					if h == unexpected {
+						t.Errorf("unexpected header %q found in %v", unexpected, headers)
+					}
+				}
+			}
+		})
+	}
+}

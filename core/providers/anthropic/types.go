@@ -48,6 +48,8 @@ const (
 	AnthropicFastModeBetaHeader = "fast-mode-2026-02-01"
 	// AnthropicRedactThinkingBetaHeader is required for redacting thinking blocks in responses.
 	AnthropicRedactThinkingBetaHeader = "redact-thinking-2026-02-12"
+	// AnthropicTaskBudgetsBetaHeader is required for output_config.task_budget (Opus 4.7+).
+	AnthropicTaskBudgetsBetaHeader = "task-budgets-2026-03-13"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -67,6 +69,7 @@ const (
 	AnthropicContext1MBetaHeaderPrefix           = "context-1m-"
 	AnthropicFastModeBetaHeaderPrefix            = "fast-mode-"
 	AnthropicRedactThinkingBetaHeaderPrefix      = "redact-thinking-"
+	AnthropicTaskBudgetsBetaHeaderPrefix         = "task-budgets-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -93,6 +96,7 @@ type ProviderFeatureSupport struct {
 	Context1M           bool // 1M context window beta (for Sonnet 4.5/4 only)
 	FastMode            bool // fast mode (Opus 4.6 only, research preview)
 	RedactThinking      bool // redact thinking blocks in responses
+	TaskBudgets         bool // task_budget in output_config (Opus 4.7+)
 	FileSearch          bool // file_search server tool (OpenAI-only)
 	ImageGeneration     bool // image_generation server tool (OpenAI-only)
 }
@@ -105,7 +109,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true, FastMode: true,
-		RedactThinking: true,
+		RedactThinking: true, TaskBudgets: true,
 	},
 	schemas.Vertex: {
 		WebSearch:   true, // only web_search_20250305 (basic), NOT dynamic filtering
@@ -124,7 +128,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		MCP: true, AdvancedToolUse: true, StructuredOutputs: true, PromptCachingScope: true,
 		Compaction: true, ContextEditing: true, FilesAPI: true,
 		InterleavedThinking: true, Skills: true, Context1M: true,
-		RedactThinking: true,
+		RedactThinking: true, TaskBudgets: true,
 	},
 }
 
@@ -156,11 +160,22 @@ func (req *AnthropicTextRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
 }
 
-// AnthropicOutputConfig represents the GA structured outputs config (output_config.format)
-// and the effort parameter (output_config.effort) for controlling token spending.
+// AnthropicTaskBudget represents an advisory token budget for a full agentic loop (output_config.task_budget).
+// The model sees a running countdown and uses it to prioritize work and finish gracefully.
+// Requires beta header "task-budgets-2026-03-13". Minimum total: 20 000 tokens.
+// This is advisory, not a hard cap — use max_tokens as the per-request hard ceiling.
+type AnthropicTaskBudget struct {
+	Type      string `json:"type"`                // always "tokens"
+	Total     int    `json:"total"`               // total advisory token budget across the agentic loop
+	Remaining *int   `json:"remaining,omitempty"` // optional; tracks remaining tokens for client-side compaction
+}
+
+// AnthropicOutputConfig represents the GA structured outputs config (output_config.format),
+// the effort parameter (output_config.effort), and the task budget (output_config.task_budget).
 type AnthropicOutputConfig struct {
-	Format json.RawMessage `json:"format,omitempty"`
-	Effort *string         `json:"effort,omitempty"` // "low", "medium", "high", "max" (Opus 4.5+)
+	Format     json.RawMessage      `json:"format,omitempty"`      // JSON schema for structured outputs
+	Effort     *string              `json:"effort,omitempty"`      // "low" | "medium" | "high" | "xhigh" | "max"
+	TaskBudget *AnthropicTaskBudget `json:"task_budget,omitempty"` // advisory token budget; requires task-budgets-2026-03-13 beta header
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -212,8 +227,9 @@ type AnthropicMetaData struct {
 }
 
 type AnthropicThinking struct {
-	Type         string `json:"type"` // "enabled" or "disabled"
-	BudgetTokens *int   `json:"budget_tokens,omitempty"`
+	Type         string  `json:"type"`                    // "enabled", "disabled", or "adaptive"
+	BudgetTokens *int    `json:"budget_tokens,omitempty"` // Only for type "enabled" (not supported on Opus 4.7+)
+	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" — controls whether thinking content appears in the response (Opus 4.7+)
 }
 
 type ContextManagementEditType string

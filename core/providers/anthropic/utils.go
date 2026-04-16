@@ -90,6 +90,17 @@ var (
 	}
 )
 
+// IsOpus47 returns true if the model is Claude Opus 4.7 or a later generation where:
+//   - Extended thinking (budget_tokens) is removed — only adaptive thinking is supported.
+//   - temperature, top_p, and top_k are not supported (setting them returns a 400).
+func IsOpus47(model string) bool {
+	model = strings.ToLower(model)
+	if !strings.Contains(model, "opus") {
+		return false
+	}
+	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7")
+}
+
 // SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
 // Currently supported on Claude Opus 4.5 and Opus 4.6.
 func SupportsNativeEffort(model string) bool {
@@ -102,11 +113,18 @@ func SupportsNativeEffort(model string) bool {
 }
 
 // SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
-// Currently only supported on Claude Opus 4.6.
+// Currently supported on Claude Opus 4.6, Claude Sonnet 4.6, and Claude Opus 4.7+.
+// On Opus 4.7+ adaptive is the only thinking-on mode; on Opus 4.6 and Sonnet 4.6 it
+// coexists with the deprecated budget_tokens-based extended thinking.
 func SupportsAdaptiveThinking(model string) bool {
+	if IsOpus47(model) {
+		return true
+	}
 	model = strings.ToLower(model)
-	return strings.Contains(model, "opus") &&
-		(strings.Contains(model, "4-6") || strings.Contains(model, "4.6"))
+	if !strings.Contains(model, "4-6") && !strings.Contains(model, "4.6") {
+		return false
+	}
+	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
 }
 
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
@@ -114,15 +132,6 @@ func SupportsAdaptiveThinking(model string) bool {
 func MapBifrostEffortToAnthropic(effort string) string {
 	if effort == "minimal" {
 		return "low"
-	}
-	return effort
-}
-
-// MapAnthropicEffortToBifrost maps an Anthropic effort level to a Bifrost effort level.
-// Anthropic supports "max" (Opus 4.6+) which is not in Bifrost's enum; it maps to "high".
-func MapAnthropicEffortToBifrost(effort string) string {
-	if effort == "max" {
-		return "high"
 	}
 	return effort
 }
@@ -324,6 +333,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
+	// Check for task budget
+	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
+		if !hasProvider || features.TaskBudgets {
+			headers = appendUniqueHeader(headers, AnthropicTaskBudgetsBetaHeader)
+		}
+	}
 	// Check for output format (structured outputs)
 	if req.OutputFormat != nil {
 		if !hasProvider || features.StructuredOutputs {
@@ -405,6 +420,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicContext1MBetaHeaderPrefix,
 	AnthropicFastModeBetaHeaderPrefix,
 	AnthropicRedactThinkingBetaHeaderPrefix,
+	AnthropicTaskBudgetsBetaHeaderPrefix,
 }
 
 // betaHeaderPrefixExists checks if any header in existing shares a known prefix with newHeader.
@@ -599,6 +615,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
 	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
+	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

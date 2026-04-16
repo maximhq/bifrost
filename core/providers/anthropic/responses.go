@@ -2158,6 +2158,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		// GA structured outputs - OutputConfig.Format has same structure as OutputFormat
 		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(req.OutputConfig.Format)
 	}
+	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil {
+		params.ExtraParams["task_budget"] = req.OutputConfig.TaskBudget
+	}
 	if req.Thinking != nil {
 		if req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive" {
 			var summary *string
@@ -2170,10 +2173,14 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 					summary = schemas.Ptr("detailed")
 				}
 			}
+			// If the request was sent with display:"omitted"
+			if req.Thinking.Display != nil && *req.Thinking.Display == "omitted" {
+				summary = schemas.Ptr("none")
+			}
 			if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
 				// Native effort present — map to Bifrost enum (e.g., "max" → "high")
 				params.Reasoning = &schemas.ResponsesParametersReasoning{
-					Effort:    schemas.Ptr(MapAnthropicEffortToBifrost(*req.OutputConfig.Effort)),
+					Effort:    schemas.Ptr(*req.OutputConfig.Effort),
 					MaxTokens: req.Thinking.BudgetTokens,
 					Summary:   summary,
 				}
@@ -2299,12 +2306,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
 		}
-		// Anthropic doesn't allow both temperature and top_p to be specified
-		// If both are present, prefer temperature (more commonly used)
-		if bifrostReq.Params.Temperature != nil {
-			anthropicReq.Temperature = bifrostReq.Params.Temperature
-		} else if bifrostReq.Params.TopP != nil {
-			anthropicReq.TopP = bifrostReq.Params.TopP
+		// Opus 4.7+ rejects temperature, top_p, and top_k with a 400 error.
+		if !IsOpus47(bifrostReq.Model) {
+			// Anthropic doesn't allow both temperature and top_p to be specified.
+			// If both are present, prefer temperature (more commonly used).
+			if bifrostReq.Params.Temperature != nil {
+				anthropicReq.Temperature = bifrostReq.Params.Temperature
+			} else if bifrostReq.Params.TopP != nil {
+				anthropicReq.TopP = bifrostReq.Params.TopP
+			}
 		}
 		if bifrostReq.Params.User != nil {
 			anthropicReq.Metadata = &AnthropicMetaData{
@@ -2364,26 +2374,31 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
-				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
-					// anthropic does not support dynamic reasoning budget like gemini
-					// setting it to default max tokens
-					budgetTokens = MinimumReasoningMaxTokens
-				}
-				if budgetTokens < MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
-				}
-				anthropicReq.Thinking = &AnthropicThinking{
-					Type:         "enabled",
-					BudgetTokens: schemas.Ptr(budgetTokens),
+				if IsOpus47(bifrostReq.Model) {
+					// Opus 4.7+: budget_tokens removed; adaptive thinking is the only thinking-on mode.
+					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+				} else {
+					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
+					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+						// anthropic does not support dynamic reasoning budget like gemini
+						// setting it to default max tokens
+						budgetTokens = MinimumReasoningMaxTokens
+					}
+					if budgetTokens < MinimumReasoningMaxTokens {
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+					}
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type:         "enabled",
+						BudgetTokens: schemas.Ptr(budgetTokens),
+					}
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil {
 					if *bifrostReq.Params.Reasoning.Effort != "none" {
 						effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 
-						if SupportsAdaptiveThinking(bifrostReq.Model) {
-							// Opus 4.6+: adaptive thinking + native effort
+						if SupportsAdaptiveThinking(bifrostReq.Model) || IsOpus47(bifrostReq.Model) {
+							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
 						} else if SupportsNativeEffort(bifrostReq.Model) {
@@ -2413,6 +2428,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							Type: "disabled",
 						}
 					}
+				}
+			}
+			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
+				if bifrostReq.Params.Reasoning != nil &&
+					bifrostReq.Params.Reasoning.Summary != nil && *bifrostReq.Params.Reasoning.Summary == "none" {
+					anthropicReq.Thinking.Display = schemas.Ptr("omitted")
+				} else {
+					// Default to "summarized" to preserve visible thinking output
+					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
 		}
@@ -2449,7 +2473,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
-				anthropicReq.TopK = topK
+				if !IsOpus47(bifrostReq.Model) {
+					anthropicReq.TopK = topK
+				}
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 				delete(anthropicReq.ExtraParams, "speed")
@@ -2474,6 +2500,31 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						anthropicReq.ContextManagement = &cm
 					}
 				}
+			}
+			if tbVal, exists := bifrostReq.Params.ExtraParams["task_budget"]; exists {
+				// Always consume provider-specific key from passthrough extras.
+				delete(anthropicReq.ExtraParams, "task_budget")
+				var taskBudget *AnthropicTaskBudget
+				switch v := tbVal.(type) {
+				case *AnthropicTaskBudget:
+					taskBudget = v
+				case AnthropicTaskBudget:
+					taskBudget = &v
+				default:
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						var tb AnthropicTaskBudget
+						if sonic.Unmarshal(data, &tb) == nil {
+							taskBudget = &tb
+						}
+					}
+				}
+				if taskBudget == nil {
+					return nil, fmt.Errorf("invalid task_budget format for anthropic")
+				}
+				if anthropicReq.OutputConfig == nil {
+					anthropicReq.OutputConfig = &AnthropicOutputConfig{}
+				}
+				anthropicReq.OutputConfig.TaskBudget = taskBudget
 			}
 		}
 
