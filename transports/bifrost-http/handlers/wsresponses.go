@@ -411,7 +411,8 @@ func (h *WSResponsesHandler) trackResponseID(session *bfws.Session, data []byte)
 
 // convertEventToRequest converts a WebSocket response.create event to a BifrostResponsesRequest.
 func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketResponsesEvent) (*schemas.BifrostResponsesRequest, error) {
-	provider, modelName := schemas.ParseModelString(event.Model, "")
+	// Default to OpenAI since /v1/responses is an OpenAI-format endpoint.
+	provider, modelName := schemas.ParseModelString(event.Model, schemas.OpenAI)
 	if provider == "" || modelName == "" {
 		return nil, errModelFormat
 	}
