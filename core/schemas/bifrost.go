@@ -897,7 +897,7 @@ type BifrostError struct {
 
 // IsRequestCancelled returns true if this error represents a client-cancelled request.
 func (e *BifrostError) IsRequestCancelled() bool {
-	return e.Error != nil && e.Error.Type != nil && *e.Error.Type == RequestCancelled
+	return e != nil && e.Error != nil && e.Error.Type != nil && *e.Error.Type == RequestCancelled
 }
 
 // StreamControl represents stream control options.
