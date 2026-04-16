@@ -2149,6 +2149,7 @@ func CreateBifrostTextCompletionChunkResponse(
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
 		ID:     id,
+		Model:  model,
 		Object: "text_completion",
 		Usage:  usage,
 		Choices: []schemas.BifrostResponseChoice{
@@ -2178,9 +2179,11 @@ func CreateBifrostChatCompletionChunkResponse(
 	model string,
 ) *schemas.BifrostChatResponse {
 	response := &schemas.BifrostChatResponse{
-		ID:     id,
-		Object: "chat.completion.chunk",
-		Usage:  usage,
+		ID:      id,
+		Model:   model,
+		Created: int(time.Now().Unix()),
+		Object:  "chat.completion.chunk",
+		Usage:   usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				FinishReason: finishReason,
