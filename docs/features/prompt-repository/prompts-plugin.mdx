@@ -29,13 +29,13 @@ The **Prompts** plugin connects the [Prompt Repository](/features/prompt-reposit
 ```mermaid
 flowchart TB
     Client([Client]) --> Gateway[Bifrost HTTP]
-    Gateway --> PreHook["HTTP transport pre-hook:<br/>copy bf-prompt-id / bf-prompt-version to context"]
+    Gateway --> PreHook["HTTP transport pre-hook:<br/>copy x-bf-prompt-id / x-bf-prompt-version to context"]
     PreHook --> PreLLM["PreLLM hook:<br/>resolve version, merge params,<br/>prepend template messages"]
     PreLLM --> Provider[Provider]
 ```
 
-1. **Transport (HTTP):** Incoming headers `bf-prompt-id` and `bf-prompt-version` are copied onto the Bifrost context (header name matching is case-insensitive).
-2. **Resolve:** The plugin looks up the prompt and the requested version. If **`bf-prompt-version` is omitted**, the prompt’s **latest committed version** is used.
+1. **Transport (HTTP):** Incoming headers `x-bf-prompt-id` and `x-bf-prompt-version` are copied onto the Bifrost context (header name matching is case-insensitive).
+2. **Resolve:** The plugin looks up the prompt and the requested version. If **`x-bf-prompt-version` is omitted**, the prompt’s **latest committed version** is used.
 3. **Parameters:** Version `model` parameters are merged into the request; any field already set on the request wins.
 4. **Messages:** Messages from the committed version are **prepended** to `messages` (chat) or `input` (responses). Your request body adds the user turn(s) after the template.
 
@@ -47,8 +47,8 @@ If the prompt ID is missing, the plugin does nothing and the request passes thro
 
 | Header | Required | Description |
 |--------|----------|-------------|
-| `bf-prompt-id` | Yes, to enable injection | UUID of the prompt in the repository. |
-| `bf-prompt-version` | No | **Integer version number** (e.g. `3` for v3). If omitted, the **latest** committed version for that prompt is used. |
+| `x-bf-prompt-id` | Yes, to enable injection | UUID of the prompt in the repository. |
+| `x-bf-prompt-version` | No | **Integer version number** (e.g. `3` for v3). If omitted, the **latest** committed version for that prompt is used. |
 
 Invalid or unknown IDs / versions are logged as warnings; the request is **not** failed by the plugin (it proceeds without template injection).
 
@@ -61,7 +61,7 @@ Use the same JSON body as a normal chat request. Only the headers select the tem
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "bf-prompt-id: YOUR-PROMPT-UUID" \
+  -H "x-bf-prompt-id: YOUR-PROMPT-UUID" \
   -H "x-bf-vk: sk-bf-your-virtual-key" \
   -d '{
     "model": "openai/gpt-5.4",
@@ -76,13 +76,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ![Commit Version with Stream enabled in the playground](../../media/prompt-plugin-version-commit.png)
 
-When you commit a version from the playground, **Stream** is saved in that version’s model parameters. The example `curl` above does not set `"stream": true` in the JSON body, but if the committed version was saved with streaming enabled (as in the screenshot), the merged parameters still include `stream: true`, so the request is handled as **streaming** even though the client did not send `stream` explicitly.
+When you commit a version from the playground, the model parameters (temperature, max tokens, etc.) are saved with it. These parameters are merged into the outgoing request, with client-supplied values taking precedence.
 
 ![LLM log for the same request showing Type: Chat Stream](../../media/prompt-plugin-llm-log.png)
 
-In **Logs**, that run shows **Type: Chat Stream** and the full conversation: the committed **system** template, your **user** message from the request body, and the assistant reply.
+In **Logs**, that run shows the full conversation: the committed **system** template, your **user** message from the request body, and the assistant reply. The log also displays the **Selected Prompt** name and version number for easy traceability.
 
-The provider receives the **stored** messages from the prompt version, checks if the request is streaming or non-streaming, applies the additional model parameters from the request and prepends the messages from the prompt version followed by your user message.
+The provider receives the merged model parameters from both the prompt version and the client request, with the messages from the committed version prepended before the client’s messages.
 
 ---
 
@@ -91,8 +91,8 @@ The provider receives the **stored** messages from the prompt version, checks if
 ```bash
 curl -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
-  -H "bf-prompt-id: YOUR-PROMPT-UUID" \
-  -H "bf-prompt-version: 4" \
+  -H "x-bf-prompt-id: YOUR-PROMPT-UUID" \
+  -H "x-bf-prompt-version: 4" \
   -H "x-bf-vk: sk-bf-your-virtual-key" \
   -d '{
     "model": "openai/gpt-5-nano-2025-08-07",
@@ -104,7 +104,7 @@ curl -X POST http://localhost:8080/v1/responses \
 
 ## Streaming
 
-If the committed version’s **model parameters** include `"stream": true`, the plugin may set streaming on the HTTP transport so behavior matches the saved version. Client-side `stream` flags still interact with the merged parameters as usual.
+Streaming is controlled entirely by the client request. If you want streaming, set `"stream": true` in the request body. The plugin merges model parameters from the committed version (request values take precedence), but does **not** override the transport-level streaming mode.
 
 ---
 
@@ -118,12 +118,26 @@ The plugin keeps an in-memory cache of prompts and versions (loaded with a small
 
 For embedded Bifrost (Go SDK), register the plugin with `prompts.Init` and a **config store** that implements the prompt tables API. The default resolver reads the same logical keys from `BifrostContext`:
 
-- `prompts.PromptIDKey` (`bf-prompt-id`)
-- `prompts.PromptVersionKey` (`bf-prompt-version`)
+- `prompts.PromptIDKey` (`x-bf-prompt-id`)
+- `prompts.PromptVersionKey` (`x-bf-prompt-version`)
 
 Set them on the context you pass to `ChatCompletion` / `Responses` if you are not going through the HTTP transport hooks.
 
-For advanced routing (for example, choosing a prompt from governance metadata), implement `prompts.PromptResolver` in `plugins/prompts/main.go` and use **`prompts.InitWithResolver`**.
+For advanced routing (for example, choosing a prompt from governance metadata), implement `prompts.PromptResolver` and use **`prompts.InitWithResolver`**. The interface is:
+
+```go
+type PromptResolver interface {
+    Resolve(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (promptID string, versionNumber int, err error)
+}
+```
+
+Return an empty `promptID` to skip injection for a request. Return `versionNumber == 0` to use the prompt's **latest** committed version; any positive integer selects that specific version.
+
+After injection, the plugin sets the following context keys (read by the logging plugin to populate log fields):
+
+- `schemas.BifrostContextKeySelectedPromptID` — UUID of the applied prompt
+- `schemas.BifrostContextKeySelectedPromptName` — Display name of the prompt
+- `schemas.BifrostContextKeySelectedPromptVersion` — Version number as a string (e.g. `"3"`)
 
 ---
 
