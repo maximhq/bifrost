@@ -38,10 +38,11 @@ export function DraggableColumnHeader<TData>({
 	const [isDropTarget, setIsDropTarget] = useState(false);
 	const pinned = header.column.getIsPinned();
 
+	const size = header.getSize();
 	return (
 		<th
 			ref={cellRef}
-			style={pinStyle}
+			style={{ width: size, minWidth: size, maxWidth: size, ...pinStyle }}
 			className={cn(
 				TH_CLASS,
 				pinned && (pinnedHeaderClassName ?? "bg-card"),

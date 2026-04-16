@@ -38,11 +38,11 @@ export const createMCPColumns = (
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
-		size: 180,
+		size: 230,
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
 			const date = new Date(timestamp);
-			return <div className="text-xs">{isValid(date) ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "Invalid date"}</div>;
+			return <div className="truncate text-xs">{isValid(date) ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "Invalid date"}</div>;
 		},
 	},
 	{
@@ -97,6 +97,7 @@ export const createMCPColumns = (
 	},
 	{
 		id: "actions",
+		size: 72,
 		cell: ({ row }) => {
 			const log = row.original;
 			return (

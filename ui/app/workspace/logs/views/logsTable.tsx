@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import {
 	buildPinStyle,
 	type ColumnConfigEntry,
@@ -8,10 +7,13 @@ import {
 	useHeaderCellRefs,
 	usePinOffsets,
 } from "@/components/table";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -173,7 +175,7 @@ export function LogsDataTable({
 					<TableBody>
 						{loading ? (
 							<TableRow>
-								<TableCell colSpan={columns.length} className="h-24 text-center">
+								<TableCell colSpan={columns.length} className="h-12 text-center">
 									<div className="flex items-center justify-center gap-2">
 										<RefreshCw className="h-4 w-4 animate-spin" />
 										Loading logs...
@@ -209,12 +211,14 @@ export function LogsDataTable({
 										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
 											{row.getVisibleCells().map((cell) => {
 												const pinned = cell.column.getIsPinned();
+												const size = cell.column.getSize();
 												return (
 													<TableCell
 														onClick={() => onRowClick?.(row.original, cell.column.id)}
 														key={cell.id}
-														style={buildPinStyle(cell.column, pinOffsets)}
+														style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
 														className={cn(
+															"overflow-hidden",
 															pinned && "bg-card",
 															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,

@@ -177,16 +177,18 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 230,
 			cell: ({ row }) => {
 				const timestamp = row.original.timestamp;
 				const date = timestamp ? new Date(timestamp) : null;
 				const isValid = date && date.toString() !== "Invalid Date";
-				return <div className="text-xs">{isValid ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "N/A"}</div>;
+				return <div className="truncate text-xs">{isValid ? format(date, "yyyy-MM-dd hh:mm:ss aa (XXX)") : "N/A"}</div>;
 			},
 		},
 		{
 			id: "request_type",
 			header: "Type",
+			size: 120,
 			cell: ({ row }) => {
 				return (
 					<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
@@ -198,11 +200,13 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		{
 			accessorKey: "input",
 			header: "Message",
+			size: 440,
 			cell: ({ row }) => <LogMessageCell log={row.original} />,
 		},
 		{
 			accessorKey: "provider",
 			header: "Provider",
+			size: 160,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName;
 				return (
@@ -216,7 +220,8 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		{
 			accessorKey: "model",
 			header: "Model",
-			cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
+			size: 160,
+			cell: ({ row }) => <div className="truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
 		},
 		{
 			accessorKey: "latency",
@@ -226,6 +231,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 140,
 			cell: ({ row }) => {
 				const latency = row.original.latency;
 				return (
@@ -243,6 +249,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 220,
 			cell: ({ row }) => {
 				const tokenUsage = row.original.token_usage;
 				if (!tokenUsage) {
@@ -251,7 +258,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 
 				return (
 					<div className="pl-4 text-sm">
-						<div className="font-mono">
+						<div className="truncate font-mono">
 							{tokenUsage.total_tokens.toLocaleString()}{" "}
 							{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
 								? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
@@ -269,6 +276,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 					<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
+			size: 120,
 			cell: ({ row }) => {
 				if (!row.original.cost) {
 					return <div className="pl-4 font-mono text-xs">N/A</div>;
@@ -285,6 +293,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 
 	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
+		size: 72,
 		cell: ({ row }) => {
 			const log = row.original;
 			return (

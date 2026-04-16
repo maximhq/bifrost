@@ -117,8 +117,6 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 						variant="outline"
 						data-testid={props.triggerTestId}
 						className={cn(
-							!predefinedPeriod && "w-[360px]",
-							predefinedPeriod && "w-[140px]",
 							"justify-start text-left font-normal",
 							!date && "text-content-disabled",
 							buttonClassName,
