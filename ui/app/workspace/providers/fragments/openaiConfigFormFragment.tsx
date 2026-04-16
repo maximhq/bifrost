@@ -107,9 +107,9 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 									<div className="space-y-0.5">
 										<FormLabel>ChatGPT OAuth Passthrough</FormLabel>
 										<p className="text-muted-foreground text-xs">
-											Route requests through ChatGPT&apos;s backend API for subscription-based (seat/plan) access. When enabled, Bifrost forwards
-											requests to chatgpt.com/backend-api/codex with the required headers and body transformations. Requires &quot;Allow Direct API
-											Keys&quot; to be enabled in Security settings so the OAuth token from the request is forwarded.
+											Route requests through ChatGPT&apos;s backend API for subscription-based (seat/plan) access. When enabled, Bifrost
+											automatically extracts the OAuth token from the request, routes to chatgpt.com/backend-api/codex, and injects the
+											required headers and body transformations. No additional security settings or API keys are needed.
 										</p>
 									</div>
 									<FormControl>

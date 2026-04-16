@@ -4974,6 +4974,29 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			req.Context.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 		}
 
+		// ChatGPT OAuth: extract Bearer token from request headers and inject as direct key.
+		// This bypasses the need for allow_direct_keys — the provider's chatgpt_oauth flag
+		// is sufficient authorization to forward the caller's token.
+		if config.OpenAIConfig != nil && config.OpenAIConfig.ChatGPTOAuth {
+			if _, alreadySet := req.Context.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); !alreadySet {
+				if headers, ok := req.Context.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); ok {
+					if authHeader, exists := headers["authorization"]; exists {
+						if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+							token := strings.TrimSpace(authHeader[7:])
+							if token != "" {
+								req.Context.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+									ID:     "chatgpt-oauth",
+									Value:  *schemas.NewEnvVar(token),
+									Models: []string{},
+									Weight: 1.0,
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+
 		key := schemas.Key{}
 		var keys []schemas.Key
 		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {

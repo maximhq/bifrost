@@ -51,16 +51,13 @@ If you have a ChatGPT Plus, Pro, Business, or Enterprise subscription, you can u
     - Injects the required `chatgpt-account-id` and `OpenAI-Beta` headers
     - Transforms request bodies to match the ChatGPT backend format
   </Step>
-  <Step title="Enable Allow Direct API Keys">
-    Go to **Config > Security** and enable **Allow Direct API Keys**. This is required so Bifrost forwards the OAuth Bearer token from Codex's request headers to the upstream provider.
-  </Step>
   <Step title="Configure Codex">
     Set the Bifrost URL in your `~/.codex/config.toml`:
     ```toml
     openai_base_url = "http://localhost:8080/openai/v1"
-    model = "openai/gpt-5.4"
+    model = "gpt-5.4"
     ```
-    No API key or `env_key` is needed — Codex sends its OAuth token automatically.
+    No API key, `env_key`, or `openai/` model prefix is needed — Bifrost automatically extracts the OAuth token from the request and the OpenAI provider is the default when no provider prefix is specified.
   </Step>
   <Step title="Log in via Codex">
     If you are not already logged in, run `codex` and complete the ChatGPT OAuth login flow when prompted.
@@ -68,7 +65,7 @@ If you have a ChatGPT Plus, Pro, Business, or Enterprise subscription, you can u
 </Steps>
 
 <Note>
-The ChatGPT OAuth passthrough requires no API keys configured on the OpenAI provider in Bifrost. The OAuth token from Codex's `Authorization` header is forwarded directly to the ChatGPT backend.
+The ChatGPT OAuth passthrough requires no API keys configured on the OpenAI provider and no additional security settings. Bifrost automatically extracts the OAuth token from the `Authorization` header and forwards it to the ChatGPT backend.
 </Note>
 
 ## Model Configuration
