@@ -102,7 +102,7 @@ func injectMCPSessionIdentity(bifrostCtx *schemas.BifrostContext, session *table
 			}
 		}
 		if session.UserID != nil && *session.UserID != "" {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceUserID, *session.UserID)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, *session.UserID)
 		}
 	}
 }

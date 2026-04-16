@@ -378,7 +378,7 @@ func TestRealtimeClientSecretsEvaluateMintingGovernance_PassesContext(t *testing
 	handler := NewRealtimeClientSecretsHandler(nil, config)
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer bifrostCtx.Done()
-	bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceUserID, "user_123")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, "user_123")
 	bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-123")
 
 	if err := handler.evaluateMintingGovernance(bifrostCtx, schemas.OpenAI, "gpt-realtime"); err != nil {

@@ -97,8 +97,11 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 	if route.DefaultProvider == schemas.OpenAI {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
 	}
-	if governanceUserID, ok := ctx.UserValue(schemas.BifrostContextKeyGovernanceUserID).(string); ok && governanceUserID != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceUserID, governanceUserID)
+	if governanceUserID, ok := ctx.UserValue(schemas.BifrostContextKeyUserID).(string); ok && governanceUserID != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserID, governanceUserID)
+	}
+	if userName, ok := ctx.UserValue(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserName, userName)
 	}
 	if bifrostErr := h.evaluateMintingGovernance(bifrostCtx, providerKey, model); bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -179,7 +182,7 @@ func (h *RealtimeClientSecretsHandler) evaluateMintingGovernance(
 		VirtualKey: bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyVirtualKey),
 		Provider:   providerKey,
 		Model:      model,
-		UserID:     bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyGovernanceUserID),
+		UserID:     bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyUserID),
 	}, schemas.RealtimeRequest)
 	return bifrostErr
 }

@@ -808,7 +808,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 
 	// Propagate identity from context so the callback can link the token to the user
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	userID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceUserID).(string)
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 	// For OSS: prefer X-Bf-User-Id header as user identity
 	if mcpUserID, _ := ctx.Value(schemas.BifrostContextKeyMCPUserID).(string); mcpUserID != "" {
 		userID = mcpUserID

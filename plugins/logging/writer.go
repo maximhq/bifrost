@@ -356,7 +356,7 @@ func applyOutputFieldsToEntry(
 	selectedPromptID, selectedPromptName, selectedPromptVersion string,
 	teamID, teamName string,
 	customerID, customerName string,
-	userID string,
+	userID, userName string,
 	businessUnitID, businessUnitName string,
 	numberOfRetries int,
 	latency int64,
@@ -399,6 +399,9 @@ func applyOutputFieldsToEntry(
 	}
 	if userID != "" {
 		entry.UserID = &userID
+	}
+	if userName != "" {
+		entry.UserName = &userName
 	}
 	if businessUnitID != "" {
 		entry.BusinessUnitID = &businessUnitID

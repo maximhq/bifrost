@@ -183,7 +183,6 @@ const (
 	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"          // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"        // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"      // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceUserID                    BifrostContextKey = "bifrost-governance-user-id"            // string (to store the user ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceBusinessUnitID            BifrostContextKey = "bifrost-governance-business-unit-id"   // string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name" // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"    // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -252,7 +251,8 @@ const (
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
-	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
+	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                                  // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                                // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"

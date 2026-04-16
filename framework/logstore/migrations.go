@@ -236,6 +236,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddSelectedPromptColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddUserNameColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2353,6 +2356,40 @@ func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) err
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUserNameColumn adds the user_name column to the logs table.
+// Adding a nullable column is instant in Postgres (metadata-only change, no table rewrite).
+func migrationAddUserNameColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_user_name_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "user_name") {
+				if err := mig.AddColumn(&Log{}, "user_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "user_name") {
+				if err := mig.DropColumn(&Log{}, "user_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding user_name column: %s", err.Error())
 	}
 	return nil
 }

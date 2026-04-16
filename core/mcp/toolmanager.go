@@ -585,7 +585,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			return nil, "", "", fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
 		}
 		virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-		userID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceUserID).(string)
+		userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 		sessionToken, _ := ctx.Value(schemas.BifrostContextKeyMCPUserSession).(string)
 
 		// Optional X-Bf-User-Id header overrides user identity; if absent, falls back to virtual key

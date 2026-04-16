@@ -1267,7 +1267,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
@@ -1311,7 +1311,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil && virtualKey != "" {
 		// filter models which are not supported on this virtual key
@@ -1368,7 +1368,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	// Create request context for evaluation (MCP requests don't have provider/model)
 	evaluationRequest := &EvaluationRequest{
@@ -1435,7 +1435,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
 	// When user auth is present, skip VK usage tracking to avoid double-counting
 	if userID != "" {

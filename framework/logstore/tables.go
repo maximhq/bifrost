@@ -125,6 +125,7 @@ type Log struct {
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
 	UserID                  *string   `gorm:"type:varchar(255);index:idx_logs_user_id" json:"user_id"`
+	UserName                *string   `gorm:"type:varchar(255)" json:"user_name"`
 	TeamID                  *string   `gorm:"type:varchar(255);index:idx_logs_team_id" json:"team_id"`
 	TeamName                *string   `gorm:"type:varchar(255)" json:"team_name"`
 	CustomerID              *string   `gorm:"type:varchar(255);index:idx_logs_customer_id" json:"customer_id"`
