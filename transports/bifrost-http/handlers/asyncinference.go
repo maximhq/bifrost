@@ -49,6 +49,17 @@ func RegisterAsyncRequestTypeMiddleware(next fasthttp.RequestHandler) fasthttp.R
 	}
 }
 
+// defaultProvider returns a default ModelProvider when only a single provider is
+// configured. When multiple providers are active, it returns an empty string so
+// callers continue to require the explicit "provider/model" format.
+func (h *AsyncHandler) defaultProvider() schemas.ModelProvider {
+	providers, err := h.client.GetConfiguredProviders()
+	if err != nil || len(providers) != 1 {
+		return ""
+	}
+	return providers[0]
+}
+
 // NewAsyncHandler creates a new AsyncHandler.
 // If the async job executor is not available (e.g., LogsStore or governance plugin not configured),
 // the handler is created with a nil executor and RegisterRoutes will skip async route registration.
@@ -100,7 +111,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 
 // asyncTextCompletion handles POST /v1/async/completions
 func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx)
+	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -137,7 +148,7 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 
 // asyncChatCompletion handles POST /v1/async/chat/completions
 func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx)
+	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -174,7 +185,7 @@ func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 
 // asyncResponses handles POST /v1/async/responses
 func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
-	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
+	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -212,7 +223,7 @@ func (h *AsyncHandler) asyncResponses(ctx *fasthttp.RequestCtx) {
 
 // asyncEmbeddings handles POST /v1/async/embeddings
 func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
-	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx)
+	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -244,7 +255,7 @@ func (h *AsyncHandler) asyncEmbeddings(ctx *fasthttp.RequestCtx) {
 
 // asyncSpeech handles POST /v1/async/audio/speech
 func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
-	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx)
+	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -281,7 +292,7 @@ func (h *AsyncHandler) asyncSpeech(ctx *fasthttp.RequestCtx) {
 
 // asyncTranscription handles POST /v1/async/audio/transcriptions
 func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
-	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx)
+	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -318,7 +329,7 @@ func (h *AsyncHandler) asyncTranscription(ctx *fasthttp.RequestCtx) {
 
 // asyncImageGeneration handles POST /v1/async/images/generations
 func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageGenerationRequest(ctx)
+	req, bifrostReq, err := prepareImageGenerationRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -355,7 +366,7 @@ func (h *AsyncHandler) asyncImageGeneration(ctx *fasthttp.RequestCtx) {
 
 // asyncImageEdit handles POST /v1/async/images/edits
 func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageEditRequest(ctx)
+	req, bifrostReq, err := prepareImageEditRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -392,7 +403,7 @@ func (h *AsyncHandler) asyncImageEdit(ctx *fasthttp.RequestCtx) {
 
 // asyncImageVariation handles POST /v1/async/images/variations
 func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
-	bifrostReq, err := prepareImageVariationRequest(ctx)
+	bifrostReq, err := prepareImageVariationRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -424,7 +435,7 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 
 // asyncRerank handles POST /v1/async/rerank
 func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
-	_, bifrostReq, err := prepareRerankRequest(ctx)
+	_, bifrostReq, err := prepareRerankRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -456,7 +467,7 @@ func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
 
 // asyncOCR handles POST /v1/async/ocr
 func (h *AsyncHandler) asyncOCR(ctx *fasthttp.RequestCtx) {
-	_, bifrostReq, err := prepareOCRRequest(ctx)
+	_, bifrostReq, err := prepareOCRRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return

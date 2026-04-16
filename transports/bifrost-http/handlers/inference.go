@@ -57,6 +57,17 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 	}
 }
 
+// defaultProvider returns a default ModelProvider when only a single provider is
+// configured. When multiple providers are active, it returns an empty string so
+// callers continue to require the explicit "provider/model" format.
+func (h *CompletionHandler) defaultProvider() schemas.ModelProvider {
+	providers, err := h.client.GetConfiguredProviders()
+	if err != nil || len(providers) != 1 {
+		return ""
+	}
+	return providers[0]
+}
+
 // Known fields for CompletionRequest
 var textParamsKnownFields = map[string]bool{
 	"prompt":            true,
@@ -812,12 +823,12 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
-func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx) (*TextRequest, *schemas.BifrostTextCompletionRequest, error) {
+func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*TextRequest, *schemas.BifrostTextCompletionRequest, error) {
 	var req TextRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -849,7 +860,7 @@ func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx) (*TextRequest, *sche
 
 // textCompletion handles POST /v1/completions - Process text completion requests
 func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx)
+	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -888,7 +899,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
-func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx) (*ChatRequest, *schemas.BifrostChatRequest, error) {
+func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req := ChatRequest{
 		ChatParameters: &schemas.ChatParameters{},
 	}
@@ -897,7 +908,7 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx) (*ChatRequest, *sche
 	}
 
 	// Create BifrostChatRequest directly using segregated structure
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -958,7 +969,7 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx) (*ChatRequest, *sche
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
-	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx)
+	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -994,14 +1005,14 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareResponsesRequest prepares a BifrostResponsesRequest from a ResponsesRequest
-func prepareResponsesRequest(ctx *fasthttp.RequestCtx) (*ResponsesRequest, *schemas.BifrostResponsesRequest, error) {
+func prepareResponsesRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*ResponsesRequest, *schemas.BifrostResponsesRequest, error) {
 	var req ResponsesRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Create BifrostResponsesRequest directly using segregated structure
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1052,7 +1063,7 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx) (*ResponsesRequest, *sche
 
 // responses handles POST /v1/responses - Process responses requests
 func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
-	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
+	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1090,12 +1101,12 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareEmbeddingRequest prepares a BifrostEmbeddingRequest from the HTTP request body
-func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx) (*EmbeddingRequest, *schemas.BifrostEmbeddingRequest, error) {
+func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*EmbeddingRequest, *schemas.BifrostEmbeddingRequest, error) {
 	var req EmbeddingRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1127,7 +1138,7 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx) (*EmbeddingRequest, *sche
 
 // embeddings handles POST /v1/embeddings - Process embeddings requests
 func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
-	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx)
+	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1158,14 +1169,14 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareRerankRequest prepares a BifrostRerankRequest from the HTTP request body
-func prepareRerankRequest(ctx *fasthttp.RequestCtx) (*RerankRequest, *schemas.BifrostRerankRequest, error) {
+func prepareRerankRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*RerankRequest, *schemas.BifrostRerankRequest, error) {
 	var req RerankRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Parse model
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1219,7 +1230,7 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx) (*RerankRequest, *schemas.Bi
 
 // rerank handles POST /v1/rerank - Process rerank requests
 func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
-	_, bifrostRerankReq, err := prepareRerankRequest(ctx)
+	_, bifrostRerankReq, err := prepareRerankRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1252,14 +1263,14 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareOCRRequest prepares a BifrostOCRRequest from the HTTP request body
-func prepareOCRRequest(ctx *fasthttp.RequestCtx) (*OCRHandlerRequest, *schemas.BifrostOCRRequest, error) {
+func prepareOCRRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*OCRHandlerRequest, *schemas.BifrostOCRRequest, error) {
 	var req OCRHandlerRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Parse model
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1309,7 +1320,7 @@ func prepareOCRRequest(ctx *fasthttp.RequestCtx) (*OCRHandlerRequest, *schemas.B
 
 // ocr handles POST /v1/ocr - Process OCR requests
 func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
-	_, bifrostOCRReq, err := prepareOCRRequest(ctx)
+	_, bifrostOCRReq, err := prepareOCRRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1342,12 +1353,12 @@ func (h *CompletionHandler) ocr(ctx *fasthttp.RequestCtx) {
 }
 
 // prepareSpeechRequest prepares a BifrostSpeechRequest from the HTTP request body
-func prepareSpeechRequest(ctx *fasthttp.RequestCtx) (*SpeechRequest, *schemas.BifrostSpeechRequest, error) {
+func prepareSpeechRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*SpeechRequest, *schemas.BifrostSpeechRequest, error) {
 	var req SpeechRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1382,7 +1393,7 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx) (*SpeechRequest, *schemas.Bi
 
 // speech handles POST /v1/audio/speech - Process speech completion requests
 func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
-	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx)
+	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1445,7 +1456,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 
 // prepareTranscriptionRequest prepares a BifrostTranscriptionRequest from a multipart form.
 // Returns the request, whether streaming was requested, and any error.
-func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTranscriptionRequest, bool, error) {
+func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*schemas.BifrostTranscriptionRequest, bool, error) {
 	form, err := ctx.MultipartForm()
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to parse multipart form: %v", err)
@@ -1454,7 +1465,7 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTran
 	if len(modelValues) == 0 || modelValues[0] == "" {
 		return nil, false, fmt.Errorf("model is required")
 	}
-	provider, modelName := schemas.ParseModelString(modelValues[0], "")
+	provider, modelName := schemas.ParseModelString(modelValues[0], defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, false, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1509,7 +1520,7 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTran
 
 // transcription handles POST /v1/audio/transcriptions - Process transcription requests
 func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
-	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx)
+	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1549,7 +1560,7 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 
 // countTokens handles POST /v1/responses/input_tokens - Process count tokens requests
 func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
-	_, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
+	_, bifrostResponsesReq, err := prepareResponsesRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1922,12 +1933,12 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 }
 
 // prepareImageGenerationRequest prepares a BifrostImageGenerationRequest from the HTTP request body
-func prepareImageGenerationRequest(ctx *fasthttp.RequestCtx) (*ImageGenerationHTTPRequest, *schemas.BifrostImageGenerationRequest, error) {
+func prepareImageGenerationRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*ImageGenerationHTTPRequest, *schemas.BifrostImageGenerationRequest, error) {
 	var req ImageGenerationHTTPRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -1959,7 +1970,7 @@ func prepareImageGenerationRequest(ctx *fasthttp.RequestCtx) (*ImageGenerationHT
 
 // imageGeneration handles POST /v1/images/generations - Processes image generation requests
 func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageGenerationRequest(ctx)
+	req, bifrostReq, err := prepareImageGenerationRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2010,7 +2021,7 @@ func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.Request
 }
 
 // prepareImageEditRequest prepares a BifrostImageEditRequest from a multipart form
-func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
+func prepareImageEditRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
 	var req ImageEditHTTPRequest
 	form, err := ctx.MultipartForm()
 	if err != nil {
@@ -2021,7 +2032,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *
 		return nil, nil, fmt.Errorf("model is required")
 	}
 	req.Model = modelValues[0]
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -2167,7 +2178,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *
 
 // imageEdit handles POST /v1/images/edits - Processes image edit requests
 func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
-	req, bifrostReq, err := prepareImageEditRequest(ctx)
+	req, bifrostReq, err := prepareImageEditRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2216,7 +2227,7 @@ func (h *CompletionHandler) handleStreamingImageEditRequest(ctx *fasthttp.Reques
 }
 
 // prepareImageVariationRequest prepares a BifrostImageVariationRequest from a multipart form
-func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostImageVariationRequest, error) {
+func prepareImageVariationRequest(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (*schemas.BifrostImageVariationRequest, error) {
 	rawBody := ctx.Request.Body()
 	form, err := ctx.MultipartForm()
 	if err != nil {
@@ -2226,7 +2237,7 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostIma
 	if len(modelValues) == 0 || modelValues[0] == "" {
 		return nil, fmt.Errorf("model is required")
 	}
-	provider, modelName := schemas.ParseModelString(modelValues[0], "")
+	provider, modelName := schemas.ParseModelString(modelValues[0], defaultProvider)
 	if provider == "" || modelName == "" {
 		return nil, fmt.Errorf("model should be in provider/model format")
 	}
@@ -2310,7 +2321,7 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostIma
 
 // imageVariation handles POST /v1/images/variations - Processes image variation requests
 func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
-	bifrostReq, err := prepareImageVariationRequest(ctx)
+	bifrostReq, err := prepareImageVariationRequest(ctx, h.defaultProvider())
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -2349,7 +2360,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Create BifrostVideoGenerationRequest directly using segregated structure
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, h.defaultProvider())
 	if provider == "" || modelName == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
 		return
@@ -2719,7 +2730,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Parse provider from model string
-	provider, modelName := schemas.ParseModelString(req.Model, "")
+	provider, modelName := schemas.ParseModelString(req.Model, h.defaultProvider())
 	if provider == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format or provider must be specified")
 		return
