@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // ChatGPTOAuthDefaultBaseURL is the default base URL for ChatGPT's backend API.
@@ -56,6 +58,7 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 //   - ensures "instructions" field exists (defaults to "")
 //   - sets "store" to false if not already present
 //   - deletes "max_output_tokens"
+//   - forces "stream" to true (the ChatGPT backend API only accepts streaming requests)
 func transformChatGPTResponsesBody(body []byte) ([]byte, error) {
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
@@ -75,6 +78,9 @@ func transformChatGPTResponsesBody(body []byte) ([]byte, error) {
 	// Remove max_output_tokens
 	delete(data, "max_output_tokens")
 
+	// Force stream to true — the ChatGPT backend API only accepts streaming
+	data["stream"] = true
+
 	return json.Marshal(data)
 }
 
@@ -84,4 +90,26 @@ func chatGPTOAuthExtraHeaders(accountID string) map[string]string {
 		"chatgpt-account-id": accountID,
 		"OpenAI-Beta":        "responses=experimental",
 	}
+}
+
+// chatGPTOAuthPrepare extracts the account ID from the bearer token, builds the
+// merged extra headers (OAuth-specific headers merged with any existing headers),
+// and returns the responses path. This is the single entry point for all
+// ChatGPT OAuth header/path logic — openai.go calls this instead of duplicating the logic.
+func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) (extraHeaders map[string]string, responsesPath string, err error) {
+	accountID, err := extractChatGPTAccountID(key.Value.GetValue())
+	if err != nil {
+		return nil, "", err
+	}
+
+	oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
+	merged := make(map[string]string, len(existingExtraHeaders)+len(oauthHeaders))
+	for k, v := range existingExtraHeaders {
+		merged[k] = v
+	}
+	for k, v := range oauthHeaders {
+		merged[k] = v
+	}
+
+	return merged, "/responses", nil
 }

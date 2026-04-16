@@ -950,6 +950,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			nil,
 			postRequestConverter,
 			postResponseConverter,
+			nil,
 			provider.logger,
 		)
 	}

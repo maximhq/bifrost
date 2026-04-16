@@ -1386,44 +1386,26 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	if provider.disableStore || provider.chatgptOAuth {
+	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	// ChatGPT OAuth: use /responses path (not /v1/responses) and inject extra headers
 	responsesPath := "/v1/responses"
 	extraHeaders := provider.networkConfig.ExtraHeaders
-	if provider.chatgptOAuth {
-		responsesPath = "/responses"
-		// Extract account ID from the Bearer token for the chatgpt-account-id header
-		accountID, err := extractChatGPTAccountID(key.Value.GetValue())
-		if err != nil {
-			provider.logger.Warn("chatgpt_oauth: failed to extract account ID from token: %v", err)
-		} else {
-			oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
-			// Merge with existing extra headers
-			merged := make(map[string]string)
-			for k, v := range extraHeaders {
-				merged[k] = v
-			}
-			for k, v := range oauthHeaders {
-				merged[k] = v
-			}
-			extraHeaders = merged
-		}
+	var bodyTransformer func([]byte) ([]byte, error)
 
-		// Ensure instructions field exists on the request
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
+	if provider.chatgptOAuth {
+		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, provider.logger)
+		if err != nil {
+			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
+		} else {
+			extraHeaders = mergedHeaders
+			responsesPath = path
 		}
-		if request.Params.Instructions == nil {
-			request.Params.Instructions = schemas.Ptr("")
-		}
-		// ChatGPT backend API does not accept max_output_tokens
-		request.Params.MaxOutputTokens = nil
+		bodyTransformer = transformChatGPTResponsesBody
 	}
 
 	return HandleOpenAIResponsesRequest(
@@ -1439,10 +1421,13 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		nil,
 		nil,
 		provider.logger,
+		bodyTransformer,
 	)
 }
 
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
+// bodyTransformer, if non-nil, is applied to the serialized JSON body before it is sent.
+// Pass nil for standard behavior.
 func HandleOpenAIResponsesRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -1456,6 +1441,7 @@ func HandleOpenAIResponsesRequest(
 	customResponseHandler responseHandler[schemas.BifrostResponsesResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
+	bodyTransformer func([]byte) ([]byte, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -1510,6 +1496,14 @@ func HandleOpenAIResponsesRequest(
 		providerName)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if bodyTransformer != nil {
+		transformed, transformErr := bodyTransformer(jsonData)
+		if transformErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, transformErr, providerName)
+		}
+		jsonData = transformed
 	}
 
 	req.SetBody(jsonData)
@@ -1589,39 +1583,27 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
-	if provider.disableStore || provider.chatgptOAuth {
+
+	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
 		}
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	// ChatGPT OAuth: use /responses path and inject extra headers
 	responsesPath := "/v1/responses"
 	extraHeaders := provider.networkConfig.ExtraHeaders
+
+	var streamBodyTransformer func([]byte) ([]byte, error)
 	if provider.chatgptOAuth {
-		responsesPath = "/responses"
-		accountID, err := extractChatGPTAccountID(key.Value.GetValue())
+		mergedHeaders, path, err := chatGPTOAuthPrepare(key, extraHeaders, provider.logger)
 		if err != nil {
-			provider.logger.Warn("chatgpt_oauth: failed to extract account ID from token: %v", err)
+			provider.logger.Warn("chatgpt_oauth: failed to prepare request: %v", err)
 		} else {
-			oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
-			merged := make(map[string]string)
-			for k, v := range extraHeaders {
-				merged[k] = v
-			}
-			for k, v := range oauthHeaders {
-				merged[k] = v
-			}
-			extraHeaders = merged
+			extraHeaders = mergedHeaders
+			responsesPath = path
 		}
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
-		}
-		if request.Params.Instructions == nil {
-			request.Params.Instructions = schemas.Ptr("")
-		}
-		request.Params.MaxOutputTokens = nil
+		streamBodyTransformer = transformChatGPTResponsesBody
 	}
 
 	// Use shared streaming logic
@@ -1640,6 +1622,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		nil,
 		nil,
+		streamBodyTransformer,
 		provider.logger,
 	)
 }
@@ -1661,6 +1644,7 @@ func HandleOpenAIResponsesStreaming(
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
+	bodyTransformer func([]byte) ([]byte, error),
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
@@ -1691,6 +1675,14 @@ func HandleOpenAIResponsesStreaming(
 		providerName)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if bodyTransformer != nil {
+		transformed, transformErr := bodyTransformer(jsonBody)
+		if transformErr != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, transformErr, providerName)
+		}
+		jsonBody = transformed
 	}
 
 	// Create HTTP request for streaming

@@ -351,6 +351,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 		nil,
 		nil,
 		provider.logger,
+		nil,
 	)
 }
 
@@ -372,6 +373,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,

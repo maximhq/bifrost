@@ -183,6 +183,7 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 		nil,
 		ParseXAIError,
 		provider.logger,
+		nil,
 	)
 }
 
@@ -205,6 +206,7 @@ func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 		postHookRunner,
 		nil,
 		ParseXAIError,
+		nil,
 		nil,
 		nil,
 		provider.logger,
