@@ -1,0 +1,578 @@
+---
+title: "Plugins"
+description: "Configure Bifrost plugins in Helm — telemetry, logging, semantic cache, OpenTelemetry, Datadog, governance, and custom plugins"
+icon: "puzzle-piece"
+---
+
+Plugins are configured under `bifrost.plugins`. Each plugin is independently enabled/disabled. Pre-hooks run in registration order; post-hooks run in reverse order.
+
+```yaml
+bifrost:
+  plugins:
+    telemetry:
+      enabled: true
+    logging:
+      enabled: true
+    governance:
+      enabled: true
+    semanticCache:
+      enabled: false
+    otel:
+      enabled: false
+    datadog:
+      enabled: false
+```
+
+```bash
+# Enable plugins at install time
+helm install bifrost bifrost/bifrost \
+  --set image.tag=v1.4.11 \
+  --set bifrost.plugins.telemetry.enabled=true \
+  --set bifrost.plugins.logging.enabled=true \
+  --set bifrost.plugins.governance.enabled=true
+
+# Or upgrade to enable a plugin without touching other values
+helm upgrade bifrost bifrost/bifrost \
+  --reuse-values \
+  --set bifrost.plugins.otel.enabled=true
+```
+
+---
+
+<Tabs>
+
+<Tab title="Telemetry">
+
+### Telemetry (Prometheus)
+
+Exposes Prometheus metrics at `GET /metrics`.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.telemetry.enabled` | Enable Prometheus metrics | `false` |
+| `bifrost.plugins.telemetry.config.custom_labels` | Extra labels attached to every metric | `[]` |
+| `bifrost.plugins.telemetry.config.push_gateway.enabled` | Push metrics to a Prometheus Push Gateway | `false` |
+| `bifrost.plugins.telemetry.config.push_gateway.push_gateway_url` | Push Gateway URL | `""` |
+| `bifrost.plugins.telemetry.config.push_gateway.job_name` | Job label | `"bifrost"` |
+| `bifrost.plugins.telemetry.config.push_gateway.push_interval` | Push interval in seconds | `15` |
+
+**Basic setup:**
+
+```yaml
+# telemetry-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    telemetry:
+      enabled: true
+      config:
+        custom_labels:
+          - name: "environment"
+            value: "production"
+          - name: "region"
+            value: "us-east-1"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f telemetry-values.yaml
+
+# Verify metrics are exposed
+kubectl port-forward svc/bifrost 8080:8080 &
+curl http://localhost:8080/metrics | head -30
+```
+
+**With Prometheus Push Gateway** (recommended for multi-replica / HA setups where pull-based scraping can miss pods):
+
+```yaml
+bifrost:
+  plugins:
+    telemetry:
+      enabled: true
+      config:
+        push_gateway:
+          enabled: true
+          push_gateway_url: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+          job_name: "bifrost"
+          instance_id: ""      # auto-derived from pod name if empty
+          push_interval: 15
+          basic_auth:
+            username: ""
+            password: ""
+```
+
+**ServiceMonitor for Prometheus Operator:**
+
+```yaml
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  namespace: monitoring     # namespace where Prometheus is deployed
+```
+
+</Tab>
+
+<Tab title="Logging">
+
+### Request/Response Logging
+
+Persists full request and response data to the configured log store.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.logging.enabled` | Enable request/response logging | `false` |
+| `bifrost.plugins.logging.config.disable_content_logging` | Strip message body from logs | `false` |
+| `bifrost.plugins.logging.config.logging_headers` | HTTP headers to capture in log metadata | `[]` |
+
+```yaml
+# logging-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    logging:
+      enabled: true
+      config:
+        disable_content_logging: false   # set true for HIPAA/compliance
+        logging_headers:
+          - "x-request-id"
+          - "x-user-id"
+          - "x-team-id"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f logging-values.yaml
+```
+
+**Verify logs are being written:**
+
+```bash
+kubectl port-forward svc/bifrost 8080:8080 &
+# Make a test request, then query logs
+curl -s "http://localhost:8080/api/logs?limit=5" | jq .
+```
+
+<Note>
+`bifrost.plugins.logging` controls the *plugin* (which hooks into every request). `bifrost.client.enableLogging` / `disableContentLogging` controls the *client-level* defaults. Both must be configured consistently — see the [Client Configuration](/deployment-guides/helm/client) page.
+</Note>
+
+</Tab>
+
+<Tab title="Governance">
+
+### Governance Plugin
+
+Enforces budget caps, rate limits, and virtual key policies on every request. Must be enabled alongside `bifrost.governance` resource definitions.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.governance.enabled` | Enable governance enforcement | `false` |
+| `bifrost.plugins.governance.config.is_vk_mandatory` | Reject requests without a virtual key | `false` |
+| `bifrost.plugins.governance.config.required_headers` | Additional headers required on every request | `[]` |
+| `bifrost.plugins.governance.config.is_enterprise` | Enable enterprise governance features | `false` |
+
+```yaml
+# governance-plugin-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: true     # require virtual key on all inference requests
+        required_headers: []
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f governance-plugin-values.yaml
+```
+
+See the [Governance](/deployment-guides/helm/governance) page for defining budgets, rate limits, and virtual keys.
+
+</Tab>
+
+<Tab title="Semantic Cache">
+
+### Semantic Cache
+
+Caches LLM responses using vector similarity so semantically equivalent prompts return cached answers.
+
+Two modes:
+- **Semantic mode** (`dimension > 1`): uses an embedding model + vector store for similarity search
+- **Direct / hash mode** (`dimension: 1`): exact-match hash-based caching, no embedding model needed
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.semanticCache.enabled` | Enable semantic caching | `false` |
+| `bifrost.plugins.semanticCache.config.provider` | Embedding provider | `"openai"` |
+| `bifrost.plugins.semanticCache.config.embedding_model` | Embedding model name | `"text-embedding-3-small"` |
+| `bifrost.plugins.semanticCache.config.dimension` | Embedding dimension (`1` = direct/hash mode) | `1536` |
+| `bifrost.plugins.semanticCache.config.threshold` | Cosine similarity threshold (0–1) | `0.8` |
+| `bifrost.plugins.semanticCache.config.ttl` | Cache entry TTL (Go duration) | `"5m"` |
+| `bifrost.plugins.semanticCache.config.conversation_history_threshold` | Number of past messages to include in cache key | `3` |
+| `bifrost.plugins.semanticCache.config.cache_by_model` | Include model name in cache key | `true` |
+| `bifrost.plugins.semanticCache.config.cache_by_provider` | Include provider name in cache key | `true` |
+| `bifrost.plugins.semanticCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
+| `bifrost.plugins.semanticCache.config.cleanup_on_shutdown` | Delete cache data on pod shutdown | `false` |
+
+**Semantic mode (with OpenAI embeddings + Weaviate):**
+
+```bash
+kubectl create secret generic semantic-cache-secret \
+  --from-literal=openai-key='sk-your-openai-embedding-key'
+```
+
+```yaml
+# semantic-cache-values.yaml
+image:
+  tag: "v1.4.11"
+
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true
+    persistence:
+      size: 20Gi
+
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        keys:
+          - value: "env.SEMANTIC_CACHE_OPENAI_KEY"
+            weight: 1
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.85
+        ttl: "1h"
+        conversation_history_threshold: 5
+        cache_by_model: true
+        cache_by_provider: true
+
+  providerSecrets:
+    semantic-cache-key:
+      existingSecret: "semantic-cache-secret"
+      key: "openai-key"
+      envVar: "SEMANTIC_CACHE_OPENAI_KEY"
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f semantic-cache-values.yaml
+```
+
+**Direct / hash mode** (no embedding provider needed):
+
+```yaml
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1          # triggers hash-based exact matching
+        ttl: "30m"
+        cache_by_model: true
+        cache_by_provider: true
+```
+
+<Note>
+The vector store (`vectorStore.*`) must be configured and enabled for semantic mode. Direct/hash mode works without a vector store but still requires a storage backend.
+</Note>
+
+</Tab>
+
+<Tab title="OpenTelemetry">
+
+### OpenTelemetry (OTel)
+
+Sends distributed traces and push-based metrics to any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, etc.).
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.otel.enabled` | Enable OTel tracing | `false` |
+| `bifrost.plugins.otel.config.service_name` | Service name in traces | `"bifrost"` |
+| `bifrost.plugins.otel.config.collector_url` | OTLP collector endpoint | `""` |
+| `bifrost.plugins.otel.config.trace_type` | Trace type (`genai_extension` or `default`) | `"genai_extension"` |
+| `bifrost.plugins.otel.config.protocol` | Transport protocol (`grpc` or `http`) | `"grpc"` |
+| `bifrost.plugins.otel.config.metrics_enabled` | Enable OTLP push-based metrics | `false` |
+| `bifrost.plugins.otel.config.metrics_endpoint` | OTLP metrics endpoint | `""` |
+| `bifrost.plugins.otel.config.metrics_push_interval` | Push interval in seconds | `15` |
+| `bifrost.plugins.otel.config.headers` | Custom headers for the collector | `{}` |
+| `bifrost.plugins.otel.config.insecure` | Skip TLS verification | `false` |
+| `bifrost.plugins.otel.config.tls_ca_cert` | Path to CA cert for TLS | `""` |
+
+```yaml
+# otel-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    otel:
+      enabled: true
+      config:
+        service_name: "bifrost-production"
+        collector_url: "otel-collector.observability.svc.cluster.local:4317"
+        trace_type: "genai_extension"
+        protocol: "grpc"
+        insecure: true        # set false in production with a proper cert
+        metrics_enabled: true
+        metrics_endpoint: "otel-collector.observability.svc.cluster.local:4317"
+        metrics_push_interval: 15
+        headers:
+          x-honeycomb-team: "env.HONEYCOMB_API_KEY"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f otel-values.yaml
+```
+
+**With authentication headers from a Kubernetes Secret:**
+
+```bash
+kubectl create secret generic otel-credentials \
+  --from-literal=api-key='your-honeycomb-or-grafana-key'
+```
+
+```yaml
+bifrost:
+  plugins:
+    otel:
+      enabled: true
+      config:
+        collector_url: "api.honeycomb.io:443"
+        protocol: "grpc"
+        headers:
+          x-honeycomb-team: "env.OTEL_API_KEY"
+
+  providerSecrets:
+    otel-key:
+      existingSecret: "otel-credentials"
+      key: "api-key"
+      envVar: "OTEL_API_KEY"
+```
+
+</Tab>
+
+<Tab title="Datadog">
+
+### Datadog APM
+
+Sends traces to a Datadog Agent running in the cluster.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.datadog.enabled` | Enable Datadog tracing | `false` |
+| `bifrost.plugins.datadog.config.service_name` | Service name | `"bifrost"` |
+| `bifrost.plugins.datadog.config.agent_addr` | Datadog Agent address | `"localhost:8126"` |
+| `bifrost.plugins.datadog.config.env` | Deployment environment tag | `""` |
+| `bifrost.plugins.datadog.config.version` | Version tag | `""` |
+| `bifrost.plugins.datadog.config.enable_traces` | Enable trace collection | `true` |
+| `bifrost.plugins.datadog.config.custom_tags` | Extra tags on all spans | `{}` |
+
+The Datadog Agent is typically deployed via the [Datadog Helm chart](https://docs.datadoghq.com/containers/kubernetes/installation/) as a DaemonSet, making it available at the node's hostIP.
+
+```yaml
+# datadog-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    datadog:
+      enabled: true
+      config:
+        service_name: "bifrost"
+        agent_addr: "$(HOST_IP):8126"   # uses Datadog DaemonSet pattern
+        env: "production"
+        version: "v1.4.11"
+        enable_traces: true
+        custom_tags:
+          team: "platform"
+          region: "us-east-1"
+
+# Inject HOST_IP so Bifrost can reach the DaemonSet agent on the same node
+env:
+  - name: HOST_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f datadog-values.yaml
+```
+
+</Tab>
+
+<Tab title="Maxim">
+
+### Maxim Observability
+
+Sends LLM request/response data to [Maxim](https://getmaxim.ai) for tracing, evaluation, and observability.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.plugins.maxim.enabled` | Enable Maxim plugin | `false` |
+| `bifrost.plugins.maxim.config.api_key` | Maxim API key (plain text, prefer secret) | `""` |
+| `bifrost.plugins.maxim.config.log_repo_id` | Maxim log repository ID | `""` |
+| `bifrost.plugins.maxim.secretRef.name` | Kubernetes Secret name for API key | `""` |
+| `bifrost.plugins.maxim.secretRef.key` | Key within the secret | `"api-key"` |
+
+```bash
+kubectl create secret generic maxim-credentials \
+  --from-literal=api-key='your-maxim-api-key'
+```
+
+```yaml
+# maxim-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  plugins:
+    maxim:
+      enabled: true
+      config:
+        log_repo_id: "your-log-repo-id"
+      secretRef:
+        name: "maxim-credentials"
+        key: "api-key"
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f maxim-values.yaml
+```
+
+</Tab>
+
+<Tab title="Custom Plugin">
+
+### Custom / Dynamic Plugins
+
+Load a custom Go plugin (compiled `.so` file) at runtime.
+
+```yaml
+bifrost:
+  plugins:
+    custom:
+      - name: "my-custom-plugin"
+        enabled: true
+        path: "/plugins/my-plugin.so"
+        version: 1
+        config:
+          api_endpoint: "https://my-service.example.com"
+          timeout: 5000
+```
+
+Mount the `.so` file via a volume:
+
+```yaml
+volumes:
+  - name: custom-plugins
+    configMap:
+      name: bifrost-custom-plugins
+
+volumeMounts:
+  - name: custom-plugins
+    mountPath: /plugins
+```
+
+Or use an init container to download the plugin binary:
+
+```yaml
+initContainers:
+  - name: download-plugin
+    image: curlimages/curl:8.6.0
+    command:
+      - sh
+      - -c
+      - |
+        curl -fsSL https://plugins.example.com/my-plugin.so \
+          -o /plugins/my-plugin.so
+    volumeMounts:
+      - name: plugin-dir
+        mountPath: /plugins
+
+volumes:
+  - name: plugin-dir
+    emptyDir: {}
+
+volumeMounts:
+  - name: plugin-dir
+    mountPath: /plugins
+```
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f custom-plugin-values.yaml
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## All Plugins Together
+
+```yaml
+# all-plugins-values.yaml
+image:
+  tag: "v1.4.11"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  plugins:
+    telemetry:
+      enabled: true
+      config:
+        custom_labels:
+          - name: "environment"
+            value: "production"
+
+    logging:
+      enabled: true
+      config:
+        disable_content_logging: false
+        logging_headers:
+          - "x-request-id"
+
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: true
+
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        keys:
+          - value: "env.CACHE_OPENAI_KEY"
+            weight: 1
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.85
+        ttl: "1h"
+
+    otel:
+      enabled: true
+      config:
+        service_name: "bifrost"
+        collector_url: "otel-collector.observability.svc.cluster.local:4317"
+        protocol: "grpc"
+        insecure: true
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f all-plugins-values.yaml
+```

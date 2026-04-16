@@ -1,0 +1,513 @@
+---
+title: "Cluster Mode & HA"
+description: "Run Bifrost in a multi-replica cluster with gossip-based peer discovery, distributed state sync, and high-availability configuration"
+icon: "network-wired"
+---
+
+Cluster mode enables multiple Bifrost replicas to share state — rate limits, budget counters, and governance data — across pods. When `bifrost.cluster.enabled` is `false` (the default), each replica operates independently and state is only shared via the database.
+
+<Note>
+Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-node only.
+</Note>
+
+## When to Use Cluster Mode
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Single replica | Not needed |
+| Multiple replicas, shared DB only | Optional — DB provides eventual consistency |
+| Multiple replicas with strict per-minute rate limiting | **Enable cluster mode** — in-memory counters are synced via gossip |
+| Geographic multi-region | Enable cluster mode with DNS or Consul discovery |
+
+---
+
+## Basic Cluster Setup
+
+```yaml
+# cluster-values.yaml
+image:
+  tag: "v1.4.11"
+
+replicaCount: 3
+
+storage:
+  mode: postgres
+
+postgresql:
+  external:
+    enabled: true
+    host: "your-postgres-host.example.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "postgres-credentials"
+    passwordKey: "password"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  cluster:
+    enabled: true
+    gossip:
+      port: 7946
+      config:
+        timeoutSeconds: 10
+        successThreshold: 3
+        failureThreshold: 3
+
+# Spread replicas across nodes for true HA
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: bifrost
+        topologyKey: kubernetes.io/hostname
+
+# Conservative scale-down: avoid killing pods mid-stream
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+# Give in-flight SSE streams time to drain
+terminationGracePeriodSeconds: 90
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 20"]
+```
+
+```bash
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-postgres-password'
+
+kubectl create secret generic bifrost-encryption \
+  --from-literal=encryption-key='your-32-byte-encryption-key'
+
+helm install bifrost bifrost/bifrost -f cluster-values.yaml
+```
+
+---
+
+## Peer Discovery
+
+Bifrost uses a gossip protocol (memberlist) for peer-to-peer state sync. Configure how peers find each other:
+
+<Tabs>
+
+<Tab title="Kubernetes (Recommended)">
+
+Bifrost queries the Kubernetes API to find other Bifrost pods by label selector. No static peer list needed — works with HPA.
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    discovery:
+      enabled: true
+      type: kubernetes
+      k8sNamespace: "default"           # namespace where Bifrost runs
+      k8sLabelSelector: "app.kubernetes.io/name=bifrost"
+    gossip:
+      port: 7946
+```
+
+The service account needs permission to list pods:
+
+```yaml
+serviceAccount:
+  create: true
+  annotations: {}
+```
+
+```bash
+# Create a ClusterRole and binding for pod discovery (apply once)
+kubectl apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bifrost-pod-discovery
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bifrost-pod-discovery
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: bifrost
+    namespace: default
+roleRef:
+  kind: Role
+  name: bifrost-pod-discovery
+  apiGroup: rbac.authorization.k8s.io
+EOF
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f cluster-k8s-discovery-values.yaml
+```
+
+</Tab>
+
+<Tab title="DNS">
+
+Uses a headless service DNS name to resolve peer IPs. Works well with StatefulSets (predictable pod DNS names).
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    discovery:
+      enabled: true
+      type: dns
+      dnsNames:
+        - "bifrost-headless.default.svc.cluster.local"
+    gossip:
+      port: 7946
+```
+
+The chart automatically creates a headless service (`bifrost-headless`) when cluster mode is enabled with a StatefulSet. For Deployments, create it manually:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-headless
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: bifrost
+  ports:
+    - name: gossip
+      port: 7946
+      protocol: TCP
+EOF
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f cluster-dns-discovery-values.yaml
+```
+
+</Tab>
+
+<Tab title="Static Peers">
+
+Enumerate peer addresses explicitly. Use when discovery mechanisms are unavailable or you want deterministic membership.
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    peers:
+      - "bifrost-0.bifrost-headless.default.svc.cluster.local:7946"
+      - "bifrost-1.bifrost-headless.default.svc.cluster.local:7946"
+      - "bifrost-2.bifrost-headless.default.svc.cluster.local:7946"
+    gossip:
+      port: 7946
+```
+
+<Note>
+Static peers require StatefulSet pod names to be stable. This approach doesn't adapt to HPA-driven scaling — use Kubernetes or DNS discovery for dynamic replica counts.
+</Note>
+
+</Tab>
+
+<Tab title="Consul">
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    discovery:
+      enabled: true
+      type: consul
+      consulAddress: "consul.consul.svc.cluster.local:8500"
+    gossip:
+      port: 7946
+```
+
+```bash
+helm install bifrost bifrost/bifrost -f cluster-consul-discovery-values.yaml
+```
+
+</Tab>
+
+<Tab title="etcd">
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    discovery:
+      enabled: true
+      type: etcd
+      etcdEndpoints:
+        - "http://etcd-0.etcd.default.svc.cluster.local:2379"
+        - "http://etcd-1.etcd.default.svc.cluster.local:2379"
+        - "http://etcd-2.etcd.default.svc.cluster.local:2379"
+    gossip:
+      port: 7946
+```
+
+</Tab>
+
+<Tab title="mDNS">
+
+Best for local development or bare-metal clusters where multicast is available.
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    discovery:
+      enabled: true
+      type: mdns
+      mdnsService: "_bifrost._tcp"
+    gossip:
+      port: 7946
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Allowed Address Space
+
+Restrict gossip to a specific subnet (useful in multi-tenant clusters):
+
+```yaml
+bifrost:
+  cluster:
+    discovery:
+      enabled: true
+      type: kubernetes
+      k8sNamespace: "default"
+      k8sLabelSelector: "app.kubernetes.io/name=bifrost"
+      allowedAddressSpace:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+```
+
+---
+
+## Region-Aware Routing
+
+Tag replicas with a region identifier for latency-aware routing:
+
+```yaml
+bifrost:
+  cluster:
+    enabled: true
+    region: "us-east-1"
+```
+
+---
+
+## Full HA Production Example
+
+```yaml
+# ha-production-values.yaml
+image:
+  tag: "v1.4.11"
+
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 75
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
+
+terminationGracePeriodSeconds: 90
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 20"]
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+  hosts:
+    - host: bifrost.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.yourdomain.com
+
+storage:
+  mode: postgres
+
+postgresql:
+  external:
+    enabled: true
+    host: "rds.us-east-1.amazonaws.com"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: "postgres-credentials"
+    passwordKey: "password"
+
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "encryption-key"
+
+  client:
+    initialPoolSize: 1000
+    dropExcessRequests: true
+    enableLogging: true
+    enforceGovernanceHeader: true
+
+  cluster:
+    enabled: true
+    region: "us-east-1"
+    discovery:
+      enabled: true
+      type: kubernetes
+      k8sNamespace: "default"
+      k8sLabelSelector: "app.kubernetes.io/name=bifrost"
+    gossip:
+      port: 7946
+      config:
+        timeoutSeconds: 10
+        successThreshold: 3
+        failureThreshold: 3
+
+  plugins:
+    telemetry:
+      enabled: true
+      config:
+        push_gateway:
+          enabled: true
+          push_gateway_url: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+          push_interval: 15
+    logging:
+      enabled: true
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: true
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: bifrost
+        topologyKey: kubernetes.io/hostname
+
+serviceAccount:
+  create: true
+  annotations: {}
+```
+
+```bash
+# Prerequisites
+kubectl create secret generic postgres-credentials \
+  --from-literal=password='your-secure-postgres-password'
+
+kubectl create secret generic bifrost-encryption \
+  --from-literal=encryption-key='your-32-byte-encryption-key'
+
+# RBAC for Kubernetes pod discovery
+kubectl apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bifrost-pod-discovery
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bifrost-pod-discovery
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: bifrost
+    namespace: default
+roleRef:
+  kind: Role
+  name: bifrost-pod-discovery
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+# Install
+helm install bifrost bifrost/bifrost -f ha-production-values.yaml
+
+# Verify all peers have found each other (check logs)
+kubectl logs -l app.kubernetes.io/name=bifrost --tail=50 | grep -i gossip
+```
+
+---
+
+## Verifying Cluster Health
+
+```bash
+# Check all pods are running
+kubectl get pods -l app.kubernetes.io/name=bifrost
+
+# Check gossip port is reachable between pods
+kubectl exec -it bifrost-0 -- nc -zv bifrost-1.bifrost-headless 7946
+
+# Check health endpoint
+kubectl port-forward svc/bifrost 8080:8080 &
+curl http://localhost:8080/health
+
+# View HPA status
+kubectl get hpa bifrost
+
+# Scale manually during maintenance
+kubectl scale deployment bifrost --replicas=5
+```
