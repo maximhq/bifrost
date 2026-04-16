@@ -94,6 +94,12 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 		return "", fmt.Errorf("chatgpt_account_id not found or empty in JWT auth claim")
 	}
 
+	// Sanitize: reject account IDs containing newlines or carriage returns
+	// to prevent HTTP header injection attacks via crafted JWTs.
+	if strings.ContainsAny(accountID, "\r\n") {
+		return "", fmt.Errorf("chatgpt_account_id contains invalid characters")
+	}
+
 	return accountID, nil
 }
 

@@ -143,6 +143,40 @@ func TestExtractChatGPTAccountID(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "chatgpt_account_id not found or empty")
 	})
+
+	// Security: HTTP header injection prevention
+	t.Run("rejects account_id with newline (header injection)", func(t *testing.T) {
+		token := buildTestJWT(map[string]interface{}{
+			"https://api.openai.com/auth": map[string]interface{}{
+				"chatgpt_account_id": "legit-id\r\nX-Injected: malicious",
+			},
+		})
+		_, err := extractChatGPTAccountID(token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid characters")
+	})
+
+	t.Run("rejects account_id with bare newline", func(t *testing.T) {
+		token := buildTestJWT(map[string]interface{}{
+			"https://api.openai.com/auth": map[string]interface{}{
+				"chatgpt_account_id": "legit-id\ninjection",
+			},
+		})
+		_, err := extractChatGPTAccountID(token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid characters")
+	})
+
+	t.Run("rejects account_id with bare carriage return", func(t *testing.T) {
+		token := buildTestJWT(map[string]interface{}{
+			"https://api.openai.com/auth": map[string]interface{}{
+				"chatgpt_account_id": "legit-id\rinjection",
+			},
+		})
+		_, err := extractChatGPTAccountID(token)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid characters")
+	})
 }
 
 // ---------------------------------------------------------------------------
