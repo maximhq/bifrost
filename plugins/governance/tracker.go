@@ -186,6 +186,41 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	if err := t.store.DumpBudgets(ctx, nil); err != nil {
 		t.logger.Error("failed to dump budgets to database: %v", err)
 	}
+
+	// ==== PART 4: Extension lifecycle ====
+	t.expireBudgetExtensions(ctx)
+}
+
+// expireBudgetExtensions marks past-due extensions as expired in DB and invalidates
+// the in-memory cache for affected budgets. Separated from counter resets for clarity,
+// testability, and because its responsibility (workflow lifecycle) is distinct from
+// usage counter management.
+func (t *UsageTracker) expireBudgetExtensions(ctx context.Context) {
+	if t.configStore == nil {
+		return
+	}
+
+	affectedBudgetIDs, err := t.configStore.ExpireBudgetExtensions(ctx)
+	if err != nil {
+		t.logger.Error("failed to expire budget extensions: %v", err)
+		return
+	}
+
+	if len(affectedBudgetIDs) == 0 {
+		return
+	}
+
+	t.logger.Debug("expired budget extensions for %d budgets", len(affectedBudgetIDs))
+
+	// Reload in-memory cache for each affected budget to remove stale entries
+	for _, budgetID := range affectedBudgetIDs {
+		extensions, err := t.configStore.GetActiveBudgetExtensions(ctx, budgetID)
+		if err != nil {
+			t.logger.Error("failed to reload active extensions for budget %s after expiry: %v", budgetID, err)
+			continue
+		}
+		t.store.UpdateBudgetExtensionsInMemory(budgetID, extensions)
+	}
 }
 
 // Public methods for monitoring and admin operations

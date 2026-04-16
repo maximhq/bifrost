@@ -700,6 +700,50 @@ func (m *MockConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*go
 	return nil
 }
 
+func (m *MockConfigStore) GetBudgetExtensions(ctx context.Context, budgetID string, status string) ([]tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetBudgetExtension(ctx context.Context, id string) (*tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateBudgetExtension(ctx context.Context, ext *tables.TableBudgetExtension, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteBudgetExtension(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetActiveBudgetExtensions(ctx context.Context, budgetID string) ([]tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetAllActiveBudgetExtensions(ctx context.Context) ([]tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ExpireBudgetExtensions(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) HasActiveExtension(ctx context.Context, budgetID string) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) ApproveBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) RejectBudgetExtensionAtomic(ctx context.Context, extID string, reviewedBy string, reviewNote string) (*tables.TableBudgetExtension, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error) {
 	return []tables.TableRateLimit{}, nil
 }

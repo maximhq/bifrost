@@ -24,14 +24,15 @@ type EntityWiseRateLimits map[string][]*configstoreTables.TableRateLimit
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
-	virtualKeys  sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
-	teams        sync.Map // string -> *Team (Team ID -> Team)
-	customers    sync.Map // string -> *Customer (Customer ID -> Customer)
-	budgets      sync.Map // string -> *Budget (Budget ID -> Budget)
-	rateLimits   sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
-	modelConfigs sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
-	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
-	routingRules sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	virtualKeys      sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
+	teams            sync.Map // string -> *Team (Team ID -> Team)
+	customers        sync.Map // string -> *Customer (Customer ID -> Customer)
+	budgets          sync.Map // string -> *Budget (Budget ID -> Budget)
+	rateLimits       sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
+	modelConfigs     sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
+	providers        sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	routingRules     sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+	budgetExtensions sync.Map // string -> []TableBudgetExtension (Budget ID -> active extensions)
 
 	// Last DB usages for budgets and rate limits
 	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
@@ -179,6 +180,9 @@ type GovernanceStore interface {
 	GetScopedRoutingRules(ctx context.Context, scope string, scopeID string) []*configstoreTables.TableRoutingRule
 	UpdateRoutingRuleInMemory(ctx context.Context, rule *configstoreTables.TableRoutingRule) error
 	DeleteRoutingRuleInMemory(ctx context.Context, id string) error
+	// Budget Extensions
+	UpdateBudgetExtensionsInMemory(budgetID string, extensions []configstoreTables.TableBudgetExtension)
+	GetActiveBudgetExtensionAmount(budgetID string) float64
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -869,11 +873,13 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudge
 			}
 			gs.logger.Debug("LocalStore CheckBudget: Checking %s budget %s: local=%.4f, remote=%.4f, total=%.4f, limit=%.4f",
 				entity, budget.ID, budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
-			// Check if current usage (local + remote baseline) exceeds budget limit
-			if budget.CurrentUsage+baseline >= budget.MaxLimit {
+			// Compute effective limit by adding any active budget extensions
+			effectiveLimit := budget.MaxLimit + gs.GetActiveBudgetExtensionAmount(budget.ID)
+			// Check if current usage (local + remote baseline) exceeds effective budget limit
+			if budget.CurrentUsage+baseline >= effectiveLimit {
 				gs.logger.Debug("LocalStore CheckBudget: Budget %s EXCEEDED", budget.ID)
 				return DecisionBudgetExceeded, fmt.Errorf("%s budget exceeded: %.4f >= %.4f dollars",
-					entity, budget.CurrentUsage+baseline, budget.MaxLimit)
+					entity, budget.CurrentUsage+baseline, effectiveLimit)
 			}
 		}
 	}
@@ -1713,6 +1719,25 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 
 	// Rebuild in-memory structures (lock-free)
 	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
+
+	// Batch load all active budget extensions in a single query (avoids N+1 per-budget queries)
+	// Clear existing entries first to evict budgets that no longer have active extensions
+	gs.budgetExtensions.Range(func(key, _ any) bool {
+		gs.budgetExtensions.Delete(key)
+		return true
+	})
+	allExtensions, err := gs.configStore.GetAllActiveBudgetExtensions(ctx)
+	if err != nil {
+		gs.logger.Error("failed to batch load active budget extensions: %v", err)
+	} else if len(allExtensions) > 0 {
+		extByBudget := make(map[string][]configstoreTables.TableBudgetExtension)
+		for _, ext := range allExtensions {
+			extByBudget[ext.BudgetID] = append(extByBudget[ext.BudgetID], ext)
+		}
+		for budgetID, exts := range extByBudget {
+			gs.budgetExtensions.Store(budgetID, exts)
+		}
+	}
 
 	return nil
 }
@@ -3120,8 +3145,9 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 							if !exists {
 								baseline = 0
 							}
-							if budget.MaxLimit > 0 {
-								budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+							effectiveLimit := budget.MaxLimit + gs.GetActiveBudgetExtensionAmount(budget.ID)
+							if effectiveLimit > 0 {
+								budgetPercent := float64(budget.CurrentUsage+baseline) / effectiveLimit * 100
 								if budgetPercent > result.BudgetPercentUsed {
 									result.BudgetPercentUsed = budgetPercent
 								}
@@ -3172,8 +3198,9 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 						if !exists {
 							baseline = 0
 						}
-						if budget.MaxLimit > 0 {
-							budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+						effectiveLimit := budget.MaxLimit + gs.GetActiveBudgetExtensionAmount(budget.ID)
+						if effectiveLimit > 0 {
+							budgetPercent := float64(budget.CurrentUsage+baseline) / effectiveLimit * 100
 							if budgetPercent > result.BudgetPercentUsed {
 								result.BudgetPercentUsed = budgetPercent
 							}
@@ -3225,8 +3252,9 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 						if !exists {
 							baseline = 0
 						}
-						if budget.MaxLimit > 0 {
-							budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+						effectiveLimit := budget.MaxLimit + gs.GetActiveBudgetExtensionAmount(budget.ID)
+						if effectiveLimit > 0 {
+							budgetPercent := float64(budget.CurrentUsage+baseline) / effectiveLimit * 100
 							if budgetPercent > result.BudgetPercentUsed {
 								result.BudgetPercentUsed = budgetPercent
 							}
@@ -3280,8 +3308,9 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 								if !exists {
 									baseline = 0
 								}
-								if budget.MaxLimit > 0 {
-									budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+								effectiveLimit := budget.MaxLimit + gs.GetActiveBudgetExtensionAmount(budget.ID)
+								if effectiveLimit > 0 {
+									budgetPercent := float64(budget.CurrentUsage+baseline) / effectiveLimit * 100
 									if budgetPercent > result.BudgetPercentUsed {
 										result.BudgetPercentUsed = budgetPercent
 									}
@@ -3388,4 +3417,35 @@ func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(ctx context.Context, i
 	// Invalidate compiled program cache for this rule
 	gs.compiledRoutingPrograms.Delete(id)
 	return nil
+}
+
+// UpdateBudgetExtensionsInMemory replaces the cached active extensions for a budget
+func (gs *LocalGovernanceStore) UpdateBudgetExtensionsInMemory(budgetID string, extensions []configstoreTables.TableBudgetExtension) {
+	if len(extensions) == 0 {
+		gs.budgetExtensions.Delete(budgetID)
+		return
+	}
+	gs.budgetExtensions.Store(budgetID, extensions)
+}
+
+// GetActiveBudgetExtensionAmount returns the total additional budget from active extensions
+func (gs *LocalGovernanceStore) GetActiveBudgetExtensionAmount(budgetID string) float64 {
+	val, ok := gs.budgetExtensions.Load(budgetID)
+	if !ok {
+		return 0
+	}
+	extensions, ok := val.([]configstoreTables.TableBudgetExtension)
+	if !ok {
+		return 0
+	}
+	now := time.Now()
+	var total float64
+	for _, ext := range extensions {
+		if ext.Status == configstoreTables.BudgetExtensionStatusApproved &&
+			ext.StartsAt != nil && ext.ExpiresAt != nil &&
+			!now.Before(*ext.StartsAt) && now.Before(*ext.ExpiresAt) {
+			total += ext.Amount
+		}
+	}
+	return total
 }

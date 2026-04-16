@@ -43,6 +43,7 @@ type GovernanceManager interface {
 	RemoveRoutingRule(ctx context.Context, id string) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
+	ReloadBudgetExtensions(ctx context.Context, budgetID string) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -325,6 +326,13 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Self-service endpoint — no admin auth, VK in header is the credential.
 	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+	// Budget Extension operations
+	r.GET("/api/governance/budget-extensions", lib.ChainMiddlewares(h.getBudgetExtensions, middlewares...))
+	r.POST("/api/governance/budget-extensions", lib.ChainMiddlewares(h.createBudgetExtension, middlewares...))
+	r.GET("/api/governance/budget-extensions/{ext_id}", lib.ChainMiddlewares(h.getBudgetExtension, middlewares...))
+	r.PUT("/api/governance/budget-extensions/{ext_id}/approve", lib.ChainMiddlewares(h.approveBudgetExtension, middlewares...))
+	r.PUT("/api/governance/budget-extensions/{ext_id}/reject", lib.ChainMiddlewares(h.rejectBudgetExtension, middlewares...))
+	r.DELETE("/api/governance/budget-extensions/{ext_id}", lib.ChainMiddlewares(h.deleteBudgetExtension, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -3869,5 +3877,272 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"is_active":        vk.IsActive,
 		"budgets":          vk.Budgets,
 		"rate_limit":       vk.RateLimit,
+	})
+}
+
+// Budget Extension Request/Response Types
+
+// CreateBudgetExtensionRequest represents the request body for creating a budget extension request
+type CreateBudgetExtensionRequest struct {
+	BudgetID    string  `json:"budget_id" validate:"required"`
+	Amount      float64 `json:"amount" validate:"required"`  // Additional budget in dollars
+	Duration    string  `json:"duration" validate:"required"` // e.g., "1h", "1d", "1w"
+	Reason      string  `json:"reason,omitempty"`
+	RequestedBy string  `json:"requested_by" validate:"required"`
+}
+
+// ReviewBudgetExtensionRequest represents the request body for approving/rejecting a budget extension
+type ReviewBudgetExtensionRequest struct {
+	ReviewedBy string `json:"reviewed_by" validate:"required"`
+	ReviewNote string `json:"review_note,omitempty"`
+}
+
+// Budget Extension CRUD Operations
+
+// getBudgetExtensions handles GET /api/governance/budget-extensions
+func (h *GovernanceHandler) getBudgetExtensions(ctx *fasthttp.RequestCtx) {
+	budgetID := string(ctx.QueryArgs().Peek("budget_id"))
+	status := string(ctx.QueryArgs().Peek("status"))
+
+	extensions, err := h.configStore.GetBudgetExtensions(ctx, budgetID, status)
+	if err != nil {
+		SendError(ctx, 500, fmt.Sprintf("failed to get budget extensions: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"budget_extensions": extensions,
+	})
+}
+
+// getBudgetExtension handles GET /api/governance/budget-extensions/{ext_id}
+func (h *GovernanceHandler) getBudgetExtension(ctx *fasthttp.RequestCtx) {
+	extID := ctx.UserValue("ext_id").(string)
+
+	ext, err := h.configStore.GetBudgetExtension(ctx, extID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget extension not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to get budget extension: %v", err))
+		return
+	}
+
+	SendJSON(ctx, ext)
+}
+
+// createBudgetExtension handles POST /api/governance/budget-extensions
+func (h *GovernanceHandler) createBudgetExtension(ctx *fasthttp.RequestCtx) {
+	var req CreateBudgetExtensionRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	if req.BudgetID == "" {
+		SendError(ctx, 400, "budget_id is required")
+		return
+	}
+	if req.Amount <= 0 {
+		SendError(ctx, 400, "amount must be greater than 0")
+		return
+	}
+	if req.Duration == "" {
+		SendError(ctx, 400, "duration is required")
+		return
+	}
+	if req.RequestedBy == "" {
+		SendError(ctx, 400, "requested_by is required")
+		return
+	}
+
+	// Validate duration format AND enforce max duration cap
+	if _, err := configstoreTables.ValidateExtensionDuration(req.Duration); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
+	// Verify the budget exists and validate the extension amount against it
+	budget, err := h.configStore.GetBudget(ctx, req.BudgetID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to verify budget: %v", err))
+		return
+	}
+
+	// Validate extension amount against base budget (capped at MaxExtensionMultiplier * MaxLimit)
+	if err := configstoreTables.ValidateExtensionAmount(req.Amount, budget.MaxLimit); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
+	ext := &configstoreTables.TableBudgetExtension{
+		ID:          uuid.NewString(),
+		BudgetID:    req.BudgetID,
+		Amount:      req.Amount,
+		Reason:      req.Reason,
+		RequestedBy: req.RequestedBy,
+		Status:      configstoreTables.BudgetExtensionStatusPending,
+		Duration:    req.Duration,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.configStore.CreateBudgetExtension(ctx, ext); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("failed to create budget extension: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(201)
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "budget extension request created successfully",
+		"budget_extension": ext,
+	})
+}
+
+// approveBudgetExtension handles PUT /api/governance/budget-extensions/{ext_id}/approve
+//
+// Atomicity: the entire approval (status check, active-extension check, update) is wrapped
+// in a DB transaction with a row lock on the parent budget. This prevents the TOCTOU race
+// where two concurrent approvals both see "no active extension" and both proceed.
+//
+// Cache consistency: the DB update and in-memory reload are not atomic. If the cache reload
+// fails, the approved extension will not be counted in GetActiveBudgetExtensionAmount until
+// the next successful reload (startup, or a subsequent approve/delete on this budget). The
+// expiry worker does NOT reconcile newly approved extensions (it only processes expired ones),
+// so a missed reload cannot self-heal without a restart. We therefore log the failure and
+// return 200 anyway — the DB is the source of truth and the primary operation succeeded.
+func (h *GovernanceHandler) approveBudgetExtension(ctx *fasthttp.RequestCtx) {
+	extID := ctx.UserValue("ext_id").(string)
+
+	var req ReviewBudgetExtensionRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	if req.ReviewedBy == "" {
+		SendError(ctx, 400, "reviewed_by is required")
+		return
+	}
+
+	// Atomic approval: lock parent budget row, check pending + no active extension, update.
+	// Returns typed errors for business-rule violations.
+	ext, err := h.configStore.ApproveBudgetExtensionAtomic(ctx, extID, req.ReviewedBy, req.ReviewNote)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget extension not found")
+			return
+		}
+		if errors.Is(err, configstore.ErrExtensionNotPending) {
+			SendError(ctx, 400, "budget extension is not pending (may have been actioned concurrently)")
+			return
+		}
+		if errors.Is(err, configstore.ErrActiveExtensionExists) {
+			SendError(ctx, 409, "budget already has an active extension; wait for it to expire or delete it before approving another")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to approve budget extension: %v", err))
+		return
+	}
+
+	// Reload in-memory cache. If this fails, the DB is authoritative and the extension
+	// is correctly approved — but GetActiveBudgetExtensionAmount will return 0 for this
+	// budget until the cache is refreshed (next reload or process restart). We treat this
+	// as a non-fatal background concern: log it and return 200 so the caller is not misled
+	// into retrying (a retry would hit ErrActiveExtensionExists, not fix the cache).
+	if err := h.governanceManager.ReloadBudgetExtensions(ctx, ext.BudgetID); err != nil {
+		logger.Error("budget extension approved in DB but cache reload failed for budget %s: %v", ext.BudgetID, err)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "budget extension approved successfully",
+		"budget_extension": ext,
+	})
+}
+
+// rejectBudgetExtension handles PUT /api/governance/budget-extensions/{ext_id}/reject
+//
+// Atomicity: uses a conditional UPDATE (WHERE status = 'pending') to prevent overwriting
+// a concurrently approved extension. This mirrors the pattern in ApproveBudgetExtensionAtomic.
+func (h *GovernanceHandler) rejectBudgetExtension(ctx *fasthttp.RequestCtx) {
+	extID := ctx.UserValue("ext_id").(string)
+
+	var req ReviewBudgetExtensionRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	if req.ReviewedBy == "" {
+		SendError(ctx, 400, "reviewed_by is required")
+		return
+	}
+
+	// Atomic rejection: returns typed errors for business-rule violations.
+	ext, err := h.configStore.RejectBudgetExtensionAtomic(ctx, extID, req.ReviewedBy, req.ReviewNote)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget extension not found")
+			return
+		}
+		if errors.Is(err, configstore.ErrExtensionNotPending) {
+			SendError(ctx, 400, "budget extension is not pending (may have been actioned concurrently)")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to reject budget extension: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "budget extension rejected",
+		"budget_extension": ext,
+	})
+}
+
+// deleteBudgetExtension handles DELETE /api/governance/budget-extensions/{ext_id}
+func (h *GovernanceHandler) deleteBudgetExtension(ctx *fasthttp.RequestCtx) {
+	extID := ctx.UserValue("ext_id").(string)
+
+	// Get the extension first to know the budget_id for cache invalidation.
+	// Even if the status changes between read and delete, we always reload the cache
+	// afterward to avoid stale entries from a concurrent approval.
+	ext, err := h.configStore.GetBudgetExtension(ctx, extID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget extension not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to get budget extension: %v", err))
+		return
+	}
+
+	budgetID := ext.BudgetID
+
+	if err := h.configStore.DeleteBudgetExtension(ctx, extID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "budget extension not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("failed to delete budget extension: %v", err))
+		return
+	}
+
+	// Always reload cache after delete — the extension may have been approved between
+	// our read and delete, so we can't rely on the stale `ext.Status` read above.
+	// If reload fails, the deleted extension may still be counted by GetActiveBudgetExtensionAmount
+	// until the cache is refreshed. The expiry worker will not clean this up (it only queries
+	// the DB, and the row is gone). Treat as non-fatal: log and return 200 since the delete
+	// itself succeeded — returning 500 here would falsely imply the resource still exists.
+	if err := h.governanceManager.ReloadBudgetExtensions(ctx, budgetID); err != nil {
+		logger.Error("budget extension deleted from DB but cache reload failed for budget %s: %v", budgetID, err)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "budget extension deleted successfully",
 	})
 }
