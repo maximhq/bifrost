@@ -56,6 +56,7 @@ func TestVLLM(t *testing.T) {
 			Rerank:                     rerankModel != "",
 			ListModels:                 true,
 			Reasoning:                  true,
+			PassThroughExtraParams:     true,
 			SpeechSynthesis:            false,
 			SpeechSynthesisStream:      false,
 			Transcription:              true,
