@@ -85,7 +85,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 			Model:    "claude-sonnet-4-20250514",
 			Input: []schemas.ChatMessage{{
 				Role:    schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+				Content: &schemas.ChatMessageContent{ContentStr: new("test")},
 			}},
 			Params: &schemas.ChatParameters{
 				Tools: []schemas.ChatTool{{
