@@ -141,7 +141,8 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
-		Client            *configstore.ClientConfig             `json:"client"`
+		Client            *configstore.ClientConfig             `json:"client,omitempty"`
+		ClientConfigAlias *configstore.ClientConfig             `json:"client_config,omitempty"`
 		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -159,8 +160,18 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("failed to unmarshal config data: %w", err)
 	}
 
+	if temp.Client != nil && temp.ClientConfigAlias != nil && !reflect.DeepEqual(temp.Client, temp.ClientConfigAlias) {
+		return fmt.Errorf("config contains conflicting client blocks: both 'client' and 'client_config' are set with different values")
+	}
+
 	// Set simple fields
-	cd.Client = temp.Client
+	// Backward compatibility: accept both `client` (schema key) and
+	// `client_config` (legacy/common user key) as the client config source.
+	if temp.Client != nil {
+		cd.Client = temp.Client
+	} else {
+		cd.Client = temp.ClientConfigAlias
+	}
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
 	cd.Providers = temp.Providers

@@ -43,6 +43,7 @@ var securityHeaders = []string{
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	ReloadConfigFromFile(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
@@ -74,10 +75,34 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
+	r.POST("/api/config/reload", lib.ChainMiddlewares(h.reloadConfig, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
 	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
+}
+
+// reloadConfig reloads config.json from disk and hot-applies supported settings to the running instance.
+func (h *ConfigHandler) reloadConfig(ctx *fasthttp.RequestCtx) {
+	if err := h.configManager.ReloadConfigFromFile(ctx); err != nil {
+		errorMessage := err.Error()
+		statusCode := fasthttp.StatusInternalServerError
+
+		// Reload validation and file-mode eligibility failures are request errors,
+		// so they should be surfaced as 400 instead of 500.
+		if strings.Contains(errorMessage, "only available in file-based config mode") || strings.Contains(errorMessage, "failed to parse config.json") {
+			statusCode = fasthttp.StatusBadRequest
+		}
+
+		SendError(ctx, statusCode, errorMessage)
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "config reloaded successfully",
+	})
 }
 
 // getVersion handles GET /api/version - Get the current version

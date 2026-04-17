@@ -4,11 +4,13 @@ package server
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -59,6 +61,7 @@ type ServerCallbacks interface {
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	ReloadConfigFromFile(ctx context.Context) error
 	// Pricing related callbacks
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
@@ -672,6 +675,247 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			Logger:             logger,
 		})
 	}
+	return nil
+}
+
+// ReloadConfigFromFile reloads config.json from disk and hot-applies it to the running server.
+func (s *BifrostHTTPServer) ReloadConfigFromFile(ctx context.Context) error {
+	if s.Config == nil || s.Client == nil {
+		return fmt.Errorf("bifrost server is not initialized")
+	}
+
+	configDir := GetDefaultConfigDir(s.AppDir)
+	configFilePath := filepath.Join(configDir, "config.json")
+
+	// Mirror startup behavior: a readable config.json is required for file-based reload.
+	if _, err := os.Stat(configFilePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("config reload is only available in file-based config mode; config.json was not found at %s", configFilePath)
+		}
+		return fmt.Errorf("failed to read config.json at %s: %w", configFilePath, err)
+	}
+
+	configFileBytes, err := os.ReadFile(configFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read config.json at %s: %w", configFilePath, err)
+	}
+
+	var fileConfigData lib.ConfigData
+	if err := json.Unmarshal(configFileBytes, &fileConfigData); err != nil {
+		return fmt.Errorf("failed to parse config.json: %w", err)
+	}
+
+	fileProviderSet := make(map[schemas.ModelProvider]struct{}, len(fileConfigData.Providers))
+	for provider := range fileConfigData.Providers {
+		fileProviderSet[schemas.ModelProvider(strings.ToLower(provider))] = struct{}{}
+	}
+
+	// Reuse the canonical startup loader so parsing/merging/defaulting stays consistent.
+	newConfig, err := lib.LoadConfig(ctx, configDir)
+	if err != nil {
+		return fmt.Errorf("failed to parse config.json: %w", err)
+	}
+	defer newConfig.Close(ctx)
+
+	currentProviders, err := s.Config.GetAllProviders()
+	if err != nil {
+		return fmt.Errorf("failed to read current providers: %w", err)
+	}
+
+	skipDBCtx := context.WithValue(ctx, schemas.BifrostContextKeySkipDBUpdate, true)
+
+	currentProviderSet := make(map[schemas.ModelProvider]struct{}, len(currentProviders))
+	currentProviderConfigByName := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(currentProviders))
+	for _, provider := range currentProviders {
+		currentProviderSet[provider] = struct{}{}
+		providerConfig, getErr := s.Config.GetProviderConfigRaw(provider)
+		if getErr != nil {
+			return fmt.Errorf("failed to snapshot provider %s config before reload: %w", provider, getErr)
+		}
+		currentProviderConfigByName[provider] = *providerConfig
+	}
+
+	oldClientConfig := s.Config.ClientConfig
+	oldGovernanceConfig := s.Config.GovernanceConfig
+	oldFrameworkConfig := s.Config.FrameworkConfig
+	oldProxyConfig := s.Config.ProxyConfig
+	oldPluginConfigs := s.Config.PluginConfigs
+	oldWebSocketConfig := s.Config.WebSocketConfig
+	oldMaxRequestBodySize := 0
+	if s.Server != nil {
+		oldMaxRequestBodySize = s.Server.MaxRequestBodySize
+	}
+
+	getAuthConfig := func(governanceConfig *configstore.GovernanceConfig) *configstore.AuthConfig {
+		if governanceConfig == nil {
+			return nil
+		}
+		return governanceConfig.AuthConfig
+	}
+
+	reloadClientWithCurrentConfig := func() error {
+		if s.Config.ClientConfig == nil {
+			return fmt.Errorf("client config not found")
+		}
+		account := lib.NewBaseAccount(s.Config)
+		var mcpConfig *schemas.MCPConfig
+		if s.Config.MCPConfig != nil {
+			mcpConfig = s.Config.MCPConfig
+		}
+		return s.Client.ReloadConfig(schemas.BifrostConfig{
+			Account:            account,
+			InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
+			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
+			LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
+			MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
+			MCPConfig:          mcpConfig,
+			Logger:             logger,
+		})
+	}
+
+	applyRuntimeConfig := func() {
+		if s.Config.ClientConfig != nil {
+			s.Config.SetHeaderMatcher(lib.NewHeaderMatcher(s.Config.ClientConfig.HeaderFilterConfig))
+		}
+		if s.AuthMiddleware != nil {
+			if s.Config.ClientConfig != nil {
+				s.AuthMiddleware.UpdateWhitelistedRoutes(s.Config.ClientConfig.WhitelistedRoutes)
+			}
+			s.AuthMiddleware.UpdateAuthConfig(getAuthConfig(s.Config.GovernanceConfig))
+		}
+		if s.Server != nil && s.Config.ClientConfig != nil {
+			s.Server.MaxRequestBodySize = s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+		}
+	}
+
+	addedProviders := make([]schemas.ModelProvider, 0)
+	updatedProviders := make([]schemas.ModelProvider, 0)
+	removedProviders := make([]schemas.ModelProvider, 0)
+
+	rollback := func(reloadErr error) error {
+		for i := len(removedProviders) - 1; i >= 0; i-- {
+			provider := removedProviders[i]
+			providerConfig, ok := currentProviderConfigByName[provider]
+			if !ok {
+				continue
+			}
+			if err := s.Config.AddProvider(skipDBCtx, provider, providerConfig); err != nil {
+				logger.Warn("rollback failed to restore removed provider %s: %v", provider, err)
+				continue
+			}
+			if err := s.Client.UpdateProvider(provider); err != nil {
+				logger.Warn("rollback failed to activate restored provider %s: %v", provider, err)
+			}
+		}
+
+		for i := len(updatedProviders) - 1; i >= 0; i-- {
+			provider := updatedProviders[i]
+			providerConfig, ok := currentProviderConfigByName[provider]
+			if !ok {
+				continue
+			}
+			if err := s.Config.UpdateProviderConfig(skipDBCtx, provider, providerConfig); err != nil {
+				logger.Warn("rollback failed to restore provider %s config: %v", provider, err)
+				continue
+			}
+			if err := s.Client.UpdateProvider(provider); err != nil {
+				logger.Warn("rollback failed to reactivate provider %s: %v", provider, err)
+			}
+		}
+
+		for i := len(addedProviders) - 1; i >= 0; i-- {
+			provider := addedProviders[i]
+			if err := s.RemoveProvider(skipDBCtx, provider); err != nil {
+				logger.Warn("rollback failed to remove added provider %s: %v", provider, err)
+			}
+		}
+
+		s.Config.Mu.Lock()
+		s.Config.ClientConfig = oldClientConfig
+		s.Config.GovernanceConfig = oldGovernanceConfig
+		s.Config.FrameworkConfig = oldFrameworkConfig
+		s.Config.ProxyConfig = oldProxyConfig
+		s.Config.PluginConfigs = oldPluginConfigs
+		s.Config.WebSocketConfig = oldWebSocketConfig
+		s.Config.Mu.Unlock()
+
+		applyRuntimeConfig()
+		if s.Server != nil {
+			s.Server.MaxRequestBodySize = oldMaxRequestBodySize
+		}
+		if s.AuthMiddleware != nil {
+			s.AuthMiddleware.UpdateAuthConfig(getAuthConfig(oldGovernanceConfig))
+		}
+
+		if err := reloadClientWithCurrentConfig(); err != nil {
+			logger.Warn("rollback failed to reload client config: %v", err)
+		}
+
+		if oldFrameworkConfig != nil && oldFrameworkConfig.Pricing != nil {
+			if err := s.ReloadPricingManager(ctx); err != nil {
+				logger.Warn("rollback failed to reload pricing manager: %v", err)
+			}
+		}
+
+		return reloadErr
+	}
+
+	for provider, providerConfig := range newConfig.Providers {
+		if _, exists := currentProviderSet[provider]; exists {
+			if err := s.Config.UpdateProviderConfig(skipDBCtx, provider, providerConfig); err != nil {
+				return rollback(fmt.Errorf("failed to update provider %s: %w", provider, err))
+			}
+			updatedProviders = append(updatedProviders, provider)
+			continue
+		}
+
+		if err := s.Config.AddProvider(skipDBCtx, provider, providerConfig); err != nil {
+			return rollback(fmt.Errorf("failed to add provider %s: %w", provider, err))
+		}
+
+		if err := s.Client.UpdateProvider(provider); err != nil {
+			return rollback(fmt.Errorf("failed to activate provider %s: %w", provider, err))
+		}
+
+		addedProviders = append(addedProviders, provider)
+	}
+
+	for _, provider := range currentProviders {
+		if _, exists := fileProviderSet[provider]; exists {
+			continue
+		}
+
+		if err := s.RemoveProvider(skipDBCtx, provider); err != nil {
+			return rollback(fmt.Errorf("failed to remove provider %s: %w", provider, err))
+		}
+
+		removedProviders = append(removedProviders, provider)
+	}
+
+	// Swap live in-memory config pointers under lock to avoid partial visibility.
+	s.Config.Mu.Lock()
+	s.Config.ClientConfig = newConfig.ClientConfig
+	s.Config.GovernanceConfig = newConfig.GovernanceConfig
+	s.Config.FrameworkConfig = newConfig.FrameworkConfig
+	s.Config.ProxyConfig = newConfig.ProxyConfig
+	s.Config.PluginConfigs = newConfig.PluginConfigs
+	s.Config.WebSocketConfig = newConfig.WebSocketConfig
+	s.Config.Mu.Unlock()
+
+	// Rebuild derived runtime artifacts that depend on ClientConfig.
+	applyRuntimeConfig()
+
+	// Reload core runtime config so request-path behavior reflects new client settings.
+	if err := reloadClientWithCurrentConfig(); err != nil {
+		return rollback(fmt.Errorf("failed to reload client config: %w", err))
+	}
+
+	if s.Config.FrameworkConfig != nil && s.Config.FrameworkConfig.Pricing != nil {
+		if err := s.ReloadPricingManager(ctx); err != nil {
+			return rollback(fmt.Errorf("failed to reload pricing manager: %w", err))
+		}
+	}
+
 	return nil
 }
 
