@@ -70,7 +70,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 
 // GetProviderKey returns the provider identifier for Mistral.
 func (provider *MistralProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Mistral
+	return providerUtils.GetProviderName(schemas.Mistral, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -158,13 +158,27 @@ func (provider *MistralProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
+// normalizeChatRequestForConversion returns the request unchanged for the stock Mistral
+// provider. For custom aliases (e.g. a provider registered as "custom-mistral" with
+// BaseProviderType=Mistral), it returns a shallow copy with Provider set to schemas.Mistral
+// so the shared OpenAI converter applies Mistral-specific compatibility (max_completion_tokens
+// → max_tokens, tool_choice struct → "any"). The caller's request is never mutated.
+func (provider *MistralProvider) normalizeChatRequestForConversion(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || provider.customProviderConfig == nil || request.Provider == schemas.Mistral {
+		return request
+	}
+	normalized := *request
+	normalized.Provider = schemas.Mistral
+	return &normalized
+}
+
 // ChatCompletion performs a chat completion request to the Mistral API.
 func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
-		request,
+		provider.normalizeChatRequestForConversion(request),
 		key,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -190,7 +204,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
-		request,
+		provider.normalizeChatRequestForConversion(request),
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

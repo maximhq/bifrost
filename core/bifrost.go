@@ -5359,6 +5359,16 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.OCRRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.OCRRequest); bifrostError != nil {
+			if req.BifrostRequest.OCRRequest != nil {
+				bifrostError.ExtraFields.ModelRequested = req.BifrostRequest.OCRRequest.Model
+			}
+			return nil, bifrostError
+		}
 		ocrResponse, bifrostError := provider.OCR(req.Context, key, req.BifrostRequest.OCRRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
