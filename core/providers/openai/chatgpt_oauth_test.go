@@ -775,6 +775,13 @@ func TestOpenAIListModelsResponse_UnmarshalEmpty(t *testing.T) {
 	assert.Empty(t, resp.Data)
 }
 
+func TestOpenAIListModelsResponse_UnmarshalInvalidJSON(t *testing.T) {
+	body := []byte(`{invalid}`)
+	var resp OpenAIListModelsResponse
+	err := resp.UnmarshalJSON(body)
+	require.Error(t, err)
+}
+
 // ---------------------------------------------------------------------------
 // Non-streaming Responses path rejects chatgpt_oauth cleanly via error sentinel
 // ---------------------------------------------------------------------------
