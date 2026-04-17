@@ -3,37 +3,21 @@
  * Create/Edit form for routing rules
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import {
-	Sheet,
-	SheetContent,
-	SheetDescription,
-	SheetHeader,
-	SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
-import {
-	useGetCustomersQuery,
-	useGetTeamsQuery,
-	useGetVirtualKeysQuery,
-} from "@/lib/store/apis/governanceApi";
+import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
-import {
-	useCreateRoutingRuleMutation,
-	useGetRoutingRulesQuery,
-	useUpdateRoutingRuleMutation,
-} from "@/lib/store/apis/routingRulesApi";
+import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
@@ -42,10 +26,7 @@ import {
 	RoutingRuleFormData,
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
-import {
-	validateRateLimitAndBudgetRules,
-	validateRoutingRules
-} from "@/lib/utils/celConverterRouting";
+import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { Plus, Save, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";

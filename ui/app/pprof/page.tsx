@@ -1,5 +1,3 @@
-"use client";
-
 import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from "@/lib/store";
 import type { AllocationInfo, GoroutineGroup } from "@/lib/store/apis/devApi";
 import {
@@ -147,11 +145,7 @@ function classifyLeakSeverity(retention: number, liveBytes: number, isGrowing: b
 	return null;
 }
 
-function detectLeaks(
-	cumulative: AllocationInfo[],
-	live: AllocationInfo[],
-	inuseHistory: Map<string, number[]>,
-): LeakCandidate[] {
+function detectLeaks(cumulative: AllocationInfo[], live: AllocationInfo[], inuseHistory: Map<string, number[]>): LeakCandidate[] {
 	const cumMap = new Map<string, AllocationInfo>();
 	for (const c of cumulative) {
 		cumMap.set(makeStackKey(c.stack), c);
@@ -285,8 +279,17 @@ function AllocationTable({
 	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown;
 
 	const SortHeader = ({ field, children }: { field: AllocationSortField; children: React.ReactNode }) => (
-		<th scope="col" aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-			<button type="button" onClick={() => onSort(field)} data-testid={`${testIdPrefix}-${field}`} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
+		<th
+			scope="col"
+			aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+			className="px-4 py-3 text-left text-sm font-medium text-zinc-400"
+		>
+			<button
+				type="button"
+				onClick={() => onSort(field)}
+				data-testid={`${testIdPrefix}-${field}`}
+				className="flex cursor-pointer items-center gap-1 hover:text-zinc-200"
+			>
 				{children}
 				{sortField === field && <SortIcon className="h-3 w-3" />}
 			</button>
@@ -332,7 +335,11 @@ function AllocationTable({
 								>
 									<td className="w-8 px-2 py-3 align-top">
 										{hasStack ? (
-											isExpanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />
+											isExpanded ? (
+												<ChevronDown className="h-4 w-4 text-zinc-500" />
+											) : (
+												<ChevronRight className="h-4 w-4 text-zinc-500" />
+											)
 										) : null}
 									</td>
 									<td className="px-4 py-3">
@@ -460,9 +467,7 @@ function LeakTable({
 										<span className="font-mono text-sm text-emerald-400">{formatBytes(c.liveBytes)}</span>
 									</td>
 									<td className="px-4 py-3">
-										<span className={`font-mono text-sm ${getRetentionColor(c.retention)}`}>
-											{(c.retention * 100).toFixed(0)}%
-										</span>
+										<span className={`font-mono text-sm ${getRetentionColor(c.retention)}`}>{(c.retention * 100).toFixed(0)}%</span>
 									</td>
 									<td className="px-4 py-3">
 										{c.isGrowing ? (
@@ -579,7 +584,7 @@ function GoroutineGroupRow({
 						if (filePath) onSkip(filePath);
 					}}
 					data-testid="pprof-goroutine-skip"
-					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
+					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-zinc-700 hover:text-zinc-300 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500"
 					title="Hide goroutines from this file"
 					aria-label="Hide goroutines from this file"
 				>
@@ -1055,9 +1060,8 @@ export default function PprofPage() {
 								)}
 							</div>
 							<p className="mt-1 text-xs text-zinc-500">
-								Stacks whose live bytes remain a large fraction of what they ever allocated (retention), optionally with
-								live bytes trending upward over the last minute. Growth + high retention together is the strongest leak
-								signal.
+								Stacks whose live bytes remain a large fraction of what they ever allocated (retention), optionally with live bytes trending
+								upward over the last minute. Growth + high retention together is the strongest leak signal.
 							</p>
 						</div>
 						<LeakTable candidates={leakCandidates} expandedKeys={expandedLeaks} onToggle={toggleLeakExpand} />

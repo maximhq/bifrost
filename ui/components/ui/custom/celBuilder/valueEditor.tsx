@@ -140,7 +140,7 @@ export function ValueEditor({
 				placeholder="Search for a model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
-				className="w-[360px] border-input"
+				className="border-input w-[360px]"
 				menuPosition={menuPosition}
 				menuPortalTarget={menuPortalTarget}
 			/>

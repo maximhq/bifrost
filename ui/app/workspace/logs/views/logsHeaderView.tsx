@@ -204,7 +204,12 @@ export function LogsHeaderView({
 					</Command>
 				</PopoverContent>
 			</Popover>
-			<ColumnConfigDropdown entries={columnEntries} labels={columnLabels} onToggleVisibility={onToggleColumnVisibility} onReset={onResetColumns} />
+			<ColumnConfigDropdown
+				entries={columnEntries}
+				labels={columnLabels}
+				onToggleVisibility={onToggleColumnVisibility}
+				onReset={onResetColumns}
+			/>
 		</div>
 	);
 }

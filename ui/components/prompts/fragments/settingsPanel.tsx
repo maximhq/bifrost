@@ -141,7 +141,7 @@ export function SettingsPanel() {
 
 	return (
 		<div className="flex h-full min-h-0 flex-col">
-			<div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-2">
+			<div className="flex min-h-0 flex-1 flex-col px-4 pt-2 pb-4">
 				<Accordion
 					type="single"
 					collapsible
@@ -157,17 +157,17 @@ export function SettingsPanel() {
 				>
 					<AccordionItem
 						value="parameters"
-						className={cn(
-							"flex min-h-0 flex-col border-b-0",
-							openSection === "parameters" ? "flex-1" : "shrink-0 overflow-hidden",
-						)}
+						className={cn("flex min-h-0 flex-col border-b-0", openSection === "parameters" ? "flex-1" : "shrink-0 overflow-hidden")}
 					>
-						<AccordionTrigger data-testid="prompts-configuration-trigger" className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline">
+						<AccordionTrigger
+							data-testid="prompts-configuration-trigger"
+							className="text-muted-foreground shrink-0 py-3 pr-1 text-xs font-medium uppercase hover:no-underline"
+						>
 							<span className="min-w-0 flex-1 text-left font-semibold">Configuration</span>
 						</AccordionTrigger>
 						<AccordionContent
 							containerClassName="data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col"
-							className="min-h-0 flex-1 overflow-y-auto pb-2 pt-0"
+							className="min-h-0 flex-1 overflow-y-auto pt-0 pb-2"
 						>
 							<div className="space-y-6">
 								<div className="flex flex-col gap-2" data-testid="settings-provider">
@@ -217,12 +217,7 @@ export function SettingsPanel() {
 									<>
 										<Separator />
 										<div className="flex flex-col gap-4">
-											<ModelParameters
-												model={model}
-												config={modelParams}
-												onChange={handleModelParamsChange}
-												hideFields={["promptTools"]}
-											/>
+											<ModelParameters model={model} config={modelParams} onChange={handleModelParamsChange} hideFields={["promptTools"]} />
 										</div>
 									</>
 								)}

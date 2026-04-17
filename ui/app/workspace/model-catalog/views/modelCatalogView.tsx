@@ -50,7 +50,13 @@ export default function ModelCatalogView() {
 				triggerStats({ filters: { providers: [p.name], start_time: dayAgo, end_time: now } })
 					.unwrap()
 					.then((stats) => [p.name, stats] as const)
-					.catch(() => [p.name, { total_requests: 0, success_rate: 0, user_facing_success_rate: 0, average_latency: 0, total_tokens: 0, total_cost: 0 }] as const),
+					.catch(
+						() =>
+							[
+								p.name,
+								{ total_requests: 0, success_rate: 0, user_facing_success_rate: 0, average_latency: 0, total_tokens: 0, total_cost: 0 },
+							] as const,
+					),
 			),
 		).then((results) => {
 			if (!cancelled) setStatsMap(new Map(results));

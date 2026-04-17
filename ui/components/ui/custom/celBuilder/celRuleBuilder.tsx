@@ -3,11 +3,10 @@
  * Reusable visual query builder for creating CEL expressions
  */
 
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
@@ -18,7 +17,6 @@ import { FieldSelector } from "./fieldSelector";
 import { OperatorSelector } from "./operatorSelector";
 import { QueryBuilderWrapper } from "./queryBuilderWrapper";
 import { ValueEditor } from "./valueEditor";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 
 export interface CELFieldDefinition {
 	name: string;

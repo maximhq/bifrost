@@ -25,12 +25,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
   ProviderIconType,
@@ -42,8 +42,7 @@ import {
   RequestTypeLabels,
   RoutingEngineUsedColors,
   RoutingEngineUsedLabels,
-  Status,
-  StatusColors,
+  Status
 } from "@/lib/constants/logs";
 import { LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
