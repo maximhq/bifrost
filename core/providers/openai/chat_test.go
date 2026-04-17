@@ -499,14 +499,14 @@ func TestApplyMistralCompatibility_ReasoningEffort(t *testing.T) {
 			expectedEffort: schemas.Ptr("high"),
 		},
 		{
-			name:           "medium is mapped to high",
+			name:           "medium is dropped (unsupported)",
 			effort:         schemas.Ptr("medium"),
-			expectedEffort: schemas.Ptr("high"),
+			expectedEffort: nil,
 		},
 		{
-			name:           "low is mapped to high",
+			name:           "low is dropped (unsupported)",
 			effort:         schemas.Ptr("low"),
-			expectedEffort: schemas.Ptr("high"),
+			expectedEffort: nil,
 		},
 		{
 			name:           "nil effort is preserved",
