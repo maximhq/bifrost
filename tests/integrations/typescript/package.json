@@ -31,6 +31,7 @@
     "@langchain/core": "^1.1.39",
     "@langchain/google-genai": "^2.1.26",
     "@langchain/openai": "^1.4.4",
+    "langsmith": "^0.5.19",
     "openai": "^6.15.0",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"

@@ -100,6 +100,8 @@
 		"vitest": "4.0.18"
 	},
 	"overrides": {
-		"tar": "7.5.3"
+		"tar": "7.5.3",
+		"dompurify": "3.4.0",
+		"follow-redirects": "1.16.0"
 	}
 }
