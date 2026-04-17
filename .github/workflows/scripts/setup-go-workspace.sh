@@ -18,6 +18,9 @@ if [ -f "go.work" ]; then
   return 0 2>/dev/null || exit 0
 fi
 go work init
+# Bump workspace go directive so GOTOOLCHAIN=auto switches to >= 1.26.2
+# (required by published core@v1.4.19 which is referenced from transports/go.mod).
+go work edit -go=1.26.2 -toolchain=go1.26.2
 go work use ./core
 go work use ./framework
 go work use ./plugins/governance
