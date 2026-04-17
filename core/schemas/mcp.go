@@ -5,7 +5,9 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -75,7 +77,7 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID               string            `json:"client_id"`                          // Client ID
+	ID               string            `json:"client_id"`                   // Client ID
 	Name             string            `json:"name"`                        // Client name
 	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
@@ -103,6 +105,96 @@ type MCPClientConfig struct {
 	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
 	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
 	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
+}
+
+func parseFlexibleDurationJSON(data json.RawMessage) (time.Duration, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, nil
+	}
+
+	var durationString string
+	if err := json.Unmarshal(data, &durationString); err == nil {
+		parsedDuration, parseErr := time.ParseDuration(durationString)
+		if durationString == "" {
+			return 0, nil
+		}
+		if parseErr != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", durationString, parseErr)
+		}
+		return parsedDuration, nil
+	}
+
+	var durationNanos int64
+	if err := json.Unmarshal(data, &durationNanos); err == nil {
+		return time.Duration(durationNanos), nil
+	}
+
+	return 0, errors.New("must be a duration string or integer nanoseconds")
+}
+
+// UnmarshalJSON accepts duration fields as either Go duration strings (for example "10m")
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPConfig
+	var raw struct {
+		*alias
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
+	}
+	raw.alias = (*alias)(c)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
+	if err != nil {
+		return fmt.Errorf("tool_sync_interval: %w", err)
+	}
+	c.ToolSyncInterval = parsedDuration
+
+	return nil
+}
+
+// UnmarshalJSON accepts tool_execution_timeout as either a Go duration string
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPToolManagerConfig
+	var raw struct {
+		*alias
+		ToolExecutionTimeout json.RawMessage `json:"tool_execution_timeout,omitempty"`
+	}
+	raw.alias = (*alias)(c)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolExecutionTimeout)
+	if err != nil {
+		return fmt.Errorf("tool_execution_timeout: %w", err)
+	}
+	c.ToolExecutionTimeout = parsedDuration
+
+	return nil
+}
+
+// UnmarshalJSON accepts tool_sync_interval as either a Go duration string
+// or raw integer nanoseconds for backward compatibility.
+func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
+	type alias MCPClientConfig
+	var raw struct {
+		*alias
+		ToolSyncInterval json.RawMessage `json:"tool_sync_interval,omitempty"`
+	}
+	raw.alias = (*alias)(c)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	parsedDuration, err := parseFlexibleDurationJSON(raw.ToolSyncInterval)
+	if err != nil {
+		return fmt.Errorf("tool_sync_interval: %w", err)
+	}
+	c.ToolSyncInterval = parsedDuration
+
+	return nil
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
