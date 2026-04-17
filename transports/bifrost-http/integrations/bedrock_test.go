@@ -241,6 +241,9 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig_FallbackConversion(t 
 	// Should use conversion path, not passthrough
 	// The Created event produces a message_start event
 	require.NotNil(t, result)
+	// Verify the result is a BedrockStreamEvent from conversion
+	_, ok := result.(*bedrock.BedrockStreamEvent)
+	assert.True(t, ok, "Expected conversion to produce *bedrock.BedrockStreamEvent")
 }
 
 func Test_createBedrockConverseStreamRouteConfig_Passthrough(t *testing.T) {
