@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -14,10 +15,32 @@ import (
 // No signature verification is needed — we only decode the payload.
 func buildTestJWT(payload map[string]interface{}) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-	payloadBytes, _ := json.Marshal(payload)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		panic(fmt.Sprintf("buildTestJWT: failed to marshal test payload: %v", err))
+	}
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payloadBytes)
 	sig := base64.RawURLEncoding.EncodeToString([]byte("fake-signature"))
 	return header + "." + payloadB64 + "." + sig
+}
+
+// captureLogger is a minimal schemas.Logger stub that records Warn calls for
+// assertion in tests. All other methods are no-ops.
+type captureLogger struct {
+	warns []string
+}
+
+func (l *captureLogger) Debug(msg string, args ...any) {}
+func (l *captureLogger) Info(msg string, args ...any)  {}
+func (l *captureLogger) Warn(msg string, args ...any) {
+	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
+}
+func (l *captureLogger) Error(msg string, args ...any)                     {}
+func (l *captureLogger) Fatal(msg string, args ...any)                     {}
+func (l *captureLogger) SetLevel(level schemas.LogLevel)                   {}
+func (l *captureLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+func (l *captureLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
+	return nil
 }
 
 // buildTestJWTRaw creates a JWT with a raw base64url-encoded payload string.
@@ -212,7 +235,7 @@ func TestTransformChatGPTResponsesBody(t *testing.T) {
 		assert.Equal(t, "You are a coding assistant", result["instructions"])
 	})
 
-	t.Run("preserves existing store value when set to true", func(t *testing.T) {
+	t.Run("forces store false even when caller sets true", func(t *testing.T) {
 		input := []byte(`{"model":"gpt-5.4","store":true}`)
 		output, err := transformChatGPTResponsesBody(input)
 		require.NoError(t, err)
@@ -220,10 +243,10 @@ func TestTransformChatGPTResponsesBody(t *testing.T) {
 		var result map[string]interface{}
 		require.NoError(t, json.Unmarshal(output, &result))
 
-		assert.Equal(t, true, result["store"])
+		assert.Equal(t, false, result["store"], "ChatGPT backend rejects store=true for OAuth callers; transformer must force false")
 	})
 
-	t.Run("preserves existing store value when explicitly false", func(t *testing.T) {
+	t.Run("keeps store false when caller already sets false", func(t *testing.T) {
 		input := []byte(`{"model":"gpt-5.4","store":false}`)
 		output, err := transformChatGPTResponsesBody(input)
 		require.NoError(t, err)
@@ -351,7 +374,7 @@ func TestChatGPTOAuthPath(t *testing.T) {
 		{"responses input_tokens", "/v1/responses/input_tokens", "/responses/input_tokens"},
 
 		// Models — appends required client_version query param
-		{"models listing", "/v1/models", "/models?client_version=" + ChatGPTOAuthClientVersion},
+		{"models listing", "/v1/models", "/models?client_version=" + ChatGPTOAuthClientVersionFallback},
 
 		// Realtime/voice
 		{"realtime calls", "/v1/realtime/calls", "/realtime/calls"},
@@ -411,7 +434,7 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 
 		_, path, err := chatGPTOAuthPrepare(key, nil, "/v1/models", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "/models?client_version="+ChatGPTOAuthClientVersion, path)
+		assert.Equal(t, "/models?client_version="+ChatGPTOAuthClientVersionFallback, path)
 	})
 
 	t.Run("maps /v1/responses/compact", func(t *testing.T) {
@@ -499,5 +522,205 @@ func TestChatGPTOAuthPrepare(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "empty access token")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ExtractChatGPTOAuthBearerToken (public helper used by core/bifrost.go)
+// ---------------------------------------------------------------------------
+
+func TestExtractChatGPTOAuthBearerToken(t *testing.T) {
+	t.Run("extracts bearer token from lowercased key", func(t *testing.T) {
+		headers := map[string]string{"authorization": "Bearer abc123"}
+		assert.Equal(t, "abc123", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("extracts bearer token case-insensitively", func(t *testing.T) {
+		headers := map[string]string{"Authorization": "Bearer abc123"}
+		assert.Equal(t, "abc123", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("accepts mixed-case Bearer prefix", func(t *testing.T) {
+		headers := map[string]string{"authorization": "bearer xyz"}
+		assert.Equal(t, "xyz", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("trims whitespace", func(t *testing.T) {
+		headers := map[string]string{"authorization": "Bearer   padded  "}
+		assert.Equal(t, "padded", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("returns empty when no auth header", func(t *testing.T) {
+		assert.Equal(t, "", ExtractChatGPTOAuthBearerToken(map[string]string{"x-other": "v"}))
+	})
+
+	t.Run("returns empty when auth is not Bearer", func(t *testing.T) {
+		headers := map[string]string{"authorization": "Basic dXNlcjpwYXNz"}
+		assert.Equal(t, "", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("returns empty when auth header is empty", func(t *testing.T) {
+		headers := map[string]string{"authorization": ""}
+		assert.Equal(t, "", ExtractChatGPTOAuthBearerToken(headers))
+	})
+
+	t.Run("returns empty when headers is nil", func(t *testing.T) {
+		assert.Equal(t, "", ExtractChatGPTOAuthBearerToken(nil))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// chatGPTOAuthMergeHeaders (non-request variant used for headers-only routes)
+// ---------------------------------------------------------------------------
+
+func TestChatGPTOAuthMergeHeaders(t *testing.T) {
+	validToken := buildTestJWT(map[string]interface{}{
+		"https://api.openai.com/auth": map[string]interface{}{"chatgpt_account_id": "acct-xyz"},
+	})
+	key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
+
+	t.Run("disabled returns input unchanged", func(t *testing.T) {
+		existing := map[string]string{"X-Custom": "v"}
+		got := chatGPTOAuthMergeHeaders(false, key, existing, nil)
+		assert.Equal(t, existing, got)
+	})
+
+	t.Run("enabled merges OAuth headers", func(t *testing.T) {
+		existing := map[string]string{"X-Custom": "v"}
+		got := chatGPTOAuthMergeHeaders(true, key, existing, nil)
+		assert.Equal(t, "acct-xyz", got["chatgpt-account-id"])
+		assert.Equal(t, "responses=experimental", got["OpenAI-Beta"])
+		assert.Equal(t, "v", got["X-Custom"])
+	})
+
+	t.Run("enabled with invalid token returns unchanged headers", func(t *testing.T) {
+		existing := map[string]string{"X-Custom": "v"}
+		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
+		got := chatGPTOAuthMergeHeaders(true, badKey, existing, nil)
+		assert.Equal(t, existing, got)
+	})
+
+	t.Run("case-insensitive override drops conflicting existing header", func(t *testing.T) {
+		existing := map[string]string{
+			"chatgpt-account-id": "stale-id",
+			"OPENAI-BETA":        "stale-beta",
+			"X-Keep":             "keep",
+		}
+		got := chatGPTOAuthMergeHeaders(true, key, existing, nil)
+		// OAuth values win even when existing had different casing
+		assert.Equal(t, "acct-xyz", got["chatgpt-account-id"])
+		assert.Equal(t, "responses=experimental", got["OpenAI-Beta"])
+		// Stale casing should NOT appear as a duplicate key
+		_, hasStaleBeta := got["OPENAI-BETA"]
+		assert.False(t, hasStaleBeta, "existing header with conflicting case must be dropped")
+		assert.Equal(t, "keep", got["X-Keep"])
+	})
+}
+
+// ---------------------------------------------------------------------------
+// chatGPTOAuthApplyRequest — fail-fast on invalid token
+// ---------------------------------------------------------------------------
+
+func TestChatGPTOAuthApplyRequest(t *testing.T) {
+	validToken := buildTestJWT(map[string]interface{}{
+		"https://api.openai.com/auth": map[string]interface{}{"chatgpt_account_id": "acct-apply"},
+	})
+
+	t.Run("disabled returns unchanged headers and nil transformer", func(t *testing.T) {
+		existing := map[string]string{"X-Custom": "v"}
+		headers, transformer, err := chatGPTOAuthApplyRequest(false, schemas.Key{}, existing, nil)
+		require.NoError(t, err)
+		assert.Equal(t, existing, headers)
+		assert.Nil(t, transformer)
+	})
+
+	t.Run("enabled with valid token returns merged headers + transformer", func(t *testing.T) {
+		key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
+		headers, transformer, err := chatGPTOAuthApplyRequest(true, key, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "acct-apply", headers["chatgpt-account-id"])
+		assert.NotNil(t, transformer)
+	})
+
+	t.Run("enabled with invalid token returns error (fail fast)", func(t *testing.T) {
+		key := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
+		headers, transformer, err := chatGPTOAuthApplyRequest(true, key, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid ChatGPT OAuth token")
+		assert.Nil(t, headers)
+		assert.Nil(t, transformer)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// chatGPTOAuthWebSocketURL / chatGPTOAuthWebSocketHeaders
+// ---------------------------------------------------------------------------
+
+func TestChatGPTOAuthWebSocketURL(t *testing.T) {
+	t.Run("https with /v1 prefix", func(t *testing.T) {
+		got := chatGPTOAuthWebSocketURL("https://chatgpt.com/backend-api/codex", "/v1/responses")
+		assert.Equal(t, "wss://chatgpt.com/backend-api/codex/responses", got)
+	})
+
+	t.Run("http maps to ws", func(t *testing.T) {
+		got := chatGPTOAuthWebSocketURL("http://localhost:8080", "/v1/responses")
+		assert.Equal(t, "ws://localhost:8080/responses", got)
+	})
+}
+
+func TestChatGPTOAuthWebSocketHeaders(t *testing.T) {
+	validToken := buildTestJWT(map[string]interface{}{
+		"https://api.openai.com/auth": map[string]interface{}{"chatgpt_account_id": "acct-ws"},
+	})
+	key := schemas.Key{Value: schemas.EnvVar{Val: validToken}}
+
+	t.Run("sets Authorization + chatgpt headers", func(t *testing.T) {
+		got := chatGPTOAuthWebSocketHeaders(key, nil, nil)
+		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
+		assert.Equal(t, "acct-ws", got["chatgpt-account-id"])
+		assert.Equal(t, "responses=experimental", got["OpenAI-Beta"])
+	})
+
+	t.Run("merges extra headers but skips Authorization override", func(t *testing.T) {
+		extra := map[string]string{
+			"authorization": "Bearer should-be-ignored",
+			"X-Custom":      "kept",
+		}
+		got := chatGPTOAuthWebSocketHeaders(key, extra, nil)
+		assert.Equal(t, "Bearer "+validToken, got["Authorization"])
+		assert.Equal(t, "kept", got["X-Custom"])
+	})
+
+	t.Run("falls back to auth-only when JWT invalid", func(t *testing.T) {
+		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
+		got := chatGPTOAuthWebSocketHeaders(badKey, nil, nil)
+		assert.Equal(t, "Bearer not-a-jwt", got["Authorization"])
+		_, hasAccountID := got["chatgpt-account-id"]
+		assert.False(t, hasAccountID, "account-id should not be set when JWT extraction fails")
+	})
+
+	t.Run("logs warning when JWT invalid and logger provided", func(t *testing.T) {
+		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
+		logger := &captureLogger{}
+		got := chatGPTOAuthWebSocketHeaders(badKey, nil, logger)
+		assert.Equal(t, "Bearer not-a-jwt", got["Authorization"])
+		require.Len(t, logger.warns, 1)
+		assert.Contains(t, logger.warns[0], "failed to extract account ID for WebSocket")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Logger-nil branches for chatGPTOAuthMergeHeaders
+// ---------------------------------------------------------------------------
+
+func TestChatGPTOAuthMergeHeaders_LoggerBranch(t *testing.T) {
+	t.Run("invalid token with logger emits warning", func(t *testing.T) {
+		badKey := schemas.Key{Value: schemas.EnvVar{Val: "not-a-jwt"}}
+		logger := &captureLogger{}
+		existing := map[string]string{"X-Keep": "v"}
+		got := chatGPTOAuthMergeHeaders(true, badKey, existing, logger)
+		assert.Equal(t, existing, got)
+		require.Len(t, logger.warns, 1)
+		assert.Contains(t, logger.warns[0], "failed to extract account ID")
 	})
 }

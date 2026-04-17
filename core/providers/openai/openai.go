@@ -96,6 +96,17 @@ func (provider *OpenAIProvider) effectiveExtraHeaders(key schemas.Key) map[strin
 	return chatGPTOAuthMergeHeaders(provider.chatgptOAuth, key, provider.networkConfig.ExtraHeaders, provider.logger)
 }
 
+// buildFullURL concatenates the base URL with a standard OpenAI /v1 path,
+// applying the chatgpt_oauth path rewrite when enabled. Use this instead of
+// manually appending to provider.networkConfig.BaseURL for routes that don't
+// already go through buildRequestURL (e.g. dynamic paths like /v1/files/{id}).
+func (provider *OpenAIProvider) buildFullURL(standardPath string) string {
+	if provider.chatgptOAuth {
+		standardPath = chatGPTOAuthPath(standardPath)
+	}
+	return provider.networkConfig.BaseURL + standardPath
+}
+
 // buildRequestURL constructs the full request URL using the provider's configuration.
 // When chatgpt_oauth is enabled, the /v1 prefix is stripped from paths so requests
 // route correctly to chatgpt.com/backend-api/codex/<route> instead of /codex/v1/<route>.
@@ -1414,7 +1425,10 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, bodyTransformer := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	extraHeaders, bodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	if oauthErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(oauthErr.Error(), oauthErr, provider.GetProviderKey())
+	}
 
 	return HandleOpenAIResponsesRequest(
 		ctx,
@@ -1475,23 +1489,27 @@ func HandleOpenAIResponsesRequest(
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	// Large payload passthrough: stream body directly without JSON marshaling
-	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ResponsesRequest, logger); handled {
-		if lpErr != nil {
-			return nil, lpErr
-		}
-		if len(lpResult.ResponseBody) > 0 {
-			response := &schemas.BifrostResponsesResponse{}
-			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	// Large payload passthrough: stream body directly without JSON marshaling.
+	// Skip it when a body transformer is set (e.g. chatgpt_oauth) — the transformer
+	// needs to mutate the JSON, which can't happen on a streamed passthrough.
+	if bodyTransformer == nil {
+		if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ResponsesRequest, logger); handled {
+			if lpErr != nil {
+				return nil, lpErr
 			}
-			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency}
-			return response, nil
+			if len(lpResult.ResponseBody) > 0 {
+				response := &schemas.BifrostResponsesResponse{}
+				if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+				}
+				response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency}
+				return response, nil
+			}
+			return &schemas.BifrostResponsesResponse{
+				Model:       request.Model,
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency},
+			}, nil
 		}
-		return &schemas.BifrostResponsesResponse{
-			Model:       request.Model,
-			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency},
-		}, nil
 	}
 
 	// Use centralized converter
@@ -1599,7 +1617,10 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		request.Params.Store = schemas.Ptr(false)
 	}
 
-	extraHeaders, streamBodyTransformer := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	extraHeaders, streamBodyTransformer, oauthErr := chatGPTOAuthApplyRequest(provider.chatgptOAuth, key, provider.effectiveExtraHeaders(key), provider.logger)
+	if oauthErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(oauthErr.Error(), oauthErr, provider.GetProviderKey())
+	}
 
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
@@ -1672,7 +1693,11 @@ func HandleOpenAIResponsesStreaming(
 		return nil, bifrostErr
 	}
 
-	if bodyTransformer != nil {
+	// When a body transformer is set (e.g. chatgpt_oauth), the transformed JSON must
+	// be the one sent upstream — large-payload streaming passthrough must be bypassed
+	// since it streams the raw original body, defeating the transformer.
+	hasBodyTransformer := bodyTransformer != nil
+	if hasBodyTransformer {
 		transformed, transformErr := bodyTransformer(jsonBody)
 		if transformErr != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, transformErr, providerName)
@@ -1698,7 +1723,12 @@ func HandleOpenAIResponsesStreaming(
 		req.Header.Set(key, value)
 	}
 
-	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+	if hasBodyTransformer {
+		// Always use the transformed JSON body; skip large-payload streaming passthrough.
+		req.SetBody(jsonBody)
+	} else {
+		setStreamingRequestBody(ctx, req, jsonBody, providerName)
+	}
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
@@ -5181,7 +5211,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.buildFullURL("/v1/files/" + request.FileID))
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -5257,7 +5287,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.SetRequestURI(provider.buildFullURL("/v1/files/" + request.FileID))
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -5349,7 +5379,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+		req.SetRequestURI(provider.buildFullURL("/v1/files/" + request.FileID + "/content"))
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -5750,7 +5780,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID)
+		req.SetRequestURI(provider.buildFullURL("/v1/batches/" + request.BatchID))
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -5826,7 +5856,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID + "/cancel")
+		req.SetRequestURI(provider.buildFullURL("/v1/batches/" + request.BatchID + "/cancel"))
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -5947,7 +5977,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.effectiveExtraHeaders(key), nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
+		req.SetRequestURI(provider.buildFullURL("/v1/files/" + *batchResp.OutputFileID + "/content"))
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -7113,7 +7143,7 @@ func (provider *OpenAIProvider) Passthrough(
 		path = after
 	}
 
-	url := provider.networkConfig.BaseURL + "/v1" + path
+	url := provider.buildFullURL("/v1" + path)
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
@@ -7190,7 +7220,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	if after, ok := strings.CutPrefix(path, "/v1"); ok {
 		path = after
 	}
-	url := provider.networkConfig.BaseURL + "/v1" + path
+	url := provider.buildFullURL("/v1" + path)
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}

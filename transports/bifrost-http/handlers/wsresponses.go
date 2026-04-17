@@ -674,7 +674,7 @@ var wsResponsesKnownFields = map[string]bool{
 }
 
 var (
-	errModelFormat   = errorf("model should be in provider/model format")
+	errModelFormat   = errorf("model is required")
 	errInputRequired = errorf("input is required for responses")
 )
 

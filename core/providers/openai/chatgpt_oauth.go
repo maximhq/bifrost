@@ -2,10 +2,10 @@ package openai
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -43,9 +43,44 @@ const ChatGPTOAuthDefaultBaseURL = "https://chatgpt.com/backend-api/codex"
 //   - max_output_tokens: must be deleted
 //   - stream: must be true (backend only accepts streaming)
 
-// ChatGPTOAuthClientVersion is the default Codex client_version appended to requests
-// that require it (e.g. /models). Matches the openai-oauth proxy fallback.
-const ChatGPTOAuthClientVersion = "0.111.0"
+// ChatGPTOAuthClientVersionFallback is the default Codex client_version used only
+// when no caller-supplied version is available. The ChatGPT backend requires the
+// param to exist on /models but is tolerant of the actual value. Callers (Codex CLI)
+// supply their own version in the query string via the /v1/models?client_version=
+// query param — we prefer that value and fall back to this constant only when absent.
+// Matches the openai-oauth proxy fallback.
+const ChatGPTOAuthClientVersionFallback = "0.111.0"
+
+// ChatGPTOAuthDirectKeyID is the key ID used when Bifrost auto-injects a Bearer
+// token from the inbound Authorization header as a direct key.
+const ChatGPTOAuthDirectKeyID = "chatgpt-oauth"
+
+// ExtractChatGPTOAuthBearerToken extracts a Bearer token from a request headers
+// map (case-insensitive "authorization" lookup). Returns "" if no Bearer token
+// is present. Public helper used by core/bifrost.go for the auto-inject path.
+func ExtractChatGPTOAuthBearerToken(headers map[string]string) string {
+	if headers == nil {
+		return ""
+	}
+	authHeader, ok := headers["authorization"]
+	if !ok {
+		// Try case-insensitive fallback since the caller may not lowercase.
+		for k, v := range headers {
+			if strings.EqualFold(k, "authorization") {
+				authHeader = v
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok || authHeader == "" {
+		return ""
+	}
+	if !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(authHeader[7:])
+}
 
 // chatGPTOAuthPath maps a standard OpenAI /v1/... path to the ChatGPT backend path.
 // Strips the /v1 prefix and appends required query parameters for routes that need them
@@ -59,7 +94,7 @@ func chatGPTOAuthPath(standardPath string) string {
 	}
 	// /models requires a client_version query parameter on the ChatGPT backend
 	if mapped == "/models" {
-		return mapped + "?client_version=" + ChatGPTOAuthClientVersion
+		return mapped + "?client_version=" + ChatGPTOAuthClientVersionFallback
 	}
 	return mapped
 }
@@ -119,7 +154,7 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 	}
 
 	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
+	if err := sonic.Unmarshal(payload, &claims); err != nil {
 		return "", fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
@@ -154,7 +189,7 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 //   - forces "stream" to true (the ChatGPT backend API only accepts streaming requests)
 func transformChatGPTResponsesBody(body []byte) ([]byte, error) {
 	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := sonic.Unmarshal(body, &data); err != nil {
 		return nil, fmt.Errorf("failed to parse request body: %w", err)
 	}
 
@@ -163,10 +198,9 @@ func transformChatGPTResponsesBody(body []byte) ([]byte, error) {
 		data["instructions"] = ""
 	}
 
-	// Set store to false if not already set
-	if _, ok := data["store"]; !ok {
-		data["store"] = false
-	}
+	// Force store to false — the ChatGPT backend API rejects store=true for OAuth
+	// callers regardless of caller intent.
+	data["store"] = false
 
 	// Remove max_output_tokens
 	delete(data, "max_output_tokens")
@@ -174,7 +208,7 @@ func transformChatGPTResponsesBody(body []byte) ([]byte, error) {
 	// Force stream to true — the ChatGPT backend API only accepts streaming
 	data["stream"] = true
 
-	return json.Marshal(data)
+	return sonic.Marshal(data)
 }
 
 // chatGPTOAuthExtraHeaders returns the extra headers required for ChatGPT OAuth requests.
@@ -195,17 +229,7 @@ func chatGPTOAuthPrepare(key schemas.Key, existingExtraHeaders map[string]string
 	if err != nil {
 		return nil, "", err
 	}
-
-	oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
-	merged := make(map[string]string, len(existingExtraHeaders)+len(oauthHeaders))
-	for k, v := range existingExtraHeaders {
-		merged[k] = v
-	}
-	for k, v := range oauthHeaders {
-		merged[k] = v
-	}
-
-	return merged, chatGPTOAuthPath(standardPath), nil
+	return mergeHeadersCaseInsensitive(existingExtraHeaders, chatGPTOAuthExtraHeaders(accountID)), chatGPTOAuthPath(standardPath), nil
 }
 
 // chatGPTOAuthMergeHeaders merges ChatGPT OAuth headers (chatgpt-account-id, OpenAI-Beta)
@@ -223,15 +247,7 @@ func chatGPTOAuthMergeHeaders(enabled bool, key schemas.Key, existingExtraHeader
 		}
 		return existingExtraHeaders
 	}
-	oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
-	merged := make(map[string]string, len(existingExtraHeaders)+len(oauthHeaders))
-	for k, v := range existingExtraHeaders {
-		merged[k] = v
-	}
-	for k, v := range oauthHeaders {
-		merged[k] = v
-	}
-	return merged
+	return mergeHeadersCaseInsensitive(existingExtraHeaders, chatGPTOAuthExtraHeaders(accountID))
 }
 
 // chatGPTOAuthApplyRequest is a convenience wrapper that applies ChatGPT OAuth
@@ -239,11 +255,43 @@ func chatGPTOAuthMergeHeaders(enabled bool, key schemas.Key, existingExtraHeader
 // Path mapping is handled separately by buildRequestURL, which auto-strips /v1
 // when chatgpt_oauth is enabled.
 // If enabled is false, returns the inputs unchanged and nil bodyTransformer.
-// If enabled is true and JWT extraction fails, logs and returns unchanged headers
-// but still returns the bodyTransformer so stream=true is forced.
-func chatGPTOAuthApplyRequest(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) (headers map[string]string, bodyTransformer func([]byte) ([]byte, error)) {
+// If enabled is true and JWT extraction fails, returns an error so the caller
+// can surface a structured "invalid ChatGPT OAuth token" error rather than
+// letting the upstream reject a mutated body with no account-id header.
+func chatGPTOAuthApplyRequest(enabled bool, key schemas.Key, existingExtraHeaders map[string]string, logger schemas.Logger) (headers map[string]string, bodyTransformer func([]byte) ([]byte, error), err error) {
 	if !enabled {
-		return existingExtraHeaders, nil
+		return existingExtraHeaders, nil, nil
 	}
-	return chatGPTOAuthMergeHeaders(enabled, key, existingExtraHeaders, logger), transformChatGPTResponsesBody
+	accountID, extractErr := extractChatGPTAccountID(key.Value.GetValue())
+	if extractErr != nil {
+		return nil, nil, fmt.Errorf("invalid ChatGPT OAuth token: %w", extractErr)
+	}
+	oauthHeaders := chatGPTOAuthExtraHeaders(accountID)
+	merged := mergeHeadersCaseInsensitive(existingExtraHeaders, oauthHeaders)
+	return merged, transformChatGPTResponsesBody, nil
+}
+
+// mergeHeadersCaseInsensitive merges two header maps, treating header names
+// case-insensitively. OAuth overrides always win. Keys from the OAuth map are
+// preserved as-is; duplicates from existingHeaders (by case-insensitive match)
+// are dropped. This prevents both "openai-beta" and "OpenAI-Beta" from ending
+// up in the result map where Go's unordered iteration would cause intermittent
+// behavior in SetExtraHeaders.
+func mergeHeadersCaseInsensitive(existingHeaders, oauthHeaders map[string]string) map[string]string {
+	// Build case-insensitive lookup of OAuth keys so we can skip duplicates from existingHeaders.
+	oauthKeysLower := make(map[string]bool, len(oauthHeaders))
+	for k := range oauthHeaders {
+		oauthKeysLower[strings.ToLower(k)] = true
+	}
+	merged := make(map[string]string, len(existingHeaders)+len(oauthHeaders))
+	for k, v := range existingHeaders {
+		if oauthKeysLower[strings.ToLower(k)] {
+			continue // OAuth override wins
+		}
+		merged[k] = v
+	}
+	for k, v := range oauthHeaders {
+		merged[k] = v
+	}
+	return merged
 }
