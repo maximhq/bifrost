@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/andybalholm/brotli v1.2.0
@@ -12,15 +12,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.4.20
-	github.com/maximhq/bifrost/framework v1.2.38
-	github.com/maximhq/bifrost/plugins/governance v1.4.38
-	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.27
-	github.com/maximhq/bifrost/plugins/logging v1.4.38
-	github.com/maximhq/bifrost/plugins/maxim v1.5.38
-	github.com/maximhq/bifrost/plugins/otel v1.1.37
-	github.com/maximhq/bifrost/plugins/semanticcache v1.4.36
-	github.com/maximhq/bifrost/plugins/telemetry v1.4.38
+	github.com/maximhq/bifrost/core v1.4.19
+	github.com/maximhq/bifrost/framework v1.2.36
+	github.com/maximhq/bifrost/plugins/governance v1.4.36
+	github.com/maximhq/bifrost/plugins/litellmcompat v0.0.25
+	github.com/maximhq/bifrost/plugins/logging v1.4.36
+	github.com/maximhq/bifrost/plugins/maxim v1.5.36
+	github.com/maximhq/bifrost/plugins/otel v1.1.35
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.34
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.36
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
