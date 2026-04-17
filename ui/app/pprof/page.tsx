@@ -16,7 +16,7 @@ import {
 	RotateCcw,
 	TrendingUp,
 } from "lucide-react";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 // ============================================================================
@@ -102,6 +102,135 @@ function saveSkippedGoroutineFiles(skipped: Set<string>): void {
 
 type AllocationSortField = "function" | "file" | "bytes" | "count";
 type SortDirection = "asc" | "desc";
+type AllocationSortState = { field: AllocationSortField; direction: SortDirection };
+type LeakSeverity = "high" | "medium" | "low";
+
+interface LeakCandidate {
+	key: string;
+	function: string;
+	file: string;
+	line: number;
+	stack: string[];
+	liveBytes: number;
+	cumulativeBytes: number;
+	retention: number;
+	liveCount: number;
+	samples: number[];
+	isGrowing: boolean;
+	growthBytes: number;
+	severity: LeakSeverity;
+}
+
+// ~60 seconds of history at 10s polling interval
+const LEAK_MAX_SAMPLES = 6;
+const LEAK_MIN_GROWTH_SAMPLES = 3;
+const LEAK_SEVERITY_RANK: Record<LeakSeverity, number> = { high: 0, medium: 1, low: 2 };
+
+function makeStackKey(stack: string[]): string {
+	return stack.join("\n");
+}
+
+function isMonotonicGrowing(samples: number[]): boolean {
+	if (samples.length < LEAK_MIN_GROWTH_SAMPLES) return false;
+	for (let i = 1; i < samples.length; i++) {
+		if (samples[i] < samples[i - 1]) return false;
+	}
+	return samples[samples.length - 1] > samples[0];
+}
+
+function classifyLeakSeverity(retention: number, liveBytes: number, isGrowing: boolean): LeakSeverity | null {
+	const MB = 1024 * 1024;
+	if (isGrowing && retention >= 0.5 && liveBytes >= MB) return "high";
+	if (retention >= 0.8 && liveBytes >= 10 * MB) return "high";
+	if (retention >= 0.5 && liveBytes >= MB) return "medium";
+	if (retention >= 0.3 && liveBytes >= 100 * 1024) return "low";
+	return null;
+}
+
+function detectLeaks(
+	cumulative: AllocationInfo[],
+	live: AllocationInfo[],
+	inuseHistory: Map<string, number[]>,
+): LeakCandidate[] {
+	const cumMap = new Map<string, AllocationInfo>();
+	for (const c of cumulative) {
+		cumMap.set(makeStackKey(c.stack), c);
+	}
+
+	const candidates: LeakCandidate[] = [];
+	for (const l of live) {
+		const key = makeStackKey(l.stack);
+		const cum = cumMap.get(key);
+		if (!cum || cum.bytes === 0) continue;
+		const retention = l.bytes / cum.bytes;
+		const samples = inuseHistory.get(key) ?? [];
+		const isGrowing = isMonotonicGrowing(samples);
+		const growthBytes = samples.length >= 2 ? samples[samples.length - 1] - samples[0] : 0;
+		const severity = classifyLeakSeverity(retention, l.bytes, isGrowing);
+		if (!severity) continue;
+		candidates.push({
+			key,
+			function: l.function,
+			file: l.file,
+			line: l.line,
+			stack: l.stack,
+			liveBytes: l.bytes,
+			cumulativeBytes: cum.bytes,
+			retention,
+			liveCount: l.count,
+			samples: [...samples],
+			isGrowing,
+			growthBytes,
+			severity,
+		});
+	}
+
+	candidates.sort((a, b) => {
+		if (a.severity !== b.severity) return LEAK_SEVERITY_RANK[a.severity] - LEAK_SEVERITY_RANK[b.severity];
+		return b.liveBytes - a.liveBytes;
+	});
+	return candidates;
+}
+
+function getLeakSeverityClasses(severity: LeakSeverity): string {
+	switch (severity) {
+		case "high":
+			return "text-red-400 bg-red-400/10 border-red-400/20";
+		case "medium":
+			return "text-amber-400 bg-amber-400/10 border-amber-400/20";
+		case "low":
+			return "text-zinc-400 bg-zinc-400/10 border-zinc-400/20";
+	}
+}
+
+function getRetentionColor(retention: number): string {
+	if (retention >= 0.8) return "text-red-400";
+	if (retention >= 0.5) return "text-amber-400";
+	return "text-zinc-400";
+}
+
+function sortAllocations(list: AllocationInfo[], sort: AllocationSortState): AllocationInfo[] {
+	const sorted = [...list];
+	sorted.sort((a, b) => {
+		let cmp = 0;
+		switch (sort.field) {
+			case "function":
+				cmp = a.function.localeCompare(b.function);
+				break;
+			case "file":
+				cmp = a.file.localeCompare(b.file);
+				break;
+			case "bytes":
+				cmp = a.bytes - b.bytes;
+				break;
+			case "count":
+				cmp = a.count - b.count;
+				break;
+		}
+		return sort.direction === "asc" ? cmp : -cmp;
+	});
+	return sorted;
+}
 
 // ============================================================================
 // Components
@@ -139,17 +268,25 @@ function AllocationTable({
 	sortField,
 	sortDirection,
 	onSort,
+	expandedKeys,
+	onToggle,
+	bytesColorClass = "text-rose-400",
+	testIdPrefix = "pprof-sort",
 }: {
 	allocations: AllocationInfo[];
 	sortField: AllocationSortField;
 	sortDirection: SortDirection;
 	onSort: (field: AllocationSortField) => void;
+	expandedKeys: Set<string>;
+	onToggle: (key: string) => void;
+	bytesColorClass?: string;
+	testIdPrefix?: string;
 }) {
 	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown;
 
 	const SortHeader = ({ field, children }: { field: AllocationSortField; children: React.ReactNode }) => (
 		<th scope="col" aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-			<button type="button" onClick={() => onSort(field)} data-testid={`pprof-sort-${field}`} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
+			<button type="button" onClick={() => onSort(field)} data-testid={`${testIdPrefix}-${field}`} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
 				{children}
 				{sortField === field && <SortIcon className="h-3 w-3" />}
 			</button>
@@ -161,6 +298,7 @@ function AllocationTable({
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
+						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
 						<SortHeader field="function">Function</SortHeader>
 						<SortHeader field="file">File:Line</SortHeader>
 						<SortHeader field="bytes">Bytes</SortHeader>
@@ -168,28 +306,213 @@ function AllocationTable({
 					</tr>
 				</thead>
 				<tbody>
-					{allocations.map((alloc, i) => (
-						<tr key={`${alloc.function}-${alloc.line}-${i}`} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-							<td className="px-4 py-3">
-								<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
-							</td>
-							<td className="px-4 py-3">
-								<code className="text-sm text-zinc-400">
-									{alloc.file}:{alloc.line}
-								</code>
-							</td>
-							<td className="px-4 py-3">
-								<span className="font-mono text-sm text-rose-400">{formatBytes(alloc.bytes)}</span>
-							</td>
-							<td className="px-4 py-3">
-								<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
-							</td>
-						</tr>
-					))}
+					{allocations.map((alloc) => {
+						const hasStack = alloc.stack && alloc.stack.length > 0;
+						const key = hasStack ? makeStackKey(alloc.stack) : `${alloc.function}:${alloc.file}:${alloc.line}`;
+						const isExpanded = expandedKeys.has(key);
+						return (
+							<React.Fragment key={key}>
+								<tr
+									role={hasStack ? "button" : undefined}
+									tabIndex={hasStack ? 0 : undefined}
+									aria-expanded={hasStack ? isExpanded : undefined}
+									onClick={hasStack ? () => onToggle(key) : undefined}
+									onKeyDown={
+										hasStack
+											? (e) => {
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														onToggle(key);
+													}
+												}
+											: undefined
+									}
+									data-testid="pprof-alloc-row"
+									className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${hasStack ? "cursor-pointer" : ""}`}
+								>
+									<td className="w-8 px-2 py-3 align-top">
+										{hasStack ? (
+											isExpanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />
+										) : null}
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm text-zinc-400">
+											{alloc.file}:{alloc.line}
+										</code>
+									</td>
+									<td className="px-4 py-3">
+										<span className={`font-mono text-sm ${bytesColorClass}`}>{formatBytes(alloc.bytes)}</span>
+									</td>
+									<td className="px-4 py-3">
+										<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
+									</td>
+								</tr>
+								{isExpanded && hasStack && (
+									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
+										<td />
+										<td colSpan={4} className="px-4 py-3">
+											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+											<div className="space-y-0.5 font-mono text-xs">
+												{alloc.stack.map((line, j) => (
+													<div key={j} className="break-all text-zinc-400">
+														{line}
+													</div>
+												))}
+											</div>
+										</td>
+									</tr>
+								)}
+							</React.Fragment>
+						);
+					})}
 					{allocations.length === 0 && (
 						<tr>
-							<td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
+							<td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
 								No allocations data available
+							</td>
+						</tr>
+					)}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+// Leak Candidates Table
+function LeakTable({
+	candidates,
+	expandedKeys,
+	onToggle,
+}: {
+	candidates: LeakCandidate[];
+	expandedKeys: Set<string>;
+	onToggle: (key: string) => void;
+}) {
+	return (
+		<div className="overflow-x-auto">
+			<table className="w-full">
+				<thead>
+					<tr className="border-b border-zinc-800">
+						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Severity
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Function
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							File:Line
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Live
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Retention
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Trend
+						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+							Live Count
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{candidates.map((c) => {
+						const rowKey = c.key;
+						const isExpanded = expandedKeys.has(rowKey);
+						return (
+							<React.Fragment key={rowKey}>
+								<tr
+									role="button"
+									tabIndex={0}
+									aria-expanded={isExpanded}
+									onClick={() => onToggle(rowKey)}
+									onKeyDown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onToggle(rowKey);
+										}
+									}}
+									data-testid="pprof-leak-row"
+									className="cursor-pointer border-b border-zinc-800/50 hover:bg-zinc-800/30"
+								>
+									<td className="w-8 px-2 py-3 align-top">
+										{isExpanded ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
+									</td>
+									<td className="px-4 py-3">
+										<span className={`rounded border px-2 py-0.5 text-xs uppercase ${getLeakSeverityClasses(c.severity)}`}>
+											{c.severity}
+										</span>
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm break-all text-zinc-200">{c.function}</code>
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm text-zinc-400">
+											{c.file}:{c.line}
+										</code>
+									</td>
+									<td className="px-4 py-3">
+										<span className="font-mono text-sm text-emerald-400">{formatBytes(c.liveBytes)}</span>
+									</td>
+									<td className="px-4 py-3">
+										<span className={`font-mono text-sm ${getRetentionColor(c.retention)}`}>
+											{(c.retention * 100).toFixed(0)}%
+										</span>
+									</td>
+									<td className="px-4 py-3">
+										{c.isGrowing ? (
+											<span className="flex items-center gap-1 text-xs text-rose-400">
+												<TrendingUp className="h-3 w-3" />+{formatBytes(c.growthBytes)}
+											</span>
+										) : (
+											<span className="text-xs text-zinc-500">stable</span>
+										)}
+									</td>
+									<td className="px-4 py-3">
+										<span className="font-mono text-sm text-zinc-300">{c.liveCount.toLocaleString()}</span>
+									</td>
+								</tr>
+								{isExpanded && (
+									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
+										<td />
+										<td colSpan={7} className="px-4 py-3">
+											<div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+												<span>
+													Cumulative: <span className="text-zinc-300">{formatBytes(c.cumulativeBytes)}</span>
+												</span>
+												<span>
+													Retained: <span className="text-zinc-300">{(c.retention * 100).toFixed(1)}%</span>
+												</span>
+												{c.samples.length >= 2 && (
+													<span>
+														Last {c.samples.length * 10}s:{" "}
+														<span className="text-zinc-300">{c.samples.map((b) => formatBytes(b)).join(" → ")}</span>
+													</span>
+												)}
+											</div>
+											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+											<div className="space-y-0.5 font-mono text-xs">
+												{c.stack.map((line, j) => (
+													<div key={j} className="break-all text-zinc-400">
+														{line}
+													</div>
+												))}
+											</div>
+										</td>
+									</tr>
+								)}
+							</React.Fragment>
+						);
+					})}
+					{candidates.length === 0 && (
+						<tr>
+							<td colSpan={8} className="px-4 py-8 text-center text-zinc-500">
+								No obvious leak signatures — all live allocations have normal retention ratios.
 							</td>
 						</tr>
 					)}
@@ -287,10 +610,14 @@ export default function PprofPage() {
 	const [expandedGoroutines, setExpandedGoroutines] = useState<Set<string>>(new Set());
 	const [skippedGoroutines, setSkippedGoroutines] = useState<Set<string>>(new Set());
 	const [hasLoadedSkipped, setHasLoadedSkipped] = useState(false);
-	const [allocationSort, setAllocationSort] = useState<{
-		field: AllocationSortField;
-		direction: SortDirection;
-	}>({ field: "bytes", direction: "desc" });
+	const [allocationSort, setAllocationSort] = useState<AllocationSortState>({ field: "bytes", direction: "desc" });
+	const [inuseSort, setInuseSort] = useState<AllocationSortState>({ field: "bytes", direction: "desc" });
+	const [expandedAlloc, setExpandedAlloc] = useState<Set<string>>(new Set());
+	const [expandedInuse, setExpandedInuse] = useState<Set<string>>(new Set());
+	const [expandedLeaks, setExpandedLeaks] = useState<Set<string>>(new Set());
+	const inuseHistoryRef = useRef<Map<string, number[]>>(new Map());
+	const lastInuseSnapshotRef = useRef<string | null>(null);
+	const [historyVersion, setHistoryVersion] = useState(0);
 
 	// Load skipped goroutines from localStorage on client
 	useEffect(() => {
@@ -333,29 +660,55 @@ export default function PprofPage() {
 	}, [data?.history]);
 
 	// Sort allocations
-	const sortedAllocations = useMemo(() => {
-		if (!data?.top_allocations) return [];
-		const sorted = [...data.top_allocations];
-		sorted.sort((a, b) => {
-			let cmp = 0;
-			switch (allocationSort.field) {
-				case "function":
-					cmp = a.function.localeCompare(b.function);
-					break;
-				case "file":
-					cmp = a.file.localeCompare(b.file);
-					break;
-				case "bytes":
-					cmp = a.bytes - b.bytes;
-					break;
-				case "count":
-					cmp = a.count - b.count;
-					break;
-			}
-			return allocationSort.direction === "asc" ? cmp : -cmp;
-		});
-		return sorted;
-	}, [data?.top_allocations, allocationSort]);
+	const sortedAllocations = useMemo(
+		() => sortAllocations(data?.top_allocations ?? [], allocationSort),
+		[data?.top_allocations, allocationSort],
+	);
+	const sortedInuseAllocations = useMemo(
+		() => sortAllocations(data?.inuse_allocations ?? [], inuseSort),
+		[data?.inuse_allocations, inuseSort],
+	);
+
+	// Roll a ~60s window of inuse bytes per stack signature so we can detect
+	// sites whose live memory grows monotonically across polls. Dedupe on
+	// data.timestamp (stamped fresh by the backend each poll) rather than
+	// array identity: RTK Query's default structural sharing reuses the
+	// inuse_allocations reference when the snapshot is deep-equal, which
+	// would silently skip samples on idle polls and shrink the window.
+	useEffect(() => {
+		const inuse = data?.inuse_allocations;
+		const snapshotTs = data?.timestamp;
+		if (!inuse || !snapshotTs || lastInuseSnapshotRef.current === snapshotTs) return;
+		lastInuseSnapshotRef.current = snapshotTs;
+		const map = inuseHistoryRef.current;
+		const seen = new Set<string>();
+		for (const l of inuse) {
+			const key = makeStackKey(l.stack);
+			seen.add(key);
+			const samples = map.get(key) ?? [];
+			samples.push(l.bytes);
+			while (samples.length > LEAK_MAX_SAMPLES) samples.shift();
+			map.set(key, samples);
+		}
+		// Drop sites absent from the latest snapshot (either freed or evicted
+		// from top-N) so the map stays bounded.
+		for (const key of [...map.keys()]) {
+			if (!seen.has(key)) map.delete(key);
+		}
+		setHistoryVersion((v) => v + 1);
+	}, [data?.timestamp, data?.inuse_allocations]);
+
+	const leakCandidates = useMemo(
+		() => detectLeaks(data?.top_allocations ?? [], data?.inuse_allocations ?? [], inuseHistoryRef.current),
+		// historyVersion bumps when the ref is mutated; top/inuse refs change per poll
+		[data?.top_allocations, data?.inuse_allocations, historyVersion],
+	);
+
+	const leakSummary = useMemo(() => {
+		const counts: Record<LeakSeverity, number> = { high: 0, medium: 0, low: 0 };
+		for (const c of leakCandidates) counts[c.severity]++;
+		return counts;
+	}, [leakCandidates]);
 
 	// Detect goroutine count trend
 	const goroutineTrend = useMemo(() => {
@@ -392,6 +745,49 @@ export default function PprofPage() {
 			field,
 			direction: prev.field === field && prev.direction === "desc" ? "asc" : "desc",
 		}));
+	}, []);
+
+	const handleInuseSort = useCallback((field: AllocationSortField) => {
+		setInuseSort((prev) => ({
+			field,
+			direction: prev.field === field && prev.direction === "desc" ? "asc" : "desc",
+		}));
+	}, []);
+
+	const toggleAllocExpand = useCallback((key: string) => {
+		setExpandedAlloc((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) {
+				next.delete(key);
+			} else {
+				next.add(key);
+			}
+			return next;
+		});
+	}, []);
+
+	const toggleInuseExpand = useCallback((key: string) => {
+		setExpandedInuse((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) {
+				next.delete(key);
+			} else {
+				next.add(key);
+			}
+			return next;
+		});
+	}, []);
+
+	const toggleLeakExpand = useCallback((key: string) => {
+		setExpandedLeaks((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) {
+				next.delete(key);
+			} else {
+				next.add(key);
+			}
+			return next;
+		});
 	}, []);
 
 	const toggleGoroutineExpand = useCallback((id: string) => {
@@ -635,18 +1031,81 @@ export default function PprofPage() {
 						</div>
 					</div>
 
-					{/* Allocations Table */}
+					{/* Potential Leaks — stacks accumulating live memory without being freed */}
 					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">
-						<div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
-							<HardDrive className="h-4 w-4 text-rose-400" />
-							<span className="font-medium text-zinc-300">Memory Allocations</span>
-							<span className="text-sm text-zinc-500">({sortedAllocations.length} allocations)</span>
+						<div className="border-b border-zinc-800 px-4 py-3">
+							<div className="flex items-center gap-2">
+								<AlertTriangle className="h-4 w-4 text-amber-400" />
+								<span className="font-medium text-zinc-300">Potential Leaks</span>
+								<span className="text-sm text-zinc-500">({leakCandidates.length} suspicious)</span>
+								{leakSummary.high > 0 && (
+									<span className="rounded border border-red-400/20 bg-red-400/10 px-2 py-0.5 text-xs text-red-400">
+										{leakSummary.high} high
+									</span>
+								)}
+								{leakSummary.medium > 0 && (
+									<span className="rounded border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 text-xs text-amber-400">
+										{leakSummary.medium} medium
+									</span>
+								)}
+								{leakSummary.low > 0 && (
+									<span className="rounded border border-zinc-400/20 bg-zinc-400/10 px-2 py-0.5 text-xs text-zinc-400">
+										{leakSummary.low} low
+									</span>
+								)}
+							</div>
+							<p className="mt-1 text-xs text-zinc-500">
+								Stacks whose live bytes remain a large fraction of what they ever allocated (retention), optionally with
+								live bytes trending upward over the last minute. Growth + high retention together is the strongest leak
+								signal.
+							</p>
+						</div>
+						<LeakTable candidates={leakCandidates} expandedKeys={expandedLeaks} onToggle={toggleLeakExpand} />
+					</div>
+
+					{/* Live Heap Allocations — what's currently consuming the heap */}
+					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">
+						<div className="border-b border-zinc-800 px-4 py-3">
+							<div className="flex items-center gap-2">
+								<HardDrive className="h-4 w-4 text-emerald-400" />
+								<span className="font-medium text-zinc-300">Live Heap Allocations</span>
+								<span className="text-sm text-zinc-500">({sortedInuseAllocations.length} sites)</span>
+							</div>
+							<p className="mt-1 text-xs text-zinc-500">
+								Call stacks currently holding memory on the heap right now — expand a row to see the full stack.
+							</p>
+						</div>
+						<AllocationTable
+							allocations={sortedInuseAllocations}
+							sortField={inuseSort.field}
+							sortDirection={inuseSort.direction}
+							onSort={handleInuseSort}
+							expandedKeys={expandedInuse}
+							onToggle={toggleInuseExpand}
+							bytesColorClass="text-emerald-400"
+							testIdPrefix="pprof-inuse-sort"
+						/>
+					</div>
+
+					{/* Cumulative Memory Allocations — total since process start */}
+					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">
+						<div className="border-b border-zinc-800 px-4 py-3">
+							<div className="flex items-center gap-2">
+								<HardDrive className="h-4 w-4 text-rose-400" />
+								<span className="font-medium text-zinc-300">Cumulative Memory Allocations</span>
+								<span className="text-sm text-zinc-500">({sortedAllocations.length} sites)</span>
+							</div>
+							<p className="mt-1 text-xs text-zinc-500">
+								Total bytes allocated since process start (includes memory already freed) — expand a row to see the full stack.
+							</p>
 						</div>
 						<AllocationTable
 							allocations={sortedAllocations}
 							sortField={allocationSort.field}
 							sortDirection={allocationSort.direction}
 							onSort={handleAllocationSort}
+							expandedKeys={expandedAlloc}
+							onToggle={toggleAllocExpand}
 						/>
 					</div>
 

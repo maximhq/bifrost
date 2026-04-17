@@ -701,6 +701,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 		defer func() {
 			model := "unknown"
 			if meta != nil {
@@ -1187,6 +1188,7 @@ func HandleAnthropicResponsesStream(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 		defer func() {
 			model := "<unknown>"
 			if meta != nil {
@@ -1226,6 +1228,7 @@ func HandleAnthropicResponsesStream(
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := 0
@@ -2786,6 +2789,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 		defer func() {
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.GetProviderKey(), req.Model, schemas.PassthroughStreamRequest, provider.logger)
@@ -2797,6 +2801,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer stopIdleTimeout()
 		defer stopCancellation()
+
 
 		buf := make([]byte, 4096)
 		for {

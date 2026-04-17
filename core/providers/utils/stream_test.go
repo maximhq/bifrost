@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -18,7 +20,7 @@ func TestCheckFirstStreamChunk_ErrorInFirstChunk(t *testing.T) {
 	}
 	close(stream)
 
-	_, drainDone, err := CheckFirstStreamChunkForError(stream)
+	_, drainDone, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -47,7 +49,7 @@ func TestCheckFirstStreamChunk_ValidFirstChunk(t *testing.T) {
 	stream <- chunk2
 	close(stream)
 
-	wrapped, _, err := CheckFirstStreamChunkForError(stream)
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +77,7 @@ func TestCheckFirstStreamChunk_EmptyStream(t *testing.T) {
 	stream := make(chan *schemas.BifrostStreamChunk)
 	close(stream)
 
-	wrapped, drainDone, err := CheckFirstStreamChunkForError(stream)
+	wrapped, drainDone, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestCheckFirstStreamChunk_ErrorInSecondChunk(t *testing.T) {
 	close(stream)
 
 	// Should NOT return error — only first chunk matters for retry
-	wrapped, _, err := CheckFirstStreamChunkForError(stream)
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestCheckFirstStreamChunk_ErrorDrainsSource(t *testing.T) {
 	}
 	close(stream)
 
-	_, drainDone, err := CheckFirstStreamChunkForError(stream)
+	_, drainDone, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -176,12 +178,55 @@ func TestCheckFirstStreamChunk_ErrorWithEmptyMessage(t *testing.T) {
 	}
 	close(stream)
 
-	wrapped, _, err := CheckFirstStreamChunkForError(stream)
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("unexpected error for empty message: %v", err)
 	}
 	// Should be treated as valid chunk
 	<-wrapped
+}
+
+func TestCheckFirstStreamChunk_CtxCancelUnblocksWrapper(t *testing.T) {
+	// Source with cap=1 so wrapped also has cap=1. wrapped is left full by
+	// the re-injected first chunk, which makes the forwarder goroutine block
+	// on its next send — the exact leak condition this test guards against.
+	src := make(chan *schemas.BifrostStreamChunk, 1)
+	src <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "1"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wrapped, drainDone, err := CheckFirstStreamChunkForError(ctx, src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wrapped == nil {
+		t.Fatal("expected wrapped channel, got nil")
+	}
+
+	// Push a second chunk; forwarder will read it from src and then block
+	// trying to send into the full wrapped channel (we intentionally never
+	// read from wrapped).
+	src <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "2"},
+	}
+
+	// Cancel — forwarder must stop trying to send to wrapped and drain src.
+	cancel()
+
+	// Simulate the upstream producer still emitting, then closing. The
+	// drain loop should consume these and terminate.
+	src <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{ID: "3"},
+	}
+	close(src)
+
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("drainDone did not close after ctx cancel; forwarder goroutine leaked")
+	}
 }
 
 func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
@@ -196,7 +241,7 @@ func TestCheckFirstStreamChunk_CodeOnlyError(t *testing.T) {
 	}
 	close(stream)
 
-	_, drainDone, err := CheckFirstStreamChunkForError(stream)
+	_, drainDone, err := CheckFirstStreamChunkForError(context.Background(), stream)
 	if err == nil {
 		t.Fatal("expected error for code-only error, got nil")
 	}

@@ -1,9 +1,17 @@
 ## ✨ Features
 
 - **Claude Opus 4.7 Support** — Added compatibility for Anthropic's Claude Opus 4.7 model, including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Anthropic Structured Outputs** — Added `response_format` and structured output support for Anthropic models across chat completions and Responses API, including JSON-schema and JSON-object formats with order-preserving merge of additional model request fields (thanks [@emirhanmutlu-natuvion](https://github.com/emirhanmutlu-natuvion)!)
+- **MCP Tool Annotations** — Preserve MCP tool annotations (`title`, `readOnly`, `destructive`, `idempotent`, `openWorld`) in bidirectional conversion between MCP tools and Bifrost chat tools so agents can reason about tool behavior
+- **Anthropic Server Tools** — Expanded Anthropic chat schema and Responses converters to surface server-side tools (web search, code execution, computer use containers) end-to-end
 
 ## 🐞 Fixed
 
+- **Provider Queue Shutdown Panic** — Eliminated `send on closed channel` panics in provider queue shutdown by leaving queue channels open and exiting workers via the `done` signal; stale producers transparently re-route to new queues during `UpdateProvider`, with rollback on failed updates
+- **OpenAI Tool Result Output** — Flatten array-form `tool_result` output into a newline-joined string before marshaling for the Responses API so strict upstreams (Ollama Cloud, openai-go typed models) no longer reject it with HTTP 400; non-text blocks (images, files) are preserved (thanks [@martingiguere](https://github.com/martingiguere)!)
+- **vLLM Token Usage** — Treat `delta.content=""` the same as `nil` in streaming so the synthesis chunk retains its `finish_reason`, restoring token usage attribution in logs and UI
+- **Config Schema Validator** — Corrected JSON-path lookups for concurrency and SCIM blocks in the schema validation script, and reformatted `transports/config.schema.json` for readability
+- **CI Egress Hardening** — Switched `step-security/harden-runner` from `audit` to `block` across all GitHub Actions workflows with explicit `allowed-endpoints` per job
 - **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages (thanks [@tom-diacono](https://github.com/tom-diacono)!)
 - **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream and case-insensitive `anthropic-beta` header merging (thanks [@tefimov](https://github.com/tefimov)!)
 - **Bedrock Tool Images** — Preserve image content blocks in tool results when converting Anthropic Messages to Bedrock Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)

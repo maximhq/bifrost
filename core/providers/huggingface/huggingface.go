@@ -1160,6 +1160,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 	// Start streaming in a goroutine
 	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer close(responseChan)
 
@@ -1579,6 +1580,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	// Start streaming in a goroutine
 	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx)
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		defer close(responseChan)
 

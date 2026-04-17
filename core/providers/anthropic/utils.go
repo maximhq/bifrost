@@ -14,6 +14,77 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// anthropicToolTypePrefixToFeature maps Anthropic server-tool type prefixes
+// to the corresponding ProviderFeatureSupport flag. Mirrors the structure of
+// betaHeaderPrefixToFeature (defined later in this file) so tool-type gating
+// and beta-header gating share the same shape.
+//
+// Prefix-based so future version bumps (e.g. web_search_20261231) flow
+// through without a code change. Exact-match types (currently just
+// "mcp_toolset") are handled separately.
+var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
+	"web_search_":       func(f ProviderFeatureSupport) bool { return f.WebSearch },
+	"web_fetch_":        func(f ProviderFeatureSupport) bool { return f.WebFetch },
+	"code_execution_":   func(f ProviderFeatureSupport) bool { return f.CodeExecution },
+	"computer_":         func(f ProviderFeatureSupport) bool { return f.ComputerUse },
+	"bash_":             func(f ProviderFeatureSupport) bool { return f.Bash },
+	"memory_":           func(f ProviderFeatureSupport) bool { return f.Memory },
+	"text_editor_":      func(f ProviderFeatureSupport) bool { return f.TextEditor },
+	"tool_search_tool_": func(f ProviderFeatureSupport) bool { return f.ToolSearch },
+}
+
+// isAnthropicServerToolSupported returns whether the given Anthropic server-tool
+// type string is supported by the provider's ProviderFeatureSupport. Unknown
+// types return true (forward-compat: let the provider reject if truly invalid
+// rather than Bifrost dropping a tool Anthropic has just added).
+func isAnthropicServerToolSupported(toolType string, features ProviderFeatureSupport) bool {
+	// Exact-match types first.
+	if toolType == "mcp_toolset" {
+		return features.MCP
+	}
+	// Prefix match for versioned types.
+	for prefix, check := range anthropicToolTypePrefixToFeature {
+		if strings.HasPrefix(toolType, prefix) {
+			return check(features)
+		}
+	}
+	return true
+}
+
+// ValidateChatToolsForProvider is the chat-path mirror of
+// ValidateToolsForProvider. It partitions []schemas.ChatTool into a keep-set
+// (function/custom tools + server tools supported on the target provider)
+// and a dropped-set (server-tool Type strings the provider doesn't support
+// per ProviderFeatures).
+//
+// Does NOT mutate its input. Callers decide the policy (silent strip vs
+// fail-fast). The Bedrock ChatCompletion path uses silent strip so the
+// request still reaches the provider without the unsupported tool; the model
+// responds with a prose completion instead of tool use.
+//
+// Unknown providers keep all tools (safe default for custom providers),
+// matching ValidateToolsForProvider.
+func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.ModelProvider) (keep []schemas.ChatTool, dropped []string) {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return tools, nil
+	}
+	for _, tool := range tools {
+		// Function/custom tools are universal — always keep.
+		if tool.Function != nil || tool.Custom != nil {
+			keep = append(keep, tool)
+			continue
+		}
+		t := string(tool.Type)
+		if isAnthropicServerToolSupported(t, features) {
+			keep = append(keep, tool)
+		} else {
+			dropped = append(dropped, t)
+		}
+	}
+	return keep, dropped
+}
+
 // ValidateToolsForProvider checks if all tools in the request are supported by the given provider.
 // Returns an error for the first unsupported tool found.
 func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {

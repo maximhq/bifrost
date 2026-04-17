@@ -1893,6 +1893,41 @@ func ProcessAndSendBifrostError(
 	}
 }
 
+// EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
+// on ctx, if any. Designed to be deferred as the last line of defence in a
+// provider's streaming goroutine (next to SetupStreamCancellation's cleanup):
+//
+//	defer providerUtils.EnsureStreamFinalizerCalled(ctx)
+//
+// On a normal stream end the finalizer is already invoked when the final chunk
+// is processed (via completeDeferredSpan). The registration wraps the closure
+// in sync.Once, so this safety-net call is a noop in that case. It only does
+// real work when the streaming goroutine exits without reaching the final-chunk
+// path — e.g. a panic mid-stream — which would otherwise leak the plugin
+// pipeline back-reference held by the finalizer closure.
+//
+// Panics inside the finalizer are recovered and logged so they never mask an
+// in-flight panic that triggered the defer.
+func EnsureStreamFinalizerCalled(ctx context.Context) {
+	// Install the recover first so any panic — including one triggered by
+	// accessing ctx itself — is caught. This matters because this helper is
+	// called from `defer`, so a panic here would mask the in-flight panic
+	// that invoked the defer.
+	defer func() {
+		if r := recover(); r != nil {
+			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
+		}
+	}()
+	if ctx == nil {
+		return
+	}
+	finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context))
+	if !ok || finalizer == nil {
+		return
+	}
+	finalizer(ctx)
+}
+
 // SetupStreamCancellation spawns a goroutine that closes the body stream when
 // the context is cancelled or deadline exceeded, unblocking any blocked Read/Scan operations.
 // Returns a cleanup function that MUST be called when streaming is done to

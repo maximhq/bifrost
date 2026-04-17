@@ -410,8 +410,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		//   (3) Custom tool (tool.Custom != nil) — not currently forwarded
 		//       to Anthropic; skipped.
 		if bifrostReq.Params.Tools != nil {
-			tools := make([]AnthropicTool, 0, len(bifrostReq.Params.Tools))
-			for _, tool := range bifrostReq.Params.Tools {
+			// Strip server tools the target provider doesn't support per
+			// ProviderFeatures (e.g. web_search on Vertex's non-supporting
+			// model variants, or MCP on Bedrock when this converter is used
+			// by non-Bedrock providers). Function/custom tools are always
+			// kept. The dropped set is discarded — "silent strip + continue"
+			// policy per user direction. See Bedrock's convertToolConfig for
+			// the direct-Bedrock-path equivalent.
+			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, bifrostReq.Provider)
+			tools := make([]AnthropicTool, 0, len(filtered))
+			for _, tool := range filtered {
 				if tool.Function != nil {
 					tools = append(tools, convertFunctionToolToAnthropic(tool))
 					continue

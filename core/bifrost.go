@@ -4689,8 +4689,16 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// shared processedResponse or processedError objects.
 					streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-					// Send the processed message to the output stream
-					outputStream <- streamResponse
+					// Guarded send: if the consumer abandons outputStream (client
+					// disconnect, ctx cancel), drain the upstream shortCircuit.Stream
+					// so its producer can exit cleanly instead of blocking on its send.
+					select {
+					case outputStream <- streamResponse:
+					case <-ctx.Done():
+						for range shortCircuit.Stream {
+						}
+						return
+					}
 
 					//TODO: Release the processed response immediately after use
 				}
@@ -4952,7 +4960,7 @@ func executeRequestWithRetries[T any](
 		// the SSE stream instead of returning proper HTTP error status codes.
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
-				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(streamChan)
+				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
 				if firstChunkErr != nil {
 					<-drainDone
 					bifrostError = firstChunkErr
@@ -5216,12 +5224,16 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				return resp, nil
 			}
-			// Store a finalizer callback to create aggregated post-hook spans at stream end
-			// This closure captures the pipeline reference and releases it after finalization
+			// Store a finalizer callback to create aggregated post-hook spans at stream end.
+			// Wrapped in sync.Once so the normal end-of-stream invocation and a deferred
+			// safety-net invocation (e.g. from a provider goroutine's panic path) cannot
+			// double-release the pipeline.
+			var finalizerOnce sync.Once
 			postHookSpanFinalizer := func(ctx context.Context) {
-				pipeline.FinalizeStreamingPostHookSpans(ctx)
-				// Release the pipeline AFTER finalizing spans (not before streaming completes)
-				bifrost.releasePluginPipeline(pipeline)
+				finalizerOnce.Do(func() {
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					bifrost.releasePluginPipeline(pipeline)
+				})
 			}
 			req.Context.SetValue(schemas.BifrostContextKeyPostHookSpanFinalizer, postHookSpanFinalizer)
 		}
