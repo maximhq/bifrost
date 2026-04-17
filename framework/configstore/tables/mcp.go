@@ -28,7 +28,7 @@ type TableMCPClient struct {
 	ToolSyncInterval       int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
