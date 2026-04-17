@@ -215,6 +215,8 @@ github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuE
 github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/maximhq/bifrost/core v1.4.19 h1:RY6n8O1upUo/W05whsLO2OJtJpCpTFzplyq+6pk4NaY=
 github.com/maximhq/bifrost/core v1.4.19/go.mod h1:iOh2p1qEKVolMG8l84LWcn1CseUL2Kl5c/iXFMiZI84=
+github.com/maximhq/bifrost/core v1.4.20 h1:irEnW4oenNN4q8wiERa0Oa2D3UYnOQiF77UDMjqr1rc=
+github.com/maximhq/bifrost/core v1.4.20/go.mod h1:IaGSRlCgvy6Nr7Xiyu44sJJo9JbK188EL4QPXIcvURA=
 github.com/maximhq/bifrost/framework v1.2.38 h1:uWITpE+PilOwo1CQCXhZ8iQ98hH7VOBroJlTMWGL8As=
 github.com/maximhq/bifrost/framework v1.2.38/go.mod h1:S7vc+M9QOAj7RYK6pA0uauWHMxLxGRvlhHlZGArNsPw=
 github.com/maximhq/bifrost/plugins/governance v1.4.38 h1:B9rYAYWo5hO57XGRmb5nNMyj8FAdN8rcRtBTl4SLDXQ=
